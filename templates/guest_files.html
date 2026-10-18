@@ -1,0 +1,115 @@
+{# Frost guest temp-file list (/guest-files). Replaces the legacy
+   templates/files.html.
+
+   NOTE: the legacy template emitted `const MAX_GB = {{ max_gb }}` but the
+   guest_files() route never passed max_gb and it is not in the context
+   processor, so that line rendered as `const MAX_GB = ;` — a syntax error that
+   killed the whole inline script AND the script.js it pulled in. Neither is
+   needed on a read-only listing, so both are gone. #}
+{% extends 'base.html' %}
+{% block title %}YOUR UPLOADS{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('gateway.css') }}">{% endblock %}
+
+{% block content %}
+<section class="gw-section">
+  <div class="gw-card gw-card-wide">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
+    <div class="gw-rule"></div>
+    <h1 class="gw-title">Uploaded files</h1>
+    <p class="gw-sub">Temporary uploads from this browser session</p>
+
+    {% if files %}
+    <div style="overflow-x:auto;margin-top:1.6rem">
+      <table class="gw-table">
+        <thead>
+          <tr>
+            <th>File name</th>
+            <th>Size</th>
+            <th>Expires</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for file in files %}
+          <tr>
+            <td><a href="{{ url_for('download', id_or_token=file.id, filename=file.orig_name) }}" class="gw-fname">{{ file.orig_name }}</a></td>
+            <td class="gw-mono">{{ file.size | filesize }}</td>
+            <td class="gw-mono">{% if file.expires_at %}{{ file.expires_at.strftime('%Y-%m-%d %H:%M') }}{% else %}Never{% endif %}</td>
+            <td>
+              {% if file.is_e2e_encrypted %}
+                <span class="gw-tag gw-tag-good">E2EE</span>
+              {% else %}
+                <span class="gw-tag">Server-side</span>
+              {% endif %}
+              {% if file.password_hash %}
+                <span class="gw-tag gw-tag-accent">Protected</span>
+              {% elif file.is_public and not file.is_e2e_encrypted %}
+                <span class="gw-tag gw-tag-accent">Public</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="gw-row-actions">
+                <a href="{{ url_for('manage', token=file.management_token) }}" class="gw-mini">Edit</a>
+                <button type="button" class="gw-mini gw-copy-link" data-url="{{ url_for('download', id_or_token=file.id, filename=file.orig_name, _external=True) }}">Copy link</button>
+                <button type="button" class="gw-mini gw-mini-danger gw-delete" data-token="{{ file.management_token }}" data-name="{{ file.orig_name }}">Delete</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <a class="gw-empty" href="{{ url_for('share') if allow_temp_uploads else url_for('files') }}" style="margin-top:1.6rem">
+      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>
+      <div class="gw-empty-title">No files uploaded yet</div>
+      <p class="gw-sub">{% if allow_temp_uploads %}Click to upload{% else %}Use your drive to upload files{% endif %}</p>
+    </a>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
+<script nonce="{{ csp_nonce }}">
+document.addEventListener('click', async function (e) {
+  const copyBtn = e.target.closest('.gw-copy-link')
+  if (copyBtn) {
+    const url = copyBtn.dataset.url || ''
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(url)
+      } else {
+        const ta = document.createElement('textarea')
+        ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0'
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove()
+      }
+      showToast('LINK COPIED', 'success')
+    } catch (err) { showToast('FAILED TO COPY LINK', 'error') }
+    return
+  }
+
+  const delBtn = e.target.closest('.gw-delete')
+  if (delBtn) {
+    const name = delBtn.dataset.name || 'THIS FILE'
+    const ok = await showConfirm(name, 'This file will be permanently deleted. This action cannot be undone.', 'DELETE')
+    if (!ok) return
+    const fd = new FormData()
+    const t = document.getElementById('csrf_token')
+    if (t) fd.append('csrf_token', t.value)
+    try {
+      const r = await fetch('/delete/' + delBtn.dataset.token, {
+        method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd
+      })
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      showToast('FILE DELETED', 'success')
+      const row = delBtn.closest('tr'); if (row) row.remove()
+    } catch (err) {
+      showToast('FAILED TO DELETE FILE', 'error')
+    }
+  }
+})
+</script>
+{% endblock %}

@@ -1,0 +1,41 @@
+{# Frost 404 / generic error page. Replaces the legacy templates/notfound.html.
+   Accepts the same context vars the old template did (error_code / title /
+   subtitle / detail) so every abort() call site in app.py keeps working. #}
+{% extends 'base.html' %}
+{% block title %}{{ title|default('NOT FOUND') }}{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('gateway.css') }}">{% endblock %}
+
+{% block content %}
+<section class="gw-section">
+  <div class="gw-card">
+    <div class="gw-code" aria-hidden="true">
+      <span class="gw-digit">{{ error_code|default('4') }}</span>
+      <span class="gw-digit gw-digit-accent">{{ error_code_mid|default('0') }}</span>
+      <span class="gw-digit">{{ error_code_end|default('4') }}</span>
+    </div>
+    <div class="gw-rule"></div>
+    <h1 class="gw-title">{{ title|default('File not found') }}</h1>
+    <p class="gw-sub">{{ subtitle|default('The file you are looking for has expired or does not exist') }}</p>
+
+    {% if detail %}
+    <div class="gw-detail">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      <span>{{ detail }}</span>
+    </div>
+    {% endif %}
+
+    <div class="gw-actions">
+      {% if allow_temp_uploads %}
+      <a href="{{ url_for('share') }}" class="gw-btn gw-btn-primary">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Upload a file
+      </a>
+      {% endif %}
+      <a href="{{ url_for('index') }}" class="gw-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        Go home
+      </a>
+    </div>
+  </div>
+</section>
+{% endblock %}

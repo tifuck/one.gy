@@ -1,0 +1,94 @@
+{# Shared quick-share uploader widget. Reuses the existing upload JS
+   (script.js / crypto.js / manage-modal.js). Include anywhere and pass
+   temp_max_gb in the template context. Frost styling: uploader.css. #}
+<div class="rd-uploader">
+  <input type="hidden" id="csrf_token" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="drop-zone" id="dropZone">
+    <div class="drop-zone-body">
+      <div class="drop-zone-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="56" height="56"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+      <h2 class="drop-zone-title">Drop files here</h2>
+      <p class="drop-zone-text">or click to browse</p>
+    </div>
+    <div class="drop-zone-toggles">
+      <span class="drop-zone-limit">Max {{ "%.0f"|format(temp_max_gb) if temp_max_gb == temp_max_gb|int else "%.1f"|format(temp_max_gb) }} GB</span>
+      <div class="drop-zone-toggle"><div class="toggle-switch"><input type="checkbox" id="shortToggle" class="toggle-checkbox"><span class="toggle-slider"></span></div><span class="drop-zone-toggle-label">Short URL</span></div>
+      <div class="drop-zone-toggle"><div class="toggle-switch"><input type="checkbox" id="e2eToggle" class="toggle-checkbox"><span class="toggle-slider"></span></div><span class="drop-zone-toggle-label">E2E encrypt</span></div>
+    </div>
+  </div>
+  <p class="rd-uploader-trust">AES-256-GCM · encrypted in your browser</p>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+  const MAX_GB = {{ temp_max_gb|default(1.0) }};
+  var _pendingUploadRefresh = false;
+</script>
+<script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
+<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('temp-keychain.js') }}" defer></script>
+<script src="{{ versioned_static('manage-modal.js') }}" defer></script>
+<script src="{{ versioned_static('temp-preview.js') }}" defer></script>
+<script src="{{ versioned_static('script.js') }}" defer></script>
+<script nonce="{{ csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function() {
+  if (typeof initShareUpload === 'function') initShareUpload();
+
+  // E2E on by default (encrypt everything); hide the toggle where Web Crypto is unavailable.
+  var e2e = document.getElementById('e2eToggle');
+  if (e2e) e2e.checked = true;
+  if (!window.crypto || !window.crypto.subtle) {
+    if (e2e) { e2e.checked = false; var row = e2e.closest('.drop-zone-toggle'); if (row) row.style.display = 'none'; }
+  }
+
+  // Toggle slider clicks (delegated so it survives innerHTML swaps during upload)
+  document.addEventListener('click', function(e) {
+    var slider = e.target.closest('.toggle-slider');
+    if (!slider) return;
+    var checkbox = slider.previousElementSibling;
+    if (checkbox && checkbox.tagName === 'INPUT' && checkbox.type === 'checkbox') {
+      checkbox.checked = !checkbox.checked;
+      checkbox.dispatchEvent(new Event('change'));
+    }
+  });
+
+  if (typeof ManageModal !== 'undefined') {
+    ManageModal.init({
+      showToast: function(msg, cat) { if (typeof showToast === 'function') showToast(msg, cat); },
+      showConfirm: window.showConfirm,
+      domain: '{{ domain }}',
+      getCSRFToken: function() { var t = document.getElementById('csrf_token'); return t ? t.value : ''; },
+      onDelete: async function(type, data) {
+        var confirmed = await showConfirm(data.name || 'THIS FILE',
+          'This file will be permanently deleted. This action cannot be undone.', 'DELETE');
+        if (!confirmed) return;
+        _pendingUploadRefresh = false;
+        var fd = new FormData();
+        var t = document.getElementById('csrf_token'); if (t) fd.append('csrf_token', t.value);
+        try {
+          var response = await fetch('/delete/' + data.management_token, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+          var result = await response.json().catch(function() { return {}; });
+          if (!response.ok || result.success !== true) throw new Error(result.error || ('HTTP ' + response.status));
+          ManageModal.close();
+          if (typeof showToast === 'function') showToast('FILE DELETED', 'success');
+          window.location.reload();
+        } catch (err) {
+          if (typeof showToast === 'function') showToast('FAILED TO DELETE FILE: ' + String(err.message || 'UNKNOWN ERROR'), 'error');
+        }
+      },
+      onDownload: function(type, data) {
+        var link = document.getElementById('manageShareLink');
+        var url = link ? link.value : (data && data.download_url) || '';
+        if (url) window.location.href = url;
+      },
+      onAfterSave: function() {},
+      onClose: function() {
+        if (_pendingUploadRefresh) {
+          _pendingUploadRefresh = false;
+          // ManageModal removes its pushState entry immediately after onClose.
+          // Refresh after that history navigation so it cannot cancel the load.
+          setTimeout(function() { window.location.replace('/share'); }, 50);
+        }
+      }
+    });
+  }
+});
+</script>

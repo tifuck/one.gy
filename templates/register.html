@@ -1,0 +1,371 @@
+{% extends 'base.html' %}
+{% block title %}REGISTER{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('auth.css') }}">{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+  <div class="auth-box">
+    <h1>REGISTER</h1>
+    <form id="registerForm" class="auth-form" autocomplete="off"
+          action="{{ url_for('register') }}" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
+      <div class="form-group">
+        <label for="username">USERNAME</label>
+        <input type="text" id="username" name="username" class="form-input" required autofocus>
+      </div>
+      <div class="form-group">
+        <label for="email">EMAIL (OPTIONAL)</label>
+        <input type="email" id="email" name="email" class="form-input">
+      </div>
+      <div class="form-group">
+        <label for="password">PASSWORD</label>
+        <input type="password" id="password" class="form-input" required minlength="6">
+        <small class="auth-hint">MINIMUM 6 CHARACTERS</small>
+      </div>
+      <div class="form-group">
+        <label for="confirm_password">CONFIRM PASSWORD</label>
+        <input type="password" id="confirm_password" class="form-input" required minlength="6">
+      </div>
+      <button type="submit" id="registerBtn" class="btn-primary">REGISTER</button>
+    </form>
+    <p class="auth-link">ALREADY HAVE AN ACCOUNT? <a href="{{ url_for('login') }}">LOGIN HERE</a></p>
+    {% if allow_temp_uploads %}
+    <p class="auth-link">OR <a href="{{ url_for('share') }}">CONTINUE AS GUEST</a></p>
+    {% endif %}
+  </div>
+</div>
+
+{% if captcha_enabled %}
+<div class="rd-modal" id="captchaModal" role="dialog" aria-modal="true" aria-labelledby="captchaModalTitle" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head">
+      <h3 class="rd-h3" id="captchaModalTitle">One more step</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Solve the puzzle to confirm you're human, then we'll create your account.</p>
+      <div class="captcha-container">
+        <button type="button" id="refreshCaptcha" class="captcha-refresh" title="LOAD NEW CAPTCHA" aria-label="Refresh captcha">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M13.65 2.35A7.96 7.96 0 008 0C3.58 0 .01 3.58.01 8S3.58 16 8 16c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 018 14 6 6 0 012 8a6 6 0 016-6c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/></svg>
+        </button>
+        <img id="captchaImg" alt="CAPTCHA" class="captcha-image" draggable="false">
+        <input type="text" id="captcha" class="form-input captcha-input" placeholder="ANSWER" autocomplete="off" inputmode="numeric">
+      </div>
+      <button type="button" id="captchaVerifyBtn" class="btn-primary">Create account</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script nonce="{{ csp_nonce }}">
+// Helper: safely parse JSON from a fetch response
+async function safeParseJSON(response) {
+  const ct = response.headers.get('content-type') || ''
+  if (ct.includes('application/json')) {
+    return await response.json()
+  }
+  const text = await response.text()
+  if (text.includes('CSRF')) {
+    throw new Error('SESSION EXPIRED — PLEASE REFRESH THE PAGE AND TRY AGAIN')
+  }
+  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS — PLEASE WAIT' : 'REQUEST FAILED — PLEASE REFRESH THE PAGE')
+}
+
+document.getElementById('registerForm').addEventListener('submit', async function(e) {
+  e.preventDefault()
+  
+  const btn = document.getElementById('registerBtn')
+  const csrfToken = document.getElementById('csrf_token').value
+  
+  const username = document.getElementById('username').value.trim()
+  const email = document.getElementById('email').value.trim()
+  const password = document.getElementById('password').value
+  const confirmPassword = document.getElementById('confirm_password').value
+  
+  if (!username || !password) return
+  if (password !== confirmPassword) {
+    showFlash('PASSWORDS DO NOT MATCH', 'error')
+    return
+  }
+  if (password.length < 6) {
+    showFlash('PASSWORD MUST BE AT LEAST 6 CHARACTERS', 'error')
+    return
+  }
+  
+  // Anti-automation gate (soft): stop obvious headless/automation clients.
+  // The server-validated captcha below remains the hard gate.
+  const signals = detectAutomation()
+  if (signals.blocked) {
+    showFlash('AUTOMATED CLIENTS CANNOT REGISTER — PLEASE USE A STANDARD BROWSER', 'error')
+    return
+  }
+
+  // Captcha is a second step now: prompt for it, then continue.
+  let captchaValue = ''
+  {% if captcha_enabled %}
+  try { captchaValue = await getCaptcha() } catch (cancelled) { return }
+  {% endif %}
+
+  btn.disabled = true
+  btn.textContent = 'CREATING ACCOUNT...'
+  const vbtn = document.getElementById('captchaVerifyBtn')
+  if (vbtn) { vbtn.disabled = true; vbtn.textContent = 'CREATING ACCOUNT...' }
+  let keys = null
+  let accountCreated = false
+  let redirectUrl = ''
+
+  try {
+    // Step 1: Generate E2EE key set (master key + RSA keypair)
+    // setupUserKeys now uses split-key derivation internally:
+    //   PBKDF2(600K) → HKDF → authToken (for server) + wrappingKey (local only)
+    try {
+      keys = await OneGyCrypto.setupUserKeys(password)
+    } catch (cryptoErr) {
+      console.warn('[REGISTER] E2EE key setup failed:', cryptoErr)
+      throw new Error('SECURE REGISTRATION REQUIRES A MODERN HTTPS BROWSER WITH WEBCRYPTO ENABLED')
+    }
+
+    // Step 2: Send registration + encrypted keys to server
+    // Zero-knowledge: when split-key keys are available, do NOT send the raw password
+    // to the server. Password length validation is done client-side only.
+    const payload = {
+      username: username,
+      email: email || null,
+      captcha: captchaValue,
+      password_length: password.length,
+      client_signals: signals
+    }
+    // Split-key registration: omit password (zero-knowledge), send auth_token instead
+    payload.auth_token = keys.authToken
+    payload.auth_salt = keys.authSalt
+    payload.encrypted_master_key = keys.encryptedMasterKey
+    payload.master_key_nonce = keys.masterKeyNonce
+    payload.master_key_salt = keys.masterKeySalt
+    payload.public_key = keys.publicKey
+    payload.encrypted_private_key = keys.encryptedPrivateKey
+    payload.private_key_nonce = keys.privateKeyNonce
+    payload.recovery_key_hash = keys.recoveryKeyHash
+    // AUDIT FIX M3: independent recovery key + its server-stored wrap of the
+    // master key (without the wrap the key could never recover anything)
+    payload.recovery_wrapped_master_key = keys.recoveryWrappedMasterKey
+    payload.recovery_key_nonce = keys.recoveryKeyNonce
+    const response = await fetch('{{ url_for("register") }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRFToken': csrfToken
+      },
+      body: JSON.stringify(payload)
+    })
+
+    const result = await safeParseJSON(response)
+    
+    if (!response.ok) {
+      throw new Error(result.error || 'REGISTRATION FAILED')
+    }
+    accountCreated = true
+    redirectUrl = typeof result.redirect === 'string' && result.redirect ? result.redirect : '{{ url_for("login") }}'
+    
+    {% if captcha_enabled %}closeCaptchaModal(){% endif %}
+    showFlash('ACCOUNT CREATED', 'success')
+    
+      await completeRegistrationRecovery(keys, redirectUrl)
+
+  } catch (err) {
+    console.error('[REGISTER]', err)
+    if (accountCreated) {
+      showFlash('Account created, but recovery setup is incomplete. Do not register again.', 'error')
+      showRegistrationRecoveryRetry(keys, redirectUrl)
+      return
+    }
+    showFlash(err.message || 'REGISTRATION FAILED', 'error')
+    btn.disabled = false
+    btn.textContent = 'REGISTER'
+    const vbtn2 = document.getElementById('captchaVerifyBtn')
+    if (vbtn2) { vbtn2.disabled = false; vbtn2.textContent = 'Create account' }
+    // Refresh captcha so the user can retry in the modal
+    refreshCaptchaImage()
+  }
+})
+
+async function completeRegistrationRecovery(keys, redirectUrl) {
+  // AUDIT FIX M3: show the INDEPENDENT recovery key (only it recovers the
+  // account now); fall back for legacy key shapes.
+  const recoveryKey = keys.recoveryKey || await OneGyCrypto.exportRecoveryKey(keys._masterKey)
+  try {
+    await OneGyCrypto.storeMasterKeyInSession(keys._masterKey)
+    await OneGyCrypto.storePrivateKeyInSession(keys._privateKey)
+  } catch (sessionErr) {
+    console.warn('[REGISTER] Account created but session key storage failed:', sessionErr)
+    showFlash('Account created. Save the recovery key, then sign in again in this browser.', 'error')
+  }
+  showRecoveryKeyModal(recoveryKey, redirectUrl)
+}
+
+function showRegistrationRecoveryRetry(keys, redirectUrl) {
+  let overlay = document.getElementById('registrationRecoveryRetry')
+  if (!overlay) {
+    overlay = document.createElement('div')
+    overlay.id = 'registrationRecoveryRetry'
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,16,24,0.75);z-index:10000;display:flex;align-items:center;justify-content:center;padding:1.2rem;'
+    overlay.innerHTML = '<div style="background:var(--bg);border:2px solid var(--border);padding:2rem;max-width:520px;text-align:center;"><h2>Account created</h2><p>Your recovery key has not been presented yet. Do not close this page or register again.</p><button type="button" id="retryRegistrationRecovery" class="btn-primary">Retry recovery setup</button></div>'
+    document.body.appendChild(overlay)
+  }
+  overlay.style.display = 'flex'
+  document.getElementById('retryRegistrationRecovery').onclick = async function() {
+    this.disabled = true
+    try {
+      await completeRegistrationRecovery(keys, redirectUrl)
+      overlay.remove()
+    } catch (err) {
+      console.error('[REGISTER] Recovery setup retry failed:', err)
+      showFlash('Recovery setup is still incomplete. Keep this page open and retry.', 'error')
+      this.disabled = false
+    }
+  }
+}
+
+function refreshCaptchaImage() {
+  const img = document.getElementById('captchaImg')
+  const input = document.getElementById('captcha')
+  if (!img || !input) return
+  img.src = '{{ url_for("captcha") }}?t=' + Date.now()
+  input.value = ''
+  input.focus()
+}
+
+const refreshBtn = document.getElementById('refreshCaptcha')
+if (refreshBtn) {
+  refreshBtn.addEventListener('click', function() {
+    refreshCaptchaImage()
+  })
+}
+
+{% if captcha_enabled %}
+// ─── Captcha step (prompted on Register, not on the main form) ───────────
+var _captchaResolve = null, _captchaReject = null
+function openCaptchaModal() {
+  var m = document.getElementById('captchaModal')
+  refreshCaptchaImage()
+  m.classList.add('rd-open'); m.setAttribute('aria-hidden', 'false')
+  document.documentElement.style.overflow = 'hidden'
+  setTimeout(function(){ var i = document.getElementById('captcha'); if (i) i.focus() }, 60)
+}
+function closeCaptchaModal() {
+  var m = document.getElementById('captchaModal')
+  m.classList.remove('rd-open'); m.setAttribute('aria-hidden', 'true')
+  document.documentElement.style.overflow = ''
+}
+function getCaptcha() {
+  return new Promise(function(resolve, reject){ _captchaResolve = resolve; _captchaReject = reject; openCaptchaModal() })
+}
+function _cancelCaptcha() {
+  closeCaptchaModal()
+  if (_captchaReject) { var r = _captchaReject; _captchaResolve = _captchaReject = null; r(new Error('cancelled')) }
+}
+document.getElementById('captchaVerifyBtn').addEventListener('click', function() {
+  var v = (document.getElementById('captcha').value || '').trim()
+  if (!v) { showFlash('PLEASE SOLVE THE CAPTCHA', 'error'); return }
+  if (_captchaResolve) { var r = _captchaResolve; _captchaResolve = _captchaReject = null; r(v) }
+})
+document.getElementById('captcha').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('captchaVerifyBtn').click() }
+})
+document.getElementById('captchaModal').addEventListener('click', function(e) {
+  if (e.target.closest('[data-rd-modal-close]') || e.target.classList.contains('rd-modal-overlay')) _cancelCaptcha()
+})
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.getElementById('captchaModal').classList.contains('rd-open')) _cancelCaptcha()
+})
+{% endif %}
+
+// ─── Anti-automation signals (soft gate; captcha stays the hard gate) ────
+var _humanInteracted = false
+;['pointerdown','keydown','mousemove','touchstart'].forEach(function(t) {
+  window.addEventListener(t, function _mark() { _humanInteracted = true; window.removeEventListener(t, _mark) }, { once: true, passive: true })
+})
+function detectAutomation() {
+  var s = { interacted: _humanInteracted }
+  try { s.webdriver = navigator.webdriver === true } catch (e) { s.webdriver = false }
+  try { s.ua = navigator.userAgent || '' } catch (e) { s.ua = '' }
+  s.headlessUA = /headlesschrome|phantomjs|slimerjs/i.test(s.ua)
+  try { s.languages = (navigator.languages || []).length } catch (e) { s.languages = 0 }
+  try { s.cores = navigator.hardwareConcurrency || 0 } catch (e) { s.cores = 0 }
+  try { s.touch = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0 } catch (e) { s.touch = false }
+  try {
+    var c = document.createElement('canvas'),
+        gl = c.getContext('webgl') || c.getContext('experimental-webgl'),
+        dbg = gl && gl.getExtension('WEBGL_debug_renderer_info')
+    s.webgl = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : ''
+  } catch (e) { s.webgl = '' }
+  s.softwareGL = /swiftshader|llvmpipe|software|mesa offscreen/i.test(s.webgl)
+  // Hard-block only on the strongest, lowest-false-positive signals.
+  s.blocked = s.webdriver === true || s.headlessUA === true
+  return s
+}
+
+function showRecoveryKeyModal(recoveryKey, redirectUrl) {
+  const overlay = document.createElement('div')
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,16,24,0.55);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1.2rem;'
+
+  const modal = document.createElement('div')
+  modal.style.cssText = "background:var(--bg);border:2px solid var(--border);box-shadow:8px 8px 0 var(--accent);padding:clamp(1.6rem,4vw,2.2rem);max-width:520px;width:100%;text-align:center;"
+  modal.innerHTML = `
+    <div style="width:52px;height:52px;margin:0 auto 14px;display:grid;place-items:center;border:2px solid var(--border);color:var(--accent);">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    </div>
+    <h2 style="font-family:var(--font-display);font-weight:800;text-transform:uppercase;letter-spacing:-.01em;color:var(--text);margin-bottom:8px;font-size:1.4em;">RECOVERY KEY</h2>
+    <p style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.72em;line-height:1.6;text-transform:uppercase;margin-bottom:16px;">
+      SAVE THIS KEY SECURELY. IT IS THE ONLY WAY TO RECOVER YOUR ENCRYPTED FILES IF YOU LOSE YOUR PASSWORD.
+      THE SERVER CANNOT RECOVER YOUR DATA WITHOUT THIS KEY.
+    </p>
+    <div id="recoveryKeyDisplay" style="background:var(--surface-2);border:2px solid var(--accent);padding:16px;margin-bottom:16px;word-break:break-all;font-family:'JetBrains Mono', monospace;font-size:0.85em;color:#7fd4ff;user-select:all;"></div>
+    <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+      <button id="copyRecoveryKey" style="background:var(--surface);color:var(--text);border:2px solid var(--border);padding:10px 18px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:0.72em;">
+        COPY TO CLIPBOARD
+      </button>
+      <button id="downloadRecoveryKey" style="background:var(--surface);color:var(--text);border:2px solid var(--border);padding:10px 18px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:0.72em;">
+        DOWNLOAD AS FILE
+      </button>
+    </div>
+    <p style="color:#d8231b;font-family:var(--font-mono);font-size:0.7em;letter-spacing:.04em;margin-top:16px;font-weight:700;text-transform:uppercase;">
+      WARNING: THIS KEY WILL NOT BE SHOWN AGAIN
+    </p>
+    <button id="continueBtn" style="background:var(--text);color:var(--bg);border:2px solid var(--text);padding:12px 28px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-top:16px;font-size:0.78em;">
+      I HAVE SAVED MY RECOVERY KEY
+    </button>
+  `
+  overlay.appendChild(modal)
+  document.body.appendChild(overlay)
+  document.getElementById('recoveryKeyDisplay').textContent = recoveryKey
+  
+  document.getElementById('copyRecoveryKey').addEventListener('click', function() {
+    navigator.clipboard.writeText(recoveryKey).then(() => {
+      this.textContent = 'COPIED!'
+      setTimeout(() => { this.textContent = 'COPY TO CLIPBOARD' }, 2000)
+    })
+  })
+  
+  document.getElementById('downloadRecoveryKey').addEventListener('click', function() {
+    const blob = new Blob(['ONE.GY RECOVERY KEY\n\nUsername: ' + document.getElementById('username').value + '\nRecovery Key: ' + recoveryKey + '\n\nStore this file securely. This is the only way to recover your encrypted files if you lose your password.\n'], {type: 'text/plain'})
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'onegy-recovery-key.txt'
+    a.click()
+    URL.revokeObjectURL(url)
+  })
+  
+  document.getElementById('continueBtn').addEventListener('click', function() {
+    window.location.href = redirectUrl
+  })
+}
+
+// showFlash is inherited from base.html's unified toast system
+</script>
+{% endblock %}

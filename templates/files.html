@@ -1,0 +1,185 @@
+{% extends '_app_base.html' %}
+{% block title %}FILES{% endblock %}
+{% set nav_active = 'files' %}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ versioned_static('manage.css') }}">
+<link rel="stylesheet" href="{{ versioned_static('preview.css') }}">
+<link rel="stylesheet" href="{{ versioned_static('music.css') }}">
+<link rel="stylesheet" href="{{ versioned_static('files.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="fx-shell">
+
+  <!-- Sidebar -->
+  <aside class="fx-side rd-side" id="fxSide" aria-label="Folder tree">
+    <div class="rd-side-inner">
+      <div class="rd-side-head">Library</div>
+      <nav class="fx-tree rd-side-scroll" id="fxTree" aria-label="Folders">
+        <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
+        <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
+        <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
+        <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
+      </nav>
+      <div class="rd-side-foot">
+        <button type="button" class="rd-side-trash" id="fxTrashBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+          Trash<span class="rd-side-trash-count" id="fxTrashCount" hidden>0</span>
+        </button>
+        <div class="rd-side-storage"><span>Storage</span><b id="fxStorageTxt">— / —</b></div>
+        <div class="rd-meter"><div class="rd-meter-fill" id="fxMeter" style="width:0%"></div></div>
+      </div>
+    </div>
+  </aside>
+  <button type="button" class="rd-rail-label" data-rd-label="side" title="Expand library">Library</button>
+  <div class="rd-resizer" data-rd-resize="side" role="separator" aria-orientation="vertical"
+       aria-label="Resize library" tabindex="0" title="Drag to resize · double-click to collapse"></div>
+  <div class="fx-side-scrim" id="fxSideScrim"></div>
+
+  <!-- Main -->
+  <div class="fx-main">
+    <div class="fx-toolbar">
+      <button type="button" class="fx-side-toggle" id="fxSideToggle" aria-label="Toggle folders" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+      <div class="fx-bcrumb" id="fxBcrumb" aria-label="Breadcrumb"></div>
+      <div class="fx-spacer"></div>
+      <div class="fx-tbar-actions">
+        <div class="fx-search" id="fxSearchBox">
+          <button type="button" class="fx-search-btn" id="fxSearchToggle" aria-label="Search files" aria-expanded="false" title="SEARCH">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          </button>
+          <input type="search" id="fxSearch" placeholder="Search files…" autocomplete="off" spellcheck="false" tabindex="-1">
+          <button type="button" class="fx-search-clear" id="fxSearchClear" aria-label="Clear search" title="CLEAR" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="fx-seg" role="group" aria-label="View mode" id="fxViewSeg">
+          <button type="button" class="fx-seg-btn is-active" data-view="grid" title="Grid" aria-label="Grid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
+          <button type="button" class="fx-seg-btn" data-view="list" title="List" aria-label="List"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
+          <button type="button" class="fx-seg-btn" data-view="gallery" title="Gallery" aria-label="Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
+          <button type="button" class="fx-seg-btn" data-view="columns" title="Columns" aria-label="Columns"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="18"/><rect x="10" y="3" width="5" height="18"/><rect x="17" y="3" width="4" height="18"/></svg></button>
+        </div>
+        <select class="fx-sort" id="fxSort" aria-label="Sort">
+          <option value="name">Name A–Z</option>
+          <option value="name-desc">Name Z–A</option>
+          <option value="date">Newest</option>
+          <option value="date-asc">Oldest</option>
+          <option value="size">Largest</option>
+          <option value="size-asc">Smallest</option>
+        </select>
+        <button type="button" class="rd-btn rd-btn-ghost" id="fxNewFolder">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/><path d="M12 11v4M10 13h4"/></svg>
+          <span class="fx-hide-sm">New folder</span>
+        </button>
+        <button type="button" class="rd-btn rd-btn-ghost" id="restoreAllBtn" hidden>Restore all</button>
+        <button type="button" class="rd-btn rd-btn-primary" id="fxUploadBtn">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
+          <span class="fx-hide-sm">Upload</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="fx-view" id="fxView" data-view="grid" aria-live="polite" tabindex="0">
+      <div class="fx-skel">
+        <div class="fx-skel-card"></div><div class="fx-skel-card"></div><div class="fx-skel-card"></div>
+        <div class="fx-skel-card"></div><div class="fx-skel-card"></div><div class="fx-skel-card"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- E2EE unlock — fullscreen modal (drive is unreadable until unlocked) -->
+<div class="fx-unlock" id="fxLockBar" hidden>
+  <div class="fx-lock-card">
+    <div class="fx-lock-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.2" fill="currentColor" stroke="none"/></svg></div>
+    <h2 class="fx-lock-title">Your files are locked</h2>
+    <p class="fx-lock-sub">Enter your password to decrypt your files on this device. Your key never leaves your browser.</p>
+    <form class="fx-lock-form" id="fxUnlockForm">
+      <input type="password" id="fxUnlockPw" class="form-input" placeholder="Password" autocomplete="current-password" autofocus>
+      <button type="submit" class="rd-btn rd-btn-primary">Unlock</button>
+    </form>
+  </div>
+</div>
+
+<!-- Selection bar -->
+<div class="fx-selbar" id="fxSelbar" role="toolbar" aria-label="Selection actions">
+  <span class="fx-selbar-count"><b id="fxSelCount">0</b> selected</span>
+  <div class="fx-selbar-sep"></div>
+  <button type="button" id="fxSelDownload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>Download</button>
+  <button type="button" id="fxSelMove"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>Move</button>
+  <button type="button" class="fx-selbar-danger" id="fxSelDelete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>Delete</button>
+  <div class="fx-selbar-sep"></div>
+  <button type="button" id="fxSelClear" aria-label="Clear selection"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+</div>
+
+<!-- Details drawer -->
+<aside class="fx-drawer" id="fxDrawer" aria-label="Details" aria-hidden="true">
+  <div class="fx-drawer-head">
+    <h3>Details</h3>
+    <button type="button" class="fx-drawer-close" id="fxDrawerClose" aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="fx-drawer-body" id="fxDrawerBody"></div>
+</aside>
+
+<!-- Dropzone overlay -->
+<div class="fx-drop" id="fxDrop">
+  <div class="fx-drop-inner">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6"/><path d="M4 20h16"/></svg>
+    <h3>Drop to upload</h3>
+    <p id="fxDropDest">to this folder — end-to-end encrypted</p>
+  </div>
+</div>
+
+<!-- Upload tray -->
+<div class="fx-uptray" id="fxUptray">
+  <div class="fx-uptray-head"><span class="fx-up-spin" id="fxUpSpin"></span><span id="fxUpTitle">Uploading</span><button type="button" id="fxUpClose" aria-label="Hide"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+  <div class="fx-uptray-list" id="fxUpList"></div>
+</div>
+
+<input type="file" id="fxFileInput" multiple hidden>
+
+{% include '_manage_modal.html' %}
+{% include 'partials/_preview_modal.html' %}
+{% include 'partials/_music_player.html' %}
+
+<!-- New folder / rename modal -->
+<div class="rd-modal" id="fxNameModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3" id="fxNameTitle">New folder</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <input type="text" id="fxNameInput" class="form-input" placeholder="Folder name" maxlength="120" autocomplete="off">
+      <button type="button" class="rd-btn rd-btn-primary" id="fxNameSave" style="width:100%;margin-top:.9rem">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move selection modal -->
+<div class="rd-modal" id="bulkMoveModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-move-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">Move selected items</h3>
+      <button class="rd-modal-close" type="button" data-move-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <div class="fx-move-tree" id="moveFolderTree" role="listbox" aria-label="Destination folder"></div>
+      <button type="button" class="rd-btn rd-btn-primary" id="confirmMoveBtn" disabled>Move</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
+<script src="{{ versioned_static('manage-modal.js') }}" defer></script>
+<script src="{{ versioned_static('preview.js') }}" defer></script>
+<script src="{{ versioned_static('music-player.js') }}" defer></script>
+<script nonce="{{ csp_nonce }}">window.__FX_ROOT_NAME__ = {{ (root_folder_name or 'FILES')|tojson }};
+window.__FX_INITIAL_FOLDER__ = {{ (current_folder.id if current_folder is defined and current_folder else None)|tojson }};
+window.__FX_INITIAL_TRASH__ = {{ (true if is_trash_view else false)|tojson }};</script>
+<script src="{{ versioned_static('files.js') }}" defer></script>
+{% endblock %}

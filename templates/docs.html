@@ -1,0 +1,1574 @@
+{% extends 'base.html' %}
+{% block title %}API{% endblock %}
+{% set nav_active = 'docs' %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('docs.css') }}">{% endblock %}
+{% block content %}
+{% if session.get('logged_in_user_id') %}
+<script nonce="{{ csp_nonce }}">try { localStorage.setItem('onegy_last_page', JSON.stringify({ page: '/docs' })) } catch(e) {}</script>
+{% endif %}
+<div class="docs-layout">
+
+  <!-- Left Navigation Sidebar -->
+  <aside class="docs-sidebar">
+    <div class="docs-sidebar-inner">
+      <div class="docs-sidebar-heading">API REFERENCE</div>
+      <nav class="docs-nav">
+        <a href="#section-overview" class="docs-nav-link active" data-section="section-overview">OVERVIEW</a>
+        {% if allow_temp_uploads %}
+        <div class="docs-sidebar-heading">GUEST API</div>
+        <a href="#section-upload" class="docs-nav-link" data-section="section-upload">UPLOAD</a>
+        <a href="#section-download" class="docs-nav-link" data-section="section-download">DOWNLOAD</a>
+        <a href="#section-manage" class="docs-nav-link" data-section="section-manage">MANAGE FILE</a>
+        <a href="#section-delete" class="docs-nav-link" data-section="section-delete">DELETE FILE</a>
+        <div class="docs-nav-divider"></div>
+        <div class="docs-sidebar-heading">ADVANCED</div>
+        <a href="#section-e2e" class="docs-nav-link" data-section="section-e2e">E2E ENCRYPTION</a>
+        {% else %}
+        <a href="#section-download" class="docs-nav-link" data-section="section-download">DOWNLOAD</a>
+        {% endif %}
+        {% if allow_api_keys %}
+        <div class="docs-nav-divider"></div>
+        <div class="docs-sidebar-heading">AUTHENTICATED API</div>
+        <a href="#section-api-auth" class="docs-nav-link" data-section="section-api-auth">AUTHENTICATION</a>
+        <a href="#section-api-key-mgmt" class="docs-nav-link" data-section="section-api-key-mgmt">KEY MANAGEMENT</a>
+        <a href="#section-api-upload" class="docs-nav-link" data-section="section-api-upload">UPLOAD</a>
+        <a href="#section-api-download" class="docs-nav-link" data-section="section-api-download">DOWNLOAD</a>
+        <a href="#section-api-files" class="docs-nav-link" data-section="section-api-files">LIST FILES</a>
+        <a href="#section-api-folders" class="docs-nav-link" data-section="section-api-folders">CREATE FOLDER</a>
+        <a href="#section-api-delete" class="docs-nav-link" data-section="section-api-delete">DELETE</a>
+        <a href="#section-api-search" class="docs-nav-link" data-section="section-api-search">SEARCH</a>
+        <a href="#section-api-trash" class="docs-nav-link" data-section="section-api-trash">TRASH</a>
+        <a href="#section-api-endpoints" class="docs-nav-link" data-section="section-api-endpoints">ALL ENDPOINTS</a>
+        {% endif %}
+        <div class="docs-nav-divider"></div>
+        <div class="docs-sidebar-heading">REFERENCE</div>
+        <a href="#section-errors" class="docs-nav-link" data-section="section-errors">ERROR CODES</a>
+        <a href="#section-limits" class="docs-nav-link" data-section="section-limits">RATE LIMITS</a>
+      </nav>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <div class="docs-main">
+
+    <!-- Overview -->
+    <div class="docs-section" id="section-overview">
+      <h2 class="docs-section-title">OVERVIEW</h2>
+      <div class="docs-section-content">
+        <div class="api-description">
+          <p>Upload, download, manage, and delete files programmatically over HTTPS. All endpoints use the base URL shown below.</p>
+          <p>Guest uploads are temporary and expire automatically. Authenticated users can upload to their cloud drive with optional permanent retention.</p>
+        </div>
+        <div class="docs-info-grid">
+          <div class="docs-info-card">
+            <div class="docs-info-label">BASE URL</div>
+            <div class="docs-info-value"><code>https://{{ domain }}</code></div>
+          </div>
+          <div class="docs-info-card">
+            <div class="docs-info-label">MAX UPLOAD SIZE</div>
+            <div class="docs-info-value"><code>{{ "%.0f"|format(max_size_gb) if max_size_gb == max_size_gb|int else "%.1f"|format(max_size_gb) }} GB</code></div>
+          </div>
+          {% if temp_max_gb is defined and temp_max_gb %}
+          <div class="docs-info-card">
+            <div class="docs-info-label">GUEST UPLOAD LIMIT</div>
+            <div class="docs-info-value"><code>{{ "%.0f"|format(temp_max_gb) if temp_max_gb == temp_max_gb|int else "%.1f"|format(temp_max_gb) }} GB</code></div>
+          </div>
+          {% endif %}
+          <div class="docs-info-card">
+            <div class="docs-info-label">DEFAULT EXPIRY</div>
+            <div class="docs-info-value"><code>1 DAY</code></div>
+          </div>
+          <div class="docs-info-card">
+            <div class="docs-info-label">ENCRYPTION</div>
+            <div class="docs-info-value"><code>FERNET (AT REST)</code></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% if allow_temp_uploads %}
+    <!-- Upload -->
+    <div class="docs-section" id="section-upload">
+      <h2 class="docs-section-title">UPLOAD</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-post">POST</div>
+          <div class="api-path">/upload</div>
+        </div>
+        <div class="api-description">
+          <p>Upload one or more files via multipart form data. Returns a management URL and a download URL. Multiple files are automatically bundled into a ZIP archive server-side.</p>
+          <p>Guest uploads are temporary and expire after 1 day by default. Authenticated users can upload to their cloud drive by setting <code>is_temp=false</code> for permanent retention.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Upload a single file
+curl -X POST https://{{ domain }}/upload \
+  -F "files=@photo.jpg"
+
+# Upload multiple files (bundled into ZIP)
+curl -X POST https://{{ domain }}/upload \
+  -F "files=@file1.txt" \
+  -F "files=@file2.png"
+
+# Upload with a short URL
+curl -X POST https://{{ domain }}/upload \
+  -F "files=@photo.jpg" \
+  -F "short_url=true"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> WGET</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># wget requires a manually constructed multipart body
+B="----Boundary$(date +%s)"; F="photo.jpg"; T=$(mktemp)
+printf -- "--%s\r\nContent-Disposition: form-data; name=\"files\"; filename=\"%s\"\r\n\r\n" "$B" "$F" > "$T"
+cat "$F" >> "$T"; printf "\r\n--%s--\r\n" "$B" >> "$T"
+wget --method=POST --body-file="$T" \
+  --header="Content-Type: multipart/form-data; boundary=$B" \
+  -O response.json "https://{{ domain }}/upload"
+rm "$T"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import requests
+
+# Upload a file
+response = requests.post(
+    "https://{{ domain }}/upload",
+    files=[
+        ("files", ("report.pdf", open("report.pdf", "rb"))),
+        ("files", ("data.csv", open("data.csv", "rb"))),
+    ],
+    verify=False,  # Only if using self-signed certificate
+)
+result = response.json()
+print(f"Download: {result['download_url']}")
+print(f"Manage:   https://{{ domain }}{result['redirect']}")</code></pre>
+        </div>
+
+        <h3>PARAMETERS</h3>
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>NAME</span>
+            <span>TYPE</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">files</span>
+            <span class="param-type">file</span>
+            <span class="param-desc">One or more files (multipart/form-data). Use <code>file</code> for single E2E uploads.</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">is_temp</span>
+            <span class="param-type">string</span>
+            <span class="param-desc"><code>"true"</code> (default) for temporary upload, <code>"false"</code> for cloud drive (requires login)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">folder_id</span>
+            <span class="param-type">integer</span>
+            <span class="param-desc">Destination folder ID for cloud drive uploads (requires login)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">short_url</span>
+            <span class="param-type">string</span>
+            <span class="param-desc"><code>"true"</code> to generate a short 6-character URL code accessible at <code>/s/{code}</code></span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">e2e</span>
+            <span class="param-type">string</span>
+            <span class="param-desc"><code>"true"</code> for client-side encrypted uploads (see E2E section)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">e2e_salt</span>
+            <span class="param-type">string</span>
+            <span class="param-desc">Base64 or comma-separated decimal bytes of 16-byte salt (required if e2e=true)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">e2e_iv</span>
+            <span class="param-type">string</span>
+            <span class="param-desc">Base64 or comma-separated decimal bytes of 12-byte IV (required if e2e=true)</span>
+          </div>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK</span>
+          </div>
+          <pre><code class="language-json">{
+  "redirect": "/manage/{management_token}",
+  "download_url": "https://{{ domain }}/f/{file_id}/{filename}",
+  "management_token": "{management_token}"
+}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    {% endif %}
+
+    <!-- Download -->
+    <div class="docs-section" id="section-download">
+      <h2 class="docs-section-title">DOWNLOAD</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-get">GET</div>
+          <div class="api-path">/f/{file_id}/{filename}</div>
+        </div>
+        <div class="api-description">
+          <p>Download a file by its UUID. Including the filename in the URL ensures <code>wget</code> and <code>curl -O</code> save with the correct name. Password-protected files require the <code>pw</code> query parameter.</p>
+          <p>Files uploaded with <code>short_url=true</code> can also be downloaded via <code>/s/{short_code}</code>, which redirects to the full URL (or serves directly for CLI clients).</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Public file
+curl -O "https://{{ domain }}/f/{file_id}/{filename}"
+
+# Password-protected file
+curl -H "X-Share-Password: yourpassword" -O "https://{{ domain }}/f/{file_id}/{filename}"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> WGET</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Public file
+wget "https://{{ domain }}/f/{file_id}/{filename}"
+
+# Password-protected file
+wget --header="X-Share-Password: yourpassword" "https://{{ domain }}/f/{file_id}/{filename}"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import requests
+
+# Public file
+response = requests.get(
+    "https://{{ domain }}/f/{file_id}/{filename}",
+    verify=False,
+)
+with open("photo.jpg", "wb") as f:
+    f.write(response.content)
+
+# Password-protected file
+response = requests.get(
+    "https://{{ domain }}/f/{file_id}/{filename}",
+    params={"pw": "yourpassword"},
+    verify=False,
+)</code></pre>
+        </div>
+
+        <h3>PARAMETERS</h3>
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>NAME</span>
+            <span>TYPE</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">file_id</span>
+            <span class="param-type">path</span>
+            <span class="param-desc">UUID of the file</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">filename</span>
+            <span class="param-type">path</span>
+            <span class="param-desc">Original filename (optional, ensures correct save name)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">pw</span>
+            <span class="param-type">query</span>
+            <span class="param-desc">Password for protected files</span>
+          </div>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK</span>
+          </div>
+          <pre><code>Binary file data (streamed)</code></pre>
+        </div>
+      </div>
+    </div>
+
+    {% if allow_temp_uploads %}
+    <!-- Manage File -->
+    <div class="docs-section" id="section-manage">
+      <h2 class="docs-section-title">MANAGE FILE</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-get">GET</div>
+          <div class="api-path">/manage/{token}</div>
+        </div>
+        <div class="api-description">
+          <p>View file management page. The management token is returned in the upload response under <code>redirect</code>. Requires session ownership.</p>
+        </div>
+
+        <div class="api-endpoint">
+          <div class="api-method api-method-post">POST</div>
+          <div class="api-path">/manage/{token}</div>
+        </div>
+        <div class="api-description">
+          <p>Update file settings programmatically. Set the <code>X-Requested-With: XMLHttpRequest</code> header to receive a JSON response instead of a redirect.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL - UPDATE SETTINGS</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash">curl -X POST https://{{ domain }}/manage/{token} \
+  -H "X-Requested-With: XMLHttpRequest" \
+  -d "public=on" \
+  -d "expires=7d" \
+  -d "max_downloads=100"</code></pre>
+        </div>
+
+        <h3>PARAMETERS</h3>
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>NAME</span>
+            <span>TYPE</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">public</span>
+            <span class="param-type">string</span>
+            <span class="param-desc"><code>"on"</code> to make file publicly accessible, <code>"off"</code> to make private</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">expires</span>
+            <span class="param-type">string</span>
+            <span class="param-desc"><code>30m</code>, <code>6h</code>, <code>1d</code>, <code>3d</code>, <code>7d</code>, or <code>never</code>. <code>never</code> requires a logged-in user with a cloud drive file; temp/guest uploads are capped at <code>7d</code>.</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">max_downloads</span>
+            <span class="param-type">integer</span>
+            <span class="param-desc">Max total downloads before file is auto-deleted. Set to <code>0</code> to remove the limit.</span>
+          </div>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK (AJAX)</span>
+          </div>
+          <pre><code class="language-json">{
+  "success": true,
+  "has_password": false
+}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete File -->
+    <div class="docs-section" id="section-delete">
+      <h2 class="docs-section-title">DELETE FILE</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-post">POST</div>
+          <div class="api-path">/delete/{token}</div>
+        </div>
+        <div class="api-description">
+          <p>Permanently delete a file from the server. Requires the management token and session ownership. The token is the last segment of the management URL returned during upload.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash">curl -X POST https://{{ domain }}/delete/{token} \
+  -H "X-Requested-With: XMLHttpRequest"</code></pre>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK (AJAX)</span>
+          </div>
+          <pre><code class="language-json">{"success": true}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- E2E Encryption -->
+    <div class="docs-section" id="section-e2e">
+      <h2 class="docs-section-title">E2E ENCRYPTION</h2>
+      <div class="docs-section-content">
+        <div class="api-description">
+          <p>End-to-end encrypted files are encrypted on the client before upload. The server never sees the plaintext data or the encryption key.</p>
+          <p><strong>BROWSER (MODERN):</strong> The browser uses a MEGA-style zero-knowledge system with per-file AES-256-GCM keys, chunked 64MB encryption, and PBKDF2 key derivation with 600,000 iterations (split-key). Guest/CLI passphrase wraps use 210,000 iterations for compatibility. This is handled automatically and is not directly accessible via the API examples below.</p>
+          <p><strong>API (LEGACY SIMPLE):</strong> The examples below demonstrate a simpler single-file encryption scheme using AES-256-GCM with PBKDF2 key derivation (600,000 iterations). You derive a key from a passphrase using PBKDF2 with a random salt, encrypt the file with AES-256-GCM using a random IV, then upload the ciphertext along with the salt and IV as form parameters.</p>
+        </div>
+
+        <h3>UPLOAD WITH E2E ENCRYPTION</h3>
+        <div class="api-endpoint">
+          <div class="api-method api-method-post">POST</div>
+          <div class="api-path">/upload</div>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON - E2E UPLOAD</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import os
+import base64
+import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+
+# Configuration
+PASSPHRASE = "my-secret-passphrase"
+FILE_PATH = "secret-document.pdf"
+DOMAIN = "https://{{ domain }}"
+
+# Generate random salt and IV
+salt = os.urandom(16)
+iv = os.urandom(12)
+
+# Derive key from passphrase using PBKDF2
+kdf = PBKDF2HMAC(
+    algorithm=hashes.SHA256(),
+    length=32,
+    salt=salt,
+    iterations=600000,
+)
+key = kdf.derive(PASSPHRASE.encode("utf-8"))
+
+# Encrypt file with AES-256-GCM
+with open(FILE_PATH, "rb") as f:
+    plaintext = f.read()
+
+aesgcm = AESGCM(key)
+ciphertext = aesgcm.encrypt(iv, plaintext, None)
+
+# Upload encrypted data with salt and IV
+response = requests.post(
+    f"{DOMAIN}/upload",
+    files={"file": ("secret-document.pdf", ciphertext)},
+    data={
+        "e2e": "true",
+        "e2e_salt": base64.b64encode(salt).decode(),
+        "e2e_iv": base64.b64encode(iv).decode(),
+    },
+    verify=False,
+)
+result = response.json()
+print(f"Download: {result['download_url']}")
+print(f"Manage:   {DOMAIN}{result['redirect']}")</code></pre>
+        </div>
+
+        <h3>DOWNLOAD AND DECRYPT E2E FILE</h3>
+        <div class="api-endpoint">
+          <div class="api-method api-method-get">GET</div>
+          <div class="api-path">/f/{file_id}/encrypted</div>
+        </div>
+        <div class="api-description">
+          <p>Download raw encrypted data for E2E files. The response includes <code>X-E2E-Salt</code> and <code>X-E2E-IV</code> headers containing comma-separated decimal byte values of the salt and IV needed for decryption.</p>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON - E2E DOWNLOAD AND DECRYPT</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import base64
+import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+
+# Configuration
+PASSPHRASE = "my-secret-passphrase"
+FILE_ID = "your-file-uuid-here"
+DOMAIN = "https://{{ domain }}"
+OUTPUT_FILE = "decrypted-document.pdf"
+
+# Download encrypted data
+response = requests.get(
+    f"{DOMAIN}/f/{FILE_ID}/encrypted",
+    verify=False,
+)
+
+# Extract salt and IV from response headers (comma-separated decimal byte values)
+salt = bytes([int(x) for x in response.headers["X-E2E-Salt"].split(",")])
+iv = bytes([int(x) for x in response.headers["X-E2E-IV"].split(",")])
+ciphertext = response.content
+
+# Derive the same key from the passphrase
+kdf = PBKDF2HMAC(
+    algorithm=hashes.SHA256(),
+    length=32,
+    salt=salt,
+    iterations=600000,
+)
+key = kdf.derive(PASSPHRASE.encode("utf-8"))
+
+# Decrypt with AES-256-GCM
+aesgcm = AESGCM(key)
+plaintext = aesgcm.decrypt(iv, ciphertext, None)
+
+with open(OUTPUT_FILE, "wb") as f:
+    f.write(plaintext)
+print(f"Decrypted file saved to {OUTPUT_FILE}")</code></pre>
+        </div>
+
+        <h3>E2E PARAMETERS</h3>
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>NAME</span>
+            <span>TYPE</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">e2e</span>
+            <span class="param-type">string</span>
+            <span class="param-desc"><code>"true"</code> to mark upload as end-to-end encrypted</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">e2e_salt</span>
+            <span class="param-type">string</span>
+            <span class="param-desc">Comma-separated decimal byte values of 16-byte salt used for PBKDF2 key derivation (e.g. "142,55,201,44,..."). Base64-encoded strings are also accepted.</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">e2e_iv</span>
+            <span class="param-type">string</span>
+            <span class="param-desc">Comma-separated decimal byte values of 12-byte IV used for AES-256-GCM encryption (e.g. "10,233,78,..."). Base64-encoded strings are also accepted.</span>
+          </div>
+        </div>
+
+        <h3>RESPONSE HEADERS (ENCRYPTED DOWNLOAD)</h3>
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>HEADER</span>
+            <span>TYPE</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">X-E2E-Salt</span>
+            <span class="param-type">string</span>
+            <span class="param-desc">Comma-separated decimal byte values of salt for PBKDF2 key derivation</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">X-E2E-IV</span>
+            <span class="param-type">string</span>
+            <span class="param-desc">Comma-separated decimal byte values of IV for AES-256-GCM decryption</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% endif %}
+
+    {% if allow_api_keys %}
+    <!-- API Authentication -->
+    <div class="docs-section" id="section-api-auth">
+      <h2 class="docs-section-title">AUTHENTICATION</h2>
+      <div class="docs-section-content">
+        <div class="api-description">
+          <p>All authenticated API endpoints require an API key sent via the <code>Authorization</code> header using the Bearer scheme. Generate API keys from your <a href="/account#section-api-keys" style="color: #DE1833;">account page</a>.</p>
+          <p>Each API key has individual <strong>permissions</strong> controlling which actions it can perform. You can also restrict keys to specific <strong>IP addresses</strong>. Users can create up to <strong>10 API keys</strong>, each with their own permissions and IP whitelist.</p>
+        </div>
+
+        <h3>AUTHENTICATION HEADER</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> FORMAT</span>
+          </div>
+          <pre><code>Authorization: Bearer YOUR_API_KEY</code></pre>
+        </div>
+
+        <h3>PERMISSIONS</h3>
+        <div class="api-description">
+          <p>Each API key must be granted specific permissions. All permissions are disabled by default when creating a new key. Available permissions:</p>
+        </div>
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>PERMISSION</span>
+            <span>ENDPOINTS</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">read</span>
+            <span class="param-type">GET /apiv1/files, /search, /trash, /files/{id}/properties</span>
+            <span class="param-desc">List files, folders, search, view trash, get file properties</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">download</span>
+            <span class="param-type">GET /apiv1/download/{id}</span>
+            <span class="param-desc">Download files</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">write</span>
+            <span class="param-type">POST /apiv1/upload, /folders</span>
+            <span class="param-desc">Upload files, create folders</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">delete</span>
+            <span class="param-type">DELETE /apiv1/files/{id}, /folders/{id}, /trash/{id}, /trash/empty</span>
+            <span class="param-desc">Trash and permanently delete files/folders, empty trash</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">restore</span>
+            <span class="param-type">POST /apiv1/trash/{id}/restore</span>
+            <span class="param-desc">Restore files from trash</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">manage_keys</span>
+            <span class="param-type">GET/POST/PATCH/DELETE /apiv1/keys</span>
+            <span class="param-desc">List, create, update, and revoke API keys via the API</span>
+          </div>
+        </div>
+
+        <h3>IP WHITELIST</h3>
+        <div class="api-description">
+          <p>Each API key can optionally be restricted to a list of up to 10 IPv4 addresses or CIDR subnets (minimum /24). If no IPs are configured, the key works from any IP address.</p>
+        </div>
+
+        <h3>EXAMPLE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">&#9654;</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Test your API key
+curl https://{{ domain }}/apiv1/files \
+  -H "Authorization: Bearer YOUR_API_KEY"</code></pre>
+        </div>
+
+        <h3>ERROR RESPONSES</h3>
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>CODE</span>
+            <span>REASON</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">401</span>
+            <span class="param-type">Missing/Invalid Key</span>
+            <span class="param-desc">No Authorization header, invalid format, or revoked/unknown key</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">403</span>
+            <span class="param-type">API Disabled / No Permission / IP Blocked</span>
+            <span class="param-desc">API access disabled, key lacks required permission, or IP not in whitelist</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Key Management -->
+    <div class="docs-section" id="section-api-key-mgmt">
+      <h2 class="docs-section-title">KEY MANAGEMENT (API)</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-post">POST</div>
+          <div class="api-path">/apiv1/keys</div>
+        </div>
+        <div class="api-description">
+          <p>Create a new API key with specific permissions and optional IP whitelist. Requires <code>manage_keys</code> permission. Maximum 10 active keys per user.</p>
+        </div>
+
+        <h3>REQUEST BODY</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">&#9654;</span> JSON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-json">{
+  "label": "MY DEPLOYMENT SCRIPT",
+  "permissions": {
+    "read": true,
+    "download": true,
+    "write": true,
+    "delete": false,
+    "restore": false,
+    "manage_keys": false
+  },
+  "allowed_ips": ["203.0.113.1", "10.0.0.0/24"]
+}</code></pre>
+        </div>
+
+        <h3>EXAMPLE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">&#9654;</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Create key with read + write permissions, restricted to one IP
+curl -X POST https://{{ domain }}/apiv1/keys \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"CI Server","permissions":{"read":true,"write":true},"allowed_ips":["203.0.113.50"]}'</code></pre>
+        </div>
+
+        <div class="api-endpoint" style="margin-top: 24px;">
+          <div class="api-method api-method-patch" style="background: #b45309;">PATCH</div>
+          <div class="api-path">/apiv1/keys/{key_id}</div>
+        </div>
+        <div class="api-description">
+          <p>Update permissions, IP whitelist, and/or label on an existing API key. Only provided fields are changed.</p>
+        </div>
+
+        <h3>EXAMPLE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">&#9654;</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Add delete permission and restrict to subnet
+curl -X PATCH https://{{ domain }}/apiv1/keys/KEY_ID \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"permissions":{"delete":true},"allowed_ips":["10.0.0.0/24"]}'
+
+# Remove all IP restrictions (allow any IP)
+curl -X PATCH https://{{ domain }}/apiv1/keys/KEY_ID \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"allowed_ips":[]}'</code></pre>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">&#9654;</span> 200 OK</span>
+          </div>
+          <pre><code class="language-json">{
+  "id": "abc-123",
+  "label": "CI Server",
+  "permissions": {
+    "read": true, "download": false, "write": true,
+    "delete": true, "restore": false, "manage_keys": false
+  },
+  "allowed_ips": ["10.0.0.0/24"]
+}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Upload -->
+    <div class="docs-section" id="section-api-upload">
+      <h2 class="docs-section-title">UPLOAD (API)</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-post">POST</div>
+          <div class="api-path">/apiv1/upload</div>
+        </div>
+        <div class="api-description">
+          <p>Upload a file to your cloud drive. Files are encrypted server-side with Fernet (E2E encryption is not supported via API). Uploaded files have no expiration and are private by default.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Upload a file
+curl -X POST https://{{ domain }}/apiv1/upload \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "file=@photo.jpg"
+
+# Upload to a specific folder
+curl -X POST https://{{ domain }}/apiv1/upload \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "file=@report.pdf" \
+  -F "folder_id=42"
+
+# Upload multiple files (bundled into ZIP)
+curl -X POST https://{{ domain }}/apiv1/upload \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "files=@file1.txt" \
+  -F "files=@file2.png"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> WGET</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># wget requires a manually constructed multipart body
+B="----Boundary$(date +%s)"; F="photo.jpg"; T=$(mktemp)
+printf -- "--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n\r\n" "$B" "$F" > "$T"
+cat "$F" >> "$T"; printf "\r\n--%s--\r\n" "$B" >> "$T"
+wget --method=POST --body-file="$T" \
+  --header="Content-Type: multipart/form-data; boundary=$B" \
+  --header="Authorization: Bearer YOUR_API_KEY" \
+  -O response.json "https://{{ domain }}/apiv1/upload"
+rm "$T"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import requests
+
+response = requests.post(
+    "https://{{ domain }}/apiv1/upload",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    files={"file": ("report.pdf", open("report.pdf", "rb"))},
+    verify=False,
+)
+result = response.json()
+print(f"File ID:  {result['file_id']}")
+print(f"Download: {result['download_url']}")</code></pre>
+        </div>
+
+        <h3>PARAMETERS</h3>
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>NAME</span>
+            <span>TYPE</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">file / files</span>
+            <span class="param-type">file</span>
+            <span class="param-desc">One or more files (multipart/form-data). Use <code>file</code> for single, <code>files</code> for multiple.</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">folder_id</span>
+            <span class="param-type">integer</span>
+            <span class="param-desc">Destination folder ID (optional, defaults to root)</span>
+          </div>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 201 CREATED</span>
+          </div>
+          <pre><code class="language-json">{
+  "file_id": "a1b2c3d4-...",
+  "name": "photo.jpg",
+  "size": 1048576,
+  "download_url": "https://{{ domain }}/f/{file_id}/{filename}",
+  "management_token": "e5f6g7h8-..."
+}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Download -->
+    <div class="docs-section" id="section-api-download">
+      <h2 class="docs-section-title">DOWNLOAD (API)</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-get">GET</div>
+          <div class="api-path">/apiv1/download/{file_id}</div>
+        </div>
+        <div class="api-description">
+          <p>Download a file from your cloud drive. The file is decrypted server-side and streamed. Only non-E2E files are supported. Returns binary file data.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash">curl -o photo.jpg \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  "https://{{ domain }}/apiv1/download/{file_id}"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> WGET</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash">wget --header="Authorization: Bearer YOUR_API_KEY" \
+  -O photo.jpg \
+  "https://{{ domain }}/apiv1/download/{file_id}"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import requests
+
+response = requests.get(
+    "https://{{ domain }}/apiv1/download/{file_id}",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    verify=False,
+)
+with open("photo.jpg", "wb") as f:
+    f.write(response.content)</code></pre>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK</span>
+          </div>
+          <pre><code>Binary file data (streamed, with Content-Disposition and Content-Length headers)</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- API List Files -->
+    <div class="docs-section" id="section-api-files">
+      <h2 class="docs-section-title">LIST FILES (API)</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-get">GET</div>
+          <div class="api-path">/apiv1/files</div>
+        </div>
+        <div class="api-endpoint">
+          <div class="api-method api-method-get">GET</div>
+          <div class="api-path">/apiv1/files/{folder_id}</div>
+        </div>
+        <div class="api-description">
+          <p>List files and subfolders in a directory. Omit <code>folder_id</code> for the root directory.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># List root directory
+curl https://{{ domain }}/apiv1/files \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# List a specific folder
+curl https://{{ domain }}/apiv1/files/42 \
+  -H "Authorization: Bearer YOUR_API_KEY"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import requests
+
+response = requests.get(
+    "https://{{ domain }}/apiv1/files",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    verify=False,
+)
+data = response.json()
+for folder in data["folders"]:
+    print(f"[DIR] {folder['name']} (id={folder['id']})")
+for file in data["files"]:
+    print(f"      {file['name']} ({file['size_formatted']})")</code></pre>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK</span>
+          </div>
+          <pre><code class="language-json">{
+  "folder_id": null,
+  "folders": [
+    {"id": 42, "name": "Documents", "is_e2e": false, "is_public": false}
+  ],
+  "files": [
+    {
+      "id": "a1b2c3d4-...",
+      "name": "photo.jpg",
+      "size": 1048576,
+      "size_formatted": "1.00 MB",
+      "is_public": false,
+      "download_url": "https://{{ domain }}/f/{file_id}/{filename}",
+      "downloads": 3
+    }
+  ]
+}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Create Folder -->
+    <div class="docs-section" id="section-api-folders">
+      <h2 class="docs-section-title">CREATE FOLDER (API)</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-post">POST</div>
+          <div class="api-path">/apiv1/folders</div>
+        </div>
+        <div class="api-description">
+          <p>Create a new folder. Sends JSON body with the folder name and optional parent folder ID.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Create in root
+curl -X POST https://{{ domain }}/apiv1/folders \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Photos"}'
+
+# Create nested folder
+curl -X POST https://{{ domain }}/apiv1/folders \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Vacation", "parent_id": 42}'</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import requests
+
+response = requests.post(
+    "https://{{ domain }}/apiv1/folders",
+    headers={
+        "Authorization": "Bearer YOUR_API_KEY",
+        "Content-Type": "application/json",
+    },
+    json={"name": "Photos"},
+    verify=False,
+)
+print(f"Folder ID: {response.json()['id']}")</code></pre>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 201 CREATED</span>
+          </div>
+          <pre><code class="language-json">{"id": 43, "name": "Photos"}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Delete -->
+    <div class="docs-section" id="section-api-delete">
+      <h2 class="docs-section-title">DELETE (API)</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-delete">DELETE</div>
+          <div class="api-path">/apiv1/files/{file_id}</div>
+        </div>
+        <div class="api-endpoint">
+          <div class="api-method api-method-delete">DELETE</div>
+          <div class="api-path">/apiv1/folders/{folder_id}</div>
+        </div>
+        <div class="api-description">
+          <p>Move a file or folder to trash (soft delete). Trashed items are automatically permanently deleted after 48 hours. Use the trash endpoints to restore or permanently delete sooner.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># Delete a file (moves to trash)
+curl -X DELETE https://{{ domain }}/apiv1/files/{file_id} \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# Delete a folder and all contents (moves to trash)
+curl -X DELETE https://{{ domain }}/apiv1/folders/42 \
+  -H "Authorization: Bearer YOUR_API_KEY"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import requests
+
+# Delete a file
+response = requests.delete(
+    "https://{{ domain }}/apiv1/files/{file_id}",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    verify=False,
+)
+print(response.json())  # {"success": true}</code></pre>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK</span>
+          </div>
+          <pre><code class="language-json">{"success": true}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Search -->
+    <div class="docs-section" id="section-api-search">
+      <h2 class="docs-section-title">SEARCH (API)</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-get">GET</div>
+          <div class="api-path">/apiv1/search?q={query}</div>
+        </div>
+        <div class="api-description">
+          <p>Search files and folders by name. Returns up to 50 results for each type. Case-insensitive partial matching.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash">curl "https://{{ domain }}/apiv1/search?q=photo" \
+  -H "Authorization: Bearer YOUR_API_KEY"</code></pre>
+        </div>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> PYTHON</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-python">import requests
+
+response = requests.get(
+    "https://{{ domain }}/apiv1/search",
+    params={"q": "photo"},
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    verify=False,
+)
+for f in response.json()["files"]:
+    print(f"{f['name']} ({f['size_formatted']})")</code></pre>
+        </div>
+
+        <h3>RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK</span>
+          </div>
+          <pre><code class="language-json">{
+  "files": [
+    {"id": "...", "name": "photo.jpg", "size": 1048576, "size_formatted": "1.00 MB", "download_url": "..."}
+  ],
+  "folders": [
+    {"id": 42, "name": "Photos", "parent_id": null}
+  ]
+}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Trash -->
+    <div class="docs-section" id="section-api-trash">
+      <h2 class="docs-section-title">TRASH (API)</h2>
+      <div class="docs-section-content">
+        <div class="api-endpoint">
+          <div class="api-method api-method-get">GET</div>
+          <div class="api-path">/apiv1/trash</div>
+        </div>
+        <div class="api-endpoint">
+          <div class="api-method api-method-post">POST</div>
+          <div class="api-path">/apiv1/trash/{file_id}/restore</div>
+        </div>
+        <div class="api-endpoint">
+          <div class="api-method api-method-delete">DELETE</div>
+          <div class="api-path">/apiv1/trash/{file_id}</div>
+        </div>
+        <div class="api-endpoint">
+          <div class="api-method api-method-delete">DELETE</div>
+          <div class="api-path">/apiv1/trash/empty</div>
+        </div>
+        <div class="api-description">
+          <p>Manage trashed items. List trash contents, restore files, permanently delete individual files, or empty the entire trash. Trashed items are auto-deleted after 48 hours.</p>
+        </div>
+
+        <h3>EXAMPLES</h3>
+
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
+            <button class="copy-btn">COPY</button>
+          </div>
+          <pre><code class="language-bash"># List trash
+curl https://{{ domain }}/apiv1/trash \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# Restore a file from trash
+curl -X POST https://{{ domain }}/apiv1/trash/{file_id}/restore \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# Permanently delete from trash
+curl -X DELETE https://{{ domain }}/apiv1/trash/{file_id} \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# Empty entire trash
+curl -X DELETE https://{{ domain }}/apiv1/trash/empty \
+  -H "Authorization: Bearer YOUR_API_KEY"</code></pre>
+        </div>
+
+        <h3>RESPONSE (LIST)</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> 200 OK</span>
+          </div>
+          <pre><code class="language-json">{
+  "files": [
+    {"id": "...", "name": "old-file.txt", "size": 1024, "remaining_hours": 36.5}
+  ],
+  "folders": [
+    {"id": 10, "name": "Archive", "remaining_hours": 12.3}
+  ]
+}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- API All Endpoints Reference -->
+    <div class="docs-section" id="section-api-endpoints">
+      <h2 class="docs-section-title">ALL ENDPOINTS</h2>
+      <div class="docs-section-content">
+        <div class="api-description">
+          <p>Complete reference of all authenticated API endpoints. All require the <code>Authorization: Bearer</code> header and the listed permission.</p>
+        </div>
+
+        <div class="param-table param-table-4col">
+          <div class="param-row param-header">
+            <span>METHOD</span>
+            <span>ENDPOINT</span>
+            <span>PERMISSION</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">GET</span>
+            <span class="param-type">/apiv1/keys</span>
+            <span class="param-desc"><code>manage_keys</code></span>
+            <span class="param-desc">List your active API keys (with permissions & IP whitelist)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">POST</span>
+            <span class="param-type">/apiv1/keys</span>
+            <span class="param-desc"><code>manage_keys</code></span>
+            <span class="param-desc">Create a new API key (JSON: <code>{"label": "...", "permissions": {...}, "allowed_ips": [...]}</code>)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">PATCH</span>
+            <span class="param-type">/apiv1/keys/{key_id}</span>
+            <span class="param-desc"><code>manage_keys</code></span>
+            <span class="param-desc">Update permissions and/or IP whitelist on an existing key</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">DELETE</span>
+            <span class="param-type">/apiv1/keys/{key_id}</span>
+            <span class="param-desc"><code>manage_keys</code></span>
+            <span class="param-desc">Revoke an API key</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">POST</span>
+            <span class="param-type">/apiv1/upload</span>
+            <span class="param-desc"><code>write</code></span>
+            <span class="param-desc">Upload file(s) to cloud drive</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">GET</span>
+            <span class="param-type">/apiv1/download/{file_id}</span>
+            <span class="param-desc"><code>download</code></span>
+            <span class="param-desc">Download a file (non-E2E only)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">GET</span>
+            <span class="param-type">/apiv1/files</span>
+            <span class="param-desc"><code>read</code></span>
+            <span class="param-desc">List files in root directory</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">GET</span>
+            <span class="param-type">/apiv1/files/{folder_id}</span>
+            <span class="param-desc"><code>read</code></span>
+            <span class="param-desc">List files in a folder</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">GET</span>
+            <span class="param-type">/apiv1/files/{file_id}/properties</span>
+            <span class="param-desc"><code>read</code></span>
+            <span class="param-desc">Get file details (size, downloads, visibility, etc.)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">DELETE</span>
+            <span class="param-type">/apiv1/files/{file_id}</span>
+            <span class="param-desc"><code>delete</code></span>
+            <span class="param-desc">Move file to trash</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">POST</span>
+            <span class="param-type">/apiv1/folders</span>
+            <span class="param-desc"><code>write</code></span>
+            <span class="param-desc">Create folder (JSON: <code>{"name": "...", "parent_id": N}</code>)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">DELETE</span>
+            <span class="param-type">/apiv1/folders/{folder_id}</span>
+            <span class="param-desc"><code>delete</code></span>
+            <span class="param-desc">Move folder and contents to trash</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">GET</span>
+            <span class="param-type">/apiv1/search?q={query}</span>
+            <span class="param-desc"><code>read</code></span>
+            <span class="param-desc">Search files and folders by name</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">GET</span>
+            <span class="param-type">/apiv1/trash</span>
+            <span class="param-desc"><code>read</code></span>
+            <span class="param-desc">List trashed items</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">POST</span>
+            <span class="param-type">/apiv1/trash/{file_id}/restore</span>
+            <span class="param-desc"><code>restore</code></span>
+            <span class="param-desc">Restore file from trash</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">DELETE</span>
+            <span class="param-type">/apiv1/trash/{file_id}</span>
+            <span class="param-desc"><code>delete</code></span>
+            <span class="param-desc">Permanently delete from trash</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">DELETE</span>
+            <span class="param-type">/apiv1/trash/empty</span>
+            <span class="param-desc"><code>delete</code></span>
+            <span class="param-desc">Empty entire trash</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Error Responses -->
+    <div class="docs-section" id="section-errors">
+      <h2 class="docs-section-title">ERROR CODES</h2>
+      <div class="docs-section-content">
+        <div class="api-description">
+          <p>All error responses return an appropriate HTTP status code. JSON endpoints return an <code>error</code> field in the response body.</p>
+        </div>
+
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>CODE</span>
+            <span>STATUS</span>
+            <span>DESCRIPTION</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">400</span>
+            <span class="param-type">Bad Request</span>
+            <span class="param-desc">No files provided or invalid request format</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">401</span>
+            <span class="param-type">Unauthorized</span>
+            <span class="param-desc">Login required (e.g. cloud drive upload with <code>is_temp=false</code>)</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">403</span>
+            <span class="param-type">Forbidden</span>
+            <span class="param-desc">Session does not own this file or insufficient permissions</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">404</span>
+            <span class="param-type">Not Found</span>
+            <span class="param-desc">File not found, expired, or invalid token</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">410</span>
+            <span class="param-type">Gone</span>
+            <span class="param-desc">Download limit reached, file has been removed</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">413</span>
+            <span class="param-type">Payload Too Large</span>
+            <span class="param-desc">File exceeds the maximum upload size ({{ "%.0f"|format(max_size_gb) if max_size_gb == max_size_gb|int else "%.1f"|format(max_size_gb) }} GB for registered users{% if temp_max_gb is defined and temp_max_gb %}, {{ "%.0f"|format(temp_max_gb) if temp_max_gb == temp_max_gb|int else "%.1f"|format(temp_max_gb) }} GB for guests{% endif %})</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">429</span>
+            <span class="param-type">Too Many Requests</span>
+            <span class="param-desc">Rate limit exceeded, try again later</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">507</span>
+            <span class="param-type">Insufficient Storage</span>
+            <span class="param-desc">Server disk is full or user storage quota exceeded</span>
+          </div>
+        </div>
+
+        <h3>EXAMPLE ERROR RESPONSE</h3>
+        <div class="code-block collapsed">
+          <div class="code-header">
+            <span class="code-title"><span class="code-toggle-icon">▶</span> JSON ERROR</span>
+          </div>
+          <pre><code class="language-json">{"error": "No files"}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rate Limits -->
+    <div class="docs-section" id="section-limits">
+      <h2 class="docs-section-title">RATE LIMITS</h2>
+      <div class="docs-section-content">
+        <div class="api-description">
+          <p>API endpoints are rate-limited to prevent abuse. Authenticated users have higher limits than guests. When a rate limit is exceeded, the server returns <code>429 Too Many Requests</code>.</p>
+        </div>
+
+        <div class="param-table">
+          <div class="param-row param-header">
+            <span>ENDPOINT</span>
+            <span>GUESTS</span>
+            <span>AUTHENTICATED</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">/upload</span>
+            <span class="param-desc">30 / min</span>
+            <span class="param-desc">1000 / min</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">/f/{id}</span>
+            <span class="param-desc">60 / min</span>
+            <span class="param-desc">2000 / min</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">/manage/{token}</span>
+            <span class="param-desc">20 / min</span>
+            <span class="param-desc">600 / min</span>
+          </div>
+          <div class="param-row">
+            <span class="param-name">/delete/{token}</span>
+            <span class="param-desc">20 / min</span>
+            <span class="param-desc">600 / min</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+function toggleCodeBlock(header) {
+  const block = header.parentElement;
+  block.classList.toggle('collapsed');
+}
+
+document.addEventListener('click', function (e) {
+  var copy = e.target.closest && e.target.closest('.copy-btn')
+  if (copy) { e.stopPropagation(); copyCode(copy); return }
+  var header = e.target.closest && e.target.closest('.code-header')
+  if (header) toggleCodeBlock(header)
+})
+
+function copyCode(button) {
+  const block = button.closest('.code-block');
+  const code = block.querySelector('pre code').textContent;
+
+  navigator.clipboard.writeText(code).then(() => {
+    const originalText = button.textContent;
+    button.textContent = 'COPIED';
+    button.style.background = 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)';
+    setTimeout(() => {
+      button.textContent = originalText;
+      button.style.background = '';
+    }, 2000);
+  }).catch(() => {
+    const textarea = document.createElement('textarea');
+    textarea.value = code;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+
+    const originalText = button.textContent;
+    button.textContent = 'COPIED';
+    button.style.background = 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)';
+    setTimeout(() => {
+      button.textContent = originalText;
+      button.style.background = '';
+    }, 2000);
+  });
+}
+
+// Sidebar active link tracking on scroll
+const sections = document.querySelectorAll('.docs-section[id]');
+const navLinks = document.querySelectorAll('.docs-nav-link');
+
+function updateActiveNav() {
+  const scrollPos = window.scrollY + 120;
+
+  let currentSection = '';
+  sections.forEach(section => {
+    if (section.offsetTop <= scrollPos) {
+      currentSection = section.id;
+    }
+  });
+
+  navLinks.forEach(link => {
+    link.classList.remove('active');
+    if (link.dataset.section === currentSection) {
+      link.classList.add('active');
+    }
+  });
+}
+
+window.addEventListener('scroll', updateActiveNav);
+window.addEventListener('load', updateActiveNav);
+
+// Smooth scroll for nav links
+navLinks.forEach(link => {
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    const targetId = link.getAttribute('href').substring(1);
+    const target = document.getElementById(targetId);
+    if (target) {
+      const offset = target.offsetTop - 80;
+      window.scrollTo({ top: offset, behavior: 'smooth' });
+    }
+  });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,174 @@
+{% extends 'base.html' %}
+{% block title %}SHARE{% endblock %}
+{% set nav_active = 'share' %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('uploader.css') }}"><link rel="stylesheet" href="{{ versioned_static('manage.css') }}"><link rel="stylesheet" href="{{ versioned_static('share.css') }}">{% endblock %}
+
+{% block content %}
+<section class="rd-section share-hero-sec">
+  <div class="rd-container">
+    <span class="share-badge"><span class="share-badge-dot"></span>Zero-knowledge</span>
+    <h1 class="share-title">Quick share</h1>
+    <p class="share-subtitle">Drop a file. Get a link. No account needed.</p>
+    {% if allow_temp_uploads %}
+    <div class="share-uploader-wrap">{% include '_uploader.html' %}</div>
+    {% endif %}
+  </div>
+</section>
+
+{% if temp_files %}
+  <div class="share-files-area">
+    <div class="temp-files-section">
+      <h2 class="section-title">YOUR TEMPORARY UPLOADS</h2>
+      <div class="temp-browser">
+    <div class="temp-browser-header">
+      <div class="browser-col col-name">NAME</div>
+      <div class="browser-col col-tags"></div>
+      <div class="browser-col col-encryption">E2E</div>
+      <div class="browser-col col-size">SIZE</div>
+      <div class="browser-col col-date">UPLOADED</div>
+      <div class="browser-col col-actions">ACTIONS</div>
+    </div>
+    <div class="temp-browser-files">
+      {% for file in temp_files %}
+      {% set extension = get_compound_ext(file.orig_name) %}
+      {% if extension in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico'] %}
+        {% set file_icon = '🖼️' %}
+      {% elif extension in ['exe', 'msi'] %}
+        {% set file_icon = '⚙️' %}
+      {% elif extension in ['zip', 'rar', '7z', 'tar', 'gz', 'bz2'] %}
+        {% set file_icon = '📦' %}
+      {% elif extension in ['pdf'] %}
+        {% set file_icon = '📕' %}
+      {% elif extension in ['doc', 'docx', 'txt', 'rtf', 'odt'] %}
+        {% set file_icon = '📝' %}
+      {% elif extension in ['xls', 'xlsx', 'csv', 'ods'] %}
+        {% set file_icon = '📊' %}
+      {% elif extension in ['ppt', 'pptx', 'odp'] %}
+        {% set file_icon = '📽️' %}
+      {% elif extension in ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v'] %}
+        {% set file_icon = '🎬' %}
+      {% elif extension in ['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac'] %}
+        {% set file_icon = '<svg class="audio-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>' %}
+      {% elif extension in ['py', 'js', 'java', 'cpp', 'c', 'h', 'cs', 'php', 'rb', 'go', 'rs', 'swift'] %}
+        {% set file_icon = '💻' %}
+      {% elif extension in ['html', 'css', 'xml', 'json', 'yaml', 'yml'] %}
+        {% set file_icon = '🌐' %}
+      {% elif extension in ['jar', 'apk', 'deb', 'rpm', 'dmg', 'pkg'] %}
+        {% set file_icon = '📱' %}
+      {% else %}
+        {% set file_icon = '📄' %}
+      {% endif %}
+      <div class="temp-browser-row file-row" data-file-id="{{ file.id }}" data-management-token="{{ file.management_token }}" data-file-name="{{ file.orig_name }}" data-e2e="{{ 'true' if file.is_e2e_encrypted else 'false' }}" data-extension="{{ extension }}" data-previewable="{{ 'true' if extension in previewable_exts else 'false' }}"{% if file.short_code %} data-short-code="{{ file.short_code }}"{% endif %}{% if file.is_e2e_encrypted and file.has_thumbnail and file.encrypted_thumbnail_nonce %} data-enc-thumb-nonce="{{ file.encrypted_thumbnail_nonce }}"{% endif %}{% if file.is_e2e_encrypted and file.encrypted_name %} data-encrypted-name="{{ file.encrypted_name }}" data-name-nonce="{{ file.name_nonce }}" data-encrypted-file-key="{{ file.encrypted_file_key }}" data-file-key-nonce="{{ file.file_key_nonce }}"{% if file.file_key_salt %} data-file-key-salt="{{ file.file_key_salt }}"{% endif %}{% endif %}>
+        <div class="browser-col col-name">
+          {% if not file.is_e2e_encrypted and (file.has_thumbnail or is_thumbnailable_name(file.orig_name)) %}
+            <span class="file-icon-small{% if extension in previewable_exts %} file-icon-preview{% endif %}" data-thumb-fill="{{ file.id }}">{{ file_icon|safe }}</span>
+          {% else %}
+            <span class="file-icon-small{% if extension in previewable_exts %} file-icon-preview{% endif %}">{{ file_icon|safe }}</span>
+          {% endif %}
+          {% if '.' in file.orig_name %}
+            <span class="file-name-text"><span class="file-name-base">{{ file.orig_name.rsplit('.', 1)[0] }}</span><span class="file-name-ext">.{{ file.orig_name.rsplit('.', 1)[1] }}</span></span>
+          {% else %}
+            <span class="file-name-text">{{ file.orig_name }}</span>
+          {% endif %}
+        </div>
+        <div class="browser-col col-tags">
+          {% if file.expires_at %}
+            <span class="file-badge file-badge-expires" title="Expires {{ file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') }} UTC" data-expires-at="{{ file.get_expires_at_aware().isoformat() }}">
+              <svg class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <span class="expires-text"></span>
+            </span>
+          {% endif %}
+          {% if file.is_public %}
+            <span class="file-badge file-badge-public" title="Publicly accessible via link">🌐 PUBLIC</span>
+          {% endif %}
+        </div>
+        <div class="browser-col col-encryption">
+          {% if file.is_e2e_encrypted %}
+            <span class="enc-icon enc-icon-e2e" title="END-TO-END ENCRYPTED"></span>
+          {% else %}
+            <span class="enc-icon enc-icon-server" title="SERVER-SIDE ENCRYPTED"></span>
+          {% endif %}
+        </div>
+        <div class="browser-col col-size">{{ file.size | filesize }}</div>
+        <div class="browser-col col-date">{{ file.get_upload_time_aware().strftime('%b %d, %Y') }}</div>
+        <div class="browser-col col-actions">
+          <a href="{{ url_for('download', id_or_token=file.id, filename=file.orig_name) }}" class="action-btn action-download" title="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>
+          <button class="action-btn action-manage manage-temp-file-btn" data-token="{{ file.management_token }}" title="Manage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+          <button class="action-btn action-delete delete-temp-file-btn" data-token="{{ file.management_token }}" data-filename="{{ file.orig_name }}" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<div class="context-menu" id="contextMenu">
+  <div class="context-menu-item" data-action="download">
+    <span class="context-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+    <span>DOWNLOAD</span>
+  </div>
+  <div class="context-menu-item" data-action="copy-link">
+    <span class="context-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+    <span>COPY LINK</span>
+  </div>
+  <div class="context-menu-item" data-action="properties">
+    <span class="context-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+    <span>MANAGE</span>
+  </div>
+  <div class="context-menu-divider"></div>
+  <div class="context-menu-item danger" data-action="delete">
+    <span class="context-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
+    <span>DELETE</span>
+  </div>
+</div>
+
+{% include '_manage_modal.html' %}
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+document.addEventListener('click', async function(e){
+  var m = e.target.closest('.manage-temp-file-btn');
+  if (m){ e.preventDefault(); var tok=m.dataset.token; if(tok && typeof ManageModal!=='undefined') ManageModal.openFileByToken(tok); return; }
+  var d = e.target.closest('.delete-temp-file-btn');
+  if (d){
+    var tok=d.dataset.token, name=d.dataset.filename;
+    var ok = await showConfirm(name || 'THIS FILE', 'This file will be permanently deleted. This action cannot be undone.', 'DELETE');
+    if(!ok) return;
+    var fd=new FormData(); var t=document.getElementById('csrf_token'); if(t) fd.append('csrf_token', t.value);
+    d.disabled=true;
+    try {
+      var response=await fetch('/delete/'+tok,{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'},body:fd});
+      var result=await response.json().catch(function(){return {};});
+      if(!response.ok || result.success!==true) throw new Error(result.error || ('HTTP '+response.status));
+      var row = d.closest('.temp-browser-row'); if(row) row.remove();
+      if(typeof showToast==='function') showToast('FILE DELETED','success');
+      var files=document.querySelector('.temp-browser-files');
+      if(files && !files.querySelector('.temp-browser-row')){ var s=document.querySelector('.share-files-area'); if(s) s.remove(); }
+    } catch(err) {
+      d.disabled=false;
+      if(typeof showToast==='function') showToast('FAILED TO DELETE FILE: '+String(err.message || 'UNKNOWN ERROR'),'error');
+    }
+  }
+});
+document.querySelectorAll('[data-thumb-fill]').forEach(function (slot) {
+  var id = slot.getAttribute('data-thumb-fill')
+  var tries = 0
+  function attempt () {
+    var img = new Image()
+    img.className = 'file-thumbnail'
+    img.alt = ''
+    img.onload = function () { slot.replaceWith(img) }
+    img.onerror = function () {
+      tries++
+      if (tries < 8) setTimeout(attempt, Math.min(8000, 700 * tries))
+    }
+    img.src = '/file/' + encodeURIComponent(id) + '/thumbnail'
+  }
+  attempt()
+})
+</script>
+{% endblock %}

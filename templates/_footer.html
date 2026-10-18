@@ -1,0 +1,22 @@
+<footer class="rd-footer">
+  <div class="rd-container rd-footer-inner">
+    <div class="rd-footer-brand">ONE<span class="rd-accent">.GY</span></div>
+    <nav class="rd-footer-links" aria-label="Footer">
+      {% if allow_temp_uploads %}<a href="{{ url_for('share') }}">Share</a>{% endif %}
+      <a href="{{ url_for('docs') }}">Docs</a>
+      {% if session.get('logged_in_user_id') %}
+        <a href="{{ url_for('files') }}">Files</a>
+        <a href="{{ url_for('account') }}">Account</a>
+      {% else %}
+        <a href="{{ url_for('login') }}">Sign in</a>
+        {% if allow_registration %}<a href="{{ url_for('register') }}">Register</a>{% endif %}
+      {% endif %}
+    </nav>
+    {% if landing_stats %}
+    <div class="rd-footer-status">
+      <span class="rd-status-dot rd-status-{{ landing_stats.backup_completion_status }}"></span>
+      {{ landing_stats.backup_completion_percent_label }} mirrored · {{ landing_stats.total_display_file_bytes_formatted }} encrypted
+    </div>
+    {% endif %}
+  </div>
+</footer>

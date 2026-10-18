@@ -1,0 +1,94 @@
+/* ============================================================================
+   EDITORIAL BASE — structural rules shared by every editorial variant.
+   Scoped to any body whose class contains "rd-theme-editorial" so each
+   variant theme file only supplies palette tokens + its signature motion.
+   Authored entirely against tokens; imported by theme-editorial-*.css.
+   ========================================================================== */
+[class*="rd-theme-editorial"] .rd-h1{font-family:var(--font-display);font-weight:800;letter-spacing:-.03em;line-height:.92;text-transform:uppercase}
+[class*="rd-theme-editorial"] .rd-h2{font-family:var(--font-display);font-weight:800;letter-spacing:-.02em;text-transform:uppercase}
+[class*="rd-theme-editorial"] .rd-h3{font-weight:700}
+
+/* Hard-edged everything */
+[class*="rd-theme-editorial"] .rd-card,
+[class*="rd-theme-editorial"] .rd-stat,
+[class*="rd-theme-editorial"] .rd-terminal,
+/* Modals share the Frost popup language: 2px border + offset accent shadow
+   (same as .manage-modal-panel and .ucm-dialog). */
+[class*="rd-theme-editorial"] .rd-modal-panel{border:2px solid var(--border);box-shadow:var(--shadow-2);background:var(--bg)}
+[class*="rd-theme-editorial"] .rd-card:hover{transform:translate(-3px,-3px);box-shadow:var(--shadow-2);border-color:var(--accent)}
+[class*="rd-theme-editorial"] .rd-btn{border:2px solid var(--border);font-family:var(--font-mono);
+  font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:.82rem}
+[class*="rd-theme-editorial"] .rd-btn-primary{background:var(--text);color:var(--bg);box-shadow:none}
+[class*="rd-theme-editorial"] .rd-btn-primary:hover{transform:translate(-2px,-2px);box-shadow:5px 5px 0 var(--text);background:var(--accent);color:var(--accent-contrast);border-color:var(--accent)}
+[class*="rd-theme-editorial"] .rd-btn-ghost{background:transparent}
+[class*="rd-theme-editorial"] .rd-btn-ghost:hover{background:var(--accent);color:var(--accent-contrast);border-color:var(--accent)}
+
+/* Nav */
+[class*="rd-theme-editorial"] .rd-nav.rd-scrolled,
+[class*="rd-theme-editorial"] .rd-app:not(.rd-nav-ghost) .rd-nav{background:var(--nav-bg);border-bottom-color:var(--border);
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+[class*="rd-theme-editorial"] .rd-nav-link{font-family:var(--font-mono);font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;border-radius:0}
+[class*="rd-theme-editorial"] .rd-nav-link.is-active{color:var(--accent)}
+[class*="rd-theme-editorial"] .rd-nav-word{text-transform:uppercase}
+[class*="rd-theme-editorial"] .rd-nav-toggle{border-width:2px}
+[class*="rd-theme-editorial"] .rd-nav-drawer{border-bottom:2px solid var(--border)}
+[class*="rd-theme-editorial"] .rd-nav-drawer .rd-btn{border:2px solid var(--border)}
+
+/* Dossier top rule */
+[class*="rd-theme-editorial"] .doss-rule{display:flex;flex-wrap:wrap;gap:.4rem 1.5rem;align-items:center;
+  padding:.6rem 0;border-bottom:2px solid var(--border);
+  font-family:var(--font-mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
+[class*="rd-theme-editorial"] .doss-rule b{color:var(--text);font-weight:700}
+[class*="rd-theme-editorial"] .doss-stamp{margin-left:auto;color:var(--accent);border:2px solid var(--accent);
+  padding:.15rem .5rem;transform:rotate(-3deg);font-weight:700}
+
+/* Hero */
+[class*="rd-theme-editorial"] .rd-hero-grid{grid-template-columns:1.25fr .75fr;align-items:end}
+@media (max-width:900px){ [class*="rd-theme-editorial"] .rd-hero-grid{grid-template-columns:1fr;align-items:start} }
+[class*="rd-theme-editorial"] .doss-meta{border:2px solid var(--border);padding:1.1rem 1.2rem;
+  font-family:var(--font-mono);font-size:.8rem;line-height:1.9;background:var(--surface)}
+[class*="rd-theme-editorial"] .doss-meta dt{color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;font-size:.68rem}
+[class*="rd-theme-editorial"] .doss-meta dd{margin:0 0 .7rem;font-weight:600}
+[class*="rd-theme-editorial"] .doss-meta dd:last-child{margin-bottom:0}
+
+/* Redaction signature (palette via --redact-bg / --redact-fg) */
+[class*="rd-theme-editorial"] .redact{position:relative;display:inline-block;color:transparent;
+  background:var(--redact-bg,var(--text));padding:0 .1em;cursor:help;
+  transition:background .35s var(--ease),color .35s var(--ease)}
+[class*="rd-theme-editorial"] .redact::after{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(45deg,transparent,transparent 5px,rgba(255,255,255,.14) 5px,rgba(255,255,255,.14) 6px)}
+[class*="rd-theme-editorial"] .redact:hover,
+[class*="rd-theme-editorial"] .redact:focus,
+[class*="rd-theme-editorial"] .redact.is-open{background:transparent;color:var(--redact-fg,var(--accent));outline:none}
+[class*="rd-theme-editorial"] .redact:hover::after,
+[class*="rd-theme-editorial"] .redact:focus::after,
+[class*="rd-theme-editorial"] .redact.is-open::after{opacity:0}
+
+/* Stats: oversized numerals in a ruled row */
+[class*="rd-theme-editorial"] .rd-statgrid{gap:0;border:2px solid var(--border)}
+[class*="rd-theme-editorial"] .rd-stat{border:none;border-right:2px solid var(--border);background:var(--surface)}
+[class*="rd-theme-editorial"] .rd-stat:last-child{border-right:none}
+[class*="rd-theme-editorial"] .rd-stat-num{font-family:var(--font-display);font-weight:800;font-size:clamp(2.6rem,6vw,4.4rem)}
+[class*="rd-theme-editorial"] .rd-stat-label{font-weight:700}
+@media (max-width:560px){ [class*="rd-theme-editorial"] .rd-stat{border-right:none;border-bottom:2px solid var(--border)} [class*="rd-theme-editorial"] .rd-stat:last-child{border-bottom:none} }
+
+/* Capability blocks */
+[class*="rd-theme-editorial"] .cap-tag{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--accent);display:block;margin-bottom:.6rem}
+[class*="rd-theme-editorial"] .rd-card-icon{background:transparent;border:2px solid var(--border);color:var(--text);border-radius:0}
+
+/* Data sheet */
+[class*="rd-theme-editorial"] .doss-sheet{width:100%;border-collapse:collapse;border:2px solid var(--border);
+  font-family:var(--font-mono);font-size:.82rem}
+[class*="rd-theme-editorial"] .doss-sheet th{text-align:left;background:var(--text);color:var(--bg);
+  padding:.6rem .8rem;text-transform:uppercase;letter-spacing:.06em;font-size:.7rem}
+[class*="rd-theme-editorial"] .doss-sheet td{padding:.6rem .8rem;border-top:2px solid var(--border);vertical-align:top}
+[class*="rd-theme-editorial"] .doss-sheet .no{color:var(--accent);font-weight:700}
+[class*="rd-theme-editorial"] .doss-sheet .yes{color:var(--text-dim)}
+
+/* Accent-carrying bits */
+[class*="rd-theme-editorial"] .rd-t-accent{color:var(--accent)}
+[class*="rd-theme-editorial"] .rd-checklist li svg{color:var(--accent)}
+[class*="rd-theme-editorial"] .rd-kicker{color:var(--accent)}
+[class*="rd-theme-editorial"] .rd-terminal-title,
+[class*="rd-theme-editorial"] .rd-metastrip{color:var(--text-dim)}

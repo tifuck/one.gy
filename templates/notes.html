@@ -1,0 +1,85 @@
+{% extends '_app_base.html' %}
+{% block title %}NOTES{% endblock %}
+{% set nav_active = 'notes' %}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ versioned_static('notes.css') }}">
+<link rel="stylesheet" href="{{ versioned_static('notes-canvas.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="nt-lock" id="ntLock" hidden>
+  <div class="nt-lock-card">
+    <div class="nt-lock-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/><circle cx="12" cy="15.5" r="1.2" fill="currentColor" stroke="none"/></svg></div>
+    <h2 class="nt-lock-title">Your notes are locked</h2>
+    <p class="nt-lock-sub">Enter your password to decrypt your notes on this device. Your key never leaves your browser.</p>
+    <form class="nt-lock-form" id="ntUnlockForm"><input type="password" id="ntUnlockPw" class="form-input" placeholder="Password" autocomplete="current-password" autofocus><button type="submit" class="rd-btn rd-btn-primary">Unlock</button></form>
+  </div>
+</div>
+
+<div class="nt-shell">
+  <aside class="nt-rail rd-side" id="ntRail" aria-label="Notebooks">
+    <div class="rd-side-inner" aria-hidden="true">
+      <div class="rd-side-head">Library</div>
+      <div class="rd-skel nt-skel-row"></div>
+      <div class="rd-skel nt-skel-row"></div>
+      <div class="rd-skel nt-skel-row"></div>
+      <div class="rd-skel nt-skel-row"></div>
+      <div class="rd-skel nt-skel-row"></div>
+    </div>
+  </aside>
+  <button type="button" class="rd-rail-label" data-rd-label="side" title="Expand library">Library</button>
+  <button type="button" class="rd-rail-label" data-rd-label="list" title="Expand notes">Notes</button>
+  <div class="rd-resizer" data-rd-resize="side" role="separator" aria-orientation="vertical"
+       aria-label="Resize library" tabindex="0" title="Drag to resize · double-click to collapse"></div>
+  <div class="rd-resizer" data-rd-resize="list" role="separator" aria-orientation="vertical"
+       aria-label="Resize notes list" tabindex="0" title="Drag to resize · double-click to collapse"></div>
+  <div class="nt-rail-scrim" id="ntRailScrim"></div>
+  <div class="nt-panes" id="ntPanes">
+    <div class="nt-list" id="ntList" aria-label="Notes">
+      <div class="nt-skel-list" aria-hidden="true">
+        <div class="rd-skel nt-skel-item"></div>
+        <div class="rd-skel nt-skel-item"></div>
+        <div class="rd-skel nt-skel-item"></div>
+        <div class="rd-skel nt-skel-item"></div>
+        <div class="rd-skel nt-skel-item"></div>
+        <div class="rd-skel nt-skel-item"></div>
+      </div>
+    </div>
+    <section class="nt-editor" id="ntEditor" aria-label="Editor"></section>
+  </div>
+</div>
+
+<!-- New notebook modal -->
+<div class="rd-modal" id="ntNbModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">New notebook</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <input type="text" id="ntNbName" class="form-input" placeholder="Notebook name" maxlength="120" autocomplete="off">
+      <button type="button" class="rd-btn rd-btn-primary" id="ntNbSave" style="width:100%;margin-top:.9rem">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Text prompt modal (rename) -->
+<div class="rd-modal" id="ntPromptModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3" id="ntPromptTitle">Rename</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <input type="text" id="ntPromptInput" class="form-input" maxlength="200" autocomplete="off">
+      <button type="button" class="rd-btn rd-btn-primary" id="ntPromptSave" style="width:100%;margin-top:.9rem">Save</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('notes-canvas.js') }}" defer></script>
+<script src="{{ versioned_static('notes.js') }}" defer></script>
+{% endblock %}

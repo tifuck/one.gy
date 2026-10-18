@@ -1,0 +1,156 @@
+/* ============================================================================
+   notes-canvas.css — Frost canvas/whiteboard editor (notes-canvas.js).
+   ========================================================================== */
+.fxc-root{ display:flex; flex-direction:column; height:100%; min-height:0; flex:1 1 auto; min-width:0; width:100%; }
+
+/* Toolbar */
+.fxc-bar{ flex:none; display:flex; align-items:center; gap:.65rem; height:48px; box-sizing:border-box; padding:.3rem .7rem; border-bottom:2px solid var(--border); background:var(--surface); overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
+.fxc-bar::-webkit-scrollbar{ display:none; }
+.fxc-tools, .fxc-colors, .fxc-actions{ display:flex; align-items:center; gap:.2rem; flex:none; }
+.fxc-tools{ border:2px solid var(--border); }
+.fxc-tool{ width:34px; height:34px; border:0; border-right:2px solid var(--border); background:var(--surface); color:var(--text-dim); cursor:pointer; display:inline-flex; align-items:center; justify-content:center; }
+.fxc-tool:last-child{ border-right:0; }
+.fxc-tool svg{ width:17px; height:17px; }
+.fxc-tool:hover{ background:var(--accent-soft); color:var(--text); }
+.fxc-tool:focus-visible,.fxc-abtn:focus-visible,.fxc-swatch:focus-visible,.fxc-zoom:focus-visible{ outline:2px solid var(--accent); outline-offset:-3px; }
+.fxc-tool.is-active{ background:var(--accent); color:var(--accent-contrast); }
+.fxc-colors{ gap:.3rem; }
+.fxc-swatch{ width:20px; height:20px; border:2px solid var(--border); cursor:pointer; padding:0; }
+.fxc-swatch.is-active{ box-shadow:0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.fxc-actions{ margin-left:auto; position:sticky; right:0; padding-left:.55rem; background:var(--surface); box-shadow:-8px 0 8px var(--surface); }
+.fxc-abtn{ width:32px; height:32px; border:2px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer; display:inline-flex; align-items:center; justify-content:center; }
+.fxc-abtn svg{ width:15px; height:15px; }
+.fxc-abtn:hover{ background:var(--accent-soft); }
+.fxc-abtn.fxc-danger:hover{ background:var(--bad); color:#fff; border-color:var(--bad); }
+.fxc-sep{ width:2px; height:22px; background:var(--border); margin:0 .3rem; }
+/* The zoom level doubles as the reset button: [-] 100% [+] */
+.fxc-zoom{ min-width:42px; height:32px; padding:0 .2rem; border:0; background:none; cursor:pointer; font-family:var(--font-mono); font-size:.62rem; color:var(--text-dim); }
+.fxc-zoom:hover{ color:var(--accent); }
+
+/* Viewport — a natively scrolling surface holding one OneNote-style page. */
+.fxc-vp{
+  position:relative; flex:1 1 auto; min-height:0; overflow:auto; outline:none;
+  background:var(--surface);
+  touch-action:pan-x pan-y; overscroll-behavior:contain;
+}
+.fxc-vp[data-tool="text"],.fxc-vp[data-tool="todo"],.fxc-vp[data-tool="table"],.fxc-vp[data-tool="code"],.fxc-vp[data-tool="pen"],.fxc-vp[data-tool="line"]{ cursor:crosshair; }
+.fxc-vp[data-tool="pen"],.fxc-vp[data-tool="line"]{ touch-action:none; }
+.fxc-vp.is-pan-ready{ cursor:grab; }
+/* The page is borderless and fills the whole editor — it just scrolls forever downward. */
+.fxc-page{ position:relative; margin:0; background:var(--surface); }
+.fxc-world{ position:absolute; top:0; left:0; transform-origin:0 0; }
+.fxc-overlay{ position:absolute; inset:0; pointer-events:none; z-index:400; }
+.fxc-overlay .fxc-handle{ pointer-events:auto; }
+
+/* Blocks — note: core.css sets img/svg/canvas{max-width:100%}; the canvas world
+   has no intrinsic width, so that would clamp blocks to 0. Override it here. */
+.fxc-block{ position:absolute; max-width:none; }
+.fxc-world svg, .fxc-world img, .fxc-overlay svg{ max-width:none; }
+.fxc-text{
+  min-width:60px; min-height:40px; height:auto; background:transparent; border:1.5px solid transparent;
+  font-family:var(--font-body); font-size:15px; line-height:1.45; color:var(--color, var(--text));
+  outline:none; box-shadow:none; white-space:pre-wrap; cursor:text;
+}
+.fxc-text-content{ min-height:40px; padding:.4rem .6rem; outline:none; }
+/* Rich text the text tools insert (lists, quotes, links): undo core.css's list/link reset inside blocks. */
+.fxc-text-content ul, .fxc-text-content ol, .fxc-table-card td ul, .fxc-table-card td ol{ padding-left:1.4rem; }
+.fxc-text-content ul, .fxc-table-card td ul{ list-style:revert; }
+.fxc-text-content blockquote, .fxc-table-card td blockquote{ padding:.15rem .6rem; border-left:3px solid var(--accent); background:var(--accent-soft); }
+.fxc-text-content a, .fxc-table-card td a{ color:var(--accent); text-decoration:underline; }
+.fxc-grip{ position:absolute; left:50%; top:-13px; transform:translateX(-50%); display:flex; gap:3px; align-items:center; justify-content:center; width:34px; height:14px; padding:0; border:1.5px solid var(--border); background:var(--surface); color:var(--text-dim); cursor:move; opacity:0; transition:opacity .12s; touch-action:none; }
+.fxc-block:hover .fxc-grip,.fxc-block:focus-within .fxc-grip,.fxc-block.is-sel .fxc-grip{ opacity:1; }
+.fxc-grip span{ width:3px; height:3px; border-radius:50%; background:currentColor; pointer-events:none; }
+.fxc-text:hover{ border-color:var(--border); }
+.fxc-text.is-sel{ border-color:var(--accent); }
+/* Untyped container: caret only — no outline, no move grip until there is content */
+.fxc-text.is-empty, .fxc-text.is-empty:hover, .fxc-text.is-empty.is-sel{ border-color:transparent; }
+.fxc-block.is-empty .fxc-grip{ opacity:0; pointer-events:none; }
+.fxc-svg{ overflow:visible; cursor:move; touch-action:none; }
+.fxc-svg.is-sel path{ filter:drop-shadow(0 0 0 var(--accent)); }
+.fxc-img{ object-fit:contain; cursor:move; box-shadow:none; touch-action:none; }
+.fxc-img.is-sel{ outline:2px solid var(--accent); }
+.fxc-img.is-background{ box-shadow:none; }
+.fxc-card{ background:var(--surface); border:1.5px solid var(--border); box-shadow:2px 2px 0 rgba(var(--ink-rgb),.12); }
+.fxc-card.is-sel{ border-color:var(--accent); }
+.fxc-todo{ height:auto; overflow:visible; padding:.55rem; display:flex; flex-direction:column; gap:.35rem; }
+.fxc-todo-row{ display:flex; align-items:flex-start; gap:.45rem; min-height:25px; }
+.fxc-todo-row input[type="checkbox"]{ flex:none; margin:.32rem 0 0; }
+.fxc-todo-input{ flex:1; min-width:0; min-height:24px; border:0; border-bottom:1px solid var(--border); background:transparent; color:var(--text); font:inherit; line-height:1.45; padding:.2rem; outline:none; white-space:pre-wrap; overflow-wrap:anywhere; }
+.fxc-todo-input:empty::before{ content:attr(data-placeholder); color:var(--text-dim); pointer-events:none; }
+/* Code card chrome is derived from the --code-* tokens so it follows the theme
+   (neutral grey under frost-dark instead of a hardcoded navy panel). */
+.fxc-code{ display:flex; flex-direction:column; background:var(--code-bg); }
+.fxc-code-head{ flex:none; display:flex; justify-content:space-between; align-items:center; min-height:30px; border-bottom:1px solid rgba(255,255,255,.14); }
+.fxc-code-head select,.fxc-code-copy{ height:29px; border:0; background:var(--code-bg); color:var(--code-fg); opacity:.72; font:600 .62rem var(--font-mono); letter-spacing:.06em; }
+.fxc-code-head select{ padding:0 .5rem; }.fxc-code-copy{ padding:0 .65rem; cursor:pointer; }.fxc-code-copy:hover{ color:#fff; opacity:1; background:rgba(255,255,255,.1); }
+.fxc-code textarea{ flex:none; width:100%; min-height:90px; resize:none; border:0; outline:0; padding:.7rem; background:var(--code-bg); color:var(--code-fg); font:13px/1.5 var(--font-mono); }
+/* A table draws its own borders from its style preset (none = invisible layout table), so no card frame. */
+.fxc-table-card{ height:auto; overflow:visible; border:0; box-shadow:none; }
+.fxc-table-card::after{ content:''; position:absolute; inset:0; border:var(--fxc-round-edge, 0); border-radius:inherit; pointer-events:none; }
+.fxc-table-card table{ width:100%; height:auto; border-collapse:collapse; table-layout:fixed; }
+.fxc-table-card td{ min-width:36px; padding:.35rem .45rem; border:1px solid var(--border); outline:none; vertical-align:top; overflow-wrap:anywhere; }
+.fxc-colgrip{ position:absolute; top:0; bottom:0; width:8px; cursor:col-resize; touch-action:none; z-index:5; }
+.fxc-colgrip:hover,.fxc-colgrip:active{ background:rgba(var(--accent-rgb),.3); }
+.fxc-attachment{ display:flex; align-items:center; gap:.65rem; padding:.7rem; }
+.fxc-attachment b,.fxc-attachment small{ display:block; }
+.fxc-file-icon + span{ min-width:0; }
+.fxc-attachment b{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fxc-attachment small{ color:var(--text-dim); font-family:var(--font-mono); text-transform:uppercase; }
+.fxc-file-icon{ font-size:1.3rem; color:var(--accent); }
+.fxc-live{ position:absolute; top:0; left:0; overflow:visible; pointer-events:none; }
+
+/* Canvas-owned contextual controls */
+.fxc-popover{ z-index:420; max-height:calc(100vh - 16px); overflow:auto; }
+/* A column flex box with a max-height shrinks its children: keep rows and separators full size and scroll instead. */
+.fxc-popover > *{ flex-shrink:0; }
+.fxc-pop-controls{ display:flex; flex-direction:column; gap:.55rem; min-width:240px; padding:.45rem .55rem .55rem; }
+.fxc-pop-row{ display:grid; grid-template-columns:68px minmax(0,1fr); align-items:center; gap:.65rem; font-family:var(--font-mono); font-size:.62rem; letter-spacing:.08em; color:var(--text-dim); }
+.fxc-pop-row input[type="range"]{ width:100%; accent-color:var(--accent); }
+.fxc-pop-row input[type="color"]{ width:100%; height:28px; padding:2px; border:1.5px solid var(--border); background:var(--surface); }
+.fxc-pop-buttons{ display:flex; flex-wrap:wrap; gap:.3rem; }
+.fxc-mini{ min-height:28px; padding:.3rem .5rem; border:1.5px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer; font:600 .62rem/1 var(--font-mono); letter-spacing:.04em; }
+.fxc-mini:hover,.fxc-mini:focus-visible,.fxc-mini.is-active{ border-color:var(--accent); background:var(--accent-soft); color:var(--accent); outline:none; }
+.fxc-pop-label{ margin:.35rem 0 .4rem; font-family:var(--font-mono); font-size:.58rem; letter-spacing:.14em; color:var(--text-dim); }
+.fxc-table-styles{ padding:.25rem .55rem .55rem; }
+.fxc-table-styles .fxc-mini{ flex:1 1 calc(33.333% - .3rem); }
+/* Table style picker: live mini previews of each preset */
+.fxc-style-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:.35rem; }
+.fxc-style-swatch{ display:flex; flex-direction:column; align-items:center; gap:.3rem; padding:.4rem .3rem .35rem; border:1.5px solid var(--border); background:var(--surface); cursor:pointer; }
+.fxc-style-swatch:hover,.fxc-style-swatch:focus-visible{ border-color:var(--accent); background:var(--accent-soft); outline:none; }
+.fxc-style-swatch.is-active{ border-color:var(--accent); box-shadow:0 0 0 1.5px var(--accent); }
+.fxc-style-mini{ display:flex; flex-direction:column; width:54px; background:var(--bg); overflow:hidden; }
+.fxc-style-mini-row{ display:flex; flex:none; }
+.fxc-style-mini-cell{ flex:1 1 0; height:9px; box-sizing:border-box; }
+.fxc-style-name{ font:600 .55rem/1 var(--font-mono); letter-spacing:.08em; color:var(--text-dim); }
+.fxc-text-tools{ position:fixed; z-index:430; display:flex; align-items:center; gap:.2rem; max-width:calc(100vw - 16px); padding:.3rem; border:2px solid var(--border); background:var(--surface); box-shadow:5px 5px 0 var(--accent); overflow-x:auto; }
+.fxc-text-tools .fxc-mini{ flex:none; }
+.fxc-tt-sep{ flex:none; width:2px; height:20px; background:var(--border); margin:0 .2rem; }
+.fxc-tt-color{ flex:none; display:inline-flex; align-items:center; gap:.25rem; height:28px; padding:0 .3rem; border:1.5px solid var(--border); background:var(--surface); cursor:pointer; }
+.fxc-tt-color:hover{ border-color:var(--accent); background:var(--accent-soft); }
+.fxc-tt-color-glyph{ font:700 .68rem/1 var(--font-mono); color:var(--text); }
+.fxc-tt-color input[type="color"]{ width:20px; height:18px; padding:0; border:1px solid var(--border); background:transparent; cursor:pointer; }
+.fxc-layer-panel{ padding:.15rem .55rem .35rem; }
+
+/* Selection box + handles */
+.fxc-selbox{ position:absolute; border:1.5px solid var(--accent); pointer-events:none; }
+.fxc-selbox.is-multi{ border-style:dashed; }
+.fxc-marquee{ position:absolute; border:1.5px dashed var(--accent); background:rgba(var(--accent-rgb),.1); pointer-events:none; }
+.fxc-handle{ position:absolute; width:10px; height:10px; background:var(--surface); border:2px solid var(--accent); touch-action:none; }
+.fxc-h-nw{ left:-6px; top:-6px; cursor:nwse-resize; }
+.fxc-h-n{ left:50%; top:-6px; transform:translateX(-50%); cursor:ns-resize; }
+.fxc-h-ne{ right:-6px; top:-6px; cursor:nesw-resize; }
+.fxc-h-e{ right:-6px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
+.fxc-h-sw{ left:-6px; bottom:-6px; cursor:nesw-resize; }
+.fxc-h-se{ right:-6px; bottom:-6px; cursor:nwse-resize; }
+.fxc-h-s{ left:50%; bottom:-6px; transform:translateX(-50%); cursor:ns-resize; }
+.fxc-h-w{ left:-6px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
+
+/* Empty hint */
+.fxc-hint{
+  position:absolute; left:50%; top:1.1rem; transform:translateX(-50%);
+  font-family:var(--font-mono); font-size:.66rem; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--text-dim); background:var(--surface); border:1.5px solid var(--border); padding:.35rem .7rem; pointer-events:none;
+}
+
+/* Phones: all 8 tools + undo/redo/delete must fit without scrolling (tools flex 26-44px); zoom is a pinch there. */
+@media (max-width:720px){ .fxc-bar{ height:44px; padding:.25rem .3rem; gap:.3rem; } .fxc-tools{ gap:0; flex:0 1 auto; } .fxc-tool{ flex:1 1 44px; width:auto; min-width:26px; height:32px; } .fxc-actions{ padding-left:0; gap:.15rem; box-shadow:none; } .fxc-abtn{ width:30px; height:30px; } .fxc-sep, .fxc-zoomctl, .fxc-zoom{ display:none; } .fxc-colors{ display:none; } .fxc-hint{ display:none !important; } .fxc-handle{ width:16px;height:16px; } .fxc-popover{ min-width:min(250px,calc(100vw - 16px)); max-width:calc(100vw - 16px); } .fxc-pop-controls{ min-width:0; } .fxc-text-tools{ scrollbar-width:none; } .fxc-text-tools::-webkit-scrollbar{ display:none; } }

@@ -1,0 +1,138 @@
+/* ============================================================================
+   FROST GATEWAY — the anonymous / hand-off pages that sit between a share link
+   and the actual bytes: 404, password prompt, E2EE decrypt page, server-side
+   decrypt progress, guest temp-file list, and the standalone manage page.
+
+   These render on base.html (public shell: _nav + _footer), so they
+   get core.css + components.css + themes.css + editorial-base.css. Everything
+   here is token-driven — NEVER hardcode a hex colour, it breaks the themes.
+
+   Shared prefix: .gw-*  (gateway)
+   ========================================================================== */
+
+/* ---- Shell ---------------------------------------------------------------
+   main is a flex column on these pages so the card centres in the space left
+   over by nav + footer instead of forcing 100vh and creating a phantom
+   scrollbar (same trick auth.css uses for .auth-container). */
+main:has(.gw-section){display:flex;flex-direction:column}
+.gw-section{flex:1 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:calc(var(--nav-h) + 2rem) clamp(1.15rem,4vw,2rem) 3rem}
+
+.gw-card{width:100%;max-width:34rem;background:var(--surface);border:2px solid var(--border);
+  box-shadow:8px 8px 0 var(--accent);padding:clamp(1.6rem,4vw,2.6rem);text-align:center}
+.gw-card-wide{max-width:56rem;text-align:left}
+
+/* ---- Head ---------------------------------------------------------------- */
+.gw-ico{width:56px;height:56px;margin:0 auto 1.1rem;display:grid;place-items:center;
+  border:2px solid var(--border);color:var(--accent);background:var(--bg)}
+.gw-ico svg{width:28px;height:28px}
+.gw-rule{width:56px;height:3px;background:var(--accent);margin:0 auto 1.1rem}
+.gw-card-wide .gw-rule{margin-left:0}
+
+.gw-title{font-family:var(--font-display);font-weight:800;letter-spacing:-.02em;text-transform:uppercase;
+  font-size:clamp(1.5rem,3.6vw,2.1rem);line-height:1.1;margin-bottom:.55rem;word-break:break-word}
+.gw-sub{font-family:var(--font-mono);font-size:.76rem;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--text-dim);line-height:1.6}
+.gw-note{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--text-dim);line-height:1.6;margin-top:1.4rem;
+  display:flex;align-items:center;justify-content:center;gap:.45rem}
+.gw-note svg{flex:none;opacity:.8}
+.gw-err{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--bad);border:2px solid var(--bad);padding:.6rem .8rem;margin-top:1rem}
+
+/* ---- 404 digits ---------------------------------------------------------- */
+.gw-code{display:flex;justify-content:center;gap:.35rem;margin-bottom:1.1rem}
+.gw-digit{font-family:var(--font-display);font-weight:800;font-size:clamp(3.4rem,11vw,5.4rem);
+  line-height:.9;letter-spacing:-.04em;color:var(--text)}
+.gw-digit-accent{color:var(--accent)}
+.gw-detail{display:inline-flex;align-items:center;gap:.5rem;margin-top:1rem;padding:.55rem .8rem;
+  border:2px solid var(--border);background:var(--bg);
+  font-family:var(--font-mono);font-size:.68rem;letter-spacing:.04em;text-transform:uppercase;color:var(--text-dim)}
+.gw-detail svg{flex:none;color:var(--accent)}
+
+/* ---- Share QR (standalone manage page) -----------------------------------
+   White panel is deliberate (same as .acc-qr on the account page): the QR PNG
+   itself is black-on-white, so the frame matches the image's quiet zone in
+   both themes. */
+.gw-qr{display:grid;place-items:center;width:max-content;margin:1.2rem auto 0;
+  padding:.85rem;background:#fff;border:2px solid var(--border)}
+.gw-qr img{width:150px;height:150px;display:block;image-rendering:pixelated}
+.gw-qr-label{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--text-dim);margin-top:.55rem}
+
+/* ---- Actions ------------------------------------------------------------- */
+.gw-actions{display:flex;flex-wrap:wrap;gap:.7rem;justify-content:center;margin-top:1.6rem}
+.gw-card-wide .gw-actions{justify-content:flex-start}
+.gw-btn{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 1.15rem;border:2px solid var(--border);
+  background:transparent;color:var(--text);text-decoration:none;cursor:pointer;
+  font-family:var(--font-mono);font-weight:600;font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;
+  transition:transform .2s var(--ease),background .2s var(--ease),color .2s var(--ease),box-shadow .2s var(--ease)}
+.gw-btn:hover{transform:translate(-2px,-2px);box-shadow:4px 4px 0 var(--accent-soft)}
+.gw-btn:active{transform:none;box-shadow:none}
+.gw-btn:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
+.gw-btn-primary{background:var(--text);border-color:var(--text);color:var(--bg)}
+.gw-btn-primary:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast);
+  box-shadow:4px 4px 0 var(--text)}
+
+/* ---- Form ---------------------------------------------------------------- */
+.gw-form{display:flex;flex-direction:column;gap:.9rem;margin-top:1.5rem;text-align:left}
+.gw-form .gw-btn{justify-content:center}
+
+/* ---- Progress panel (E2EE decrypt + server-side prepare) ----------------- */
+.gw-prog{margin-top:1.5rem;border:2px solid var(--border);background:var(--bg);text-align:left}
+.gw-prog-head{padding:.6rem .8rem;border-bottom:2px solid var(--border);background:var(--surface);
+  font-family:var(--font-mono);font-size:.72rem;font-weight:600;letter-spacing:.04em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gw-prog-body{padding:.9rem .8rem}
+.gw-prog-track{height:10px;background:var(--toggle-off);border:2px solid var(--border);overflow:hidden}
+.gw-prog-fill{height:100%;width:0;background:var(--accent);transition:width .3s var(--ease)}
+.gw-prog-fill.is-done{background:var(--good)}
+.gw-prog-fill.is-error{background:var(--bad)}
+.gw-prog-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:.7rem;margin-top:.8rem}
+.gw-prog-stat{display:flex;flex-direction:column;gap:.2rem;min-width:0}
+.gw-prog-label{font-family:var(--font-mono);font-size:.6rem;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--text-dim)}
+.gw-prog-value{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.02em;
+  font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---- Guest temp-file table ----------------------------------------------- */
+.gw-table{width:100%;border:2px solid var(--border);background:var(--surface);border-collapse:collapse}
+.gw-table th{font-family:var(--font-mono);font-size:.62rem;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--text-dim);text-align:left;
+  padding:.65rem .8rem;border-bottom:2px solid var(--border);white-space:nowrap}
+.gw-table td{padding:.7rem .8rem;border-bottom:1px solid var(--border);font-size:.85rem;vertical-align:middle}
+.gw-table tr:last-child td{border-bottom:0}
+.gw-table tbody tr:hover{background:var(--accent-soft)}
+.gw-fname{color:var(--text);text-decoration:none;font-weight:600;word-break:break-all}
+.gw-fname:hover{color:var(--accent)}
+.gw-mono{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.02em;color:var(--text-dim);white-space:nowrap}
+.gw-tag{display:inline-block;font-family:var(--font-mono);font-size:.6rem;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;padding:.2rem .45rem;border:1px solid var(--border);color:var(--text-dim);
+  margin-right:.3rem;white-space:nowrap}
+.gw-tag-accent{border-color:var(--accent);color:var(--accent)}
+.gw-tag-good{border-color:var(--good);color:var(--good)}
+.gw-row-actions{display:flex;gap:.4rem;flex-wrap:wrap}
+.gw-mini{padding:.35rem .6rem;border:2px solid var(--border);background:transparent;color:var(--text);
+  text-decoration:none;cursor:pointer;font-family:var(--font-mono);font-size:.64rem;font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;
+  transition:background .15s var(--ease),color .15s var(--ease),border-color .15s var(--ease)}
+.gw-mini:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast)}
+.gw-mini-danger:hover{background:var(--bad);border-color:var(--bad);color:var(--surface)}
+
+.gw-empty{border:2px dashed var(--border);background:var(--surface);padding:clamp(2rem,6vw,3.4rem) 1.2rem;
+  text-align:center;text-decoration:none;color:inherit;display:block}
+.gw-empty:hover{border-color:var(--accent)}
+.gw-empty-title{font-family:var(--font-display);font-weight:800;text-transform:uppercase;
+  font-size:1.15rem;margin:.7rem 0 .35rem}
+
+@media (max-width:640px){
+  .gw-prog-stats{grid-template-columns:1fr 1fr}
+  .gw-table thead{display:none}
+  .gw-table,.gw-table tbody,.gw-table tr,.gw-table td{display:block;width:100%}
+  .gw-table tr{border-bottom:2px solid var(--border);padding:.4rem 0}
+  .gw-table tr:last-child{border-bottom:0}
+  .gw-table td{border-bottom:0;padding:.35rem .8rem}
+}
+@media (prefers-reduced-motion:reduce){
+  .gw-btn,.gw-prog-fill{transition-duration:.001ms}
+}

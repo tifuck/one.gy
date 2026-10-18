@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <script nonce="{{ csp_nonce }}">/* pre-paint theme (no FOUC) */(function(){try{var t=localStorage.getItem('onegy_theme');var ok=['frost','frost-dark'];document.documentElement.setAttribute('data-theme',ok.indexOf(t)>=0?t:'frost')}catch(e){document.documentElement.setAttribute('data-theme','frost')}})();</script>
+  <script nonce="{{ csp_nonce }}">/* pre-paint rail widths (no layout shift) — see static/panel-resize.js */
+(function(){try{var r=document.documentElement,W=window.innerWidth,C=340;
+/* Defaults are viewport-proportional. Keep 0.17/280/460 and 0.19/320/520 in
+   sync with :root in app-shell.css and with panel-resize.js. */
+function prop(f,lo,hi){return Math.round(Math.max(lo,Math.min(hi,W*f)))}
+var dS=prop(0.17,280,460),dL=prop(0.19,320,520);
+/* One-time migration to the proportional defaults. Deliberately NEVER shrinks
+   anyone: a stored width is only dropped if it is narrower than the new
+   default, so a rail the user widened on purpose is left alone. */
+if(localStorage.getItem('onegy_rd_v')!=='2'){
+  var mig=[['onegy_rd_side_w',dS],['onegy_rd_list_w',dL]];
+  for(var i=0;i<mig.length;i++){var sv=parseInt(localStorage.getItem(mig[i][0]),10);
+    if(!isFinite(sv)||sv<mig[i][1])localStorage.removeItem(mig[i][0]);}
+  localStorage.setItem('onegy_rd_v','2');
+}
+function n(k,d){var v=parseInt(localStorage.getItem(k),10);return isFinite(v)&&v>0?v:d}
+function set(p,k,d,mn,mx){var w=Math.max(mn,Math.min(mx,n(k,d),W-C));r.style.setProperty(p,w+'px')}
+set('--rd-side-w','onegy_rd_side_w',dS,150,560);
+set('--rd-list-w','onegy_rd_list_w',dL,200,620);
+if(localStorage.getItem('onegy_rd_side_collapsed')==='1')r.setAttribute('data-rd-side','collapsed');
+if(localStorage.getItem('onegy_rd_list_collapsed')==='1')r.setAttribute('data-rd-list','collapsed');
+}catch(e){}})();</script>
+  <title>{% block title %}ONE.GY{% endblock %}</title>
+  <link rel="icon" type="image/x-icon" href="{{ versioned_static('logos/favicon.ico') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ versioned_static('logos/favicon-32x32.png') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ versioned_static('logos/apple-touch-icon.png') }}">
+  <link rel="preload" href="{{ versioned_static('vendor/fonts/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ versioned_static('vendor/fonts/inter-latin-600-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="{{ versioned_static('core.css') }}">
+  <link rel="stylesheet" href="{{ versioned_static('components.css') }}">
+  <link rel="stylesheet" href="{{ versioned_static('themes.css') }}">
+  <link rel="stylesheet" href="{{ versioned_static('editorial-base.css') }}">
+  <link rel="stylesheet" href="{{ versioned_static('app-shell.css') }}">
+  <link rel="stylesheet" href="{{ versioned_static('context-menu.css') }}">
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="rd-body rd-theme-editorial rd-app{% if nav_ghost|default(false) %} rd-nav-ghost{% endif %}">
+{% include '_nav.html' %}
+
+<main class="rd-app-main" id="main">
+  {% block content %}{% endblock %}
+</main>
+
+<div class="toast-container" id="toastContainer"></div>
+<script nonce="{{ csp_nonce }}">
+  function showToast(message, category){var c=document.getElementById('toastContainer');if(!c){c=document.createElement('div');c.id='toastContainer';c.className='toast-container';document.body.appendChild(c);}var t=document.createElement('div');t.className='toast-message toast-'+(category||'error');t.textContent=String(message).toUpperCase().replace(/[.!?]+$/,'');c.appendChild(t);setTimeout(function(){t.style.opacity='0';setTimeout(function(){t.remove();},400);},3500);}
+  function showFlash(m,c){showToast(m,c);}
+</script>
+<script src="{{ versioned_static('core.js') }}"></script>
+<script src="{{ versioned_static('panel-resize.js') }}" defer></script>
+<script src="{{ versioned_static('context-menu.js') }}" defer></script>
+<script src="{{ versioned_static('theme-switch.js') }}" defer></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

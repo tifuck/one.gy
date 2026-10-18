@@ -1,0 +1,540 @@
+{# Frost E2EE download page. Replaces the legacy templates/e2e_download.html.
+
+   ONLY the markup/classes changed — the decryption logic below is carried over
+   verbatim because it covers three distinct unwrap paths that are easy to
+   break: (1) passphrase in the URL fragment (guest/CLI uploads, PBKDF2 210k),
+   (2) HKDF link secret in the fragment (registered-user share links), and
+   (3) the owner's session master key (with an account-password unlock
+   fallback). Which path applies is decided by SERVER metadata from
+   /f/<id>/key-info (file_key_salt / link_encrypted_file_key), never by the
+   shape of the URL. #}
+{% extends 'base.html' %}
+{% block title %}ENCRYPTED DOWNLOAD{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('gateway.css') }}">{% endblock %}
+
+{% block content %}
+<section class="gw-section">
+  <div class="gw-card">
+    <div class="gw-ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="1"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16.5" r="1.2" fill="currentColor" stroke="none"/></svg>
+    </div>
+    <div class="gw-rule"></div>
+    <h1 class="gw-title">End-to-end encrypted</h1>
+    <p class="gw-sub" id="decryptSubtitle">Checking encryption…</p>
+
+    <!-- Passphrase / account-password form (only shown when a key is needed) -->
+    <form id="passphraseForm" class="gw-form" style="display:none">
+      <input type="password" id="passphrase" class="form-input" placeholder="Enter passphrase" required autofocus autocomplete="current-password">
+      <button type="submit" class="gw-btn gw-btn-primary" id="decryptBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Decrypt &amp; download
+      </button>
+    </form>
+
+    <!-- Progress panel -->
+    <div id="e2eProgressPanel" class="gw-prog" style="display:none">
+      <div class="gw-prog-head" id="e2eProgressTitle">Decrypting file</div>
+      <div class="gw-prog-body">
+        <div class="gw-prog-track"><div class="gw-prog-fill" id="e2eProgressFill"></div></div>
+        <div class="gw-prog-stats">
+          <div class="gw-prog-stat"><span class="gw-prog-label">Status</span><span class="gw-prog-value" id="e2eProgressStatus">Preparing…</span></div>
+          <div class="gw-prog-stat"><span class="gw-prog-label">Progress</span><span class="gw-prog-value" id="e2eProgressPercent">0%</span></div>
+          <div class="gw-prog-stat"><span class="gw-prog-label">Speed</span><span class="gw-prog-value" id="e2eProgressSpeed">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <p class="gw-note">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="1"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      Decryption happens in your browser. No key is sent to the server.
+    </p>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script nonce="{{ csp_nonce }}">
+const fileId = {{ file.id | tojson }}
+let origName = {{ file.orig_name | tojson }}
+const fileSize = {{ file.size }}
+
+/**
+ * Try to decrypt the real filename from E2EE encrypted name data.
+ * Call this after you have a usable fileKey. Updates origName + progress title.
+ */
+async function _tryDecryptOrigName(keyInfo, fileKey) {
+  if (!keyInfo.encrypted_name || !keyInfo.name_nonce || !fileKey) return
+  try {
+    const realName = await OneGyCrypto.decryptFileName(keyInfo.encrypted_name, keyInfo.name_nonce, fileKey)
+    if (realName) {
+      origName = realName
+      _el('e2eProgressTitle').textContent = realName
+    }
+  } catch (e) {
+    // Non-critical — keep placeholder name
+  }
+}
+
+// ─── Progress panel helpers ─────────────────────────────────────────
+const _el = (id) => document.getElementById(id)
+
+function _showProgress(title) {
+  _el('e2eProgressPanel').style.display = 'block'
+  _el('e2eProgressTitle').textContent = origName
+  _el('e2eProgressStatus').textContent = 'PREPARING...'
+  _el('e2eProgressPercent').textContent = '0%'
+  _el('e2eProgressSpeed').textContent = '-'
+  _el('e2eProgressFill').style.width = '0%'
+  _el('e2eProgressFill').classList.remove('is-done', 'is-error')
+}
+
+function _hideProgress() {
+  _el('e2eProgressPanel').style.display = 'none'
+}
+
+function _updateProgress(status, pct, speed) {
+  _el('e2eProgressStatus').textContent = status
+  _el('e2eProgressFill').style.width = Math.round(pct) + '%'
+  _el('e2eProgressPercent').textContent = Math.round(pct) + '%'
+  if (speed !== undefined) _el('e2eProgressSpeed').textContent = speed
+}
+
+function _resetForDecrypt() {
+  // Briefly disable transition so the bar resets instantly
+  const fill = _el('e2eProgressFill')
+  fill.style.transition = 'none'
+  fill.style.width = '0%'
+  // Force reflow so the browser applies width:0 before re-enabling transition
+  fill.offsetWidth
+  fill.style.transition = ''
+  _el('e2eProgressPercent').textContent = '0%'
+  _el('e2eProgressSpeed').textContent = '-'
+  _el('e2eProgressStatus').textContent = 'UNWRAPPING FILE KEY...'
+}
+
+function _completeProgress() {
+  _el('e2eProgressStatus').textContent = 'COMPLETE!'
+  _el('e2eProgressFill').style.width = '100%'
+  _el('e2eProgressFill').classList.remove('is-error')
+  _el('e2eProgressFill').classList.add('is-done')
+  _el('e2eProgressPercent').textContent = '100%'
+  _el('e2eProgressSpeed').textContent = 'DONE'
+}
+
+function _errorProgress(msg) {
+  _el('e2eProgressStatus').textContent = msg || 'FAILED'
+  _el('e2eProgressPercent').textContent = 'ERROR'
+  _el('e2eProgressSpeed').textContent = '-'
+  _el('e2eProgressFill').style.width = '100%'
+  _el('e2eProgressFill').classList.remove('is-done')
+  _el('e2eProgressFill').classList.add('is-error')
+}
+
+function _formatSpeed(bytesPerSec) {
+  if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/S'
+  return Math.round(bytesPerSec / 1024) + ' KB/S'
+}
+
+// ─── Phase 1: Fetch encrypted file with XHR (progress bar 0-100%) ───
+function _xhrDownload(url, pw) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('GET', url, true)
+    if (pw) xhr.setRequestHeader('X-Share-Password', pw)
+    xhr.responseType = 'arraybuffer'
+    let lastTime = Date.now(), lastLoaded = 0
+    xhr.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100)
+        const now = Date.now()
+        const dt = (now - lastTime) / 1000
+        let speedText = _el('e2eProgressSpeed').textContent
+        if (dt > 0.2) {
+          const bytesPerSec = (e.loaded - lastLoaded) / dt
+          speedText = _formatSpeed(bytesPerSec)
+          lastTime = now
+          lastLoaded = e.loaded
+        }
+        const mb = (e.loaded / 1048576).toFixed(1)
+        const totalMb = (e.total / 1048576).toFixed(1)
+        _updateProgress('DOWNLOADING ' + mb + ' / ' + totalMb + ' MB', pct, speedText)
+      }
+    }
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        resolve(xhr.response)
+      } else {
+        reject({ retryable: xhr.status === 0 || xhr.status >= 500, message: 'HTTP ' + xhr.status, isDownload: true })
+      }
+    }
+    xhr.onerror = () => reject({ retryable: true, message: 'NETWORK ERROR', isDownload: true })
+    xhr.ontimeout = () => reject({ retryable: true, message: 'TIMEOUT', isDownload: true })
+    xhr.onabort = () => reject({ retryable: true, message: 'ABORTED', isDownload: true })
+    xhr.send()
+  })
+}
+
+async function fetchEncryptedWithProgress(pw) {
+  const url = `/f/${fileId}/encrypted`
+  const maxRetries = 3
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const data = await _xhrDownload(url, pw)
+      _updateProgress('DOWNLOAD COMPLETE', 100, '-')
+      return data
+    } catch (err) {
+      if (err.retryable && attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000
+        _updateProgress('RETRY ' + attempt + '/' + (maxRetries - 1) + ' IN ' + (delay / 1000) + 'S...', 0, '-')
+        _el('e2eProgressFill').style.width = '0%'
+        await new Promise(r => setTimeout(r, delay))
+        continue
+      }
+      const e = new Error(err.message || 'DOWNLOAD FAILED')
+      e.isDownload = true
+      throw e
+    }
+  }
+}
+
+// ─── Phase 2: Decrypt progress callback (progress bar 0-100%) ───────
+function onDecryptProgress(pct) {
+  _updateProgress('DECRYPTING ' + pct + '%', pct, '-')
+}
+
+// ─── Determine decryption method and auto-start ─────────────────────
+// crypto.js is loaded with `defer`, so OneGyCrypto does not exist while this
+// inline script is being parsed. Wait for DOMContentLoaded (which fires AFTER
+// all deferred scripts have executed) instead of relying on the first `await`
+// happening to yield long enough — that was an implicit race in the legacy page.
+function _whenReady(fn) {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn, { once: true })
+  else fn()
+}
+
+_whenReady(async function() {
+  try {
+    const fragment = window.location.hash.substring(1)
+    const pw = null
+
+    // Fetch key metadata from server
+    const keyInfoResp = await fetch(`/f/${fileId}/key-info`)
+    if (!keyInfoResp.ok) {
+      showFlash('FAILED TO LOAD FILE INFO (HTTP ' + keyInfoResp.status + ')', 'error')
+      return
+    }
+    const keyInfo = await keyInfoResp.json()
+
+    if (!keyInfo.is_e2e || (!keyInfo.has_file_key && !keyInfo.has_link_key && !keyInfo.has_folder_link_key)) {
+      showFlash('THIS FILE CANNOT BE DECRYPTED', 'error')
+      return
+    }
+
+    // Extract fragment value: strip "passphrase=" prefix if present (unified URL format).
+    // Both new links (#passphrase=<base64>) and old link-secret links (#<base64>) are supported.
+    const fragmentValue = (fragment && fragment.startsWith('passphrase='))
+      ? fragment.substring('passphrase='.length)
+      : fragment
+
+    // Case 1a: Passphrase-wrapped file key (temp/guest uploads — PBKDF2 derivation)
+    // Determined by server metadata (file_key_salt), NOT by URL format.
+    if (fragmentValue && fragmentValue.length > 0 && keyInfo.file_key_salt) {
+      try {
+        const passphrase = decodeURIComponent(escape(atob(fragmentValue)))
+        if (passphrase) {
+          document.getElementById('decryptSubtitle').textContent = 'DECRYPTING WITH SHARE LINK...'
+          _showProgress('DOWNLOADING ENCRYPTED FILE')
+          try {
+            await _doPassphraseDecrypt(passphrase, keyInfo, pw)
+            return
+          } catch (decErr) {
+            if (decErr.isDownload) {
+              _handleDecryptError(decErr, 'PASSPHRASE LINK', () => _doPassphraseDecrypt(passphrase, keyInfo, pw))
+              return
+            }
+            // Decryption failed (bad passphrase in URL) — fall through to error
+            console.warn('[E2E DOWNLOAD] Passphrase from URL failed, link may be corrupted')
+            _hideProgress()
+          }
+        }
+      } catch (fragErr) {
+        console.warn('[E2E DOWNLOAD] Failed to decode passphrase from URL fragment:', fragErr)
+        // Fall through to missing key error
+      }
+    }
+
+    // Case 1b: Link-secret-wrapped file key (registered user share links — raw AES-256 key)
+    // Determined by server metadata (link_encrypted_file_key exists, no file_key_salt).
+    // Supports both new #passphrase=<base64> and old #<base64> formats via fragmentValue.
+    if (fragmentValue && fragmentValue.length > 10 && !keyInfo.file_key_salt && (keyInfo.has_link_key || keyInfo.has_folder_link_key)) {
+      document.getElementById('decryptSubtitle').textContent = 'DECRYPTING WITH SHARE LINK...'
+      _showProgress('DOWNLOADING ENCRYPTED FILE')
+      await decryptWithLinkKey(fragmentValue, keyInfo, pw)
+      return
+    }
+
+    // Case 2: Master-key-wrapped (no file_key_salt and no fragment means owner access)
+    if (!keyInfo.file_key_salt) {
+      const masterKey = await OneGyCrypto.getMasterKeyFromSession()
+      if (masterKey) {
+        // Auto-decrypt with session master key
+        document.getElementById('decryptSubtitle').textContent = 'DECRYPTING WITH YOUR MASTER KEY...'
+        _showProgress('DOWNLOADING ENCRYPTED FILE')
+        await decryptWithMasterKey(masterKey, keyInfo, pw)
+        return
+      } else {
+        // Master key not in session -- ask for account password
+        document.getElementById('decryptSubtitle').textContent = 'ENTER YOUR ACCOUNT PASSWORD TO UNLOCK DECRYPTION KEY'
+        document.getElementById('passphraseForm').style.display = 'flex'
+        document.getElementById('passphrase').placeholder = 'ENTER ACCOUNT PASSWORD'
+        setupPasswordUnlockFlow(keyInfo, pw)
+        return
+      }
+    }
+
+    // Case 3: Passphrase-wrapped file key but no passphrase in URL fragment
+    // The share link must contain the decryption key — if it's missing, the link was truncated or corrupted
+    document.getElementById('decryptSubtitle').textContent = 'DECRYPTION KEY MISSING'
+    showFlash('THE SHARE LINK APPEARS TO BE INCOMPLETE. THE DECRYPTION KEY IS EMBEDDED IN THE LINK AND CANNOT BE RECOVERED SEPARATELY. PLEASE REQUEST A NEW SHARE LINK FROM THE SENDER.', 'error')
+
+  } catch (err) {
+    console.error('[E2E DOWNLOAD]', err)
+    showFlash('FAILED TO LOAD FILE ENCRYPTION INFO', 'error')
+  }
+})
+
+// ─── Error handling helper ───────────────────────────────────────────
+function _handleDecryptError(err, context, retryFn) {
+  const isNetwork = err.isDownload === true
+  console.error('[E2E ' + context + ']', err)
+
+  if (isNetwork) {
+    _errorProgress('DOWNLOAD FAILED')
+    _showRetryButton(retryFn)
+    showFlash('DOWNLOAD FAILED: ' + err.message + '. TAP RETRY OR REFRESH THE PAGE.', 'error')
+  } else {
+    _errorProgress('DECRYPTION FAILED')
+    showFlash('DECRYPTION FAILED: ' + (err.message || 'UNKNOWN ERROR'), 'error')
+  }
+}
+
+function _showRetryButton(retryFn) {
+  // Remove any existing retry button
+  const existing = document.getElementById('e2eRetryBtn')
+  if (existing) existing.remove()
+
+  const btn = document.createElement('button')
+  btn.id = 'e2eRetryBtn'
+  btn.type = 'button'
+  btn.textContent = 'RETRY DOWNLOAD'
+  btn.className = 'gw-btn gw-btn-primary'
+  btn.style.marginTop = '1rem'
+  btn.onclick = () => {
+    btn.remove()
+    _showProgress('DOWNLOADING ENCRYPTED FILE')
+    retryFn()
+  }
+  _el('e2eProgressPanel').parentNode.insertBefore(btn, _el('e2eProgressPanel').nextSibling)
+}
+
+// ─── Decrypt with master key (auto, logged-in user) ─────────────────
+async function decryptWithMasterKey(masterKey, keyInfo, pw) {
+  try {
+    // Try to decrypt filename while downloading
+    try {
+      const fk = await OneGyCrypto.unwrapFileKeyWithMasterKey(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey)
+      await _tryDecryptOrigName(keyInfo, fk)
+    } catch (e) { /* non-critical */ }
+
+    const encryptedData = await fetchEncryptedWithProgress(pw)
+
+    _resetForDecrypt()
+
+    const decrypted = await OneGyCrypto.decryptFileForDownload(
+      encryptedData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey,
+      onDecryptProgress
+    )
+
+    _updateProgress('SAVING...', 99, '-')
+    downloadDecryptedFile(decrypted, origName)
+    _completeProgress()
+    showFlash('FILE DECRYPTED AND DOWNLOADED', 'success')
+    _warnLegacyContainer()
+  } catch (err) {
+    _handleDecryptError(err, 'MASTER KEY DECRYPT', () => decryptWithMasterKey(masterKey, keyInfo, pw))
+  }
+}
+
+// ─── Decrypt with share link key ────────────────────────────────────
+async function decryptWithLinkKey(linkSecret, keyInfo, pw) {
+  const wraps = [
+    [keyInfo.link_encrypted_file_key, keyInfo.link_file_key_nonce],
+    [keyInfo.folder_link_encrypted_file_key, keyInfo.folder_link_file_key_nonce],
+    [keyInfo.encrypted_file_key, keyInfo.file_key_nonce]
+  ].filter(function (w) { return w[0] && w[1] })
+
+  if (!wraps.length) {
+    _errorProgress('NO LINK KEY AVAILABLE')
+    showFlash('NO LINK KEY AVAILABLE FOR THIS FILE', 'error')
+    return
+  }
+
+  let linkKey = wraps[0][0]
+  let linkNonce = wraps[0][1]
+  for (let i = 0; i < wraps.length; i++) {
+    try {
+      await OneGyCrypto.unwrapFileKeyFromLink(wraps[i][0], wraps[i][1], linkSecret)
+      linkKey = wraps[i][0]
+      linkNonce = wraps[i][1]
+      break
+    } catch (e) {}
+  }
+
+  try {
+    // Try to decrypt filename with link key while downloading
+    try {
+      const fk = await OneGyCrypto.unwrapFileKeyFromLink(linkKey, linkNonce, linkSecret)
+      await _tryDecryptOrigName(keyInfo, fk)
+    } catch (e) { /* non-critical */ }
+
+    const encryptedData = await fetchEncryptedWithProgress(pw)
+
+    _resetForDecrypt()
+
+    const decrypted = await OneGyCrypto.decryptFileFromLink(
+      encryptedData, linkKey, linkNonce, linkSecret,
+      onDecryptProgress
+    )
+
+    _updateProgress('SAVING...', 99, '-')
+    downloadDecryptedFile(decrypted, origName)
+    _completeProgress()
+    showFlash('FILE DECRYPTED AND DOWNLOADED', 'success')
+    _warnLegacyContainer()
+  } catch (err) {
+    _handleDecryptError(err, 'LINK DECRYPT', () => decryptWithLinkKey(linkSecret, keyInfo, pw))
+  }
+}
+
+// ─── Password unlock flow (master key not in session) ───────────────
+function setupPasswordUnlockFlow(keyInfo, pw) {
+  document.getElementById('passphraseForm').addEventListener('submit', async function(e) {
+    e.preventDefault()
+    const btn = document.getElementById('decryptBtn')
+    const passphraseInput = document.getElementById('passphrase')
+    const password = passphraseInput.value
+    passphraseInput.value = ''
+    if (!password) return
+
+    btn.disabled = true
+    btn.textContent = 'UNLOCKING...'
+
+    try {
+      const keysResp = await fetch('/api/keys')
+      if (!keysResp.ok) throw Object.assign(new Error('FAILED TO FETCH KEYS (HTTP ' + keysResp.status + ')'), { isDownload: true })
+      const keysData = await keysResp.json()
+      if (!keysData.has_e2ee_keys) throw new Error('NO E2EE KEYS FOUND FOR YOUR ACCOUNT')
+
+      // Derive wrapping key and unlock master key.
+      // setupUserKeys always uses the HKDF chain (even for v0 auth users), so
+      // try the split-key derivation first using master_key_salt, then fall back
+      // to legacy PBKDF2-only if the HKDF path fails (for truly legacy key setups).
+      let masterKey
+      const serverKeys = {
+        encryptedMasterKey: keysData.encrypted_master_key,
+        masterKeyNonce: keysData.master_key_nonce,
+        masterKeySalt: keysData.master_key_salt,
+        encryptedPrivateKey: keysData.encrypted_private_key,
+        privateKeyNonce: keysData.private_key_nonce
+      }
+
+      const hkdfSalt = keysData.auth_token_salt || keysData.master_key_salt
+
+      if (hkdfSalt && OneGyCrypto.deriveAuthAndWrappingKeys) {
+        try {
+          const splitKeys = await OneGyCrypto.deriveAuthAndWrappingKeys(password, hkdfSalt)
+          const result = await OneGyCrypto.unlockUserKeys(splitKeys.wrappingKey, serverKeys)
+          masterKey = result.masterKey
+        } catch (hkdfErr) {
+          const result = await OneGyCrypto.unlockUserKeys(password, serverKeys)
+          masterKey = result.masterKey
+        }
+      } else {
+        const result = await OneGyCrypto.unlockUserKeys(password, serverKeys)
+        masterKey = result.masterKey
+      }
+
+      await OneGyCrypto.storeMasterKeyInSession(masterKey)
+
+      document.getElementById('passphraseForm').style.display = 'none'
+      _showProgress('DOWNLOADING ENCRYPTED FILE')
+      await decryptWithMasterKey(masterKey, keyInfo, pw)
+    } catch (err) {
+      console.error('[E2E PASSWORD UNLOCK]', err)
+      if (err.isDownload) {
+        // Download error already handled by decryptWithMasterKey
+      } else {
+        showFlash('FAILED TO UNLOCK. CHECK YOUR PASSWORD.', 'error')
+      }
+      btn.disabled = false
+      btn.textContent = 'DECRYPT & DOWNLOAD'
+    }
+  })
+}
+
+// ─── Passphrase decrypt flow (guest upload, new system) ─────────────
+async function _doPassphraseDecrypt(passphrase, keyInfo, pw) {
+  // Try to decrypt filename with passphrase-derived key
+  try {
+    const fk = await OneGyCrypto.unwrapFileKeyWithPassphrase(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase)
+    await _tryDecryptOrigName(keyInfo, fk)
+  } catch (e) { /* non-critical */ }
+
+  const encryptedData = await fetchEncryptedWithProgress(pw)
+
+  _resetForDecrypt()
+  _updateProgress('DERIVING KEY FROM PASSPHRASE...', 0, '-')
+
+  const decrypted = await OneGyCrypto.decryptFileForGuestDownload(
+    encryptedData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase,
+    onDecryptProgress
+  )
+
+  _updateProgress('SAVING...', 99, '-')
+  downloadDecryptedFile(decrypted, origName)
+  _completeProgress()
+  showFlash('FILE DECRYPTED AND DOWNLOADED', 'success')
+  _warnLegacyContainer()
+}
+
+// ─── Download helper ────────────────────────────────────────────────
+function downloadDecryptedFile(decryptedArrayBuffer, filename) {
+  const blob = new Blob([decryptedArrayBuffer], { type: 'application/octet-stream' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+// showFlash is inherited from base.html's unified toast system
+
+// ─── AUDIT FIX F1: legacy container warning ─────────────────────────
+// v1 containers still decrypt (old files must keep working) but their chunk
+// order/truncation are NOT authenticated — only v2 binds chunk metadata into
+// the GCM tag. crypto.js records the version of the container just decrypted;
+// surface it explicitly instead of failing silently or rejecting the file.
+function _warnLegacyContainer() {
+  try {
+    if (OneGyCrypto && typeof OneGyCrypto.wasLastContainerLegacy === 'function' &&
+        OneGyCrypto.wasLastContainerLegacy()) {
+      showFlash('FILE USES THE LEGACY V1 FORMAT: CHUNK ORDER AND TRUNCATION ARE NOT AUTHENTICATED. DOWNLOAD OK — RE-UPLOAD TO UPGRADE.', 'error')
+    }
+  } catch (e) { /* non-critical */ }
+}
+</script>
+{% endblock %}

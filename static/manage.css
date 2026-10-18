@@ -1,0 +1,136 @@
+/* ============================================================================
+   FROST MANAGE MODAL — the shared file management overlay (manage-modal.js
+   populates templates/_manage_modal.html). Frost-native re-skin.
+   Toggles reuse .toggle-switch/.toggle-slider from uploader.css.
+   ========================================================================== */
+.modal.manage-modal{position:fixed;inset:0;z-index:300;display:grid;place-items:center;padding:1.2rem;
+  background:var(--scrim);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+  opacity:0;visibility:hidden;transition:opacity .2s var(--ease),visibility .2s}
+.modal.manage-modal.manage-modal-visible{opacity:1;visibility:visible}
+/* NOTE: the shared manage-modal.js removes the visible/hiding classes on the
+   modal's `animationend`. It must be a keyframe ANIMATION (not just a
+   transition) or the invisible modal stays over the page and eats all clicks. */
+.modal.manage-modal.manage-modal-hiding{opacity:0;animation:mmHide .2s var(--ease) forwards}
+@keyframes mmHide{from{opacity:1}to{opacity:0}}
+.manage-modal-panel{position:relative;width:100%;max-width:34rem;max-height:88vh;background:var(--bg);
+  border:2px solid var(--border);box-shadow:var(--shadow-2);display:flex;flex-direction:column;
+  transform:translateY(10px) scale(.98);transition:transform .2s var(--ease)}
+.manage-modal-visible .manage-modal-panel{transform:none}
+.manage-modal-close{position:absolute;top:.7rem;right:.7rem;z-index:2;width:34px;height:34px;display:grid;
+  place-items:center;border:2px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer}
+.manage-modal-close:hover{background:var(--accent);color:var(--accent-contrast);border-color:var(--accent)}
+.manage-modal-scroll{overflow-y:auto;padding:clamp(1.4rem,3vw,2rem)}
+.manage-modal-loading{font-family:var(--font-mono);font-size:.8rem;color:var(--text-dim);text-align:center;padding:3rem 0}
+
+/* Header */
+.manage-modal-header{display:flex;align-items:center;gap:1rem;margin-bottom:1.4rem;padding-right:2.2rem}
+.manage-modal-icon{width:56px;height:56px;flex:none;display:grid;place-items:center;border:2px solid var(--border);
+  background:var(--surface);font-size:1.6rem;overflow:hidden}
+.manage-modal-icon img{width:100%;height:100%;object-fit:cover}
+/* manage-modal.js injects raw SVGs (folder / audio note) with no size attrs */
+.manage-modal-icon svg{width:30px;height:30px;color:var(--accent)}
+.manage-modal-icon svg path[fill="#141414"]{fill:var(--accent-soft)}
+.manage-modal-title-wrap{min-width:0;flex:1}
+.manage-modal-name-row{display:flex;align-items:center;gap:.5rem}
+.manage-modal-name{font-family:var(--font-display);font-weight:800;font-size:1.15rem;letter-spacing:-.01em;
+  word-break:break-word;line-height:1.15}
+.file-name-ext{color:var(--text-dim)}
+.manage-modal-copy-name{flex:none;width:26px;height:26px;display:grid;place-items:center;border:1px solid var(--border);
+  background:transparent;color:var(--text-dim);cursor:pointer}
+.manage-modal-copy-name:hover{color:var(--accent);border-color:var(--accent)}
+.manage-modal-badges{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem}
+.manage-modal-badges:empty{display:none}
+
+/* Tabs */
+.manage-modal-tabs{display:flex;gap:0;border:2px solid var(--border);margin-bottom:1.4rem}
+.manage-modal-tab{flex:1;padding:.6rem;font-family:var(--font-mono);font-size:.72rem;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--text-dim);background:transparent;border:none;border-right:2px solid var(--border);cursor:pointer}
+.manage-modal-tab:last-child{border-right:none}
+.manage-modal-tab.manage-modal-tab-active{background:var(--text);color:var(--bg)}
+.manage-modal-tab-content{display:none}
+.manage-modal-tab-content.manage-modal-tab-active{display:block}
+
+/* Details */
+.manage-modal-details{display:flex;flex-direction:column}
+.manage-modal-detail{display:flex;justify-content:space-between;gap:1rem;padding:.7rem 0;border-top:2px solid var(--border)}
+.manage-modal-detail:first-child{border-top:none}
+.manage-modal-detail-label{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)}
+.manage-modal-detail-value{font-family:var(--font-mono);font-size:.82rem;font-weight:600;text-align:right;word-break:break-all}
+.manage-modal-detail-hint{color:var(--text-dim);font-weight:400;font-size:.62rem;margin-right:.5rem}
+.manage-modal-encryption-e2e{color:#1f9d57}
+.manage-modal-encryption-server{color:var(--accent)}
+.manage-modal-encryption-mixed{color:#e5940a}
+
+/* Settings */
+.manage-modal-settings{display:flex;flex-direction:column;gap:1.3rem}
+.manage-modal-group{display:flex;flex-direction:column;gap:.5rem}
+.manage-modal-label{font-family:var(--font-mono);font-size:.68rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
+.manage-modal-toggle-row{flex-direction:row;align-items:center;gap:.8rem}
+.manage-modal-toggle-text{display:flex;flex-direction:column;gap:.15rem}
+.manage-modal-hint{font-family:var(--font-mono);font-size:.66rem;color:var(--text-dim)}
+
+/* Expiry dropdown */
+.manage-expiry-dropdown{position:relative}
+.manage-expiry-button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:.5rem;
+  padding:.6rem .8rem;border:2px solid var(--border);background:var(--surface);font-family:var(--font-mono);
+  font-size:.8rem;color:var(--text);cursor:pointer}
+.manage-expiry-button:hover{border-color:var(--accent)}
+/* NOTE: manage-modal.js toggles `.show` on #manageExpiryMenu ITSELF -- it never
+   puts `.open` on the wrapper. The redesign originally only styled
+   `.manage-expiry-dropdown.open .manage-expiry-menu`, so the menu got the class
+   but stayed display:none and the expiry control was unusable. Both selectors
+   are honoured now; do not drop the `.manage-expiry-menu.show` rule without
+   also changing manage-modal.js. */
+.manage-expiry-arrow{transition:transform .2s var(--ease)}
+.manage-expiry-dropdown.open .manage-expiry-arrow,
+.manage-expiry-dropdown:has(.manage-expiry-menu.show) .manage-expiry-arrow{transform:rotate(180deg)}
+.manage-expiry-menu{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:5;background:var(--bg);
+  border:2px solid var(--border);box-shadow:var(--shadow-2);display:none}
+.manage-expiry-dropdown.open .manage-expiry-menu,
+.manage-expiry-menu.show{display:block}
+.manage-expiry-item{padding:.55rem .8rem;font-family:var(--font-mono);font-size:.78rem;cursor:pointer;border-top:1px solid var(--border)}
+.manage-expiry-item:first-child{border-top:none}
+.manage-expiry-item:hover{background:var(--accent-soft);color:var(--accent)}
+
+/* Share section */
+.manage-modal-share{display:flex;flex-direction:column;gap:.5rem}
+.manage-modal-share-row{display:flex;gap:.5rem}
+.manage-modal-share-input-wrap{position:relative;flex:1;min-width:0}
+.manage-modal-share-input{width:100%;padding:.6rem .7rem;border:2px solid var(--border);background:var(--surface-2);
+  color:var(--code-fg);font-family:var(--font-mono);font-size:.76rem;overflow-x:auto;white-space:nowrap}
+.manage-modal-cmd{display:block}
+.manage-modal-share-copy{flex:none;padding:.6rem .9rem;border:2px solid var(--border);background:var(--text);color:var(--bg);
+  font-family:var(--font-mono);font-size:.7rem;font-weight:600;letter-spacing:.06em;cursor:pointer}
+.manage-modal-share-copy:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast)}
+.manage-modal-share-spinner{position:absolute;right:.5rem;top:50%;transform:translateY(-50%)}
+.manage-modal-share-spinner-icon,.toggle-spinner,.thumb-spinner{width:14px;height:14px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:mm-spin .7s linear infinite;display:inline-block}
+@keyframes mm-spin{to{transform:rotate(360deg)}}
+.manage-modal-regenerate-btn{display:inline-flex;align-items:center;gap:.5rem;padding:.55rem .9rem;border:2px solid var(--border);
+  background:transparent;color:var(--text);font-family:var(--font-mono);font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;cursor:pointer;margin-top:.3rem;align-self:flex-start}
+.manage-modal-regenerate-btn:hover{border-color:var(--accent);color:var(--accent)}
+.manage-modal-wget{display:flex;flex-direction:column;gap:.5rem;margin-top:.6rem}
+
+/* Actions */
+.manage-modal-actions{display:flex;gap:.7rem;margin-top:1.6rem}
+.manage-modal-btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:.5rem;padding:.75rem;
+  border:2px solid var(--border);font-family:var(--font-mono);font-weight:600;font-size:.78rem;letter-spacing:.04em;
+  text-transform:uppercase;cursor:pointer;text-decoration:none}
+.manage-modal-btn-download{background:var(--text);color:var(--bg);border-color:var(--text)}
+.manage-modal-btn-download:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast)}
+.manage-modal-btn-delete{background:transparent;color:#d8231b;border-color:#d8231b}
+.manage-modal-btn-delete:hover{background:#d8231b;color:#fff}
+
+/* Re-encrypt progress toast */
+.upload-progress-toast{position:fixed;bottom:1.2rem;right:1.2rem;z-index:210;width:min(92vw,22rem);
+  background:var(--bg);border:2px solid var(--border);box-shadow:var(--shadow-2)}
+.upload-toast-header{display:flex;align-items:center;justify-content:space-between;padding:.7rem .9rem;border-bottom:2px solid var(--border)}
+.upload-toast-title{font-family:var(--font-mono);font-size:.74rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.upload-toast-close{background:none;border:none;color:var(--text-dim);font-size:1.1rem;cursor:pointer}
+.upload-toast-body{padding:.9rem}
+.upload-progress-bar{height:12px;background:var(--surface-2);border:2px solid var(--border);overflow:hidden;margin-bottom:.7rem}
+.upload-progress-fill{height:100%;width:0;background:var(--accent);transition:width .3s var(--ease)}
+.upload-stats{display:flex;gap:1.5rem}
+.upload-stat{display:flex;flex-direction:column;gap:.15rem}
+.upload-stat-label{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)}
+.upload-stat-value{font-family:var(--font-mono);font-size:.8rem;font-weight:600}

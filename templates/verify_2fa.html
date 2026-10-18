@@ -1,0 +1,94 @@
+{# Frost 2FA challenge. Replaces the legacy templates/verify_2fa.html.
+   The markup already used the auth-* / form-* primitives that auth.css
+   styles, so only the shell changed — the fetch/JSON flow below is unchanged. #}
+{% extends 'base.html' %}
+{% block title %}TWO-FACTOR AUTH{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('auth.css') }}">{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+  <div class="auth-box">
+    <h1>Two-factor auth</h1>
+    <p class="auth-subtitle">Enter the 6-digit code from your authenticator app</p>
+    <form id="twoFactorForm" class="auth-form" autocomplete="off" method="POST" action="{{ url_for('verify_2fa') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
+      <div class="form-group">
+        <label for="totp_code">Authentication code</label>
+        <input type="text" id="totp_code" name="totp_code" class="form-input auth-code-input" required autofocus
+               maxlength="6" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"
+               placeholder="000000">
+      </div>
+      <button type="submit" id="verifyBtn" class="btn-primary">Verify</button>
+    </form>
+    <p class="auth-link"><a href="{{ url_for('login') }}">Back to sign in</a></p>
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+// Helper: safely parse JSON from a fetch response
+async function safeParseJSON(response) {
+  const ct = response.headers.get('content-type') || ''
+  if (ct.includes('application/json')) {
+    return await response.json()
+  }
+  const text = await response.text()
+  if (text.includes('CSRF')) {
+    throw new Error('SESSION EXPIRED — PLEASE REFRESH THE PAGE AND TRY AGAIN')
+  }
+  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS — PLEASE WAIT' : 'REQUEST FAILED — PLEASE REFRESH THE PAGE')
+}
+
+document.getElementById('twoFactorForm').addEventListener('submit', async function(e) {
+  e.preventDefault()
+
+  const btn = document.getElementById('verifyBtn')
+  const csrfToken = document.getElementById('csrf_token').value
+  const totpCode = document.getElementById('totp_code').value.trim()
+
+  if (!totpCode || totpCode.length !== 6) {
+    showFlash('PLEASE ENTER A 6-DIGIT CODE', 'error')
+    return
+  }
+
+  btn.disabled = true
+  btn.textContent = 'VERIFYING...'
+
+  try {
+    const response = await fetch('{{ url_for("verify_2fa") }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRFToken': csrfToken
+      },
+      body: JSON.stringify({ totp_code: totpCode })
+    })
+
+    const result = await safeParseJSON(response)
+
+    if (!response.ok) {
+      throw new Error(result.error || 'VERIFICATION FAILED')
+    }
+
+    // E2EE keys stay locked here: the password is not available at this step,
+    // so the destination page re-prompts for the unlock if needed.
+    window.location.href = result.redirect || '{{ url_for("files") }}'
+  } catch (err) {
+    console.error('[2FA]', err)
+    showFlash(err.message || 'VERIFICATION FAILED', 'error')
+    btn.disabled = false
+    btn.textContent = 'VERIFY'
+    document.getElementById('totp_code').value = ''
+    document.getElementById('totp_code').focus()
+  }
+})
+
+// Auto-submit when 6 digits entered
+document.getElementById('totp_code').addEventListener('input', function() {
+  this.value = this.value.replace(/[^0-9]/g, '')
+  if (this.value.length === 6) {
+    document.getElementById('verifyBtn').click()
+  }
+})
+</script>
+{% endblock %}

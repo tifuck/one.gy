@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <script nonce="{{ csp_nonce }}">/* pre-paint theme (no FOUC) */(function(){try{var t=localStorage.getItem('onegy_theme');var ok=['frost','frost-dark'];document.documentElement.setAttribute('data-theme',ok.indexOf(t)>=0?t:'frost')}catch(e){document.documentElement.setAttribute('data-theme','frost')}})();</script>
+  <title>{% block title %}ONE.GY{% endblock %}</title>
+  <link rel="icon" type="image/x-icon" href="{{ versioned_static('logos/favicon.ico') }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ versioned_static('logos/favicon-32x32.png') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ versioned_static('logos/apple-touch-icon.png') }}">
+  <link rel="preload" href="{{ versioned_static('vendor/fonts/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ versioned_static('vendor/fonts/inter-latin-600-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="{{ versioned_static('core.css') }}">
+  <link rel="stylesheet" href="{{ versioned_static('components.css') }}">
+  <link rel="stylesheet" href="{{ versioned_static('themes.css') }}">
+  <link rel="stylesheet" href="{{ versioned_static('editorial-base.css') }}">
+  {% block head_extra %}{% endblock %}
+</head>
+<body class="rd-body rd-theme-editorial">
+  {% include '_nav.html' %}
+  <main id="main">
+    {% block content %}{% endblock %}
+  </main>
+  {% include '_footer.html' %}
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script nonce="{{ csp_nonce }}">
+    // Sitewide toast used by shared components (uploader, manage modal, …)
+    function showToast(message, category) {
+      var c = document.getElementById('toastContainer');
+      if (!c) { c = document.createElement('div'); c.id = 'toastContainer'; c.className = 'toast-container'; document.body.appendChild(c); }
+      var t = document.createElement('div');
+      t.className = 'toast-message toast-' + (category || 'error');
+      t.textContent = String(message).toUpperCase().replace(/[.!?]+$/, '');
+      c.appendChild(t);
+      setTimeout(function () { t.style.opacity = '0'; setTimeout(function () { t.remove(); }, 400); }, 3500);
+    }
+    function showFlash(m, c) { showToast(m, c); }
+  </script>
+
+  <script src="{{ versioned_static('core.js') }}"></script>
+  <script src="{{ versioned_static('theme-switch.js') }}" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

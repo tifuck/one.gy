@@ -1,0 +1,106 @@
+{% set _uid = session.get('logged_in_user_id') or (user.id if user is defined and user else none) %}
+{% set _cu = get_user(_uid) or (user if user is defined else none) %}
+{% set _nav = nav_active|default('') %}
+<header class="rd-nav">
+  <div class="rd-nav-inner">
+    <a class="rd-nav-logo" href="{{ url_for('files') if _cu else url_for('index') }}" aria-label="ONE.GY home">
+      <svg class="rd-nav-mark" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <g class="rd-mark-shadow">
+          <rect x="4" y="10" width="16" height="10" fill="var(--accent)"/>
+          <path d="M8 10V7.5a4 4 0 0 1 8 0V10" stroke="var(--accent)" stroke-width="2" fill="none"/>
+        </g>
+        <g class="rd-mark-grp">
+          <rect class="rd-mark-body" x="4" y="10" width="16" height="10" fill="currentColor"/>
+          <path class="rd-mark-shackle" d="M8 10V7.5a4 4 0 0 1 8 0V10" stroke="currentColor" stroke-width="2" fill="none"/>
+          <rect class="rd-mark-hole" x="11" y="13" width="2" height="4" fill="var(--bg)"/>
+          <g clip-path="url(#rdMarkClip)"><rect class="rd-mark-sheen" x="2" y="9" width="4" height="12" fill="#ffffff"/></g>
+        </g>
+        <clipPath id="rdMarkClip"><rect x="4" y="10" width="16" height="10"/></clipPath>
+      </svg>
+      <span class="rd-nav-word">ONE<span class="rd-accent">.GY</span></span>
+    </a>
+
+    <nav class="rd-nav-mid" aria-label="Primary">
+      {% if _cu %}
+        <a class="rd-nav-link {{ 'is-active' if _nav == 'files' }}" href="{{ url_for('files') }}">Files</a>
+        <a class="rd-nav-link {{ 'is-active' if _nav == 'notes' }}" href="{{ url_for('notes_page') }}">Notes<span class="rd-badge" id="notesNavBadge" hidden>0</span></a>
+        {% if allow_music %}<a class="rd-nav-link {{ 'is-active' if _nav == 'music' }}" href="{{ url_for('music_page') }}">Music</a>{% endif %}
+        <a class="rd-nav-link {{ 'is-active' if _nav == 'prompts' }}" href="{{ url_for('prompts_page') }}">Prompts</a>
+        {% if _cu.is_admin %}<a class="rd-nav-link {{ 'is-active' if _nav == 'admin' }}" href="{{ url_for('admin') }}">Admin</a>{% endif %}
+      {% else %}
+        <a class="rd-nav-link {{ 'is-active' if _nav == 'docs' }}" href="{{ url_for('docs') }}">Docs</a>
+        {% if allow_temp_uploads %}<a class="rd-nav-link {{ 'is-active' if _nav == 'share' }}" href="{{ url_for('share') }}">Quick share</a>{% endif %}
+        <a class="rd-nav-link {{ 'is-active' if _nav == 'prompts' }}" href="{{ url_for('prompts_page') }}">Prompts</a>
+      {% endif %}
+    </nav>
+
+    <div class="rd-nav-actions">
+      {% if _cu %}
+      <div class="rd-menu" data-menu>
+        <button class="rd-avatar-btn" data-menu-btn aria-haspopup="true" aria-expanded="false" aria-label="Account menu">
+          <img class="rd-avatar" src="{{ url_for('user_avatar_svg', user_id=_cu.id) }}" alt="" width="30" height="30">
+        </button>
+        <div class="rd-menu-pop rd-menu-right">
+          <div class="rd-menu-user">
+            <img class="rd-avatar" src="{{ url_for('user_avatar_svg', user_id=_cu.id) }}" alt="" width="34" height="34">
+            <div><b>{{ _cu.username }}</b><span>{{ 'Administrator' if _cu.is_admin else 'User' }}</span></div>
+          </div>
+          <a class="rd-menu-item" href="{{ url_for('account') }}">Account &amp; settings</a>
+          <div class="rd-menu-sep"></div>
+          <form method="post" action="{{ url_for('logout') }}" class="js-logout-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="rd-menu-item rd-menu-danger" type="submit">Log out</button>
+          </form>
+        </div>
+      </div>
+      {% elif allow_registration %}
+        <a class="rd-nav-link rd-nav-desktop-only" href="{{ url_for('login') }}">Sign in</a>
+        <a class="rd-btn rd-btn-primary rd-nav-desktop-only" href="{{ url_for('register') }}">Get started</a>
+      {% else %}
+        <a class="rd-btn rd-btn-primary rd-nav-desktop-only" href="{{ url_for('login') }}">Sign in</a>
+      {% endif %}
+
+      <div class="rd-menu" data-menu>
+        <button class="rd-icon-btn" data-menu-btn aria-haspopup="true" aria-expanded="false" title="Theme" aria-label="Theme">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="17.5" cy="10.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="6.5" cy="12.5" r="1.5" fill="currentColor" stroke="none"/><path d="M12 2a10 10 0 1 0 0 20 2.5 2.5 0 0 0 2-4 2.5 2.5 0 0 1 2-4h2a4 4 0 0 0 4-4 10 10 0 0 0-10-8z"/></svg>
+        </button>
+        <div class="rd-menu-pop">
+          <div class="rd-menu-head">Theme</div>
+          {% for tid, tlabel in [('frost','Frost'),('frost-dark','Frost Dark')] %}
+          <button class="rd-menu-item rd-theme-opt" type="button" data-set-theme="{{ tid }}"><span class="rd-swatch" data-swatch="{{ tid }}"></span>{{ tlabel }}<span class="rd-menu-check" aria-hidden="true">✓</span></button>
+          {% endfor %}
+        </div>
+      </div>
+
+      <button class="rd-nav-toggle" type="button" aria-label="Toggle menu" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+
+  <div class="rd-nav-drawer">
+    {% if _cu %}
+      <a class="rd-nav-link {{ 'is-active' if _nav == 'files' }}" href="{{ url_for('files') }}">Files</a>
+      <a class="rd-nav-link {{ 'is-active' if _nav == 'notes' }}" href="{{ url_for('notes_page') }}">Notes</a>
+      {% if allow_music %}<a class="rd-nav-link {{ 'is-active' if _nav == 'music' }}" href="{{ url_for('music_page') }}">Music</a>{% endif %}
+      <a class="rd-nav-link {{ 'is-active' if _nav == 'prompts' }}" href="{{ url_for('prompts_page') }}">Prompts</a>
+      {% if _cu.is_admin %}<a class="rd-nav-link {{ 'is-active' if _nav == 'admin' }}" href="{{ url_for('admin') }}">Admin</a>{% endif %}
+      <a class="rd-nav-link {{ 'is-active' if _nav == 'account' }}" href="{{ url_for('account') }}">Account</a>
+      <form method="post" action="{{ url_for('logout') }}" class="js-logout-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="rd-nav-link rd-menu-danger" type="submit">Log out</button>
+      </form>
+    {% else %}
+      <a class="rd-nav-link {{ 'is-active' if _nav == 'docs' }}" href="{{ url_for('docs') }}">Docs</a>
+      {% if allow_temp_uploads %}<a class="rd-nav-link {{ 'is-active' if _nav == 'share' }}" href="{{ url_for('share') }}">Quick share</a>{% endif %}
+      <a class="rd-nav-link {{ 'is-active' if _nav == 'prompts' }}" href="{{ url_for('prompts_page') }}">Prompts</a>
+      {% if allow_registration %}
+        <a class="rd-nav-link" href="{{ url_for('login') }}">Sign in</a>
+        <a class="rd-btn rd-btn-primary" href="{{ url_for('register') }}">Get started</a>
+      {% else %}
+        <a class="rd-btn rd-btn-primary" href="{{ url_for('login') }}">Sign in</a>
+      {% endif %}
+    {% endif %}
+  </div>
+</header>
+<div id="rdNotifBanners" class="rd-notif-banners" aria-live="polite"></div>

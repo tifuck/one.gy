@@ -1,0 +1,39 @@
+{# Frost share-password prompt. Replaces the legacy templates/pw.html.
+   Posts to the exact same endpoints/field names as before:
+     folder -> POST /f/<token>  field "password"
+     file   -> POST /f/<file_id> field "pw"
+   Do not rename those fields — download_file_logic()/check_folder_access()
+   read them directly. #}
+{% extends 'base.html' %}
+{% block title %}PASSWORD REQUIRED{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('gateway.css') }}">{% endblock %}
+
+{% block content %}
+<section class="gw-section">
+  <div class="gw-card">
+    <div class="gw-ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="1"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16.5" r="1.2" fill="currentColor" stroke="none"/></svg>
+    </div>
+    <div class="gw-rule"></div>
+    <h1 class="gw-title">Password required</h1>
+    <p class="gw-sub">This {{ 'folder' if is_folder else 'file' }} is password protected</p>
+
+    {% if error %}<p class="gw-err" role="alert">Incorrect password &mdash; please try again</p>{% endif %}
+
+    {# The legacy e2ed-* class names are kept as aliases (they carry no styling
+       here) because the Playwright page objects — pages/file_view_page.py and
+       pages/shared_folder_page.py — key off .e2ed-form / .e2ed-input /
+       .e2ed-submit to detect and fill this prompt. Removing them silently
+       breaks test_password_files.py and test_sharing.py. #}
+    <form method="post" action="{{ ('/f/' ~ token) if is_folder else ('/f/' ~ file_id) }}" class="gw-form e2ed-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+      <input type="password" name="{{ 'password' if is_folder else 'pw' }}" class="form-input e2ed-input"
+             placeholder="Enter password" required autofocus autocomplete="current-password">
+      <button type="submit" class="gw-btn gw-btn-primary e2ed-submit">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="1"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Unlock
+      </button>
+    </form>
+  </div>
+</section>
+{% endblock %}

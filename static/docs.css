@@ -1,0 +1,86 @@
+/* ============================================================================
+   FROST DOCS — API reference: sticky sidebar + content, collapsible code
+   blocks, param tables, method badges. Re-skins the existing docs markup.
+   ========================================================================== */
+.docs-layout{display:grid;grid-template-columns:236px minmax(0,1fr);gap:clamp(1.5rem,4vw,3.5rem);
+  max-width:var(--maxw);margin-inline:auto;padding:calc(var(--nav-h) + 2rem) clamp(1.15rem,4vw,2.5rem) 5rem}
+
+/* ---- Sidebar ------------------------------------------------------------ */
+.docs-sidebar{position:relative}
+.docs-sidebar-inner{position:sticky;top:calc(var(--nav-h) + 1.5rem)}
+.docs-sidebar-heading{font-family:var(--font-mono);font-size:.66rem;font-weight:600;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--text-dim);margin:1.4rem 0 .5rem;padding-left:.85rem}
+.docs-sidebar-heading:first-child{margin-top:0}
+.docs-nav{display:flex;flex-direction:column;gap:.05rem}
+.docs-nav-link{font-family:var(--font-mono);font-size:.78rem;letter-spacing:.03em;color:var(--text-dim);
+  padding:.42rem .85rem;border-left:2px solid var(--border);transition:color .15s var(--ease),border-color .15s var(--ease),background .15s var(--ease)}
+.docs-nav-link:hover{color:var(--text);background:var(--surface)}
+.docs-nav-link.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-soft);font-weight:600}
+.docs-nav-divider{height:2px;background:var(--border);margin:1.1rem .85rem}
+
+/* ---- Sections ----------------------------------------------------------- */
+.docs-main{min-width:0}
+.docs-section{scroll-margin-top:calc(var(--nav-h) + 1rem);padding-bottom:clamp(2.5rem,5vw,4rem);margin-bottom:clamp(2.5rem,5vw,4rem);border-bottom:2px solid var(--border)}
+.docs-section:last-child{border-bottom:none}
+.docs-section-title{font-family:var(--font-display);font-weight:800;letter-spacing:-.02em;text-transform:uppercase;
+  font-size:clamp(1.6rem,3.2vw,2.3rem);margin-bottom:1.4rem}
+.docs-section-content{font-size:.98rem;line-height:1.7;color:var(--text)}
+.docs-section-content h3{font-family:var(--font-mono);font-size:.76rem;font-weight:600;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--text-dim);margin:2rem 0 .9rem}
+.docs-section-content p{margin-bottom:.9rem;color:var(--text-dim)}
+.docs-section-content code{font-family:var(--font-mono);font-size:.86em;background:var(--surface);
+  border:1px solid var(--border);padding:.08em .4em;color:var(--accent)}
+.api-description{max-width:70ch}
+
+/* ---- Info cards --------------------------------------------------------- */
+.docs-info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.9rem;margin-top:1.4rem}
+.docs-info-card{border:2px solid var(--border);padding:.9rem 1rem;background:var(--surface)}
+.docs-info-label{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim);margin-bottom:.4rem}
+.docs-info-value code{font-size:.86rem;background:transparent;border:none;padding:0;color:var(--text);font-weight:600}
+
+/* ---- Endpoint header ---------------------------------------------------- */
+.api-endpoint{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;margin-bottom:1.1rem;
+  border:2px solid var(--border);padding:.55rem .7rem;background:var(--surface)}
+.api-method{font-family:var(--font-mono);font-weight:700;font-size:.72rem;letter-spacing:.06em;
+  padding:.28rem .6rem;color:#fff;background:var(--text-dim)}
+.api-method-get{background:#1f9d57}
+.api-method-post{background:var(--accent)}
+.api-method-put,.api-method-patch{background:#e5940a}
+.api-method-delete{background:#d8231b}
+.api-path{font-family:var(--font-mono);font-size:.95rem;font-weight:600;color:var(--text);word-break:break-all}
+
+/* ---- Code blocks (collapsible) ----------------------------------------- */
+.code-block{border:2px solid var(--border);margin:.9rem 0;background:#0f1720}
+.code-header{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.55rem .8rem;
+  cursor:pointer;background:#0b1119;border-bottom:2px solid transparent;user-select:none}
+.code-block:not(.collapsed) .code-header{border-bottom-color:rgba(255,255,255,.08)}
+.code-title{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:#aab6c6;display:inline-flex;align-items:center;gap:.5rem}
+.code-toggle-icon{display:inline-block;font-size:.6rem;color:var(--accent);transition:transform .2s var(--ease)}
+.code-block:not(.collapsed) .code-toggle-icon{transform:rotate(90deg)}
+.copy-btn{font-family:var(--font-mono);font-size:.64rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  color:#aab6c6;background:transparent;border:1px solid rgba(255,255,255,.18);padding:.28rem .6rem;cursor:pointer;transition:color .15s,border-color .15s}
+.copy-btn:hover{color:#fff;border-color:var(--accent)}
+.code-block.collapsed pre{display:none}
+.code-block pre{margin:0;padding:1rem 1.1rem;overflow-x:auto}
+.code-block pre code{font-family:var(--font-mono);font-size:.82rem;line-height:1.65;color:#dfe7ef;white-space:pre;background:none;border:none;padding:0}
+
+/* ---- Param tables ------------------------------------------------------- */
+.param-table{border:2px solid var(--border);margin:.9rem 0}
+.param-row{display:grid;grid-template-columns:minmax(9rem,1.2fr) minmax(6rem,1fr) 2.4fr;gap:1rem;
+  padding:.7rem .9rem;border-top:2px solid var(--border)}
+.param-row:first-child{border-top:none}
+.param-name{font-family:var(--font-mono);font-size:.84rem;font-weight:600;color:var(--accent);word-break:break-all}
+.param-type{font-family:var(--font-mono);font-size:.76rem;color:var(--text-dim);text-transform:uppercase}
+.param-desc{font-size:.9rem;color:var(--text-dim);line-height:1.55}
+
+/* ---- Mobile ------------------------------------------------------------- */
+@media (max-width:820px){
+  .docs-layout{grid-template-columns:1fr;gap:1.5rem}
+  .docs-sidebar{position:relative;border-bottom:2px solid var(--border);padding-bottom:1rem}
+  .docs-sidebar-inner{position:static}
+  .docs-nav{flex-flow:row wrap;gap:.3rem}
+  .docs-nav-link{border-left:none;border:2px solid var(--border);padding:.35rem .6rem;font-size:.72rem}
+  .docs-nav-link.active{border-color:var(--accent)}
+  .docs-nav-divider,.docs-sidebar-heading{display:none}
+  .param-row{grid-template-columns:1fr;gap:.25rem}
+}

@@ -1,0 +1,528 @@
+/* ============================================================================
+   files.css — Frost Files (the drive). From-scratch layout for the logged-in
+   file browser. Token-driven; works across Frost + Frost Dark. Four view modes
+   (grid / list / gallery / columns) render the same /files/list data.
+   Prefix: .fx-*  (kept clear of dashboard.js's classes).
+   ========================================================================== */
+
+/* ---- Shell ---------------------------------------------------------------- */
+/* One bar height shared by the toolbar, the library head and the drawer head
+   so their bottom rules line up into a single line across the page. */
+:root{ --fx-bar-h:50px; }
+.fx-shell{
+  display:grid; grid-template-columns:var(--rd-side-eff) minmax(0,1fr);
+  gap:0; height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h));
+  min-height:0; overflow:hidden; align-items:stretch;
+  /* position: anchors the absolutely-positioned .rd-resizer / .rd-rail-label */
+  position:relative;
+  transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1);
+}
+.fx-main{ min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+/* Scrim is a mobile-only overlay; keep it out of the desktop grid flow. */
+.fx-side-scrim{ display:none; }
+
+/* ---- Sidebar --------------------------------------------------------------
+   Container, head, scroll body and foot come from .rd-side* in app-shell.css
+   so the Files tree and the Notes rail stay pixel-identical. Only the folder
+   tree internals live here. */
+.fx-side .rd-side-inner{ padding-top:0; }
+.fx-side .rd-side-head{
+  display:flex; align-items:center; box-sizing:border-box; height:var(--fx-bar-h);
+  margin:0 -.65rem; padding:0 1rem; border-bottom:2px solid var(--border);
+}
+.fx-tree .rd-side-row{ min-height:30px; }
+.fx-tree-row.is-drop-target{ box-shadow:inset 0 0 0 2px var(--accent); background:var(--accent-soft); }
+.fx-tree-toggle{ width:26px; height:30px; flex:none; display:inline-flex; align-items:center; justify-content:center; border:0; background:none; color:var(--text-dim); cursor:pointer; }
+.fx-tree-toggle:hover{ color:var(--accent); }
+.fx-tree-toggle svg{ width:13px; height:13px; transition:transform .15s; }
+.fx-tree-row.is-open > .fx-tree-toggle svg{ transform:rotate(90deg); }
+.fx-tree-spacer{ width:26px; flex:none; }
+.fx-tree-link{ min-width:0; height:30px; flex:1 1 auto; display:flex; align-items:center; gap:.5rem; padding:0 .2rem; border:0; background:none; color:inherit; cursor:pointer; font:inherit; text-align:left; }
+.fx-tree-ico{ flex:none; width:16px; height:16px; color:var(--accent); }
+.fx-tree-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 auto; font-size:.86rem; }
+.fx-tree-actions{ display:none; align-items:center; flex:none; padding-right:.2rem; }
+.fx-tree-row:hover .fx-tree-actions, .fx-tree-row:focus-within .fx-tree-actions{ display:flex; }
+.fx-tree-action{ width:24px; height:26px; display:inline-flex; align-items:center; justify-content:center; border:0; background:none; color:var(--text-dim); cursor:pointer; }
+.fx-tree-action:hover{ color:var(--accent); background:var(--surface); }
+.fx-tree-action.is-danger:hover{ color:var(--bad); }
+.fx-tree-action svg{ width:13px; height:13px; }
+/* Open/close a tree branch — quick staggered reveal in, quick fade out.
+   Classes are applied by renderSidebar() / collapseTreeChildren() in files.js. */
+.fx-tree-row.is-reveal{ animation:fxTreeIn .16s cubic-bezier(.2,.8,.2,1) backwards; animation-delay:calc(min(var(--ti,0),8)*14ms); }
+.fx-tree-row.is-closing{ animation:fxTreeOut .12s ease forwards; pointer-events:none; }
+@keyframes fxTreeIn{ from{ opacity:0; transform:translateY(-5px); } to{ opacity:1; transform:none; } }
+@keyframes fxTreeOut{ to{ opacity:0; transform:translateY(-5px); } }
+.fx-item[draggable="true"], .fx-row[draggable="true"], .fx-gal-item[draggable="true"], .fx-col-row[draggable="true"]{ cursor:grab; }
+/* Folders open on double-click — stop double-click from selecting label text */
+.fx-item, .fx-row, .fx-gal-item, .fx-col-row{ user-select:none; -webkit-user-select:none; }
+.fx-item.is-dragging, .fx-row.is-dragging, .fx-gal-item.is-dragging, .fx-col-row.is-dragging{ opacity:.45; }
+
+/* ---- Toolbar --------------------------------------------------------------
+   ONE single row: breadcrumb on the left, every control on the right, all of
+   them exactly --fx-ctl-h tall so the bar reads as one clean strip. */
+.fx-toolbar{
+  --fx-ctl-h:32px;
+  position:sticky; top:0; z-index:20; flex:none;
+  box-sizing:border-box; height:var(--fx-bar-h); background:var(--bg);
+  border-bottom:2px solid var(--border); padding:0 1.2rem;
+  display:flex; flex-direction:row; align-items:center; gap:.5rem; flex-wrap:nowrap;
+}
+.fx-bcrumb{
+  display:flex; align-items:center; gap:.15rem; flex-wrap:nowrap; font-size:.9rem;
+  flex:0 1 auto; min-width:0; height:var(--fx-ctl-h);
+  overflow-x:auto; overflow-y:hidden; scrollbar-width:none; -ms-overflow-style:none;
+}
+.fx-bcrumb::-webkit-scrollbar{ display:none; }
+.fx-bc-item{
+  background:none; border:0; cursor:pointer; font:inherit; color:var(--text-dim);
+  padding:.15rem .3rem; display:inline-flex; align-items:center; gap:.4rem;
+  flex:none; min-width:0; max-width:22ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  transition:color .12s;
+}
+/* Text-only crumbs must be block boxes: text-overflow is ignored on flex boxes,
+   which clipped long names mid-letter instead of showing an ellipsis. */
+.fx-bc-item:not(:first-child){ display:block; }
+.fx-bc-item:hover{ color:var(--accent); }
+.fx-bc-item.is-current{ color:var(--text); font-weight:600; cursor:default; }
+.fx-bc-item .fx-bc-ico{ width:15px; height:15px; flex:none; }
+.fx-bc-sep{ color:var(--text-dim); opacity:.5; font-size:.8rem; flex:none; }
+/* New path segments slide in on navigation (class set by renderBreadcrumb) */
+.fx-bc-in{ animation:fxBcIn .18s cubic-bezier(.2,.8,.2,1) backwards; }
+.fx-bc-sep.fx-bc-in{ animation-name:fxBcSepIn; }
+@keyframes fxBcIn{ from{ opacity:0; transform:translateX(-6px); } to{ opacity:1; transform:none; } }
+@keyframes fxBcSepIn{ from{ opacity:0; transform:translateX(-6px); } to{ opacity:.5; transform:none; } }
+
+.fx-tbar-actions{ display:flex; align-items:center; gap:.5rem; flex-wrap:nowrap; flex:none; }
+.fx-spacer{ flex:1 1 auto; min-width:.5rem; }
+
+/* search — collapsed to an icon, expands into a field on click */
+.fx-search{
+  display:flex; align-items:center; flex:none; box-sizing:border-box;
+  height:var(--fx-ctl-h); width:var(--fx-ctl-h);
+  border:2px solid var(--border); background:var(--surface); overflow:hidden;
+  transition:width .22s cubic-bezier(.2,.85,.25,1), box-shadow .12s;
+}
+.fx-search.is-open{ width:min(300px,34vw); box-shadow:3px 3px 0 var(--accent); }
+.fx-search-btn, .fx-search-clear{
+  flex:none; display:inline-flex; align-items:center; justify-content:center;
+  width:calc(var(--fx-ctl-h) - 4px); height:calc(var(--fx-ctl-h) - 4px);
+  padding:0; border:0; background:none; color:var(--text-dim); cursor:pointer;
+  transition:color .12s;
+}
+.fx-search-btn:hover, .fx-search-clear:hover{ color:var(--accent); }
+.fx-search-btn svg{ width:15px; height:15px; }
+.fx-search-clear svg{ width:14px; height:14px; }
+.fx-search-clear[hidden]{ display:none; }
+.fx-search input{
+  flex:1 1 auto; min-width:0; height:100%; padding:0 .15rem;
+  border:0; background:none; color:var(--text); font:inherit; font-size:.85rem;
+  opacity:0; pointer-events:none; transition:opacity .16s;
+}
+.fx-search.is-open input{ opacity:1; pointer-events:auto; }
+.fx-search input:focus{ outline:none; }
+.fx-search input::-webkit-search-cancel-button{ -webkit-appearance:none; appearance:none; }
+
+/* segmented view switcher */
+.fx-seg{ display:inline-flex; flex:none; box-sizing:border-box; height:var(--fx-ctl-h); border:2px solid var(--border); }
+.fx-seg-btn{
+  display:inline-flex; align-items:center; justify-content:center; width:30px; height:100%;
+  border:0; border-right:2px solid var(--border); background:var(--surface); cursor:pointer;
+  color:var(--text-dim); transition:background .12s, color .12s;
+}
+.fx-seg-btn:last-child{ border-right:0; }
+.fx-seg-btn svg{ width:16px; height:16px; }
+.fx-seg-btn:hover{ color:var(--text); background:var(--accent-soft); }
+.fx-seg-btn.is-active{ background:var(--accent); color:var(--accent-contrast); }
+
+.fx-sort{
+  flex:none; box-sizing:border-box; height:var(--fx-ctl-h);
+  border:2px solid var(--border); background:var(--surface); color:var(--text);
+  font:inherit; font-size:.78rem; padding:0 .5rem; cursor:pointer;
+}
+.fx-sort:focus{ outline:none; box-shadow:3px 3px 0 var(--accent); }
+
+/* toolbar buttons match every other control exactly */
+.fx-toolbar .rd-btn{
+  flex:none; box-sizing:border-box; height:var(--fx-ctl-h);
+  padding:0 .8rem; font-size:.76rem; border-radius:0; white-space:nowrap;
+}
+.fx-toolbar .rd-btn:hover{ transform:none; }
+.fx-toolbar .rd-btn svg{ width:14px; height:14px; }
+.fx-side-toggle{ box-sizing:border-box; }
+
+/* ---- Lock overlay (E2E unlock — fullscreen, drive unreadable until unlocked) */
+.fx-unlock{
+  position:fixed; top:var(--nav-h); left:0; right:0; bottom:0; z-index:120; display:flex;
+  align-items:center; justify-content:center; padding:1.5rem;
+  background:var(--scrim); backdrop-filter:blur(8px); animation:fxfade .18s ease both;
+}
+.fx-lock-card{
+  width:min(420px,100%); background:var(--surface); border:2px solid var(--border);
+  box-shadow:10px 10px 0 var(--accent); padding:2.2rem 2rem; text-align:center;
+  display:flex; flex-direction:column; align-items:center; gap:.7rem;
+}
+.fx-lock-ico{
+  width:60px; height:60px; border:2px solid var(--border); display:flex; align-items:center; justify-content:center;
+  color:var(--accent); margin-bottom:.3rem;
+}
+.fx-lock-ico svg{ width:30px; height:30px; }
+.fx-lock-title{ font-family:var(--font-display); font-size:1.5rem; font-weight:800; }
+.fx-lock-sub{ font-size:.86rem; color:var(--text-dim); line-height:1.5; max-width:34ch; }
+.fx-lock-form{ display:flex; flex-direction:column; gap:.6rem; width:100%; margin-top:.7rem; }
+.fx-lock-form .form-input{ width:100%; text-align:center; font-size:1rem; padding:.65rem; }
+.fx-lock-form .rd-btn{ width:100%; justify-content:center; padding:.65rem; }
+
+/* ---- View region ---------------------------------------------------------- */
+.fx-view{ position:relative; flex:1 1 auto; min-height:0; padding:1.1rem 1.2rem 3rem; overflow-y:auto; }
+.fx-view:focus, .fx-view:focus-visible{ outline:none; }
+.fx-section-label{ font-family:var(--font-mono); font-size:.62rem; letter-spacing:.2em; text-transform:uppercase; color:var(--text-dim); margin:.2rem 0 .7rem; }
+.fx-section-label:not(:first-child){ margin-top:1.6rem; }
+
+/* Shared item bits ---------------------------------------------------------- */
+.fx-ico{ display:inline-flex; align-items:center; justify-content:center; flex:none; }
+.fx-badge{ font-family:var(--font-mono); font-size:.56rem; letter-spacing:.1em; text-transform:uppercase; padding:.08rem .34rem; border:1.5px solid var(--border); color:var(--text-dim); line-height:1.4; white-space:nowrap; }
+.fx-badge.is-e2e{ border-color:var(--accent); color:var(--accent); }
+.fx-badge.is-public{ border-color:var(--warn); color:var(--warn); }
+.fx-badge.is-exp{ border-color:var(--bad); color:var(--bad); }
+.fx-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fx-meta{ font-family:var(--font-mono); font-size:.66rem; color:var(--text-dim); letter-spacing:.03em; font-variant-numeric:tabular-nums; }
+
+/* selection checkbox — hover to reveal; fill only when multi-checked */
+.fx-check{ position:absolute; top:.4rem; left:.4rem; width:20px; height:20px; border:2px solid var(--border); background:var(--surface); display:none; align-items:center; justify-content:center; z-index:3; cursor:pointer; }
+.fx-check svg{ width:12px; height:12px; color:var(--accent-contrast); opacity:0; }
+.fx-item:hover .fx-check, .fx-row:hover .fx-check, .fx-gal-item:hover .fx-check,
+.fx-item.is-checked .fx-check, .fx-row.is-checked .fx-check, .fx-gal-item.is-checked .fx-check{ display:flex; }
+.fx-item.is-checked .fx-check, .fx-row.is-checked .fx-check, .fx-gal-item.is-checked .fx-check{ background:var(--accent); border-color:var(--accent); }
+.fx-item.is-checked .fx-check svg, .fx-row.is-checked .fx-check svg, .fx-gal-item.is-checked .fx-check svg{ opacity:1; }
+/* List rows: the checkbox swaps in over the leading icon (vertically centered)
+   instead of floating over it in the top-left corner. */
+.fx-row .fx-check{ top:50%; left:.8rem; transform:translateY(-50%); box-sizing:border-box; }
+.fx-row:hover .fx-row-ico, .fx-row.is-checked .fx-row-ico,
+.fx-row:hover .fx-row-thumb, .fx-row.is-checked .fx-row-thumb{ opacity:0; }
+.fx-row-thumb{ width:20px; height:20px; flex:none; overflow:hidden; display:inline-flex; align-items:center; justify-content:center; }
+.fx-row-thumb img{ width:100%; height:100%; object-fit:cover; }
+
+/* GRID ---------------------------------------------------------------------- */
+.fx-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(158px,1fr)); gap:.9rem; }
+.fx-item{
+  position:relative; border:2px solid var(--border); background:var(--surface);
+  cursor:pointer; display:flex; flex-direction:column; overflow:hidden;
+  transition:transform .14s cubic-bezier(.2,.8,.2,1), box-shadow .14s;
+  animation:fxpop .3s cubic-bezier(.2,.8,.2,1) backwards;
+  animation-delay:calc(min(var(--i,0),14)*22ms);
+}
+.fx-item:hover{ transform:translate(-2px,-2px); box-shadow:5px 5px 0 var(--accent); }
+.fx-item.is-sel{ box-shadow:4px 4px 0 var(--accent); border-color:var(--accent); }
+.fx-item.is-folder .fx-thumb{ color:var(--accent); }
+.fx-thumb{
+  aspect-ratio:4/3; display:flex; align-items:center; justify-content:center;
+  background:var(--bg); border-bottom:2px solid var(--border); position:relative; overflow:hidden;
+}
+.fx-thumb img{ width:100%; height:100%; object-fit:cover; animation:fxthumb-in .1s ease both; }
+.fx-thumb .fx-ext-ico{ width:44px; height:44px; opacity:.85; }
+.fx-thumb .fx-ext-tag{ position:absolute; bottom:.35rem; right:.35rem; font-family:var(--font-mono); font-size:.54rem; letter-spacing:.08em; background:var(--border); color:var(--surface); padding:.05rem .3rem; text-transform:uppercase; }
+.fx-item-body{ padding:.5rem .55rem .55rem; display:flex; flex-direction:column; gap:.28rem; }
+.fx-item-top{ display:flex; align-items:center; gap:.35rem; }
+.fx-item-name{ font-size:.82rem; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 auto; }
+/* Row/card kebabs are quiet icon buttons, not the 44px bordered .rd-icon-btn */
+.fx-item-kebab, .fx-row-kebab{ flex:none; width:24px; height:24px; border:0; background:none; color:var(--text-dim); }
+.fx-item-kebab:hover, .fx-row-kebab:hover{ color:var(--accent); background:var(--accent-soft); }
+.fx-item-kebab{ margin:-.2rem -.2rem -.2rem 0; opacity:0; }
+.fx-item:hover .fx-item-kebab, .fx-item:focus-within .fx-item-kebab{ opacity:1; }
+.fx-item-sub{ display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; }
+
+@keyframes fxpop{ from{ opacity:0; transform:translateY(6px) scale(.98); } to{ opacity:1; transform:none; } }
+@keyframes fxthumb-in{ from{ opacity:0; } to{ opacity:1; } }
+@media (prefers-reduced-motion:reduce){
+  .fx-thumb img, .fx-gal-thumb img, .fx-dpreview img{ animation:none; }
+}
+
+/* LIST ---------------------------------------------------------------------- */
+.fx-list{ border:2px solid var(--border); background:var(--surface); }
+.fx-list-head, .fx-row{
+  display:grid; grid-template-columns:minmax(0,1fr) 72px 92px 108px 24px; align-items:center;
+  gap:.8rem; padding:.3rem .8rem;
+}
+.fx-list-head{
+  font-family:var(--font-mono); font-size:.6rem; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--text-dim); border-bottom:2px solid var(--border); position:sticky; top:0; background:var(--surface); z-index:1;
+  padding-top:.55rem; padding-bottom:.55rem;
+}
+.fx-list-head [data-sortcol="size"]{ justify-self:end; }
+.fx-list-head button{ background:none; border:0; font:inherit; color:inherit; cursor:pointer; text-align:left; padding:0; display:inline-flex; align-items:center; gap:.3rem; }
+.fx-list-head button:hover{ color:var(--accent); }
+.fx-row{ position:relative; min-height:36px; box-sizing:border-box; border-bottom:1px solid var(--border); cursor:pointer; transition:background .1s; animation:fxrow .22s ease backwards; animation-delay:calc(min(var(--i,0),18)*12ms); }
+.fx-row:last-child{ border-bottom:0; }
+.fx-row:hover{ background:var(--accent-soft); }
+.fx-row.is-sel{ background:var(--accent-soft); box-shadow:inset 3px 0 0 var(--accent); }
+.fx-row-name{ display:flex; align-items:center; gap:.55rem; min-width:0; }
+.fx-row-name .fx-row-ico{ width:20px; height:20px; flex:none; }
+.fx-row-name .fx-name{ font-size:.86rem; font-weight:500; }
+.fx-row .fx-meta{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fx-row .fx-list-size{ text-align:right; }
+.fx-row-badges{ display:flex; gap:.3rem; justify-content:flex-end; }
+.fx-row-kebab{ justify-self:end; }
+@keyframes fxrow{ from{ opacity:0; transform:translateX(-4px); } to{ opacity:1; transform:none; } }
+
+/* GALLERY ------------------------------------------------------------------- */
+.fx-gallery{ columns:5 200px; column-gap:.8rem; }
+.fx-gal-item{
+  break-inside:avoid; margin-bottom:.8rem; position:relative; border:2px solid var(--border);
+  background:var(--surface); cursor:pointer; overflow:hidden; display:block;
+  transition:box-shadow .14s, transform .14s; animation:fxpop .3s cubic-bezier(.2,.8,.2,1) backwards;
+  animation-delay:calc(min(var(--i,0),14)*22ms);
+}
+.fx-gal-item:hover{ transform:translate(-2px,-2px); box-shadow:5px 5px 0 var(--accent); }
+.fx-gal-thumb{ width:100%; display:block; background:var(--bg); min-height:120px; }
+.fx-gal-thumb img{ width:100%; display:block; animation:fxthumb-in .1s ease both; }
+.fx-gal-ph{ aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:var(--accent); background:var(--bg); }
+.fx-gal-ph svg{ width:40px; height:40px; opacity:.8; }
+.fx-gal-cap{ position:absolute; left:0; right:0; bottom:0; padding:.6rem .5rem .4rem; display:flex; align-items:center; gap:.35rem; font-size:.76rem; font-weight:600; color:#fff; background:linear-gradient(transparent, rgba(0,0,0,.72)); text-shadow:0 1px 2px rgba(0,0,0,.5); }
+.fx-gal-cap .fx-name{ flex:1 1 auto; }
+.fx-gal-item.is-sel{ box-shadow:4px 4px 0 var(--accent); border-color:var(--accent); }
+/* No image to sit on: a plain caption bar instead of a scrim smudged over the tile */
+.fx-gal-item:has(> .fx-gal-ph) .fx-gal-cap{ position:static; padding:.45rem .55rem; color:var(--text); background:var(--surface); text-shadow:none; border-top:2px solid var(--border); }
+
+/* COLUMNS (Miller) ---------------------------------------------------------- */
+/* Columns fill the view's remaining height instead of a guessed calc() */
+.fx-view[data-view="columns"]{ display:flex; flex-direction:column; padding-bottom:1.1rem; }
+.fx-cols{ display:flex; gap:0; overflow-x:auto; border:2px solid var(--border); background:var(--surface); flex:1 1 auto; min-height:340px; }
+.fx-col{ flex:0 0 250px; border-right:2px solid var(--border); overflow-y:auto; display:flex; flex-direction:column; }
+.fx-col:last-child{ border-right:0; }
+.fx-col-row{
+  display:flex; align-items:center; gap:.5rem; padding:.42rem .65rem; border:0; background:none;
+  cursor:pointer; font:inherit; color:var(--text); text-align:left; border-bottom:1px solid var(--border);
+  transition:background .1s;
+}
+.fx-col-row:hover{ background:var(--accent-soft); }
+.fx-col-row.is-sel, .fx-col-row.is-active{ background:var(--accent-soft); box-shadow:inset 3px 0 0 var(--accent); }
+.fx-col-row.is-checked{ background:var(--accent); color:var(--accent-contrast); }
+.fx-col-row.is-checked .fx-col-ico{ color:var(--accent-contrast); }
+.fx-item.is-focus:not(.is-sel), .fx-row.is-focus:not(.is-sel),
+.fx-gal-item.is-focus:not(.is-sel), .fx-col-row.is-focus:not(.is-sel){
+  outline:2px dotted var(--accent); outline-offset:-2px;
+}
+.fx-col-ico{ width:17px; height:17px; flex:none; color:var(--accent); }
+.fx-col-name{ flex:1 1 auto; font-size:.82rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fx-col-chev{ opacity:.5; font-size:.75rem; flex:none; }
+.fx-col-preview{ flex:1 1 auto; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.7rem; padding:1.5rem; text-align:center; }
+.fx-col-preview .fx-cp-thumb{ width:min(260px,100%); aspect-ratio:4/3; border:2px solid var(--border); display:flex; align-items:center; justify-content:center; color:var(--accent); background:var(--bg); overflow:hidden; }
+.fx-col-preview .fx-cp-thumb svg{ width:44px; height:44px; }
+.fx-col-preview .fx-cp-thumb img{ width:100%; height:100%; object-fit:contain; }
+.fx-col-preview h4{ font-size:.9rem; word-break:break-word; }
+.fx-col-preview .fx-meta{ text-align:center; }
+
+/* ---- Empty / loading ------------------------------------------------------ */
+.fx-empty{ text-align:center; padding:4rem 1rem; color:var(--text-dim); display:flex; flex-direction:column; align-items:center; gap:.9rem; }
+.fx-empty svg{ width:52px; height:52px; opacity:.4; }
+.fx-empty h3{ font-family:var(--font-display); font-size:1.3rem; color:var(--text); }
+.fx-empty p{ font-size:.9rem; max-width:32ch; }
+/* Delayed fade so sub-120ms loads never flash the skeleton */
+.fx-skel{ display:grid; grid-template-columns:repeat(auto-fill,minmax(158px,1fr)); gap:.9rem; animation:rdFade .2s .12s backwards; }
+/* Sidebar tree entrance — only when .is-anim is set (fresh folder load, not
+   open/close toggles, which re-render the tree and must not replay it) */
+.fx-tree.is-anim .fx-tree-row{ animation:rdSlideL .2s cubic-bezier(0,0,.2,1) backwards; animation-delay:calc(min(var(--i,0),12)*16ms); }
+.fx-tree-skel{ height:30px; margin:.12rem .3rem; }
+.fx-skel-card{ border:2px solid var(--border); height:190px; background:linear-gradient(100deg,var(--surface) 30%,var(--accent-soft) 50%,var(--surface) 70%); background-size:220% 100%; animation:fxsh 1.3s linear infinite; }
+@keyframes fxsh{ from{ background-position:220% 0; } to{ background-position:-40% 0; } }
+
+/* ---- Selection bar -------------------------------------------------------- */
+.fx-selbar{
+  position:fixed; left:calc(50% + var(--rd-side-eff) / 2); bottom:1.4rem; transform:translateX(-50%) translateY(140%);
+  visibility:hidden; z-index:60; display:flex; align-items:center; gap:.4rem; padding:.5rem .6rem;
+  background:var(--surface-2); color:#fff; border:2px solid var(--surface-2);
+  box-shadow:0 10px 30px rgba(0,0,0,.35); transition:transform .28s cubic-bezier(.2,.9,.2,1), visibility 0s .28s;
+}
+:root[data-theme="frost-dark"] .fx-selbar{ background:var(--surface); color:var(--text); border-color:var(--border); }
+/* Closed panels are parked off-screen AND hidden: otherwise their borders and
+   shadows leaked into the viewport edges (a grey band down the right side,
+   thin lines along the bottom). */
+.fx-selbar.is-open, .fx-drawer.is-open, .fx-uptray.is-open{ visibility:visible; transition-delay:0s; }
+.fx-selbar.is-open{ transform:translateX(-50%) translateY(0); }
+.fx-selbar-count{ font-family:var(--font-mono); font-size:.72rem; letter-spacing:.08em; padding:0 .55rem 0 .3rem; white-space:nowrap; }
+.fx-selbar button{
+  display:inline-flex; align-items:center; gap:.35rem; background:none; border:0; cursor:pointer;
+  color:inherit; font:inherit; font-size:.78rem; padding:.4rem .6rem; transition:background .12s;
+}
+.fx-selbar button:hover{ background:rgba(255,255,255,.14); }
+:root[data-theme="frost-dark"] .fx-selbar button:hover{ background:var(--accent-soft); }
+.fx-selbar button svg{ width:15px; height:15px; }
+.fx-selbar .fx-selbar-danger:hover{ background:var(--bad); color:#fff; }
+.fx-selbar-sep{ width:1px; align-self:stretch; background:rgba(255,255,255,.2); margin:.15rem .1rem; }
+
+/* ---- Details drawer ------------------------------------------------------- */
+.fx-drawer{
+  position:fixed; top:var(--nav-h); right:0; bottom:0; width:340px; max-width:88vw;
+  background:var(--surface); border-left:2px solid var(--border); z-index:55;
+  transform:translateX(102%); visibility:hidden; transition:transform .3s cubic-bezier(.2,.85,.25,1), visibility 0s .3s;
+  display:flex; flex-direction:column; box-shadow:-14px 0 34px rgba(0,0,0,.14);
+}
+.fx-drawer.is-open{ transform:none; }
+.fx-drawer-head{ display:flex; align-items:center; gap:.5rem; box-sizing:border-box; height:var(--fx-bar-h); padding:0 1rem; border-bottom:2px solid var(--border); }
+.fx-drawer-head h3{ font-size:.72rem; font-family:var(--font-mono); letter-spacing:.18em; text-transform:uppercase; color:var(--text-dim); flex:1 1 auto; }
+.fx-drawer-close{ background:none; border:0; cursor:pointer; color:var(--text-dim); display:flex; padding:.25rem; }
+.fx-drawer-close:hover{ color:var(--text); }
+.fx-drawer-body{ padding:1rem; overflow-y:auto; display:flex; flex-direction:column; gap:1rem; }
+.fx-dpreview{ aspect-ratio:16/11; border:2px solid var(--border); background:var(--bg); display:flex; align-items:center; justify-content:center; overflow:hidden; color:var(--accent); }
+.fx-dpreview img{ width:100%; height:100%; object-fit:contain; animation:fxthumb-in .1s ease both; }
+.fx-dpreview svg{ width:56px; height:56px; opacity:.75; }
+.fx-dtitle{ font-size:1rem; font-weight:600; word-break:break-word; line-height:1.3; }
+.fx-dl{ display:grid; grid-template-columns:auto 1fr; gap:.4rem .9rem; font-size:.82rem; }
+.fx-dl dt{ font-family:var(--font-mono); font-size:.62rem; letter-spacing:.1em; text-transform:uppercase; color:var(--text-dim); align-self:center; }
+.fx-dl dd{ text-align:right; font-variant-numeric:tabular-nums; }
+.fx-drawer-actions{ display:flex; flex-direction:column; gap:.5rem; margin-top:.3rem; }
+.fx-drawer-actions .rd-btn{ justify-content:center; padding:.65rem 1rem; }
+
+/* ---- Context menu: shared RdMenu component (context-menu.css) ------------- */
+
+/* ---- Dropzone overlay ----------------------------------------------------- */
+.fx-drop{
+  position:fixed; inset:var(--nav-h) 0 0 0; z-index:70; display:none;
+  align-items:center; justify-content:center; padding:2rem;
+  background:rgba(var(--accent-rgb),.10); backdrop-filter:blur(2px);
+}
+.fx-drop.is-active{ display:flex; animation:fxfade .15s ease both; }
+.fx-drop-inner{
+  border:3px dashed var(--accent); background:var(--surface); padding:3rem 4rem; text-align:center;
+  display:flex; flex-direction:column; align-items:center; gap:1rem; box-shadow:10px 10px 0 var(--accent);
+}
+.fx-drop-inner svg{ width:56px; height:56px; color:var(--accent); }
+.fx-drop-inner h3{ font-family:var(--font-display); font-size:1.5rem; }
+.fx-drop-inner p{ font-family:var(--font-mono); font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
+@keyframes fxfade{ from{opacity:0} to{opacity:1} }
+
+/* ---- Upload tray ---------------------------------------------------------- */
+.fx-uptray{
+  position:fixed; right:1.2rem; bottom:1.2rem; width:320px; max-width:calc(100vw - 2rem); z-index:58;
+  background:var(--surface); border:2px solid var(--border); box-shadow:6px 6px 0 var(--accent);
+  transform:translateY(140%); visibility:hidden; transition:transform .3s cubic-bezier(.2,.85,.25,1), visibility 0s .3s;
+}
+.fx-uptray.is-open{ transform:none; }
+.fx-uptray-head{ display:flex; align-items:center; gap:.5rem; padding:.6rem .8rem; border-bottom:2px solid var(--border); font-family:var(--font-mono); font-size:.68rem; letter-spacing:.14em; text-transform:uppercase; }
+.fx-uptray-head .fx-up-spin{ width:13px; height:13px; border:2px solid var(--accent); border-top-color:transparent; border-radius:50%; animation:fxspin .7s linear infinite; }
+@keyframes fxspin{ to{ transform:rotate(360deg); } }
+.fx-uptray-head button{ margin-left:auto; background:none; border:0; cursor:pointer; color:var(--text-dim); display:flex; }
+.fx-uptray-list{ max-height:240px; overflow-y:auto; }
+.fx-up-row{ padding:.5rem .8rem; border-bottom:1px solid var(--border); display:flex; flex-direction:column; gap:.35rem; }
+.fx-up-row:last-child{ border-bottom:0; }
+.fx-up-row-top{ display:flex; align-items:center; gap:.5rem; font-size:.8rem; }
+.fx-up-row-top .fx-name{ flex:1 1 auto; }
+.fx-up-row-top .fx-up-pct{ font-family:var(--font-mono); font-size:.66rem; color:var(--text-dim); }
+.fx-up-bar{ height:5px; background:var(--accent-soft); border:1px solid var(--border); overflow:hidden; }
+.fx-up-bar-fill{ height:100%; background:var(--accent); width:0; transition:width .2s; }
+.fx-up-row.is-done .fx-up-bar-fill{ background:var(--good); }
+.fx-up-row.is-err .fx-up-bar-fill{ background:var(--bad); }
+.fx-up-row.is-err .fx-up-pct{ color:var(--bad); }
+
+/* ---- Move picker ---------------------------------------------------------- */
+.fx-move-tree{
+  display:flex; flex-direction:column; gap:.3rem; max-height:min(46vh,420px);
+  overflow:auto; margin-bottom:1rem; padding:.2rem;
+}
+.fx-move-row{
+  display:flex; align-items:center; gap:.6rem; width:100%; padding:.5rem .7rem;
+  border:2px solid var(--border); background:var(--surface); color:var(--text);
+  font:inherit; text-align:left; cursor:pointer;
+}
+.fx-move-row:hover, .fx-move-row.is-selected{ border-color:var(--accent); background:var(--accent-soft); }
+.fx-move-row:disabled{ opacity:.45; cursor:not-allowed; }
+.fx-move-row svg{ width:17px; height:17px; flex:none; color:var(--accent); }
+.fx-move-row span{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* Files-page modals: a one-field dialog does not need the 34rem default, and
+   the title should sit level with the close button. */
+#fxNameModal .rd-modal-panel{ max-width:25rem; }
+#fxNameModal .rd-modal-head, #bulkMoveModal .rd-modal-head{ align-items:center; }
+#confirmMoveBtn{ width:100%; }
+
+/* ---- Mobile --------------------------------------------------------------- */
+.fx-side-toggle{ display:none; }
+@media (max-width:920px){
+  .fx-shell{ grid-template-columns:1fr; }
+  /* Drawer mode: the rail is off-canvas at a fixed width, so resizing and
+     collapsing are meaningless here. Neutralise both. */
+  .fx-shell .rd-resizer, .fx-shell .rd-rail-label{ display:none !important; }
+  :root[data-rd-side="collapsed"] .fx-side > .rd-side-inner{ display:flex; }
+  .fx-side{
+    position:fixed; top:var(--nav-h); left:0; bottom:0; width:260px; z-index:50;
+    transform:translateX(-102%); visibility:hidden; transition:transform .28s cubic-bezier(.2,.85,.25,1), visibility 0s .28s;
+    box-shadow:14px 0 34px rgba(0,0,0,.16);
+  }
+  .fx-side.is-open{ transform:none; visibility:visible; transition-delay:0s; }
+  .fx-side-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; background:rgba(0,0,0,.4); z-index:49; opacity:0; pointer-events:none; transition:opacity .2s; }
+  .fx-side-scrim.is-open{ opacity:1; pointer-events:auto; }
+  .fx-side-toggle{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:var(--fx-ctl-h,36px); height:var(--fx-ctl-h,36px);
+    border:2px solid var(--border); background:var(--surface); cursor:pointer; color:var(--text); flex:none;
+  }
+  .fx-side-toggle svg{ width:17px; height:17px; }
+  .fx-toolbar{ padding:0 .8rem; }
+  .fx-hide-sm{ display:none; }
+  .fx-view{ padding:.9rem .8rem 4rem; }
+  .fx-grid{ grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:.65rem; }
+  .fx-gallery{ columns:2 140px; column-gap:.6rem; }
+  /* List collapses meta columns on narrow screens */
+  .fx-list-head{ display:none; }
+  .fx-row{ grid-template-columns:minmax(0,1fr) auto auto; gap:.4rem; }
+  .fx-row .fx-list-size, .fx-row .fx-list-date{ display:none; }
+  .fx-drawer{ width:100%; max-width:100%; top:auto; height:82vh; border-left:0; border-top:2px solid var(--border); transform:translateY(102%); }
+  .fx-drawer.is-open{ transform:none; }
+  .fx-selbar{ left:.7rem; right:.7rem; transform:translateY(140%); bottom:.8rem; }
+  .fx-selbar.is-open{ transform:none; }
+  .fx-selbar-count{ margin-right:auto; }
+}
+
+/* Keep the complete file toolbar on one line at every viewport width. */
+@media (max-width:620px){
+  .fx-toolbar{
+    --fx-ctl-h:38px; position:relative; display:flex; gap:.3rem; padding:0 .45rem;
+  }
+  .fx-bcrumb{ flex:1 1 auto; width:auto; }
+  /* Too narrow for a path: show home, then the current folder with an ellipsis */
+  .fx-bc-item:not(:first-child):not(.is-current), .fx-bc-sep:not(:has(+ .is-current)){ display:none; }
+  .fx-bc-item.is-current{ flex:0 1 auto; max-width:none; }
+  .fx-bc-item:first-child:not(.is-current){ font-size:0; gap:0; max-width:none; }
+  .fx-spacer{ display:none; }
+  .fx-tbar-actions{ display:flex; gap:.3rem; min-width:0; }
+  .fx-search.is-open{
+    position:absolute; left:calc(.45rem + var(--fx-ctl-h) + .3rem); right:.45rem;
+    width:auto; z-index:2;
+  }
+  .fx-toolbar:has(.fx-search.is-open) .fx-bcrumb{ visibility:hidden; }
+  .fx-sort{ display:none; }
+  .fx-seg-btn[data-view="gallery"], .fx-seg-btn[data-view="columns"]{ display:none; }
+  .fx-seg-btn[data-view="list"]{ border-right:0; }
+  .fx-seg-btn{ width:34px; }
+  .fx-toolbar #fxNewFolder, .fx-toolbar #fxUploadBtn{ width:var(--fx-ctl-h); padding:0; justify-content:center; }
+  .fx-toolbar .fx-hide-sm{ display:none; }
+  .fx-item-kebab{ opacity:1; }
+  .fx-selbar{ padding-bottom:max(.5rem,env(safe-area-inset-bottom)); }
+  .fx-selbar-sep{ display:none; }
+  .fx-selbar button{ width:38px; height:38px; padding:.5rem; justify-content:center; font-size:0; }
+  .fx-selbar button svg{ width:18px; height:18px; }
+  .fx-uptray{ bottom:max(1rem,env(safe-area-inset-bottom)); }
+}
+@media (max-width:420px){
+  .fx-toolbar{ column-gap:.35rem; padding-inline:.45rem; }
+}
+
+/* Hide the sort/label helpers when in columns mode */
+.fx-view[data-view="columns"] .fx-section-label{ display:none; }
+
+@media (pointer: coarse){
+  .fx-item .fx-check, .fx-row .fx-check, .fx-gal-item .fx-check{ display:flex; }
+  .fx-item-kebab{ opacity:1; }
+  .fx-item-kebab, .fx-row-kebab{ width:32px; height:32px; }
+  .fx-row{ min-height:44px; }
+  .fx-tree .rd-side-row{ min-height:36px; }
+  .fx-tree-toggle, .fx-tree-link{ height:36px; }
+  .fx-row .fx-row-name{ padding-left:30px; }
+  .fx-row:hover .fx-row-ico, .fx-row.is-checked .fx-row-ico,
+  .fx-row:hover .fx-row-thumb, .fx-row.is-checked .fx-row-thumb{ opacity:1; }
+}
+
+@media (prefers-reduced-motion:reduce){
+  .fx-item, .fx-row, .fx-gal-item, .fx-skel-card, .fx-skel, .fx-tree.is-anim .fx-tree-row,
+  .fx-tree-row.is-reveal, .fx-tree-row.is-closing, .fx-bc-in{ animation:none !important; }
+  .fx-drawer, .fx-selbar, .fx-uptray, .fx-side, .rd-meter-fill{ transition:none !important; }
+}

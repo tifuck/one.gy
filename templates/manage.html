@@ -1,0 +1,139 @@
+{# Frost standalone manage page — replaces the legacy templates/manage.html
+   (~1,700 lines of bespoke markup + JS that duplicated the manage modal).
+
+   Both /manage/<token> (file, management-token auth, works for anonymous guest
+   uploads) and /folder/<id>/manage (folder, login required) render this. Rather
+   than maintaining a second implementation of every control, the page hosts the
+   SAME manage modal that /files and /share already use
+   (_manage_modal.html + static/manage-modal.js) and opens it on load.
+   One implementation, one set of behaviours, one place to fix bugs.
+
+   Context: is_folder, plus either `file` (with .management_token) or `folder`,
+   and `source` for the back link. #}
+{% extends 'base.html' %}
+{% block title %}{{ 'MANAGE FOLDER' if is_folder else 'MANAGE FILE' }}{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ versioned_static('gateway.css') }}">
+<link rel="stylesheet" href="{{ versioned_static('manage.css') }}">
+{% endblock %}
+
+{% block content %}
+{# back_url / back_label come from the route (see manage() and manage_folder()
+   in app.py). They are NOT computed with {% set %} here on purpose: Jinja
+   scopes a block-level set to that block, so {% block scripts %} below would
+   see Undefined and |tojson would 500. #}
+<section class="gw-section">
+  <div class="gw-card">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
+    <div class="gw-ico">
+      {% if is_folder %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>
+      {% else %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+      {% endif %}
+    </div>
+    <div class="gw-rule"></div>
+    <h1 class="gw-title">{{ 'Manage folder' if is_folder else 'Manage file' }}</h1>
+    <p class="gw-sub" id="gwManageName">{{ folder.name if is_folder else file.orig_name }}</p>
+
+    {# Share-link QR — only the file manage route passes qr_data (folder manage
+       does not), so this block is presence-gated. #}
+    {% if qr_data %}
+    <div class="gw-qr">
+      <img src="data:image/png;base64,{{ qr_data }}" alt="Share link QR code" width="150" height="150">
+    </div>
+    <p class="gw-qr-label">Scan to open the share link</p>
+    {% endif %}
+
+    <div class="gw-actions">
+      <button type="button" class="gw-btn gw-btn-primary" id="gwOpenManage">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Open settings
+      </button>
+      <a href="{{ back_url }}" class="gw-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        {{ back_label }}
+      </a>
+    </div>
+  </div>
+</section>
+
+{% include '_manage_modal.html' %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
+<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('temp-keychain.js') }}" defer></script>
+<script src="{{ versioned_static('manage-modal.js') }}" defer></script>
+<script nonce="{{ csp_nonce }}">
+;(function () {
+  var IS_FOLDER = {{ 'true' if is_folder else 'false' }}
+  var TOKEN = {{ (file.management_token if not is_folder else None)|tojson }}
+  var FOLDER_ID = {{ (folder.id if is_folder else None)|tojson }}
+  var BACK_URL = {{ back_url|tojson }}
+
+  function csrf () { var t = document.getElementById('csrf_token'); return t ? t.value : '' }
+  function toast (m, c) { if (typeof showToast === 'function') showToast(m, c) }
+
+  function open () {
+    if (typeof ManageModal === 'undefined') return
+    if (IS_FOLDER) ManageModal.openFolder(FOLDER_ID)
+    else ManageModal.openFileByToken(TOKEN)
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    if (typeof ManageModal === 'undefined') {
+      toast('MANAGE UI FAILED TO LOAD', 'error')
+      return
+    }
+
+    ManageModal.init({
+      showToast: toast,
+      showConfirm: window.showConfirm,
+      domain: {{ domain|tojson }},
+      getCSRFToken: csrf,
+      onAfterSave: function () {},
+      onDelete: async function (type, data) {
+        var name = (data && data.name) || (IS_FOLDER ? 'THIS FOLDER' : 'THIS FILE')
+        var ok = window.showConfirm
+          ? await window.showConfirm(name, 'This will be permanently deleted. This action cannot be undone.', 'DELETE')
+          : window.confirm('Delete?')
+        if (!ok) return
+        ManageModal.close()
+        var url, opts
+        if (type === 'folder') {
+          url = '/folder/' + data.id + '/delete'
+          opts = { method: 'POST', headers: { 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' } }
+        } else {
+          // Management-token delete works for anonymous guest uploads too.
+          var fd = new FormData(); fd.append('csrf_token', csrf())
+          url = '/delete/' + (data.management_token || TOKEN)
+          opts = { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd }
+        }
+        try {
+          var r = await fetch(url, opts)
+          if (!r.ok) throw new Error('HTTP ' + r.status)
+          toast('DELETED', 'success')
+          setTimeout(function () { window.location.href = BACK_URL }, 800)
+        } catch (e) { toast('DELETE FAILED', 'error') }
+      },
+      onDownload: function (type, data) {
+        var link = document.getElementById('manageShareLink')
+        var url = (link && link.value) || (data && data.download_url) || ''
+        if (url) window.location.href = url
+      }
+      // Deliberately NO onClose redirect. ManageModal fires onClose for a failed
+      // load and for the internal close during an E2E re-encrypt, so navigating
+      // there would swallow error toasts and race in-flight requests. Closing
+      // just reveals the card behind it, which still offers Back + Open settings.
+    })
+
+    var btn = document.getElementById('gwOpenManage')
+    if (btn) btn.addEventListener('click', open)
+
+    open()
+  })
+})()
+</script>
+{% endblock %}

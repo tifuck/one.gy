@@ -1,0 +1,188 @@
+/* ============================================================================
+   notes.css — Frost Notes. Three panes: notebooks rail · notes list · editor.
+   Token-driven; works across Frost + Frost Dark.
+   ========================================================================== */
+.nt-shell{ display:grid; grid-template-columns:var(--rd-side-eff) var(--rd-list-eff) minmax(0,1fr); height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h)); min-height:0; overflow:hidden;
+  /* position: anchors the absolutely-positioned .rd-resizer / .rd-rail-label */
+  position:relative;
+  transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1); }
+/* Collapsing the notes list hides its body; the vertical label takes over. */
+:root[data-rd-list="collapsed"] .nt-list{ overflow:hidden }
+:root[data-rd-list="collapsed"] .nt-list > *{ display:none }
+
+/* ---- Lock overlay (E2E unlock — fullscreen) ------------------------------- */
+.nt-lock{ position:fixed; top:var(--nav-h); left:0; right:0; bottom:0; z-index:120; display:flex; align-items:center; justify-content:center; padding:1.5rem; background:var(--scrim); backdrop-filter:blur(8px); }
+.nt-lock-card{ width:min(420px,100%); background:var(--surface); border:2px solid var(--border); box-shadow:10px 10px 0 var(--accent); padding:2.2rem 2rem; text-align:center; display:flex; flex-direction:column; align-items:center; gap:.7rem; }
+.nt-lock-ico{ width:60px; height:60px; border:2px solid var(--border); display:flex; align-items:center; justify-content:center; color:var(--accent); margin-bottom:.3rem; }
+.nt-lock-ico svg{ width:30px; height:30px; }
+.nt-lock-title{ font-family:var(--font-display); font-size:1.5rem; font-weight:800; }
+.nt-lock-sub{ font-size:.86rem; color:var(--text-dim); line-height:1.5; max-width:34ch; }
+.nt-lock-form{ display:flex; flex-direction:column; gap:.6rem; width:100%; margin-top:.7rem; }
+.nt-lock-form .form-input{ width:100%; text-align:center; font-size:1rem; padding:.65rem; }
+.nt-lock-form .rd-btn{ width:100%; justify-content:center; padding:.65rem; }
+
+/* ---- Rail (notebooks) -----------------------------------------------------
+   Container / head / scroll body / pinned foot all come from .rd-side* in
+   app-shell.css — shared with the Files sidebar. Only row internals here.
+   Rows carry the same 26px lead-in as a Files tree row (toggle column +
+   link padding) so both sidebars line their icons up on the same column. */
+.nt-rail-item{ gap:.5rem; padding:0 .55rem 0 calc(26px + .2rem); border:0; border-left:3px solid transparent;
+  background:none; cursor:pointer; font:inherit; font-size:.86rem; color:var(--text); text-align:left; }
+.nt-rail-item svg{ width:16px; height:16px; flex:none; color:var(--accent); }
+.nt-nb-dot{ width:13px; height:13px; flex:none; margin:0 1.5px; border:1.5px solid var(--border); }
+.nt-nb-name{ flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nt-nb-count{ font-family:var(--font-mono); font-size:.66rem; color:var(--text-dim); }
+
+/* ---- Notes list ----------------------------------------------------------- */
+.nt-list{ border-right:2px solid var(--border); background:var(--bg); display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.nt-list-head{ display:flex; align-items:center; justify-content:space-between; height:58px; flex:none; box-sizing:border-box; padding:.55rem .85rem; gap:.5rem; }
+.nt-list-title{ font-family:var(--font-display); font-size:1.3rem; font-weight:700; }
+.nt-newnote{ width:32px; height:32px; border:2px solid var(--border); background:var(--surface); cursor:pointer; color:var(--text); display:inline-flex; align-items:center; justify-content:center; }
+.nt-newnote:hover{ background:var(--accent); color:var(--accent-contrast); }
+.nt-newnote svg{ width:16px; height:16px; }
+.nt-search{ position:relative; height:48px; flex:none; box-sizing:border-box; padding:0 .85rem .55rem; border-bottom:2px solid var(--border); }
+.nt-search svg{ position:absolute; left:1.45rem; top:calc(50% - .275rem); transform:translateY(-50%); width:14px; height:14px; color:var(--text-dim); pointer-events:none; }
+.nt-search input{ width:100%; padding:.45rem .6rem .45rem 2rem; border:2px solid var(--border); background:var(--surface); color:var(--text); font:inherit; font-size:.82rem; }
+.nt-search input:focus{ outline:none; box-shadow:3px 3px 0 var(--accent); }
+.nt-items{ flex:1 1 auto; overflow-y:auto; }
+.nt-item{ position:relative; display:flex; flex-direction:column; gap:.3rem; width:100%; padding:.78rem .9rem; border:0; border-bottom:1px solid var(--border); background:none; cursor:pointer; text-align:left; color:var(--text); transition:background .1s; }
+/* :hover / .is-active use background-COLOR (not the shorthand) so the colour
+   wash on .has-color cards below survives hover and selection. */
+.nt-item:hover{ background-color:var(--accent-soft); }
+.nt-item.is-active{ background-color:var(--accent-soft); box-shadow:inset 3px 0 0 var(--accent); }
+.nt-item-bar{ position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--nt-color); }
+
+/* ---- Coloured notes -------------------------------------------------------
+   --nt-color is set inline per card by renderList(). The colour reads as a
+   glowing left rail plus a wash that fades out well before the text, so it
+   tints the row without fighting the title for attention. */
+.nt-item.has-color{ background-image:linear-gradient(90deg, color-mix(in srgb, var(--nt-color) 10%, transparent) 0%, transparent 42%); }
+.nt-item.has-color:hover,
+.nt-item.has-color.is-active{ background-image:linear-gradient(90deg, color-mix(in srgb, var(--nt-color) 17%, transparent) 0%, transparent 52%); }
+/* Selected colour note keeps its own colour on the active rail */
+.nt-item.has-color.is-active{ box-shadow:inset 3px 0 0 var(--nt-color); }
+.nt-item.has-color .nt-item-bar{ box-shadow:0 0 8px color-mix(in srgb, var(--nt-color) 60%, transparent); }
+/* Dark surfaces swallow a light wash — lift the mix a little */
+:root[data-theme="frost-dark"] .nt-item.has-color{ background-image:linear-gradient(90deg, color-mix(in srgb, var(--nt-color) 18%, transparent) 0%, transparent 52%); }
+:root[data-theme="frost-dark"] .nt-item.has-color:hover,
+:root[data-theme="frost-dark"] .nt-item.has-color.is-active{ background-image:linear-gradient(90deg, color-mix(in srgb, var(--nt-color) 28%, transparent) 0%, transparent 60%); }
+.nt-item-row{ display:flex; align-items:center; gap:.4rem; }
+.nt-item-title{ flex:1 1 auto; font-size:.9rem; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:.35rem; }
+/* The title is a flex row (pin + name), so the ellipsis has to live on the name itself. */
+.nt-item-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.nt-pin{ width:13px; height:13px; color:var(--accent); flex:none; }
+.nt-badge{ font-family:var(--font-mono); font-size:.56rem; letter-spacing:.1em; text-transform:uppercase; padding:.06rem .3rem; border:1.5px solid var(--accent); color:var(--accent); }
+.nt-item-meta{ font-family:var(--font-mono); font-size:.66rem; color:var(--text-dim); letter-spacing:.03em; }
+.nt-empty-sm{ padding:2rem 1rem; text-align:center; color:var(--text-dim); font-size:.85rem; }
+.nt-list-loading{ display:flex; justify-content:center; padding:2rem; }
+
+/* ---- Skeletons + entrances ------------------------------------------------ */
+.nt-skel-row{ height:34px; margin:.15rem .65rem; }
+.nt-skel-list{ padding:.6rem .9rem; display:flex; flex-direction:column; gap:.5rem; }
+.nt-skel-item{ height:52px; }
+/* List entrance — only when .is-anim is set (fresh data load); re-renders from
+   note clicks / search keystrokes must not replay it */
+.nt-list.is-anim .nt-item{ animation:rdSlideL .2s cubic-bezier(0,0,.2,1) backwards; animation-delay:calc(min(var(--i,0),12)*18ms); }
+.nt-rail.is-anim .rd-side-scroll > *, .nt-rail.is-anim .rd-side-foot > *{ animation:rdSlideL .22s cubic-bezier(0,0,.2,1) backwards; animation-delay:calc(min(var(--i,0),14)*16ms); }
+
+/* ---- Editor --------------------------------------------------------------- */
+.nt-editor{ display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:var(--surface); }
+/* Note switch: outgoing content dims while the next note decrypts (spinner is
+   held back ~180ms so fast opens never flash it), incoming content fades in */
+.nt-editor.nt-ed-busy > *{ opacity:.45; transition:opacity .15s; }
+.nt-editor > *{ animation:rdFade .18s ease backwards; }
+.nt-editor > .nt-ed-body{ animation:rdRise .22s cubic-bezier(0,0,.2,1) backwards; }
+.nt-ed-loading{ display:flex; flex:1 1 auto; align-items:center; justify-content:center; padding:3rem; animation:rdFade .18s .05s backwards; }
+.nt-ed-head{ display:flex; align-items:center; gap:.7rem; height:58px; flex:none; box-sizing:border-box; padding:.55rem 1.1rem; border-bottom:2px solid var(--border); overflow:hidden; }
+.nt-back{ display:none; }
+.nt-ed-title{ flex:1 1 auto; min-width:0; width:0; border:0; background:none; font-family:var(--font-display); font-size:clamp(1.15rem,2vw,1.45rem); font-weight:700; color:var(--text); padding:.2rem 0; text-overflow:ellipsis; }
+.nt-ed-title:focus{ outline:none; }
+.nt-ed-actions{ display:flex; align-items:center; gap:.35rem; flex:none; }
+.nt-savestate{ font-family:var(--font-mono); font-size:.64rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); min-width:52px; text-align:right; }
+.nt-conflict-btn{ border:1.5px solid var(--bad); background:transparent; color:var(--bad); font:inherit; font-weight:700; text-transform:uppercase; padding:.22rem .4rem; cursor:pointer; }
+.nt-conflict-btn:hover{ background:var(--bad); color:#fff; }
+.nt-toolbar{ display:flex; align-items:center; gap:.15rem; height:48px; flex:none; box-sizing:border-box; padding:.3rem 1rem; border-bottom:2px solid var(--border); flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
+.nt-toolbar::-webkit-scrollbar{ display:none; }
+.nt-tb-btn{ min-width:32px; height:30px; padding:0 .5rem; border:0; background:none; cursor:pointer; color:var(--text); font-size:.85rem; font-family:var(--font-mono); display:inline-flex; align-items:center; justify-content:center; }
+.nt-tb-btn:hover{ background:var(--accent-soft); color:var(--accent); }
+.nt-tb-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+.nt-tb-sep{ width:2px; height:20px; background:var(--border); margin:0 .3rem; }
+.nt-tb-color{ position:relative; width:32px; height:30px; flex:none; display:inline-flex; align-items:center; justify-content:center; font:700 .75rem var(--font-mono); cursor:pointer; }
+.nt-tb-color:hover{ background:var(--accent-soft); }
+.nt-tb-color input{ position:absolute; inset:auto 4px 2px; width:24px; height:5px; padding:0; border:0; opacity:.9; cursor:pointer; }
+.nt-ed-body{ flex:1 1 auto; overflow-y:auto; padding:1.6rem 1.6rem 4rem; max-width:820px; width:100%; font-size:1rem; line-height:1.7; color:var(--text); }
+.nt-ed-body:focus{ outline:none; }
+.nt-ed-body h2{ font-family:var(--font-display); font-size:1.5rem; font-weight:700; margin:1.2rem 0 .5rem; }
+.nt-ed-body h1{ font-family:var(--font-display); font-size:1.85rem; font-weight:800; margin:1.35rem 0 .6rem; }
+.nt-ed-body h3{ font-family:var(--font-display); font-size:1.2rem; font-weight:600; margin:1rem 0 .4rem; }
+.nt-ed-body p{ margin:.6rem 0; }
+.nt-ed-body ul, .nt-ed-body ol{ margin:.6rem 0; padding-left:1.5rem; }
+.nt-ed-body ul{ list-style:revert; } /* core.css strips bullets from every ul */
+.nt-ed-body table{ border-collapse:collapse; margin:.8rem 0; }
+.nt-ed-body td, .nt-ed-body th{ border:1px solid var(--border); padding:.3rem .55rem; vertical-align:top; }
+.nt-ed-body li{ margin:.25rem 0; }
+.nt-ed-body a{ color:var(--accent); }
+.nt-ed-body blockquote{ margin:.8rem 0; padding:.4rem .8rem; border-left:4px solid var(--accent); background:var(--accent-soft); }
+.nt-ed-body pre{ margin:.8rem 0; padding:.8rem; overflow:auto; border:2px solid var(--border); background:var(--code-bg); color:var(--code-fg); font:13px/1.5 var(--font-mono); white-space:pre-wrap; }
+.nt-ed-body img{ display:block; max-width:100%; height:auto; margin:.8rem 0; border:1px solid var(--border); }
+.nt-ed-body:empty::before{ content:'Start writing…'; color:var(--text-dim); }
+.nt-ed-loading{ display:flex; justify-content:center; padding:3rem; }
+
+/* Canvas note mount fills the editor area below the header */
+.nt-canvas-mount{ flex:1 1 auto; min-width:0; min-height:0; display:flex; overflow:hidden; }
+.nt-newgroup{ display:inline-flex; gap:.3rem; }
+
+/* ---- Shared: empty / spinner --------------------------------------------- */
+.nt-empty{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.9rem; padding:3rem 1.5rem; color:var(--text-dim); text-align:center; flex:1 1 auto; }
+.nt-empty svg{ width:52px; height:52px; opacity:.4; }
+.nt-empty h3{ font-family:var(--font-display); font-size:1.3rem; color:var(--text); }
+.nt-empty p{ font-size:.9rem; max-width:34ch; }
+.nt-spin{ width:30px; height:30px; border:3px solid var(--accent-soft); border-top-color:var(--accent); border-radius:50%; animation:ntspin .7s linear infinite; }
+@keyframes ntspin{ to{ transform:rotate(360deg); } }
+
+/* ---- Mobile --------------------------------------------------------------- */
+.nt-rail-scrim{ display:none; }
+.nt-rail-toggle, .nt-back{ display:none; }
+@media (max-width:1024px){
+  /* Rail becomes an off-canvas drawer, so only the notes list stays resizable.
+     With the rail track gone, the list seam sits at the list width itself. */
+  .nt-shell{ grid-template-columns:var(--rd-list-eff) minmax(0,1fr); }
+  .nt-shell .rd-resizer[data-rd-resize="side"]{ display:none !important; }
+  .nt-shell .rd-rail-label[data-rd-label="side"]{ display:none !important; }
+  .nt-shell .rd-resizer[data-rd-resize="list"]{ left:var(--rd-list-eff); }
+  .nt-shell .rd-rail-label[data-rd-label="list"]{ left:0; }
+  :root[data-rd-side="collapsed"] .nt-rail > .rd-side-inner{ display:flex; }
+  .nt-rail{ position:fixed; top:var(--nav-h); left:0; bottom:0; width:260px; z-index:75; transform:translateX(-102%); transition:transform .28s cubic-bezier(.2,.85,.25,1); }
+  /* Shadow only while open: a closed drawer's shadow bleeds onto the page's left edge. */
+  .nt-rail.is-open{ transform:none; box-shadow:14px 0 34px rgba(0,0,0,.16); }
+  .nt-rail-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; background:rgba(0,0,0,.4); z-index:74; opacity:0; pointer-events:none; transition:opacity .2s; }
+  .nt-rail-scrim.is-open{ opacity:1; pointer-events:auto; }
+  .nt-rail-toggle{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:2px solid var(--border); background:var(--surface); cursor:pointer; color:var(--text); margin-right:.4rem; }
+  .nt-rail-toggle svg{ width:15px; height:15px; }
+}
+@media (max-width:720px){
+  .nt-shell{ grid-template-columns:1fr; }
+  /* Single-pane phone layout — nothing left to resize or collapse. */
+  .nt-shell .rd-resizer, .nt-shell .rd-rail-label{ display:none !important; }
+  :root[data-rd-list="collapsed"] .nt-list{ overflow:auto; }
+  :root[data-rd-list="collapsed"] .nt-list > *{ display:revert; }
+  .nt-panes{ display:grid; grid-template-columns:1fr; min-width:0; min-height:0; }
+  .nt-editor{ display:none; }
+  .nt-panes.nt-show-editor .nt-list{ display:none; }
+  .nt-panes.nt-show-editor .nt-editor{ display:flex; }
+  .nt-back{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:2px solid var(--border); background:var(--surface); cursor:pointer; color:var(--text); }
+  .nt-back svg{ width:16px; height:16px; }
+  .nt-ed-head{ height:52px; padding:.4rem .6rem; gap:.4rem; }
+  .nt-savestate{ min-width:0; max-width:56px; overflow:hidden; }
+  .nt-ed-actions{ gap:.2rem; }
+  .nt-ed-actions .rd-icon-btn{ width:34px; height:34px; }
+}
+/* panes wrapper spans list+editor within the grid */
+.nt-panes{ display:contents; }
+@media (max-width:720px){ .nt-panes{ display:grid; } }
+
+@media (prefers-reduced-motion:reduce){
+  .nt-rail{ transition:none !important; }
+  .nt-list.is-anim .nt-item, .nt-rail.is-anim .rd-side-scroll > *, .nt-rail.is-anim .rd-side-foot > *,
+  .nt-editor > *, .nt-ed-loading, .rd-skel{ animation:none !important; }
+}

@@ -1,0 +1,32 @@
+{% extends '_app_base.html' %}
+{% block title %}ADMIN{% endblock %}
+{% set nav_active = 'admin' %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('admin.css') }}">{% endblock %}
+
+{% block content %}
+<div class="adm-wrap">
+  <div class="adm-head">
+    <div><p class="adm-eyebrow">Operations</p><h1 class="adm-title">Admin<small>CONSOLE</small></h1></div>
+    <p class="adm-head-copy">Manage accounts, platform policy, content and storage health.</p>
+  </div>
+
+  <button class="adm-nav-toggle" id="admNavToggle" aria-label="Admin sections" aria-expanded="false" aria-controls="admNav">Sections<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+  <nav class="adm-nav" id="admNav" aria-label="Admin sections" role="tablist">
+    <button class="adm-nav-link is-active" id="admTabOverview" data-tab="overview" role="tab" aria-selected="true" aria-controls="admPanel">Overview</button>
+    <button class="adm-nav-link" id="admTabUsers" data-tab="users" role="tab" aria-selected="false" aria-controls="admPanel">Accounts</button>
+    <button class="adm-nav-link" id="admTabTempFiles" data-tab="temp-files" role="tab" aria-selected="false" aria-controls="admPanel">Temp files</button>
+    <button class="adm-nav-link" id="admTabNotifications" data-tab="notifications" role="tab" aria-selected="false" aria-controls="admPanel">Notifications</button>
+    <button class="adm-nav-link" id="admTabFeedback" data-tab="feedback" role="tab" aria-selected="false" aria-controls="admPanel">Feedback</button>
+    <button class="adm-nav-link" id="admTabStatistics" data-tab="statistics" role="tab" aria-selected="false" aria-controls="admPanel">Statistics</button>
+    <button class="adm-nav-link" id="admTabStorage" data-tab="storage" role="tab" aria-selected="false" aria-controls="admPanel">Storage</button>
+    <button class="adm-nav-link" id="admTabSettings" data-tab="settings" role="tab" aria-selected="false" aria-controls="admPanel">Settings</button>
+  </nav>
+
+  <div id="admPanel" role="tabpanel" aria-labelledby="admTabOverview" tabindex="-1"><div class="adm-loading" role="status"><span class="adm-spin"></span><span class="sr-only">Loading</span></div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
+<script src="{{ versioned_static('admin.js') }}" defer></script>
+{% endblock %}

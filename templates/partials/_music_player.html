@@ -1,0 +1,103 @@
+<!-- Music Player -->
+<div class="music-player" id="musicPlayer">
+  <!-- Fullscreen header (visible only in expanded mobile view) -->
+  <div class="mp-fs-header" id="mpFsHeader">
+    <button class="mp-fs-collapse" id="mpFsCollapse" title="COLLAPSE">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
+    <span class="mp-fs-label">NOW PLAYING</span>
+    <button class="mp-btn mp-btn-sm mp-fs-playlist-btn" id="mpFsPlaylistBtn" title="PLAYLIST">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="music-player-main">
+    <!-- Dismiss button (mobile: always shown; desktop: music page only) -->
+    <button class="mp-btn mp-btn-sm mp-mobile-close" id="mpMobileClose" title="CLOSE">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><path d="M15 5L5 15M5 5l10 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <div class="music-player-art">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    </div>
+    <div class="music-player-info">
+      <div class="music-player-title-wrap">
+        <div class="mp-phantom-label" id="mpPhantomLabel"></div>
+        <div class="music-player-title" id="mpTitle"><span class="mp-title-inner">NO TRACK</span></div>
+        <div class="music-player-artist" id="mpArtist"></div>
+      </div>
+      <!-- Fullscreen-only action buttons (heart + add to playlist) -->
+      <div class="mp-fs-actions" id="mpFsActions">
+        <button class="mp-fs-action-btn mp-fs-devices-btn" id="mpFsDevicesBtn" title="DEVICES" style="display:none">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+        </button>
+        <button class="mp-fs-action-btn mp-fs-heart-btn" id="mpFsHeart" title="LIKE">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        </button>
+        <button class="mp-fs-action-btn mp-fs-add-btn" id="mpFsAdd" title="ADD TO PLAYLIST">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        </button>
+      </div>
+      <div class="music-player-progress-wrap">
+        <span class="music-player-time" id="mpCurrentTime">0:00</span>
+        <input type="range" class="music-player-progress" id="mpProgress" min="0" max="1000" value="0" step="1">
+        <span class="music-player-time" id="mpDuration">0:00</span>
+      </div>
+    </div>
+    <canvas class="mp-visualizer" id="mpVisualizer"></canvas>
+    <div class="music-player-controls">
+      <button class="mp-btn mp-btn-sm" id="mpFxBtn" title="VISUALIZER">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="20" x2="4" y2="14"/><line x1="8" y1="20" x2="8" y2="8"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="16" y1="20" x2="16" y2="10"/><line x1="20" y1="20" x2="20" y2="16"/></svg>
+      </button>
+      <span class="mp-controls-divider"></span>
+      <button class="mp-btn mp-btn-sm" id="mpShuffle" title="SHUFFLE">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+      </button>
+      <button class="mp-btn" id="mpPrev" title="PREVIOUS">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+      </button>
+      <button class="mp-btn mp-btn-play" id="mpPlay" title="PLAY">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="mp-btn" id="mpNext" title="NEXT">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16 18h2V6h-2zm-8.5-6l8.5 6V6z" transform="scale(-1,1) translate(-24,0)"/></svg>
+      </button>
+      <button class="mp-btn mp-btn-sm" id="mpRepeat" title="REPEAT OFF">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      </button>
+      <button class="mp-btn mp-btn-sm" id="mpAutoplay" title="AUTOPLAY">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-5.095-8 0-8z"/><path d="M5.822 8c-5.096 0-5.096 8 0 8 5.095 0 5.095-8 0-8z"/><line x1="10.5" y1="12" x2="13.5" y2="12"/></svg>
+      </button>
+      <div class="music-player-volume">
+        <button class="mp-btn mp-btn-sm" id="mpVolBtn" title="VOLUME">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+        </button>
+        <input type="range" class="music-player-volume-slider" id="mpVolume" min="0" max="100" value="100">
+      </div>
+    </div>
+    <!-- Mini play button for mobile music mini bar (hidden by default, shown via CSS) -->
+    <button class="mp-btn mp-btn-sm mp-mini-devices" id="mpMiniDevices" title="DEVICES" style="display:none">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+    </button>
+    <button class="mp-btn mp-btn-play mp-mini-play" id="mpMiniPlay" title="PLAY">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+    </button>
+    <div class="music-player-right">
+      <button class="mp-btn mp-btn-sm" id="mpDevicesBtn" title="DEVICES" style="display:none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+      </button>
+      <button class="mp-btn mp-btn-sm" id="mpPlaylistBtn" title="PLAYLIST">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      </button>
+      <button class="mp-btn mp-btn-sm music-player-close" id="mpClose" title="CLOSE">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none"><path d="M15 5L5 15M5 5l10 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="mp-playlist-panel" id="mpPlaylistPanel">
+    <div class="mp-playlist-header">PLAYLIST</div>
+    <div class="mp-playlist-list"></div>
+  </div>
+  <div class="mp-devices-panel" id="mpDevicesPanel">
+    <div class="mp-devices-header">DEVICES</div>
+    <div class="mp-devices-list" id="mpDevicesList"></div>
+  </div>
+</div>

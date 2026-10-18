@@ -1,0 +1,151 @@
+{# Shared file-management modal (populated by manage-modal.js) + re-encrypt
+   progress toast. Include on any page that manages files. #}
+<div class="modal manage-modal" id="manageModal">
+  <div class="manage-modal-panel">
+    <button class="manage-modal-close" id="closeManageModal">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M15 5L5 15M5 5l10 10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+
+    <div class="manage-modal-scroll">
+      <!-- Header -->
+      <div class="manage-modal-header">
+        <div class="manage-modal-icon" id="manageModalIcon"></div>
+        <div class="manage-modal-title-wrap">
+          <div class="manage-modal-name-row">
+            <h2 class="manage-modal-name" id="manageModalName"></h2>
+            <button class="manage-modal-copy-name" id="manageModalCopyName" title="COPY FILE NAME" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+          <div class="manage-modal-badges" id="manageModalBadges"></div>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="manage-modal-tabs">
+        <button class="manage-modal-tab manage-modal-tab-active" data-tab="details">DETAILS</button>
+        <button class="manage-modal-tab" data-tab="settings">SETTINGS</button>
+      </div>
+
+      <!-- Tab: Details -->
+      <div class="manage-modal-tab-content manage-modal-tab-active" data-tab="details">
+        <div class="manage-modal-details" id="manageModalDetails"></div>
+      </div>
+
+      <!-- Tab: Settings -->
+      <div class="manage-modal-tab-content" data-tab="settings">
+        <div class="manage-modal-settings">
+          <!-- Expiration -->
+          <div class="manage-modal-group">
+            <label class="manage-modal-label">EXPIRATION</label>
+            <div class="manage-expiry-dropdown" id="manageExpiryDropdown">
+              <button class="manage-expiry-button" id="manageExpiryBtn" type="button">
+                <span class="manage-expiry-selected" id="manageExpirySelected">NEVER</span>
+                <svg class="manage-expiry-arrow" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="manage-expiry-menu" id="manageExpiryMenu">
+                <div class="manage-expiry-item" data-value="30m">30 MINUTES</div>
+                <div class="manage-expiry-item" data-value="6h">6 HOURS</div>
+                <div class="manage-expiry-item" data-value="1d">1 DAY</div>
+                <div class="manage-expiry-item" data-value="3d">3 DAYS</div>
+                <div class="manage-expiry-item" data-value="7d">7 DAYS</div>
+                <div class="manage-expiry-item" data-value="never">NEVER</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Shareable -->
+          <div class="manage-modal-group manage-modal-toggle-row" id="manageShareableRow">
+            <div class="toggle-switch" id="manageShareableSwitch">
+              <input type="checkbox" class="toggle-checkbox" id="manageShareableToggle">
+              <span class="toggle-slider"></span>
+            </div>
+            <div class="manage-modal-toggle-text">
+              <label class="manage-modal-label" id="manageShareableLabel">SHAREABLE</label>
+              <span class="manage-modal-hint" id="manageShareableHint"></span>
+            </div>
+          </div>
+
+          <!-- E2E Encryption -->
+          <div class="manage-modal-group manage-modal-toggle-row" id="manageE2ERow" style="display:none;">
+            <div class="toggle-switch" id="manageE2ESwitch">
+              <input type="checkbox" class="toggle-checkbox" id="manageE2EToggle">
+              <span class="toggle-slider"></span>
+            </div>
+            <div class="manage-modal-toggle-text">
+              <label class="manage-modal-label" id="manageE2ELabel">END-TO-END ENCRYPTION</label>
+              <span class="manage-modal-hint" id="manageE2EHint"></span>
+            </div>
+          </div>
+
+          <!-- Share section -->
+           <div class="manage-modal-share" id="manageShareSection" style="display:none;">
+             <label class="manage-modal-label">SHARE</label>
+             <div class="manage-modal-share-row">
+               <div class="manage-modal-share-input-wrap">
+                 <input type="text" readonly class="manage-modal-share-input" id="manageShareLink" value="">
+                 <div class="manage-modal-share-spinner" id="manageShareSpinner" style="display:none;">
+                   <div class="manage-modal-share-spinner-icon"></div>
+                 </div>
+               </div>
+               <button class="manage-modal-share-copy" id="manageShareCopy">COPY</button>
+             </div>
+             <div class="manage-modal-wget" id="manageWgetSection" style="display:none;">
+               <label class="manage-modal-label">WGET</label>
+               <div class="manage-modal-share-row">
+                 <code class="manage-modal-share-input manage-modal-cmd" id="manageWgetCommand"></code>
+                 <button class="manage-modal-share-copy" id="manageWgetCopy">COPY</button>
+               </div>
+             </div>
+             <div class="manage-modal-wget" id="manageCliSection" style="display:none;">
+               <label class="manage-modal-label">BASH</label>
+               <div class="manage-modal-share-row">
+                 <code class="manage-modal-share-input manage-modal-cmd" id="manageCliCommand"></code>
+                 <button class="manage-modal-share-copy" id="manageCliCopy">COPY</button>
+               </div>
+             </div>
+             <button class="manage-modal-regenerate-btn" id="manageRegenerateLink" style="display:none;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              REGENERATE SHARE LINK
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="manage-modal-actions">
+        <a href="#" class="manage-modal-btn manage-modal-btn-download" id="manageDownloadBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          DOWNLOAD
+        </a>
+        <button class="manage-modal-btn manage-modal-btn-delete" id="manageDeleteBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          DELETE
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Re-encryption Progress Toast -->
+<div id="reencryptToast" class="upload-progress-toast" style="display: none;">
+  <div class="upload-toast-header">
+    <span class="upload-toast-title" id="reencryptToastTitle">ENCRYPTING</span>
+    <button class="upload-toast-close" id="reencryptToastClose" style="display: none;">&times;</button>
+  </div>
+  <div class="upload-toast-body">
+    <div class="upload-progress-bar">
+      <div class="upload-progress-fill" id="reencryptBar" style="width: 0%;"></div>
+    </div>
+    <div class="upload-stats">
+      <div class="upload-stat">
+        <span class="upload-stat-label">STATUS</span>
+        <span class="upload-stat-value" id="reencryptStatus">PREPARING...</span>
+      </div>
+      <div class="upload-stat">
+        <span class="upload-stat-label">PROGRESS</span>
+        <span class="upload-stat-value" id="reencryptPercent">0%</span>
+      </div>
+    </div>
+  </div>
+</div>

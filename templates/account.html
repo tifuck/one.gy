@@ -1,0 +1,331 @@
+{% extends '_app_base.html' %}
+{% block title %}ACCOUNT{% endblock %}
+{% set nav_active = 'account' %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('account.css') }}">
+<style>
+/* Security/danger dialog primitives. Token-driven only — no hardcoded colours,
+   no inline style attributes. Kept here because static/account.css is
+   owned by the frontend workstream. */
+.acc-mlabel-spaced{margin-top:1rem}
+.acc-hint-spaced{margin-top:.8rem}
+.acc-block-btn{width:100%;margin-top:1rem}
+.acc-captcha{display:flex;align-items:center;gap:.6rem;margin-bottom:.6rem}
+.acc-captcha img{border:2px solid var(--border);background:var(--surface);display:block}
+</style>{% endblock %}
+
+{% block content %}
+<div class="rd-app-wrap acc-layout">
+
+  <!-- Sidebar -->
+  <aside class="acc-side">
+    <div class="acc-side-inner">
+      <div class="acc-side-profile">
+        <img class="acc-side-avatar" src="{{ url_for('user_avatar_svg', user_id=user.id) }}" alt="" width="46" height="46">
+        <div>
+          <div class="acc-side-name">{{ user.username }}</div>
+          <div class="acc-side-role">{{ 'Administrator' if user.is_admin else 'Account' }}</div>
+        </div>
+      </div>
+      <nav class="acc-nav" aria-label="Account sections">
+        <a class="acc-nav-link is-active" href="#profile" data-sec="profile">Profile</a>
+        <a class="acc-nav-link" href="#appearance" data-sec="appearance">Appearance</a>
+        <a class="acc-nav-link" href="#security" data-sec="security">Security</a>
+        {% if allow_api_keys %}<a class="acc-nav-link" href="#apikeys" data-sec="apikeys">API keys</a>{% endif %}
+        <a class="acc-nav-link acc-nav-danger" href="#danger" data-sec="danger">Danger zone</a>
+      </nav>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="acc-main">
+
+    <!-- PROFILE -->
+    <section class="acc-section" id="profile">
+      <h1 class="acc-title">Profile</h1>
+      <div class="acc-card acc-profile">
+        <img class="acc-profile-avatar" src="{{ url_for('user_avatar_svg', user_id=user.id) }}" alt="" width="72" height="72">
+        <dl class="acc-fields">
+          <div class="acc-field"><dt>Username</dt><dd>{{ user.username }}</dd></div>
+          <div class="acc-field"><dt>Email</dt><dd>{{ user.email or '—' }}</dd></div>
+          <div class="acc-field"><dt>Role</dt><dd>{{ 'Administrator' if user.is_admin else 'User' }}</dd></div>
+          {% if user.created_at %}<div class="acc-field"><dt>Member since</dt><dd>{{ user.created_at.strftime('%b %d, %Y') }}</dd></div>{% endif %}
+        </dl>
+      </div>
+
+      <div class="acc-card">
+        <div class="acc-storage-head">
+          <span class="acc-storage-label">Storage</span>
+          <span class="acc-storage-val">{{ storage_used_gb }} / {{ storage_limit_gb }} GB</span>
+        </div>
+        <div class="acc-meter"><div class="acc-meter-fill" style="width:{{ [storage_percent, 100]|min }}%"></div></div>
+        <div class="acc-stats">
+          <div class="acc-stat"><b>{{ file_count }}</b><span>Files</span></div>
+          <div class="acc-stat"><b>{{ folder_count }}</b><span>Folders</span></div>
+          <div class="acc-stat"><b>{{ e2e_file_count }}</b><span>End-to-end encrypted</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- APPEARANCE -->
+    <section class="acc-section" id="appearance">
+      <h1 class="acc-title">Appearance</h1>
+      <p class="acc-lead">Pick a theme — it applies instantly and is remembered on this device.</p>
+      <div class="acc-theme-grid">
+        {% for tid, tlabel, tdesc in [
+          ('frost','Frost','Light · icy blue'),
+          ('frost-dark','Frost Dark','Neutral grey · icy blue') ] %}
+        <button type="button" class="acc-theme-card" data-set-theme="{{ tid }}">
+          <span class="acc-theme-preview" data-swatch="{{ tid }}"><span class="acc-theme-bar"></span><span class="acc-theme-bar sm"></span></span>
+          <span class="acc-theme-name">{{ tlabel }} <span class="rd-menu-check" aria-hidden="true">✓</span></span>
+          <span class="acc-theme-desc">{{ tdesc }}</span>
+        </button>
+        {% endfor %}
+      </div>
+
+    </section>
+
+    <!-- SECURITY -->
+    <section class="acc-section" id="security">
+      <h1 class="acc-title">Security</h1>
+
+      <div class="acc-card acc-2fa">
+        <div class="acc-card-head">
+          <div><div class="acc-sub">Two-factor authentication</div><div class="acc-hint">A code from your authenticator app on every sign-in.</div></div>
+          <span class="acc-status" id="tfaStatus" data-on="{{ 'true' if user.two_factor_enabled else 'false' }}">{{ 'ON' if user.two_factor_enabled else 'OFF' }}</span>
+        </div>
+        <div class="acc-card-actions">
+          <button type="button" class="rd-btn rd-btn-primary" id="tfaEnableBtn" {{ 'hidden' if user.two_factor_enabled }}>Enable 2FA</button>
+          <button type="button" class="rd-btn rd-btn-ghost acc-btn-danger" id="tfaDisableBtn" {{ 'hidden' if not user.two_factor_enabled }}>Disable 2FA</button>
+        </div>
+      </div>
+
+      <div class="acc-card">
+        <div class="acc-card-head">
+          <div><div class="acc-sub">Recovery key</div><div class="acc-hint">The only way to recover encrypted files if you lose your password. Regenerating invalidates the old one.</div></div>
+        </div>
+        <div class="acc-card-actions"><span class="acc-soon">Coming soon</span></div>
+      </div>
+
+      <div class="acc-card">
+        <div class="acc-card-head">
+          <div><div class="acc-sub">Password</div><div class="acc-hint">Your encryption keys are re-wrapped in your browser before anything is sent. Your password never leaves this device. Changing it signs you out on every other device.</div></div>
+        </div>
+        <div class="acc-card-actions">
+          <button type="button" class="rd-btn rd-btn-primary" id="pwChangeBtn">Change password</button>
+        </div>
+      </div>
+
+      <div class="acc-card">
+        <div class="acc-card-head">
+          <div><div class="acc-sub">Sign out everywhere</div><div class="acc-hint">Ends every other active session for this account. This device stays signed in.</div></div>
+        </div>
+        <div class="acc-card-actions">
+          <button type="button" class="rd-btn rd-btn-ghost" id="signOutAllBtn">Sign out other devices</button>
+        </div>
+      </div>
+    </section>
+
+    {% if allow_api_keys %}
+    <!-- API KEYS -->
+    <section class="acc-section" id="apikeys">
+      <h1 class="acc-title">API keys</h1>
+      <p class="acc-lead">Programmatic access with scoped permissions. Keys are shown once at creation.</p>
+      <div class="acc-card">
+        <div class="acc-card-head">
+          <div class="acc-sub">Your keys</div>
+          <button type="button" class="rd-btn rd-btn-primary" id="keyCreateBtn">New key</button>
+        </div>
+        <div id="keyList" class="acc-keylist"><div class="acc-empty" id="keyEmpty">Loading…</div></div>
+      </div>
+    </section>
+    {% endif %}
+
+    <!-- DANGER -->
+    <section class="acc-section" id="danger">
+      <h1 class="acc-title acc-title-danger">Danger zone</h1>
+      <div class="acc-card acc-card-danger">
+        <div class="acc-card-head">
+          <div><div class="acc-sub">Delete all files</div><div class="acc-hint">Permanently removes every file and folder. This cannot be undone.</div></div>
+          <button type="button" class="rd-btn acc-btn-danger" id="delAllBtn">Delete all files</button>
+        </div>
+      </div>
+      <div class="acc-card acc-card-danger">
+        <div class="acc-card-head">
+          <div><div class="acc-sub">Delete account</div><div class="acc-hint">Removes your account and all associated data forever.</div></div>
+          <button type="button" class="rd-btn acc-btn-danger" id="delAcctBtn">Delete account</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- 2FA enable: password re-proof (required by /account/2fa/setup) -->
+<div class="rd-modal" id="tfaStartModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">Confirm your password</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Enter your password to start setting up two-factor authentication.</p>
+      <label class="acc-mlabel" for="tfaStartPw">Password</label>
+      <input type="password" id="tfaStartPw" class="form-input" autocomplete="current-password">
+      <button type="button" class="rd-btn rd-btn-primary acc-block-btn" id="tfaStartBtn">Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- 2FA modal -->
+<div class="rd-modal" id="tfaModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">Enable two-factor</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Scan the code with your authenticator app, then enter the 6-digit code.</p>
+      <div class="acc-qr"><img id="tfaQr" alt="2FA QR code"></div>
+      <div class="acc-secret">Secret: <code id="tfaSecret"></code></div>
+      <label class="acc-mlabel" for="tfaCode">Authentication code</label>
+      <input type="text" id="tfaCode" class="form-input" inputmode="numeric" autocomplete="one-time-code" placeholder="000000" maxlength="6">
+      <button type="button" class="rd-btn rd-btn-primary acc-block-btn" id="tfaConfirmBtn">Verify &amp; enable</button>
+    </div>
+  </div>
+</div>
+
+<!-- 2FA disable: requires password AND a current code -->
+<div class="rd-modal" id="tfaDisableModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">Disable two-factor</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Your account will no longer require a code to sign in. Enter your password and a current code from your authenticator app.</p>
+      <label class="acc-mlabel" for="tfaDisablePw">Password</label>
+      <input type="password" id="tfaDisablePw" class="form-input" autocomplete="current-password">
+      <label class="acc-mlabel acc-mlabel-spaced" for="tfaDisableCode">Authentication code</label>
+      <input type="text" id="tfaDisableCode" class="form-input" inputmode="numeric" autocomplete="one-time-code" placeholder="000000" maxlength="6">
+      <button type="button" class="rd-btn acc-btn-danger acc-block-btn" id="tfaDisableConfirmBtn">Disable two-factor</button>
+    </div>
+  </div>
+</div>
+
+<!-- Change password -->
+<div class="rd-modal" id="pwModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">Change password</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Your encryption keys are unlocked and re-wrapped in this browser. Your password is never sent to the server.</p>
+      <label class="acc-mlabel" for="pwCurrent">Current password</label>
+      <input type="password" id="pwCurrent" class="form-input" autocomplete="current-password">
+      <label class="acc-mlabel acc-mlabel-spaced" for="pwNew">New password</label>
+      <input type="password" id="pwNew" class="form-input" autocomplete="new-password" minlength="6">
+      <label class="acc-mlabel acc-mlabel-spaced" for="pwConfirm">Confirm new password</label>
+      <input type="password" id="pwConfirm" class="form-input" autocomplete="new-password" minlength="6">
+      <p class="acc-hint acc-hint-spaced">At least 6 characters. All your other devices will be signed out.</p>
+      <button type="button" class="rd-btn rd-btn-primary acc-block-btn" id="pwSaveBtn">Change password</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sign out other devices -->
+<div class="rd-modal" id="signOutAllModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">Sign out other devices</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Every other session for this account ends immediately. This device stays signed in.</p>
+      <label class="acc-mlabel" for="signOutAllPw">Password</label>
+      <input type="password" id="signOutAllPw" class="form-input" autocomplete="current-password">
+      <button type="button" class="rd-btn rd-btn-primary acc-block-btn" id="signOutAllConfirmBtn">Sign out other devices</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete all files: requires password AND captcha -->
+<div class="rd-modal" id="delAllModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">Delete all files</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Every file and folder is permanently deleted. Your account stays. This cannot be undone.</p>
+      <label class="acc-mlabel" for="delAllPw">Password</label>
+      <input type="password" id="delAllPw" class="form-input" autocomplete="current-password">
+      <label class="acc-mlabel acc-mlabel-spaced" for="delAllCaptcha">Solve the captcha</label>
+      <div class="acc-captcha">
+        <img id="delAllCaptchaImg" alt="Captcha challenge" width="150" height="50">
+        <button type="button" class="rd-btn rd-btn-ghost" id="delAllCaptchaReload">Refresh</button>
+      </div>
+      <input type="text" id="delAllCaptcha" class="form-input" inputmode="numeric" autocomplete="off" placeholder="Answer">
+      <button type="button" class="rd-btn acc-btn-danger acc-block-btn" id="delAllConfirmBtn">Delete everything</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete account: requires password AND captcha -->
+<div class="rd-modal" id="delAcctModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">Delete account</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Your account, files, folders and notes are removed forever. This cannot be undone.</p>
+      <label class="acc-mlabel" for="delAcctPw">Password</label>
+      <input type="password" id="delAcctPw" class="form-input" autocomplete="current-password">
+      <label class="acc-mlabel acc-mlabel-spaced" for="delAcctCaptcha">Solve the captcha</label>
+      <div class="acc-captcha">
+        <img id="delAcctCaptchaImg" alt="Captcha challenge" width="150" height="50">
+        <button type="button" class="rd-btn rd-btn-ghost" id="delAcctCaptchaReload">Refresh</button>
+      </div>
+      <input type="text" id="delAcctCaptcha" class="form-input" inputmode="numeric" autocomplete="off" placeholder="Answer">
+      <button type="button" class="rd-btn acc-btn-danger acc-block-btn" id="delAcctConfirmBtn">Delete my account</button>
+    </div>
+  </div>
+</div>
+
+<!-- API key create modal -->
+{% if allow_api_keys %}
+<div class="rd-modal" id="keyModal" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3">New API key</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body">
+      <label class="acc-mlabel">Label</label>
+      <input type="text" id="keyLabel" class="form-input" placeholder="e.g. CI upload" maxlength="80">
+      <label class="acc-mlabel" style="margin-top:1rem">Account password</label>
+      <input type="password" id="keyPw" class="form-input" autocomplete="current-password">
+      <label class="acc-mlabel" id="keyTotpLabel" style="margin-top:1rem"{% if not user.two_factor_enabled %} hidden{% endif %}>Authenticator code</label>
+      <input type="text" id="keyTotp" class="form-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"{% if not user.two_factor_enabled %} hidden{% endif %}>
+      <label class="acc-mlabel" style="margin-top:1rem">Permissions</label>
+      <div class="acc-perms">
+        {% for pid, plabel in [('read','Read'),('write','Write'),('delete','Delete'),('list','List')] %}
+        <label class="acc-perm"><input type="checkbox" data-perm="{{ pid }}"><span class="toggle-slider" aria-hidden="true"></span>{{ plabel }}</label>
+        {% endfor %}
+      </div>
+      <button type="button" class="rd-btn rd-btn-primary" id="keySaveBtn" style="width:100%;margin-top:1rem">Create key</button>
+      <div class="acc-keyreveal" id="keyReveal" hidden>
+        <p class="acc-hint">Copy this now — it won't be shown again.</p>
+        <div class="acc-keycode"><code id="keyValue"></code><button type="button" class="rd-btn rd-btn-ghost" id="keyCopy">Copy</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
+<script src="{{ versioned_static('account.js') }}" defer></script>
+{% endblock %}

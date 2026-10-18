@@ -1,0 +1,69 @@
+/* ============================================================================
+   FROST SHARE — quick-share page: hero, temp-uploads table, context menu.
+   Uploader styling lives in uploader.css; manage modal in manage.css.
+   ========================================================================== */
+.share-hero-sec{text-align:center}
+.share-hero-sec .rd-container{max-width:660px}
+.share-badge{display:inline-flex;align-items:center;gap:.5rem;font-family:var(--font-mono);font-size:.7rem;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--text-dim);margin-bottom:1.2rem}
+.share-badge-dot{width:8px;height:8px;background:var(--accent);border-radius:50%;box-shadow:0 0 0 4px var(--accent-soft)}
+.share-title{font-family:var(--font-display);font-weight:800;text-transform:uppercase;letter-spacing:-.02em;
+  font-size:clamp(2.4rem,6vw,4rem);margin-bottom:1rem}
+.share-subtitle{font-family:var(--font-mono);font-size:.82rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim);margin-bottom:2.2rem}
+.share-uploader-wrap{max-width:520px;margin-inline:auto;text-align:left}
+
+/* ---- Temp uploads table ------------------------------------------------- */
+.share-files-area{max-width:var(--maxw);margin-inline:auto;padding:0 clamp(1.15rem,4vw,2.5rem) clamp(3rem,7vw,5rem)}
+.temp-files-section{margin-top:.5rem}
+.section-title{font-family:var(--font-display);font-weight:800;text-transform:uppercase;letter-spacing:-.01em;
+  font-size:clamp(1.3rem,2.6vw,1.7rem);margin-bottom:1.2rem}
+.temp-browser{border:2px solid var(--border)}
+.temp-browser-header,.temp-browser-row{display:grid;
+  grid-template-columns:minmax(0,2.4fr) minmax(0,1.5fr) 52px 96px 128px 132px;align-items:center;gap:.6rem;padding:.7rem .9rem}
+.temp-browser-header{background:var(--text);color:var(--bg);font-family:var(--font-mono);font-size:.64rem;
+  font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.temp-browser-row{border-top:2px solid var(--border);transition:background .15s var(--ease)}
+.temp-browser-row:hover{background:var(--surface)}
+.browser-col{min-width:0}
+.col-name{display:flex;align-items:center;gap:.6rem}
+.file-icon-small{font-size:1.15rem;flex:none;line-height:1}
+.file-icon-small svg{width:20px;height:20px}
+.file-thumbnail{width:30px;height:30px;object-fit:cover;border:1px solid var(--border);flex:none}
+.file-name-text{font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-name-ext{color:var(--text-dim)}
+.col-size,.col-date{font-family:var(--font-mono);font-size:.76rem;color:var(--text-dim)}
+
+.file-badge{display:inline-flex;align-items:center;gap:.3rem;font-family:var(--font-mono);font-size:.6rem;
+  letter-spacing:.04em;text-transform:uppercase;border:1px solid var(--border);padding:.15rem .4rem;color:var(--text-dim)}
+.file-badge-expires{border-color:#e5940a;color:#c47a06}
+.file-badge-public{border-color:var(--accent);color:var(--accent)}
+.badge-icon{width:11px;height:11px}
+.enc-icon{width:10px;height:10px;border-radius:50%;display:inline-block}
+.enc-icon-e2e{background:#1f9d57}
+.enc-icon-server{background:var(--text-dim)}
+
+.col-actions{display:flex;gap:.35rem;justify-content:flex-end}
+.action-btn{width:30px;height:30px;flex:none;display:grid;place-items:center;border:2px solid var(--border);
+  background:transparent;color:var(--text);cursor:pointer;text-decoration:none;transition:all .15s var(--ease)}
+.action-btn svg{width:15px;height:15px}
+.action-btn:hover{border-color:var(--accent);color:var(--accent)}
+.action-delete:hover{border-color:#d8231b;color:#d8231b}
+
+/* ---- Context menu ------------------------------------------------------- */
+.context-menu{position:fixed;z-index:250;min-width:180px;background:var(--bg);border:2px solid var(--border);
+  box-shadow:var(--shadow-2);display:none}
+.context-menu.visible{display:block}
+.context-menu-item{display:flex;align-items:center;gap:.6rem;padding:.55rem .8rem;font-family:var(--font-mono);
+  font-size:.76rem;letter-spacing:.03em;cursor:pointer}
+.context-menu-item:hover{background:var(--accent-soft);color:var(--accent)}
+.context-menu-item.danger:hover{background:rgba(216,35,27,.1);color:#d8231b}
+.context-icon{display:inline-grid;place-items:center}
+.context-icon svg{width:15px;height:15px}
+.context-menu-divider{height:2px;background:var(--border)}
+
+@media (max-width:720px){
+  .temp-browser-header{display:none}
+  .temp-browser-row{grid-template-columns:1fr auto;gap:.4rem .6rem}
+  .col-tags,.col-encryption,.col-date{display:none}
+  .col-size{grid-column:1;font-size:.7rem}
+}

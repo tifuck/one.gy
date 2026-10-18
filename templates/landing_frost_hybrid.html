@@ -1,0 +1,215 @@
+{% extends 'base.html' %}
+{% block title %}ONE.GY{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('frost-hybrid.css') }}"><link rel="stylesheet" href="{{ versioned_static('uploader.css') }}">{% endblock %}
+
+{% block content %}
+<!-- ═══ HERO (dossier + console terminal, sweep behind) ════════════════ -->
+<section class="rd-hero">
+  <div class="rd-container">
+    <div class="doss-rule">
+      <span>File ref <b>ONE.GY</b></span>
+      <span>Classification <b>Zero-knowledge</b></span>
+      <span>Cipher <b>AES-256-GCM</b></span>
+      <span>Server can decrypt <b style="color:var(--accent)">Negative</b></span>
+      <span class="doss-stamp">Unreadable</span>
+    </div>
+
+    <div class="fh-grid">
+      <div class="fh-copy">
+        <h1 class="rd-h1">The server<br>knows
+          <span class="redact" tabindex="0" role="button" aria-label="Reveal: nothing">nothing</span>.</h1>
+        <p class="rd-lead">Files, filenames and notes are encrypted in your browser before upload.
+          What we store is ciphertext and hashes — redacted by design.</p>
+        <div class="fh-actions">
+          {% if session.get('logged_in_user_id') %}
+            <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('files') }}">Open files</a>
+          {% elif allow_registration %}
+            <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('register') }}">Get started</a>
+          {% else %}
+            <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('login') }}">Sign in</a>
+          {% endif %}
+          <button class="rd-btn rd-btn-ghost rd-btn-lg" type="button" data-rd-modal-open="howModal">The method</button>
+        </div>
+      </div>
+
+      {% if allow_temp_uploads %}
+      {% include '_uploader.html' %}
+      {% else %}
+      <div class="rd-terminal fh-console">
+        <div class="rd-terminal-bar">
+          <span class="rd-tdot"></span><span class="rd-tdot"></span><span class="rd-tdot"></span>
+          <span class="rd-terminal-title">onegy — session</span>
+        </div>
+<pre class="rd-terminal-body"><span class="rd-t-dim">$</span> onegy login
+<span class="rd-t-dim">deriving keys</span> <span class="rd-t-dim">· PBKDF2 · 600k</span>
+  <span class="rd-t-dim">├─</span> <span class="rd-t-accent">auth token</span>   <span class="rd-t-dim">→ server sees sha-256</span>
+  <span class="rd-t-dim">└─</span> <span class="rd-t-accent">wrapping key</span> <span class="rd-t-dim">→ stays local</span>
+      <span class="rd-t-dim">└─</span> master key <span class="rd-t-dim">· AES-256-GCM</span>
+<span class="rd-t-ok">✓ unlocked</span> <span class="rd-t-dim">— zero-knowledge session</span>
+
+<span class="rd-t-dim">$</span> onegy up report.pdf
+<span class="rd-t-dim">encrypting · local</span> ████████████ <span class="rd-t-ok">ok</span>
+<span class="rd-t-accent">→</span> https://{{ domain }}/f/a1b2c3<span class="rd-t-dim">#key=…</span>
+
+<span class="rd-t-dim">$</span> <span class="fh-caret"></span></pre>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- ═══ MARQUEE ════════════════════════════════════════════════════════ -->
+<div class="rd-marquee" aria-hidden="true">
+  <div class="rd-marquee-track">
+    {% for _ in range(2) %}
+    <div class="rd-marquee-group">
+      <span class="rd-marquee-item">AES-256-GCM</span><span class="rd-marquee-item">Split-key auth</span>
+      <span class="rd-marquee-item">Encrypted filenames</span><span class="rd-marquee-item">Auto-expiring links</span>
+      <span class="rd-marquee-item">Multi-node replication</span><span class="rd-marquee-item">RSA-OAEP 4096</span>
+      <span class="rd-marquee-item">Terminal CLI</span><span class="rd-marquee-item">REST API</span>
+      <span class="rd-marquee-item">2FA TOTP</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- ═══ STATS (ruled row) ══════════════════════════════════════════════ -->
+<section class="rd-section">
+  <div class="rd-container">
+    <div class="rd-statgrid">
+      <div class="rd-stat rd-reveal">
+        <div class="rd-stat-num rd-count" data-final="{{ landing_stats.backup_completion_percent_label }}">{{ landing_stats.backup_completion_percent_label }}</div>
+        <div class="rd-stat-label">Mirrored<span class="rd-status-dot rd-status-{{ landing_stats.backup_completion_status }}"></span></div>
+        <div class="rd-stat-sub">Live replication status</div>
+      </div>
+      <div class="rd-stat rd-reveal" style="--rd:.1s">
+        <div class="rd-stat-num rd-count" data-final="{{ landing_stats.total_display_file_bytes_formatted }}">{{ landing_stats.total_display_file_bytes_formatted }}</div>
+        <div class="rd-stat-label">Encrypted</div>
+        <div class="rd-stat-sub">Across active storage nodes</div>
+      </div>
+      <div class="rd-stat rd-reveal" style="--rd:.2s">
+        <div class="rd-stat-num rd-count" data-final="{{ landing_stats.files_fully_synced_label }}">{{ landing_stats.files_fully_synced_label }}</div>
+        <div class="rd-stat-label">Fully mirrored</div>
+        <div class="rd-stat-sub">Of {{ landing_stats.total_active_files_label }} active files</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ LOWER SECTIONS (ambient glyph field behind) ═══════════════════ -->
+<div class="rd-lowbg">
+<canvas class="rd-lowbg-canvas" aria-hidden="true"></canvas>
+
+<!-- ═══ CAPABILITIES ═══════════════════════════════════════════════════ -->
+<section class="rd-section">
+  <div class="rd-container">
+    <div class="rd-section-head rd-reveal">
+      <span class="rd-kicker rd-kicker-plain">§ Capabilities</span>
+      <h2 class="rd-h2" style="margin-top:.8rem">One vault. Every workflow.</h2>
+    </div>
+    <div class="rd-cardgrid">
+      {% set caps = [
+        ('Encryption', 'End-to-end encryption', 'AES-256-GCM with a client-side key hierarchy. Keys are derived in your browser and never leave it.', '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+        ('Drive', 'Cloud drive', 'Folders, trash, bulk actions and instant search in a fast single-page drive built for keyboard and drag-and-drop.', '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+        ('Shares', 'Auto-expiring shares', 'Temporary links with download limits, passwords and expiry. Share secrets travel in the URL hash — never to the server.', '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
+        ('Notes', 'Encrypted notes', 'Notebooks with rich text and a canvas mode. Titles, tags and content are all sealed with per-note keys.', '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/>'),
+        ('Audio', 'Built-in music', 'A persistent player with playlists, likes and device sync that keeps playing while you work.', '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'),
+        ('Interface', 'CLI + REST API', 'A static Go binary for E2EE uploads from any terminal, plus a full REST API with scoped keys.', '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>')
+      ] %}
+      {% for tag, title, body, icon in caps %}
+      <article class="rd-card rd-reveal" style="--rd:{{ loop.index0 * 0.05 }}s">
+        <span class="cap-tag">{{ tag }}</span>
+        <span class="rd-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{{ icon|safe }}</svg></span>
+        <h3 class="rd-h3">{{ title }}</h3>
+        <p>{{ body }}</p>
+      </article>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<!-- ═══ SECURITY (data sheet) ══════════════════════════════════════════ -->
+<section class="rd-section">
+  <div class="rd-container rd-split">
+    <div class="rd-split-copy rd-reveal">
+      <span class="rd-kicker rd-kicker-plain">§ Security model</span>
+      <h2 class="rd-h2" style="margin-top:.8rem">What we can and can't see.</h2>
+      <p class="rd-lead" style="margin-top:1rem">Your password is split in the browser: one half authenticates,
+        the other unwraps your master key. The table is the whole story.</p>
+      <ul class="rd-checklist">
+        {% for item in [
+          'Split-key authentication — raw passwords are never stored',
+          'Filenames encrypted client-side with per-file keys',
+          'Link secrets derived via HKDF — never stored server-side',
+          'Checksum-verified replication across storage nodes'
+        ] %}
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <div class="rd-reveal" style="--rd:.12s">
+      <table class="doss-sheet">
+        <thead><tr><th>Field stored</th><th>Value</th><th>Readable</th></tr></thead>
+        <tbody>
+          <tr><td>File blob</td><td>ciphertext</td><td class="no">No</td></tr>
+          <tr><td>Filename</td><td>encrypted</td><td class="no">No</td></tr>
+          <tr><td>Master key</td><td>null</td><td class="no">No</td></tr>
+          <tr><td>Note body</td><td>ciphertext</td><td class="no">No</td></tr>
+          <tr><td>Auth token</td><td>SHA-256 hash</td><td class="yes">Hash only</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ CTA ════════════════════════════════════════════════════════════ -->
+<section class="rd-cta">
+  <div class="rd-container">
+    <h2 class="rd-h2 rd-reveal">Put your files under seal.</h2>
+    <div class="rd-cta-actions rd-reveal" style="--rd:.1s">
+      {% if session.get('logged_in_user_id') %}
+        <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('files') }}">Open files</a>
+      {% elif allow_registration %}
+        <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('register') }}">Create account</a>
+      {% else %}
+        <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('login') }}">Sign in</a>
+      {% endif %}
+      {% if allow_temp_uploads %}<a class="rd-btn rd-btn-ghost rd-btn-lg" href="{{ url_for('share') }}">Quick share</a>{% endif %}
+    </div>
+  </div>
+</section>
+
+</div><!-- /rd-lowbg -->
+
+<!-- ═══ MODAL ══════════════════════════════════════════════════════════ -->
+<div class="rd-modal" id="howModal" role="dialog" aria-modal="true" aria-labelledby="howTitle" aria-hidden="true">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head">
+      <h3 class="rd-h3" id="howTitle">The method</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="rd-modal-body">
+      <p>Your password is stretched with PBKDF2 (600k iterations) and split into two independent values in your browser.</p>
+      <p><strong>Half one</strong> becomes an auth token; we store only its SHA-256 hash.</p>
+      <p><strong>Half two</strong> unwraps your master key, which never leaves the browser and derives per-file keys, an RSA-4096 sharing key and HKDF link secrets.</p>
+      <p>What reaches our servers is ciphertext and hashes. Nothing stored can decrypt your files.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+;(function(){
+  document.querySelectorAll('.redact').forEach(function(el){
+    function t(){ el.classList.toggle('is-open') }
+    el.addEventListener('click', t)
+    el.addEventListener('keydown', function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); t() } })
+  })
+})()
+</script>
+<script src="{{ versioned_static('glyph-bg.js') }}" defer></script>
+{% endblock %}

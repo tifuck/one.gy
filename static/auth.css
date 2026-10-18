@@ -1,0 +1,41 @@
+/* ============================================================================
+   FROST AUTH — login / register / 2FA / recovery. Re-skins the existing
+   auth-* + form-* markup; forms and crypto scripts are unchanged.
+   ========================================================================== */
+/* Fill main (which flexes to viewport minus footer) and center the card,
+   so there's no 100vh + footer overflow / phantom scrollbar. */
+main:has(.auth-container){display:flex;flex-direction:column}
+.auth-container{flex:1 0 auto;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:1rem;padding:calc(var(--nav-h) + 1.5rem) clamp(1.15rem,4vw,2rem) 2rem}
+.auth-box{width:100%;max-width:26rem;background:var(--surface);border:2px solid var(--border);
+  box-shadow:8px 8px 0 var(--accent);padding:clamp(1.6rem,4vw,2.4rem)}
+.auth-box h1{font-family:var(--font-display);font-weight:800;letter-spacing:-.02em;text-transform:uppercase;
+  font-size:clamp(1.8rem,4vw,2.4rem);margin-bottom:.4rem}
+.auth-subtitle{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--text-dim);line-height:1.5;margin-bottom:1.4rem}
+.auth-form{display:flex;flex-direction:column;gap:1.1rem;margin-top:1.2rem}
+
+.form-group{display:flex;flex-direction:column;gap:.45rem}
+.form-group label{font-family:var(--font-mono);font-size:.66rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim)}
+/* .form-input primitive lives in components.css (sitewide) */
+.auth-hint{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.04em;text-transform:uppercase;color:var(--text-dim)}
+
+.btn-primary{margin-top:.4rem;width:100%;padding:.85rem 1rem;background:var(--text);color:var(--bg);border:2px solid var(--text);
+  font-family:var(--font-mono);font-weight:600;font-size:.85rem;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;
+  transition:transform .2s var(--ease),background .2s var(--ease),box-shadow .2s var(--ease)}
+.btn-primary:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast);transform:translate(-2px,-2px);box-shadow:4px 4px 0 var(--text)}
+.btn-primary:active{transform:none;box-shadow:none}
+.btn-primary:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
+
+.auth-link{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.02em;text-transform:uppercase;
+  color:var(--text-dim);text-align:center;margin-top:.9rem;line-height:1.6}
+.auth-link a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
+.auth-link a:hover{border-bottom-color:var(--accent)}
+
+/* Captcha */
+.captcha-container{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+.captcha-image{height:44px;border:2px solid var(--border);background:#fff;flex:none}
+.captcha-refresh{width:40px;height:44px;flex:none;display:grid;place-items:center;border:2px solid var(--border);
+  background:transparent;color:var(--text-dim);cursor:pointer}
+.captcha-refresh:hover{color:var(--accent);border-color:var(--accent)}
+.captcha-input{flex:1;min-width:8rem}

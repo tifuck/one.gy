@@ -1,0 +1,802 @@
+{% extends 'base.html' %}
+{% block title %}SIGN IN{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('auth.css') }}">{% endblock %}
+
+{% block content %}
+<script nonce="{{ csp_nonce }}">
+// Clear last-visited-page preference on login page (covers logout + session expiry)
+try { localStorage.removeItem('onegy_last_page') } catch(e) {}
+try {
+  if (window.OneGyCrypto && typeof window.OneGyCrypto.clearSessionKeys === 'function') {
+    window.OneGyCrypto.clearSessionKeys()
+  }
+} catch(e) {}
+try {
+  sessionStorage.removeItem('onegy_master_key')
+  sessionStorage.removeItem('onegy_private_key')
+  sessionStorage.removeItem('onegy_keys_present')
+  sessionStorage.removeItem('e2e_passphrase')
+  sessionStorage.removeItem('e2e_share_url')
+} catch(e) {}
+</script>
+<div class="auth-container">
+  <div id="loginBox" class="auth-box">
+    <h1>LOGIN</h1>
+    <!-- AUDIT FIX C1: the form had no action/method, so with JS disabled (or if
+         the submit handler throws before preventDefault) the browser issued a
+         GET to the current URL and silently re-rendered the login page. Point it
+         at the server-rendered POST handler so a plain submit degrades to the
+         legacy password path instead of failing invisibly. -->
+    <form id="loginForm" class="auth-form" autocomplete="off"
+          action="{{ url_for('login') }}" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
+      <div class="form-group">
+        <label for="username">USERNAME</label>
+        <input type="text" id="username" name="username" class="form-input" required autofocus>
+      </div>
+      <div class="form-group">
+        <label for="password">PASSWORD</label>
+        <input type="password" id="password" name="password" class="form-input" required>
+      </div>
+      <div class="form-group" id="loginCaptchaGroup" style="display:none">
+        <label for="loginCaptcha">CAPTCHA</label>
+        <div class="captcha-container">
+          <button type="button" id="loginCaptchaRefresh" class="captcha-refresh" title="LOAD NEW CAPTCHA" aria-label="Refresh captcha">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M13.65 2.35A7.96 7.96 0 008 0C3.58 0 .01 3.58.01 8S3.58 16 8 16c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 018 14 6 6 0 012 8a6 6 0 016-6c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/></svg>
+          </button>
+          <img id="loginCaptchaImg" alt="CAPTCHA" class="captcha-image" draggable="false">
+          <input type="text" id="loginCaptcha" name="captcha" class="form-input captcha-input" placeholder="ANSWER" autocomplete="off" inputmode="numeric">
+        </div>
+      </div>
+      <button type="submit" id="loginBtn" class="btn-primary">LOGIN</button>
+    </form>
+    {% if allow_registration %}
+    <p class="auth-link">DON'T HAVE AN ACCOUNT? <a href="{{ url_for('register') }}">REGISTER HERE</a></p>
+    {% endif %}
+    <p class="auth-link"><a href="#" id="showRecoveryLink">RECOVER ACCOUNT WITH RECOVERY KEY</a></p>
+    {% if allow_temp_uploads %}
+    <p class="auth-link">OR <a href="{{ url_for('share') }}">CONTINUE AS GUEST</a></p>
+    {% endif %}
+  </div>
+
+  <!-- Inline 2FA Verification (shown after password auth when 2FA is enabled) -->
+  <div id="twoFactorBox" class="auth-box" style="display: none;">
+    <h1>TWO-FACTOR AUTH</h1>
+    <p class="auth-subtitle">ENTER THE 6-DIGIT CODE FROM YOUR AUTHENTICATOR APP</p>
+    <form id="inlineTwoFactorForm" class="auth-form" autocomplete="off">
+      <div class="form-group">
+        <label for="totp_code">AUTHENTICATION CODE</label>
+        <input type="text" id="totp_code" name="totp_code" class="form-input auth-code-input" required
+               maxlength="6" inputmode="numeric" pattern="[0-9]{6}"
+               placeholder="000000">
+      </div>
+      <button type="submit" id="verifyBtn" class="btn-primary">VERIFY</button>
+    </form>
+    <p class="auth-link"><a href="#" id="cancelTwoFactorLink">BACK TO LOGIN</a></p>
+  </div>
+
+  <!-- Recovery Key Form (hidden by default, replaces login box) -->
+  <div id="recoveryForm" class="auth-box" style="display: none;">
+    <h1>ACCOUNT RECOVERY</h1>
+    <p class="auth-subtitle">ENTER YOUR RECOVERY KEY TO RESET YOUR PASSWORD</p>
+    <form id="recoveryFormInner" class="auth-form" autocomplete="off">
+      <div class="form-group">
+        <label for="rec_username">USERNAME</label>
+        <input type="text" id="rec_username" class="form-input" required>
+      </div>
+      <div class="form-group">
+        <label for="rec_key">RECOVERY KEY</label>
+        <input type="text" id="rec_key" class="form-input auth-mono-input" required placeholder="BASE64 RECOVERY KEY">
+      </div>
+      <div class="form-group">
+        <label for="rec_new_password">NEW PASSWORD</label>
+        <input type="password" id="rec_new_password" class="form-input" required minlength="6">
+      </div>
+      <div class="form-group">
+        <label for="rec_confirm_password">CONFIRM NEW PASSWORD</label>
+        <input type="password" id="rec_confirm_password" class="form-input" required minlength="6">
+      </div>
+      <button type="submit" id="recoveryBtn" class="btn-primary">RECOVER ACCOUNT</button>
+    </form>
+    <p class="auth-link"><a href="#" id="showLoginLink">BACK TO LOGIN</a></p>
+  </div>
+</div>
+
+<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script nonce="{{ csp_nonce }}">
+document.addEventListener('DOMContentLoaded', function() {
+  try {
+    if (window.OneGyCrypto && typeof window.OneGyCrypto.clearSessionKeys === 'function') {
+      window.OneGyCrypto.clearSessionKeys()
+    }
+  } catch(e) {}
+})
+
+// Clear login-trigger notification dismissals from sessionStorage so they show again on re-login
+function clearLoginNotifDismissals() {
+  try { sessionStorage.removeItem('onegy_notif_dismissed_session') } catch (e) {}
+  var keys = []
+  for (var i = 0; i < sessionStorage.length; i++) {
+    var k = sessionStorage.key(i)
+    if (k && k.indexOf('dismissed_login_notif_') === 0) keys.push(k)
+  }
+  keys.forEach(function(k) { sessionStorage.removeItem(k) })
+}
+
+// Pending 2FA state — holds password/splitKeys in memory across the inline 2FA step
+let pending2FA = null
+
+// Helper: safely parse JSON from a fetch response — handles non-JSON errors
+// (e.g. Flask-WTF CSRF failure returns HTML, which causes JSON.parse to throw
+// a cryptic browser-specific error like "The string did not match the expected pattern")
+async function safeParseJSON(response) {
+  const ct = response.headers.get('content-type') || ''
+  if (ct.includes('application/json')) {
+    return await response.json()
+  }
+  // Non-JSON response — extract a meaningful error from the HTML/text body
+  const text = await response.text()
+  if (text.includes('CSRF')) {
+    throw new Error('SESSION EXPIRED — PLEASE REFRESH THE PAGE AND TRY AGAIN')
+  }
+  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS — PLEASE WAIT' : 'REQUEST FAILED — PLEASE REFRESH THE PAGE')
+}
+
+// ─── Login Flow ─────────────────────────────────────────────────────
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
+  e.preventDefault()
+  
+  const btn = document.getElementById('loginBtn')
+  const csrfToken = document.getElementById('csrf_token').value
+  
+  const username = document.getElementById('username').value.trim()
+  const password = document.getElementById('password').value
+  
+  if (!username || !password) return
+  
+  btn.disabled = true
+  btn.textContent = 'LOGGING IN...'
+  
+  try {
+    // Step 0: Pre-login — get auth protocol version + salt.
+    // Do not fall back to a raw-password POST: a v1 account would be
+    // rejected and the failure counted toward captcha/lockout.
+    let splitKeyVersion = 0
+    let authTokenSalt = null
+    let splitKeys = null
+    const preResp = await fetch('/auth/pre-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+      body: JSON.stringify({ username })
+    })
+    if (!preResp.ok) throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE — REFRESH AND RETRY')
+    const preData = await preResp.json()
+    if (!preData || !Number.isInteger(preData.split_key_version) || preData.split_key_version < 0) {
+      throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE — REFRESH AND RETRY')
+    }
+    splitKeyVersion = preData.split_key_version
+    authTokenSalt = preData.auth_token_salt
+
+    // Step 1: Derive auth credentials
+    let loginPayload = { username }
+    const captchaInput = document.getElementById('loginCaptcha')
+    if (captchaInput && captchaInput.value.trim()) loginPayload.captcha = captchaInput.value.trim()
+    if (splitKeyVersion >= 1) {
+      try {
+        if (typeof authTokenSalt !== 'string' || !authTokenSalt.trim() || !atob(authTokenSalt).length) throw new Error('INVALID SALT')
+      } catch (saltErr) {
+        throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE — REFRESH AND RETRY')
+      }
+      if (!window.crypto || !window.crypto.subtle) {
+        throw new Error('SECURE LOGIN REQUIRES A MODERN HTTPS BROWSER WITH WEBCRYPTO ENABLED')
+      }
+      try {
+        // Split-key: derive auth_token + wrapping_key from password (server never sees password)
+        splitKeys = await OneGyCrypto.deriveAuthAndWrappingKeys(password, authTokenSalt)
+        loginPayload.auth_token = splitKeys.authToken
+      } catch (deriveErr) {
+        console.warn('[LOGIN] Split-key derivation failed:', deriveErr)
+        throw new Error('SECURE LOGIN REQUIRES A MODERN HTTPS BROWSER WITH WEBCRYPTO ENABLED')
+      }
+    } else if (splitKeyVersion === 0) {
+      // Password authentication is only for legacy accounts.
+      loginPayload.password = password
+    }
+
+    // Step 2: Authenticate and get encrypted key material
+    let response = await fetch('{{ url_for("login") }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRFToken': csrfToken
+      },
+      body: JSON.stringify(loginPayload)
+    })
+    
+    let result = await safeParseJSON(response)
+
+    if (!response.ok) {
+      if (result.captcha_required) {
+        const group = document.getElementById('loginCaptchaGroup')
+        const img = document.getElementById('loginCaptchaImg')
+        if (group) group.style.display = ''
+        if (img) img.src = '{{ url_for("captcha") }}?t=' + Date.now()
+        if (captchaInput) { captchaInput.value = ''; captchaInput.focus() }
+        throw new Error(result.error || 'CAPTCHA REQUIRED')
+      }
+      throw new Error(result.error || 'LOGIN FAILED')
+    }
+
+    // Check if 2FA is required — show inline TOTP input (no page redirect)
+    if (result.two_factor_required) {
+      // Store credentials in closure for use after TOTP verification
+      pending2FA = { splitKeys, password, splitKeyVersion }
+      document.getElementById('loginBox').style.display = 'none'
+      document.getElementById('twoFactorBox').style.display = 'block'
+      document.getElementById('totp_code').focus()
+      btn.disabled = false
+      btn.textContent = 'LOGIN'
+      return
+    }
+    
+    // Step 3: Unlock or setup E2EE keys
+    if (window.crypto && window.crypto.subtle) {
+      // Determine wrapping key source: split-key derivation or legacy password
+      const wrappingKeyOrPassword = splitKeys ? splitKeys.wrappingKey : password
+
+      if (result.has_e2ee_keys) {
+        // Existing user with keys — unlock them
+        try {
+          const { masterKey, privateKey } = await OneGyCrypto.unlockUserKeys(wrappingKeyOrPassword, {
+            encryptedMasterKey: result.encrypted_master_key,
+            masterKeyNonce: result.master_key_nonce,
+            masterKeySalt: result.master_key_salt,
+            encryptedPrivateKey: result.encrypted_private_key,
+            privateKeyNonce: result.private_key_nonce
+          })
+          
+          // Store keys in sessionStorage for this browser session
+          await OneGyCrypto.storeMasterKeyInSession(masterKey)
+          await OneGyCrypto.storePrivateKeyInSession(privateKey)
+          
+          showFlash('ENCRYPTION KEYS UNLOCKED', 'success')
+
+          // If user logged in with legacy password, upgrade to split-key
+          if (splitKeyVersion === 0 && !splitKeys) {
+            try {
+              const newSplitKeys = await OneGyCrypto.deriveAuthAndWrappingKeys(password)
+              const rewrapped = await OneGyCrypto.wrapMasterKey(masterKey, newSplitKeys.wrappingKey, newSplitKeys.salt)
+              const csrfUpgrade = result.csrf_token || csrfToken
+              const upgradeResp = await fetch('/change-password', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Requested-With': 'XMLHttpRequest',
+                  'X-CSRFToken': csrfUpgrade
+                },
+                body: JSON.stringify({
+                  current_password: password,
+                  new_password: password,
+                  confirm_password: password,
+                  new_auth_token: newSplitKeys.authToken,
+                  new_auth_salt: newSplitKeys.salt,
+                  encrypted_master_key: rewrapped.encryptedMasterKey,
+                  master_key_nonce: rewrapped.nonce,
+                  master_key_salt: rewrapped.salt
+                })
+              })
+              const upgradeData = await safeParseJSON(upgradeResp)
+              if (!upgradeResp.ok || upgradeData.success !== true) throw new Error(upgradeData.error || 'Split-key upgrade failed')
+              console.log('[LOGIN] Upgraded to split-key authentication')
+            } catch (upgradeErr) {
+              console.warn('[LOGIN] Split-key upgrade failed (non-critical):', upgradeErr)
+            }
+          }
+        } catch (keyErr) {
+          console.error('[LOGIN] Key unlock failed:', keyErr)
+          showFlash('KEY UNLOCK FAILED — YOU MAY NEED TO RE-ENTER PASSWORD', 'error')
+        }
+      } else {
+        // Existing user WITHOUT keys — generate and store them now
+        let keyData = null
+        let keysSaved = false
+        try {
+          keyData = await OneGyCrypto.setupUserKeys(password)
+          
+          // Send encrypted key material to server (use new CSRF token from login response)
+          const csrfForKeys = result.csrf_token || document.getElementById('csrf_token').value
+          const keyResp = await fetch('{{ url_for("api_update_keys") }}', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+              'X-CSRFToken': csrfForKeys
+            },
+            body: JSON.stringify({
+              encrypted_master_key: keyData.encryptedMasterKey,
+              master_key_nonce: keyData.masterKeyNonce,
+              master_key_salt: keyData.masterKeySalt,
+              public_key: keyData.publicKey,
+              encrypted_private_key: keyData.encryptedPrivateKey,
+              private_key_nonce: keyData.privateKeyNonce,
+              recovery_key_hash: keyData.recoveryKeyHash,
+              recovery_wrapped_master_key: keyData.recoveryWrappedMasterKey,
+              recovery_key_nonce: keyData.recoveryKeyNonce,
+              auth_token: keyData.authToken,
+              auth_salt: keyData.authSalt,
+              current_password: splitKeyVersion === 0 ? password : undefined,
+              current_auth_token: splitKeys ? splitKeys.authToken : undefined
+            })
+          })
+          
+          const keyResult = await safeParseJSON(keyResp)
+          if (!keyResp.ok || keyResult.success !== true) throw new Error(keyResult.error || 'FAILED TO SAVE ENCRYPTION KEYS')
+          keysSaved = true
+
+          await completeFirstTimeProvisioning(keyData)
+          return  // Don't redirect yet — user must acknowledge recovery key
+        } catch (keyErr) {
+          console.error('[LOGIN] Key setup failed:', keyErr)
+          if (keysSaved) {
+            showFlash('Encryption keys were saved, but recovery setup is incomplete.', 'error')
+            showProvisioningRetry(keyData)
+            return
+          }
+          showFlash('KEY SETUP FAILED — WILL RETRY ON NEXT LOGIN', 'error')
+        }
+      }
+    }
+    
+    // Step 4: Redirect
+    clearLoginNotifDismissals()
+    setTimeout(() => {
+      window.location.href = result.redirect
+    }, 500)
+    
+  } catch (err) {
+    console.error('[LOGIN]', err)
+    showFlash(err.message || 'LOGIN FAILED', 'error')
+    btn.disabled = false
+    btn.textContent = 'LOGIN'
+  }
+})
+
+// ─── Inline 2FA Verification ────────────────────────────────────────
+document.getElementById('inlineTwoFactorForm').addEventListener('submit', async function(e) {
+  e.preventDefault()
+
+  const btn = document.getElementById('verifyBtn')
+  const csrfToken = document.getElementById('csrf_token').value
+  const totpCode = document.getElementById('totp_code').value.trim()
+
+  if (!totpCode || totpCode.length !== 6) {
+    showFlash('PLEASE ENTER A 6-DIGIT CODE', 'error')
+    return
+  }
+
+  btn.disabled = true
+  btn.textContent = 'VERIFYING...'
+
+  try {
+    const response = await fetch('{{ url_for("verify_2fa") }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRFToken': csrfToken
+      },
+      body: JSON.stringify({ totp_code: totpCode })
+    })
+
+    const result = await safeParseJSON(response)
+
+    if (!response.ok) {
+      throw new Error(result.error || 'VERIFICATION FAILED')
+    }
+
+    // 2FA verified — now unlock E2EE keys using the in-memory password/wrapping key
+    if (window.crypto && window.crypto.subtle && pending2FA) {
+      const wrappingKeyOrPassword = pending2FA.splitKeys ? pending2FA.splitKeys.wrappingKey : pending2FA.password
+
+      if (result.has_e2ee_keys) {
+        try {
+          const { masterKey, privateKey } = await OneGyCrypto.unlockUserKeys(wrappingKeyOrPassword, {
+            encryptedMasterKey: result.encrypted_master_key,
+            masterKeyNonce: result.master_key_nonce,
+            masterKeySalt: result.master_key_salt,
+            encryptedPrivateKey: result.encrypted_private_key,
+            privateKeyNonce: result.private_key_nonce
+          })
+
+          await OneGyCrypto.storeMasterKeyInSession(masterKey)
+          await OneGyCrypto.storePrivateKeyInSession(privateKey)
+
+          showFlash('ENCRYPTION KEYS UNLOCKED', 'success')
+
+          // If user logged in with legacy password, upgrade to split-key
+          if (pending2FA.splitKeyVersion === 0 && !pending2FA.splitKeys) {
+            try {
+              const newSplitKeys = await OneGyCrypto.deriveAuthAndWrappingKeys(pending2FA.password)
+              const rewrapped = await OneGyCrypto.wrapMasterKey(masterKey, newSplitKeys.wrappingKey, newSplitKeys.salt)
+              const csrfUpgrade = result.csrf_token || csrfToken
+              const upgradeResp = await fetch('/change-password', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Requested-With': 'XMLHttpRequest',
+                  'X-CSRFToken': csrfUpgrade
+                },
+                body: JSON.stringify({
+                  current_password: pending2FA.password,
+                  new_password: pending2FA.password,
+                  confirm_password: pending2FA.password,
+                  new_auth_token: newSplitKeys.authToken,
+                  new_auth_salt: newSplitKeys.salt,
+                  encrypted_master_key: rewrapped.encryptedMasterKey,
+                  master_key_nonce: rewrapped.nonce,
+                  master_key_salt: rewrapped.salt
+                })
+              })
+              const upgradeData = await safeParseJSON(upgradeResp)
+              if (!upgradeResp.ok || upgradeData.success !== true) throw new Error(upgradeData.error || 'Split-key upgrade failed')
+              console.log('[LOGIN] Upgraded to split-key authentication (via 2FA)')
+            } catch (upgradeErr) {
+              console.warn('[LOGIN] Split-key upgrade failed (non-critical):', upgradeErr)
+            }
+          }
+        } catch (keyErr) {
+          console.error('[LOGIN] Key unlock failed after 2FA:', keyErr)
+          showFlash('KEY UNLOCK FAILED — YOU MAY NEED TO RE-ENTER PASSWORD', 'error')
+        }
+      } else if (!result.has_e2ee_keys) {
+        // User without keys — generate and store them now
+        let keyData = null
+        let keysSaved = false
+        try {
+          keyData = await OneGyCrypto.setupUserKeys(pending2FA.password)
+
+          const csrfForKeys = result.csrf_token || csrfToken
+          const keyResp = await fetch('{{ url_for("api_update_keys") }}', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+              'X-CSRFToken': csrfForKeys
+            },
+            body: JSON.stringify({
+              encrypted_master_key: keyData.encryptedMasterKey,
+              master_key_nonce: keyData.masterKeyNonce,
+              master_key_salt: keyData.masterKeySalt,
+              public_key: keyData.publicKey,
+              encrypted_private_key: keyData.encryptedPrivateKey,
+              private_key_nonce: keyData.privateKeyNonce,
+              recovery_key_hash: keyData.recoveryKeyHash,
+              recovery_wrapped_master_key: keyData.recoveryWrappedMasterKey,
+              recovery_key_nonce: keyData.recoveryKeyNonce,
+              auth_token: keyData.authToken,
+              auth_salt: keyData.authSalt,
+              current_password: pending2FA.splitKeyVersion === 0 ? pending2FA.password : undefined,
+              current_auth_token: pending2FA.splitKeys ? pending2FA.splitKeys.authToken : undefined
+            })
+          })
+
+          const keyResult = await safeParseJSON(keyResp)
+          if (!keyResp.ok || keyResult.success !== true) throw new Error(keyResult.error || 'FAILED TO SAVE ENCRYPTION KEYS')
+          keysSaved = true
+
+          pending2FA = null
+          await completeFirstTimeProvisioning(keyData)
+          return  // Don't redirect yet — user must acknowledge recovery key
+        } catch (keyErr) {
+          console.error('[LOGIN] Key setup failed after 2FA:', keyErr)
+          if (keysSaved) {
+            pending2FA = null
+            showFlash('Encryption keys were saved, but recovery setup is incomplete.', 'error')
+            showProvisioningRetry(keyData)
+            return
+          }
+          showFlash('KEY SETUP FAILED — WILL RETRY ON NEXT LOGIN', 'error')
+        }
+      }
+    }
+
+    // Clear sensitive data
+    pending2FA = null
+
+    // Redirect to dashboard
+    clearLoginNotifDismissals()
+    setTimeout(() => {
+      window.location.href = result.redirect || '{{ url_for("files") }}'
+    }, 500)
+
+  } catch (err) {
+    console.error('[2FA]', err)
+    showFlash(err.message || 'VERIFICATION FAILED', 'error')
+    btn.disabled = false
+    btn.textContent = 'VERIFY'
+    document.getElementById('totp_code').value = ''
+    document.getElementById('totp_code').focus()
+  }
+})
+
+// Auto-submit when 6 digits entered
+document.getElementById('totp_code').addEventListener('input', function() {
+  this.value = this.value.replace(/[^0-9]/g, '')
+  if (this.value.length === 6) {
+    document.getElementById('verifyBtn').click()
+  }
+})
+
+// Cancel 2FA — go back to login form
+function cancelTwoFactor() {
+  pending2FA = null
+  document.getElementById('twoFactorBox').style.display = 'none'
+  document.getElementById('loginBox').style.display = 'block'
+  document.getElementById('totp_code').value = ''
+  document.getElementById('password').value = ''
+  document.getElementById('username').focus()
+}
+
+// ─── Recovery Flow ──────────────────────────────────────────────────
+function showRecoveryForm() {
+  document.getElementById('loginBox').style.display = 'none'
+  document.getElementById('twoFactorBox').style.display = 'none'
+  document.getElementById('recoveryForm').style.display = 'block'
+  pending2FA = null
+}
+
+function showLoginForm() {
+  document.getElementById('recoveryForm').style.display = 'none'
+  document.getElementById('twoFactorBox').style.display = 'none'
+  document.getElementById('loginBox').style.display = 'block'
+}
+
+document.getElementById('recoveryFormInner').addEventListener('submit', async function(e) {
+  e.preventDefault()
+  
+  const btn = document.getElementById('recoveryBtn')
+  const csrfToken = document.getElementById('csrf_token').value
+  
+  const username = document.getElementById('rec_username').value.trim()
+  const recoveryKeyB64 = document.getElementById('rec_key').value.trim()
+  const newPassword = document.getElementById('rec_new_password').value
+  const confirmPassword = document.getElementById('rec_confirm_password').value
+  
+  if (!username || !recoveryKeyB64 || !newPassword) return
+  if (newPassword !== confirmPassword) {
+    showFlash('PASSWORDS DO NOT MATCH', 'error')
+    return
+  }
+  // AUDIT FIX M10: keep the client-side policy identical across
+  // register / change-password / recovery — the server can only sanity-check the
+  // ASSERTED length (it never sees the password), so these bounds are the real
+  // enforcement for honest clients and must not drift between the three paths.
+  if (newPassword.length < 6) {
+    showFlash('PASSWORD MUST BE AT LEAST 6 CHARACTERS', 'error')
+    return
+  }
+  if (newPassword.length > 1024) {
+    showFlash('PASSWORD MUST BE 1024 CHARACTERS OR LESS', 'error')
+    return
+  }
+  
+  btn.disabled = true
+  btn.textContent = 'RECOVERING...'
+  
+  try {
+    // Step 1 (AUDIT FIX M3): prove the CURRENT recovery key and fetch its
+    // server-stored wrap of the master key.
+    const currentMasterKey = await OneGyCrypto.importRecoveryKey(recoveryKeyB64)
+    const currentRecoveryKeyHash = await OneGyCrypto.hashMasterKey(currentMasterKey)
+    
+    const challengeResp = await fetch('{{ url_for("api_recovery_key_challenge") }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRFToken': csrfToken
+      },
+      body: JSON.stringify({
+        username: username,
+        recovery_key_hash: currentRecoveryKeyHash
+      })
+    })
+    const challenge = await safeParseJSON(challengeResp)
+    if (!challengeResp.ok) {
+      throw new Error(challenge.error || 'RECOVERY FAILED')
+    }
+    
+    // Resolve the master key. Legacy accounts (whose recovery key IS the master
+    // key) import it directly; decoupled accounts decrypt the server-stored wrap.
+    const masterKey = challenge.legacy_recovery_key
+      ? currentMasterKey
+      : await OneGyCrypto.unwrapMasterKeyWithRecoveryKey(
+          recoveryKeyB64,
+          challenge.recovery_wrapped_master_key,
+          challenge.recovery_key_nonce
+        )
+    
+    // Step 2 (AUDIT FIX M3): generate a FRESH recovery key wrapping the SAME
+    // master key. The compromised key stops working the moment this commits.
+    const rotated = await OneGyCrypto.createRecoveryKeyWrap(masterKey)
+    
+    // Step 3: derive split-key credentials from new password and re-wrap
+    const newSplitKeys = await OneGyCrypto.deriveAuthAndWrappingKeys(newPassword)
+    const rewrapped = await OneGyCrypto.wrapMasterKey(masterKey, newSplitKeys.wrappingKey, newSplitKeys.salt)
+    
+    const response = await fetch('{{ url_for("api_recovery_key_login") }}', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRFToken': csrfToken
+      },
+      body: JSON.stringify({
+        username: username,
+        recovery_key_hash: currentRecoveryKeyHash,
+        new_recovery_key_hash: rotated.recoveryKeyHash,
+        new_recovery_wrapped_master_key: rotated.recoveryWrappedMasterKey,
+        new_recovery_key_nonce: rotated.recoveryKeyNonce,
+        new_password_length: newPassword.length,
+        auth_token: newSplitKeys.authToken,
+        auth_salt: newSplitKeys.salt,
+        encrypted_master_key: rewrapped.encryptedMasterKey,
+        master_key_nonce: rewrapped.nonce,
+        master_key_salt: rewrapped.salt
+      })
+    })
+    
+    const result = await safeParseJSON(response)
+    
+    if (!response.ok) {
+      throw new Error(result.error || 'RECOVERY FAILED')
+    }
+    
+    // AUDIT FIX M3: a NEW recovery key is active now — it must be shown, and the
+    // old one (possibly compromised) no longer works.
+    showFlash('ACCOUNT RECOVERED! SAVE YOUR NEW RECOVERY KEY, THEN LOGIN WITH YOUR NEW PASSWORD', 'success')
+    showRecoveryKeyModal(rotated.recoveryKey, '{{ url_for("login") }}')
+    
+  } catch (err) {
+    console.error('[RECOVERY]', err)
+    showFlash(err.message || 'RECOVERY FAILED', 'error')
+  }
+  
+  btn.disabled = false
+  btn.textContent = 'RECOVER ACCOUNT'
+})
+
+// ─── Recovery Key Modal (shown after first-time key setup) ─────────
+let pendingRedirect = null
+
+async function completeFirstTimeProvisioning(keyData) {
+  // AUDIT FIX M3: show the INDEPENDENT recovery key (only it recovers the
+  // account now); fall back for legacy keyData shapes.
+  const recoveryKeyB64 = keyData.recoveryKey || await OneGyCrypto.exportRecoveryKey(keyData._masterKey)
+  let sessionReady = true
+  try {
+    await OneGyCrypto.storeMasterKeyInSession(keyData._masterKey)
+    await OneGyCrypto.storePrivateKeyInSession(keyData._privateKey)
+  } catch (sessionErr) {
+    sessionReady = false
+    console.warn('[LOGIN] Keys saved but session key storage failed:', sessionErr)
+    showFlash('Encryption keys saved. Save the recovery key, then sign in again in this browser.', 'error')
+  }
+  if (sessionReady) showFlash('ENCRYPTION KEYS READY', 'success')
+  showRecoveryKeyModal(recoveryKeyB64)
+}
+
+function showProvisioningRetry(keyData) {
+  let modal = document.getElementById('provisioningRetryModal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'provisioningRetryModal'
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(10,16,24,0.75);z-index:10000;display:flex;align-items:center;justify-content:center;padding:1.2rem;'
+    modal.innerHTML = '<div style="background:var(--bg);border:2px solid var(--border);padding:2rem;max-width:520px;text-align:center;"><h2>Recovery setup incomplete</h2><p>Your encryption keys are saved, but your recovery key has not been presented. Do not leave this page.</p><button type="button" id="retryProvisioningBtn" class="btn-primary">Retry recovery setup</button></div>'
+    document.body.appendChild(modal)
+  }
+  modal.style.display = 'flex'
+  document.getElementById('retryProvisioningBtn').onclick = async function() {
+    this.disabled = true
+    try {
+      await completeFirstTimeProvisioning(keyData)
+      modal.remove()
+    } catch (err) {
+      console.error('[LOGIN] Recovery setup retry failed:', err)
+      showFlash('Recovery setup is still incomplete. Keep this page open and retry.', 'error')
+      this.disabled = false
+    }
+  }
+}
+
+function showRecoveryKeyModal(recoveryKeyB64, redirectUrl) {
+  // AUDIT FIX M3: optional redirect for flows that are NOT signed in (account
+  // recovery ends at the login page, not the drive).
+  pendingRedirect = redirectUrl || '{{ url_for("files") }}'
+  
+  // Create modal if it doesn't exist
+  let modal = document.getElementById('recoveryKeyModal')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'recoveryKeyModal'
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(10,16,24,0.55);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:9999;padding:1.2rem;'
+    modal.innerHTML = `
+      <div style="background:var(--bg);border:2px solid var(--border);box-shadow:8px 8px 0 var(--accent);max-width:520px;width:100%;padding:clamp(1.6rem,4vw,2.2rem);text-align:center;">
+        <div style="width:52px;height:52px;margin:0 auto 14px;display:grid;place-items:center;border:2px solid var(--border);color:var(--accent);">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3"/></svg>
+        </div>
+        <h2 style="font-family:var(--font-display);font-weight:800;text-transform:uppercase;letter-spacing:-.01em;color:var(--text);margin:0 0 8px;font-size:1.4em;">RECOVERY KEY</h2>
+        <p style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.72em;margin:0 0 20px;line-height:1.6;text-transform:uppercase;">
+          THIS IS YOUR ONLY WAY TO RECOVER YOUR ACCOUNT IF YOU FORGET YOUR PASSWORD.<br>
+          SAVE IT SOMEWHERE SAFE. IT WILL NOT BE SHOWN AGAIN.
+        </p>
+        <div style="background:var(--surface-2);border:2px solid var(--accent);padding:16px;margin:0 0 20px;word-break:break-all;font-family:'JetBrains Mono', monospace;font-size:0.82em;color:#7fd4ff;user-select:all;" id="recoveryKeyDisplay"></div>
+        <div style="display:flex;gap:10px;justify-content:center;margin-bottom:16px;">
+           <button type="button" style="background:var(--surface);color:var(--text);border:2px solid var(--border);padding:10px 20px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:0.72em;" id="copyRecKeyBtn">COPY</button>
+           <button type="button" id="downloadRecKeyBtn" style="background:var(--surface);color:var(--text);border:2px solid var(--border);padding:10px 20px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:0.72em;">DOWNLOAD</button>
+         </div>
+         <button type="button" id="dismissRecKeyBtn" style="background:var(--text);color:var(--bg);border:2px solid var(--text);padding:12px 28px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.05em;text-transform:uppercase;font-size:0.78em;width:100%;">I HAVE SAVED MY RECOVERY KEY</button>
+      </div>
+    `
+     document.body.appendChild(modal)
+     bindRecoveryModalButtons()
+   }
+
+   document.getElementById('recoveryKeyDisplay').textContent = recoveryKeyB64
+   modal.style.display = 'flex'
+}
+
+function copyRecoveryKey() {
+  const key = document.getElementById('recoveryKeyDisplay').textContent
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(key).then(() => {
+      const btn = document.getElementById('copyRecKeyBtn')
+      btn.textContent = 'COPIED'
+      btn.style.backgroundColor = '#1f9d57'
+      setTimeout(() => { btn.textContent = 'COPY'; btn.style.backgroundColor = 'var(--surface)' }, 2000)
+    })
+  }
+}
+
+function downloadRecoveryKey() {
+  const key = document.getElementById('recoveryKeyDisplay').textContent
+  const blob = new Blob(['ONE.GY RECOVERY KEY\n\n' + key + '\n\nKEEP THIS FILE SAFE. DO NOT SHARE IT.\n'], { type: 'text/plain' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'onegy-recovery-key.txt'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function dismissRecoveryKeyModal() {
+  const modal = document.getElementById('recoveryKeyModal')
+  if (modal) modal.style.display = 'none'
+  clearLoginNotifDismissals()
+  if (pendingRedirect) window.location.href = pendingRedirect
+}
+
+function bindRecoveryModalButtons() {
+  var copyBtn = document.getElementById('copyRecKeyBtn')
+  var dlBtn = document.getElementById('downloadRecKeyBtn')
+  var dismissBtn = document.getElementById('dismissRecKeyBtn')
+  if (copyBtn) copyBtn.addEventListener('click', copyRecoveryKey)
+  if (dlBtn) dlBtn.addEventListener('click', downloadRecoveryKey)
+  if (dismissBtn) dismissBtn.addEventListener('click', dismissRecoveryKeyModal)
+}
+
+var _showRec = document.getElementById('showRecoveryLink')
+if (_showRec) _showRec.addEventListener('click', function (e) { e.preventDefault(); showRecoveryForm() })
+var _cancel2fa = document.getElementById('cancelTwoFactorLink')
+if (_cancel2fa) _cancel2fa.addEventListener('click', function (e) { e.preventDefault(); cancelTwoFactor() })
+var _showLogin = document.getElementById('showLoginLink')
+if (_showLogin) _showLogin.addEventListener('click', function (e) { e.preventDefault(); showLoginForm() })
+var _loginCaptchaRefresh = document.getElementById('loginCaptchaRefresh')
+if (_loginCaptchaRefresh) _loginCaptchaRefresh.addEventListener('click', function () {
+  var img = document.getElementById('loginCaptchaImg')
+  if (img) img.src = '{{ url_for("captcha") }}?t=' + Date.now()
+})
+
+// showFlash is inherited from base.html's unified toast system
+</script>
+{% endblock %}

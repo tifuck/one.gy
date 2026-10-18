@@ -1,0 +1,47 @@
+/* ============================================================================
+   context-menu.css — shared right-click menu (context-menu.js). One look,
+   reused everywhere. Frost: hard edges, 2px border, blue offset shadow.
+   ========================================================================== */
+.rd-cmenu{
+  position:fixed; z-index:300; min-width:196px; max-width:280px;
+  background:var(--surface); border:2px solid var(--border); box-shadow:6px 6px 0 var(--accent);
+  padding:.25rem; display:none; flex-direction:column;
+}
+.rd-cmenu.is-open{ display:flex; animation:rdcmenu .12s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes rdcmenu{ from{ opacity:0; transform:scale(.97) translateY(-2px); } to{ opacity:1; transform:none; } }
+
+.rd-cmenu-item{
+  display:flex; align-items:center; gap:.65rem; width:100%; padding:.42rem .6rem;
+  border:0; background:none; cursor:pointer; font:inherit; font-size:.85rem; color:var(--text);
+  text-align:left; transition:background .1s, color .1s;
+}
+.rd-cmenu-item:hover, .rd-cmenu-item:focus-visible{ background:var(--accent-soft); outline:none; }
+.rd-cmenu-item svg{ width:16px; height:16px; opacity:.7; flex:none; }
+.rd-cmenu-item:hover svg{ opacity:1; color:var(--accent); }
+.rd-cmenu-ico{ width:16px; height:16px; flex:none; }
+.rd-cmenu-label{ flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rd-cmenu-hint{ font-family:var(--font-mono); font-size:.62rem; letter-spacing:.04em; color:var(--text-dim); flex:none; }
+.rd-cmenu-item[disabled]{ opacity:.4; cursor:default; }
+.rd-cmenu-item[disabled]:hover{ background:none; }
+
+.rd-cmenu-danger{ color:var(--bad); }
+.rd-cmenu-danger:hover, .rd-cmenu-danger:focus-visible{ background:var(--bad); color:#fff; }
+.rd-cmenu-danger:hover svg{ color:#fff; }
+
+/* Colour swatch row ({ swatches, onPick }) — used by the notes list menu. */
+.rd-cmenu-swatches{ display:flex; flex-wrap:wrap; gap:.32rem; padding:.15rem .6rem .5rem; }
+.rd-cmenu-sw{
+  width:20px; height:20px; flex:none; padding:0; cursor:pointer;
+  border:2px solid transparent; background:none;
+  transition:transform .1s, border-color .1s;
+}
+.rd-cmenu-sw:hover, .rd-cmenu-sw:focus-visible{ transform:scale(1.18); border-color:var(--text); outline:none; }
+.rd-cmenu-sw.is-active{ border-color:var(--text); }
+.rd-cmenu-sw.is-none{ position:relative; border-color:var(--border); }
+.rd-cmenu-sw.is-none::after{
+  content:''; position:absolute; inset:0;
+  background:linear-gradient(to bottom right, transparent 43%, var(--bad) 43%, var(--bad) 57%, transparent 57%);
+}
+
+.rd-cmenu-sep{ height:1px; background:var(--border); margin:.25rem .1rem; }
+.rd-cmenu-header{ font-family:var(--font-mono); font-size:.58rem; letter-spacing:.14em; text-transform:uppercase; color:var(--text-dim); padding:.45rem .6rem .25rem; }

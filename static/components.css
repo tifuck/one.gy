@@ -1,0 +1,57 @@
+/* ============================================================================
+   FROST COMPONENTS — sitewide primitives used across the redesign: toasts and
+   the universal confirm modal (confirm-modal.js → .ucm-*). Token-driven, so
+   they adopt whatever theme is active. Loaded by base.html.
+   ========================================================================== */
+
+/* ---- Toasts (showToast) ------------------------------------------------- */
+.toast-container{position:fixed;top:calc(var(--nav-h) + .8rem);right:1rem;z-index:200;
+  display:flex;flex-direction:column;gap:.55rem;max-width:min(92vw,26rem)}
+.toast-message{font-family:var(--font-mono);font-size:.78rem;letter-spacing:.02em;line-height:1.5;
+  background:var(--surface);color:var(--text);border:2px solid var(--border);
+  border-left:4px solid var(--accent);padding:.7rem .9rem;box-shadow:var(--shadow-2);
+  opacity:1;transition:opacity .4s var(--ease),transform .4s var(--ease);transform:translateX(0)}
+.toast-success{border-left-color:#1f9d57}
+.toast-error{border-left-color:#d8231b}
+.toast-info{border-left-color:var(--accent)}
+
+/* ---- Form input (shared primitive — modals, auth, account, unlock cards) - */
+.form-input{width:100%;padding:.7rem .8rem;background:var(--bg);border:2px solid var(--border);color:var(--text);
+  font-family:var(--font-mono);font-size:.9rem;transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}
+.form-input::placeholder{color:var(--text-dim);text-transform:uppercase;font-size:.82rem}
+.form-input:focus{outline:none;border-color:var(--accent);box-shadow:3px 3px 0 var(--accent-soft)}
+
+/* ---- Universal confirm modal (confirm-modal.js) ------------------------- */
+.ucm-overlay{position:fixed;inset:0;z-index:300;display:grid;place-items:center;padding:1.2rem;
+  background:var(--scrim);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+  opacity:0;visibility:hidden;transition:opacity .18s var(--ease),visibility .18s}
+.ucm-overlay.ucm-visible{opacity:1;visibility:visible}
+.ucm-overlay.ucm-hiding{opacity:0}
+.ucm-dialog{width:100%;max-width:26rem;background:var(--bg);border:2px solid var(--border);
+  border-radius:var(--radius);box-shadow:var(--shadow-2);padding:clamp(1.4rem,3vw,2rem);text-align:center;
+  transform:translateY(10px) scale(.98);transition:transform .18s var(--ease)}
+.ucm-overlay.ucm-visible .ucm-dialog{transform:none}
+.ucm-dialog.ucm-dialog-hiding{transform:translateY(6px) scale(.98)}
+.ucm-icon-wrap{width:52px;height:52px;margin:0 auto 1rem;display:grid;place-items:center;
+  border:2px solid var(--border);color:#d8231b;font-size:1.4rem}
+.ucm-icon-wrap svg{width:26px;height:26px}
+.ucm-title{font-family:var(--font-display);font-weight:800;font-size:1.2rem;letter-spacing:-.01em;
+  text-transform:uppercase;word-break:break-word;margin-bottom:.5rem}
+.ucm-name-ext{color:var(--text-dim)}
+.ucm-message{color:var(--text-dim);font-size:.92rem;line-height:1.55;margin-bottom:1.4rem}
+.ucm-actions{display:flex;gap:.7rem;justify-content:center}
+.ucm-btn{flex:1;max-width:11rem;padding:.7rem 1rem;border:2px solid var(--border);font-family:var(--font-mono);
+  font-weight:600;font-size:.8rem;letter-spacing:.04em;text-transform:uppercase;cursor:pointer;
+  transition:transform .2s var(--ease),background .2s var(--ease),color .2s var(--ease)}
+.ucm-btn-cancel{background:transparent;color:var(--text)}
+.ucm-btn-cancel:hover{background:var(--surface)}
+.ucm-btn-confirm{background:#d8231b;color:#fff;border-color:#d8231b}
+.ucm-btn-confirm:hover{transform:translate(-2px,-2px);box-shadow:4px 4px 0 rgba(216,35,27,.4)}
+/* Non-destructive variants use the theme accent instead of danger red */
+.ucm-warn .ucm-icon-wrap,.ucm-e2e-warn .ucm-icon-wrap,.ucm-no-e2e .ucm-icon-wrap{color:var(--accent)}
+.ucm-warn .ucm-btn-confirm,.ucm-e2e-warn .ucm-btn-confirm,.ucm-no-e2e .ucm-btn-confirm{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast)}
+.ucm-warn .ucm-btn-confirm:hover,.ucm-e2e-warn .ucm-btn-confirm:hover,.ucm-no-e2e .ucm-btn-confirm:hover{box-shadow:4px 4px 0 var(--accent-soft)}
+
+@media (prefers-reduced-motion:reduce){
+  .toast-message,.ucm-overlay,.ucm-dialog{transition-duration:.001ms}
+}

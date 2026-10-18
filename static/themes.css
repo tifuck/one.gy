@@ -1,0 +1,51 @@
+/* ============================================================================
+   THEMES — all switchable palettes for the logged-in app. Runtime switch via
+   data-theme on <html> (see theme-switch.js); no reload, no FOUC. Components
+   are token-only, so a theme is (almost) pure token re-declaration. Structural
+   frost look (hard edges, Bricolage/mono, offset shadows) comes from
+   editorial-base.css scoped to body.rd-theme-editorial (kept constant).
+   ========================================================================== */
+
+/* ---- Structural tokens (theme-independent) + default palette (Frost) ----- */
+:root{
+  --font-display:'Bricolage Grotesque','Arial Black',sans-serif;
+  --font-body:'Inter',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --radius:0; --radius-lg:0; --radius-pill:0;
+  --shadow-1:none; --shadow-2:6px 6px 0 var(--accent);
+  --nav-h:68px;
+}
+
+/* Frost — light (default) */
+:root, :root[data-theme="frost"]{
+  --bg:#eef1f5; --surface:#ffffff; --surface-2:#0f1720;
+  --text:#0f1720; --text-dim:#5a6675; --border:#0f1720;
+  --accent:#0e8fd6; --accent-contrast:#ffffff; --accent-soft:rgba(14,143,214,.12);
+  --redact-bg:#0f1720; --redact-fg:#0e8fd6;
+  --ink-rgb:15,23,32; --accent-rgb:14,143,214;
+  --good:#1f9d57; --warn:#e5940a; --bad:#d8231b;
+  --nav-bg:rgba(238,241,245,.9);
+  --code-bg:#0f1720; --code-fg:#dfe7ef;
+  --toggle-off:#d3dbe4; --scrim:rgba(10,16,24,.5);
+  color-scheme:light;
+}
+
+/* Frost — dark.
+   Deliberately NEUTRAL: the chrome (bg/surfaces/borders/dim text) carries no
+   hue at all — R=G=B on every greyscale token — so the UI reads as dark grey
+   rather than navy. The icy-blue accent is the ONLY chromatic colour in the
+   palette (plus the good/warn/bad status trio), which is what makes it pop.
+   If you touch these, keep the greys hue-free or the blue cast comes back. */
+:root[data-theme="frost-dark"]{
+  --bg:#161616; --surface:#202020; --surface-2:#0e0e0e;
+  --text:#ececec; --text-dim:#9c9c9c; --border:#3d3d3d;
+  --accent:#37b6ff; --accent-contrast:#0b0b0b; --accent-soft:rgba(55,182,255,.15);
+  --redact-bg:#ececec; --redact-fg:#37b6ff;
+  --ink-rgb:236,236,236; --accent-rgb:55,182,255;
+  --good:#3fce7e; --warn:#f0b45a; --bad:#ff5d55;
+  --nav-bg:rgba(22,22,22,.85);
+  --code-bg:#0e0e0e; --code-fg:#e2e2e2;
+  --toggle-off:#3d3d3d; --scrim:rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+

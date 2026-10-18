@@ -1,0 +1,82 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+env/
+
+# Database
+instance/
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime data
+thumbnails/
+notes/
+.scheduler.lock
+
+# Uploaded files
+uploads/
+*.enc
+
+# Music library / media (never commit audio)
+music/
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.opus
+*.wav
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.csr
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+.pytest_cache/
+
+# Test artifacts
+testsv2/accounts.json
+testsv2/recordings/
+
+# Backup files
+*.backup
+*.bak
+backups/
+
+# Generated binaries
+static/cli/
+
+# Local tooling
+.claude/
+.opencode/
+devtools/.shotbot.json
+
+# Screenshots
+screenshots/

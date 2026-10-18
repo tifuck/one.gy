@@ -1,0 +1,506 @@
+{
+  "categories": [
+    {
+      "id": "backend",
+      "name": "Backend & Logic Hunting",
+      "icon": "server",
+      "blurb": "Systematically audit server code for the correctness, concurrency, error-handling, and data-integrity bugs the tests didn't catch.",
+      "prompts": [
+        {
+          "id": "backend-full-audit",
+          "title": "Audit the whole codebase, worst first",
+          "blurb": "Systematically review the entire codebase and report every real issue, most severe first.",
+          "summary": "Reviews the whole codebase end to end — purpose, then core logic, then security — and returns only real findings, tiered Critical → Low with file, problem, fix, and impact each; no praise, no filler, ordered most severe first.",
+          "tags": [
+            "audit",
+            "correctness",
+            "security"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit this entire codebase systematically and report everything that's actually\nwrong. Use your tools to walk the files, modules, and dependencies — review the\nwhole thing, not a sample.\n\nWork in this order:\n1. Understand the system first: what it's for, its main components, and how data\n   and control flow through it end to end. Establish what each part is supposed to\n   guarantee before judging whether it does.\n2. Then scrutinize the core logic against that purpose — flawed methodology, wrong\n   assumptions, incorrect algorithms, missed cases, and places a fundamentally\n   better approach exists — not just surface defects.\n3. Include a security pass: input validation and trust boundaries, authentication\n   and authorization, data handling and exposure, dependencies and known\n   advisories, and the common vulnerability classes.\n\nReport only real findings — no \"looks good\", no praise, no restating what the code\ndoes. Categorize each by severity:\n- CRITICAL: bugs, security holes, crashes, data loss, fundamental logic errors.\n- HIGH: correctness bugs, performance problems, serious maintainability hazards.\n- MEDIUM: inconsistencies, suboptimal patterns, missing edge cases.\n- LOW: minor cleanups and small clarity wins.\n\nFor each finding give: file and line(s) → the problem stated precisely → a concrete\nfix → the impact if left as-is. Where you can, prove it: name the input or\ncondition that triggers it, and mark findings you confirmed by tracing the code\napart from ones you merely suspect. Order the whole report most severe first.\n\nBe concise and actionable. Don't invent issues to fill a tier — if a severity\nlevel is empty, say so and move on.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "backend-logic-audit",
+          "title": "Audit the codebase for logic bugs",
+          "blurb": "Hunt for functions that return wrong results in some cases.",
+          "summary": "Reads the logic-bearing functions and reports correctness bugs — bad conditionals, off-by-ones, overflow, missed edge cases — each with a triggering input, a concrete fix, and a severity ranking.",
+          "tags": [
+            "audit",
+            "correctness"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit this codebase for logic and correctness bugs — the kind that return wrong\nresults in some cases and slip past the tests. Use your tools to read the code, and\nconcentrate on the functions that carry real logic: parsing, calculation, state\ntransitions, and non-trivial conditionals.\n\nFor each one, be adversarial and specific:\n1. State in one sentence what it's supposed to guarantee. Where that conflicts with\n   how it's actually called, flag the gap.\n2. Hunt concrete defects: off-by-one and boundary errors, wrong operator or\n   comparison, inverted conditions, early returns that skip cleanup, mutation of\n   shared or aliased state, integer overflow or precision loss, wrong default or\n   fallthrough, and unhandled branches.\n3. Enumerate the edge cases that matter — empty, single, maximal, negative or zero,\n   null, duplicate, unsorted, unicode, very large, malformed — and for each predict\n   what the code actually does versus what it should.\n4. Report each finding as: file and line → what's wrong → an input that triggers it\n   → the corrected behavior → severity (rank a silent wrong result above a crash\n   above a cosmetic issue).\n\nWhere you can, prove a finding by tracing the triggering input through the code or\nwriting a quick failing test, and mark confirmed bugs apart from suspected ones.\nPoint to exact lines rather than rewriting broadly, and don't invent problems to\nlook thorough.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "backend-error-handling",
+          "title": "Audit error handling & failure paths",
+          "blurb": "Find swallowed errors, wrong recovery, and failure paths that do the wrong thing.",
+          "summary": "Traces what runs when things go wrong — swallowed or mislabeled errors, lost context, panics on bad input, broken retries and cleanup — and gives the correct propagation or recovery for each, ranked by severity.",
+          "tags": [
+            "audit",
+            "correctness"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit how this codebase handles errors and failure — not the happy path, the paths\nthat run when something goes wrong. Use your tools to read the error handling,\nfallbacks, retries, and cleanup code.\n\nLook for:\n1. Swallowed or hidden failures: errors caught and ignored, logged-and-continued\n   when they should stop, or flattened into a success or a default that masks the\n   problem.\n2. Wrong or lossy propagation: errors that lose their context or cause as they\n   bubble up, get remapped to the wrong type or status, or surface a message that\n   misleads the caller.\n3. Crashes on bad input: unwrap/panic/assert, unchecked indexing, casts, and\n   division that a malformed or extreme input can blow up.\n4. Broken recovery: retries without backoff or idempotency, fallbacks that fire on\n   the wrong condition, cleanup that doesn't run on the error path, and partial\n   failures that leave state half-updated.\n5. The \"this can't fail\" assumptions that eventually do — external calls, parsing,\n   IO, and concurrency treated as infallible.\n\nFor each: file and line → what goes wrong when it fails → the correct handling\n(propagate with context, fail closed, validate first, make cleanup unconditional)\n→ severity. Prove the crash or the swallow with a triggering input where you can,\nand separate confirmed findings from suspected ones.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "backend-data-integrity",
+          "title": "Audit the write paths for data corruption",
+          "blurb": "Find writes that land wrong, stale, or duplicated data in the DB, cache, or state.",
+          "summary": "Maps every write path and finds the ones that can persist wrong, stale, or duplicated data, then proposes an invariant-enforcing guard and a query to find already-corrupted rows.",
+          "tags": [
+            "audit",
+            "database"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit this codebase for data-integrity bugs — writes that land wrong, stale,\nduplicated, or inconsistent values in the database, cache, or persistent state.\nUse your tools to map the write paths and read them.\n\nTrace it end to end:\n1. Map every code path that can write or mutate persisted data — include\n   background jobs, retries, migrations, cache refreshes, and concurrent requests,\n   not just the obvious handlers.\n2. For each writer, work out under what input or timing it would produce a bad\n   value. Look hard at partial failures, missing transactions, non-idempotent\n   retries, a race between read and write, a wrong WHERE or key, and cache/DB\n   divergence (one updated, the other not).\n3. Call out the highest-risk writers and the exact condition that triggers the\n   corruption, ranked by severity.\n4. For each, propose a guard that makes the invariant impossible to violate (a\n   transaction, unique constraint, idempotency key, optimistic-lock version, or\n   single-writer ownership) rather than just patching the symptom.\n5. Suggest a query or check to find any already-corrupted records so they can be\n   repaired.\n\nWhere the schema or transaction boundaries aren't obvious in the code, read the\nmigrations and schema to confirm them rather than guessing.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "backend-concurrency",
+          "title": "Hunt for race & concurrency bugs",
+          "blurb": "Find shared state, async, threads, or locks behaving wrong under concurrency.",
+          "summary": "Inspects concurrent code for races, deadlocks, lost updates, and visibility bugs, proving each with a concrete interleaving and proposing the minimal synchronization fix.",
+          "tags": [
+            "audit",
+            "correctness"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit this codebase for concurrency bugs — races, deadlocks, lost updates, and\nvisibility issues. Use your tools to find the code that runs concurrently\n(threads, async tasks, workers, shared caches or connections) and read it.\n\nAnalyze it rigorously:\n1. Identify every piece of state shared across concurrent execution and classify\n   each as safe or unsafe to touch without synchronization.\n2. For each unsafe access, describe a specific interleaving (T1 does X, then T2\n   does Y, then T1 does Z) that produces a wrong result, a lost update, or a\n   crash.\n3. Check for deadlock and lock-ordering hazards: do any two paths acquire the\n   same locks in different orders? Is any lock held across an await or blocking\n   call?\n4. Check atomicity assumptions: read-modify-write sequences that look atomic but\n   aren't, and check-then-act gaps.\n5. Recommend the minimal correct fix per issue (narrow the critical section,\n   reorder locks, use an atomic, make state immutable, or hand off via a channel)\n   and call out any fix that would hurt throughput.\n\nShow the bad interleaving explicitly — that's the proof — and rank findings by\nseverity. Where the concurrency or memory model isn't clear from the code, state\nthe assumption you're reasoning under and flag it.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "backend-resource-leaks",
+          "title": "Hunt resource leaks & unbounded growth",
+          "blurb": "Find leaked connections, handles, tasks, and memory that grows without bound.",
+          "summary": "Tracks acquired resources and accumulating state to find what never gets released or bounded — connections, handles, tasks, locks, transactions, caches, buffers — with the leak condition and the fix for each.",
+          "tags": [
+            "audit",
+            "performance"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit this codebase for resource leaks and unbounded growth — things acquired but\nnever released, or that accumulate without limit until the process degrades. Use\nyour tools to find where resources are opened and where state accumulates, and read\nthose paths.\n\nTrack each resource from acquisition to release:\n1. Handles and connections: files, sockets, DB connections, pooled clients —\n   acquired on every path but released on only some, especially on the error or\n   early-return path.\n2. Concurrency primitives: tasks or threads spawned and never joined or cancelled,\n   locks taken and not released on every exit, channels never closed.\n3. Transactions and sessions: opened and not committed or rolled back on failure.\n4. Unbounded growth: caches, maps, queues, and buffers that only ever grow; result\n   sets and reads with no limit; retained references that prevent reclamation.\n5. Lifetime mismatches: a resource outliving — or dying before — what depends on it.\n\nFor each: file and line → the path where it leaks or grows unbounded → the fix\n(scope-based release or RAII, an eviction bound or TTL, pagination, an explicit\nclose on every path) → severity by how fast it bites under real load. Where you\ncan, name the sequence that reproduces the growth.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "backend-api-contract",
+          "title": "Pressure-test the API surface",
+          "blurb": "Pressure-test every endpoint's inputs, outputs, errors, and failure modes.",
+          "summary": "Reviews each endpoint's validation, output shape, error codes, idempotency, and authorization, returning a prioritized issue → why-it-bites → fix list with the genuinely dangerous ones called out.",
+          "tags": [
+            "review",
+            "security"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Review the HTTP API in this codebase against the inputs and failure modes\nit'll actually meet in production. Use your tools to find the\nroute handlers and their request/response types and read them.\n\nFor each endpoint, go through it as a careful API reviewer:\n1. Inputs: for every field, check validation, type coercion, bounds, required\n   versus optional, and what happens on missing, extra, malformed, or oversized\n   values. Flag anything that trusts the caller.\n2. Outputs: is the success shape consistent and stable? Does it leak internal\n   details (stack traces, internal ids, PII)? Are nullable fields documented?\n3. Errors: map each failure to the right status code and a useful, non-leaky\n   error body. Find paths that can 500 on bad input that should be 4xx.\n4. Semantics: is it idempotent where it should be? What happens on retry,\n   double-submit, or partial failure mid-write? Any race between check and act?\n5. Boundaries: pagination limits, timeouts, rate limits, large payloads, and\n   authorization gaps (can caller A act on caller B's resource?).\n\nOutput a prioritized list per endpoint: issue → why it bites in production → the\nfix. Call out the one or two that are genuinely dangerous versus nice-to-have.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    },
+    {
+      "id": "frontend",
+      "name": "Frontend & UI",
+      "icon": "layout",
+      "blurb": "Audit layout, state, rendering, and accessibility across the UI without flailing at CSS.",
+      "prompts": [
+        {
+          "id": "frontend-layout-bug",
+          "title": "Audit the UI for layout fragility",
+          "blurb": "Find layout and CSS that misaligns, overflows, or sizes wrong.",
+          "summary": "Diagnoses layout and CSS fragility from first principles and gives the smallest correct fix for each, explaining the box-model mechanism behind it so the next one is obvious.",
+          "tags": [
+            "frontend",
+            "audit"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit the UI in this codebase for layout fragility and CSS bugs — things that\nmisalign, overflow, collapse, or size wrong. Use your tools to read the markup and\nstylesheets; if I've described a specific symptom, start there.\n\nDiagnose from first principles, not by changing CSS at random:\n1. For each issue, explain which layout system governs it (normal flow, flexbox,\n   grid, absolute or fixed positioning, float) and what the box model is doing —\n   including `box-sizing`, margins and margin collapse, and any implicit\n   min-content sizing.\n2. Pinpoint the specific rule or missing rule causing it, and explain the\n   mechanism (for example, \"the flex item has min-width auto, so it refuses to\n   shrink below its content and overflows\").\n3. Propose the smallest CSS change that would fix the cause, and say what it\n   changes and why. Do not apply it. Avoid `!important`, magic pixel values, and\n   stacking hacks unless you justify them.\n4. Note side effects the fix could have on siblings, other breakpoints, or\n   different content lengths.\n5. Flag layout that's fragile even where it isn't visibly broken yet.\n\nPrefer explanations that teach the underlying rule, so the next one is obvious.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "frontend-state-rerender",
+          "title": "Audit UI state & re-render logic",
+          "blurb": "Find stale UI, missing updates, infinite loops, and components that won't re-render.",
+          "summary": "Traces UI state flow to find stale values, missing updates, and render loops, naming the exact line and the timing that produces each, then the minimal correct fix.",
+          "tags": [
+            "frontend",
+            "audit"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit the UI state management in this codebase for re-render and data-flow bugs —\nstale values, missing updates, infinite render loops, unexpected resets, and\ndouble-fires. Use your tools to read the components and the state they share.\n\nReason about the data flow:\n1. For the stateful areas, trace each piece of state's lifecycle: where it's\n   declared, every place it's read, and every place it's written. Map the path\n   from event → state change → re-render → DOM.\n2. Identify defect classes: mutating state in place instead of replacing it; stale\n   closures capturing an old value; derived state stored instead of computed;\n   effects with wrong or missing dependencies; keys causing remounts; updates\n   batched or fired in the wrong order; identity changes (a new object or array\n   each render) triggering loops.\n3. Point at the exact line where a wrong assumption lives and explain the timing\n   that produces the symptom.\n4. Give the minimal correct fix, preferring deriving over storing and a single\n   source of truth over synchronized copies.\n5. Flag nearby footguns that will cause the next bug.\n\nIf the framework's update model matters to a conclusion, state which version or\nbehavior you're assuming.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "frontend-a11y-audit",
+          "title": "Accessibility audit of the components",
+          "blurb": "Find keyboard and screen-reader blockers and the exact markup change.",
+          "summary": "Audits components against real assistive-tech use — semantics, keyboard, screen-reader naming, forms, contrast — and returns a table of issues with the exact markup or ARIA change, blockers first.",
+          "tags": [
+            "frontend",
+            "accessibility"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit the UI components in this codebase for accessibility and give concrete,\ncorrect fixes — not a generic checklist. Use your tools to read the markup and the\nbehavior around it.\n\nEvaluate against how real assistive tech uses each component:\n1. Semantics: is the right native element used for each role? Name the correct\n   native element for any `div` or `span` button/link/input impostors, or, only\n   where unavoidable, the correct ARIA role. Flag redundant or wrong ARIA.\n2. Keyboard: can every interactive element be reached and operated with the\n   keyboard alone? Check tab order, focus visibility, Enter/Space/Escape/arrow\n   handling, and focus management for anything that opens or closes (modals,\n   menus, disclosures).\n3. Screen reader: does each control have an accessible name? Are state changes\n   (expanded, selected, loading, errors) announced? Are decorative icons hidden\n   and meaningful ones labeled?\n4. Forms: are inputs associated with labels, errors programmatically linked, and\n   required or invalid states conveyed without relying on color alone?\n5. Contrast and motion: call out any color-only signals or unguarded motion.\n\nOutput a table: file → issue → WCAG concern in plain terms → exact markup or\nattribute change. Prioritize blockers (unusable by keyboard or screen reader)\nover polish.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "frontend-responsive",
+          "title": "Audit responsive & cross-browser resilience",
+          "blurb": "Find UI that breaks at certain widths, on mobile, or in a specific browser.",
+          "summary": "Finds where the UI assumes a fixed width or a desktop engine and recommends content-driven fixes over more breakpoints, plus a short widths × browsers matrix to verify them.",
+          "tags": [
+            "frontend"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit this codebase's UI for responsive and cross-browser fragility — layouts that\nbreak at certain widths, on mobile, or in a specific engine. Use your tools to\nread the markup and CSS.\n\nReview for resilience:\n1. Find where layout assumes a fixed width, a hover that doesn't exist on touch, a\n   viewport-unit quirk, or content shorter or longer than the design assumed.\n2. Check the breakpoint strategy: are breakpoints driven by content needs or\n   guessed device sizes? Identify the width ranges where things actually fall\n   apart and explain why.\n3. Flag cross-engine hazards: `100vh` on mobile, flex or grid gaps, sticky and\n   positioning quirks, font rendering, date and number input differences, and any\n   property needing a fallback for older targets.\n4. Recommend fixes that scale with content (intrinsic sizing, `clamp()`, `minmax`,\n   container-aware layout) over more hard-coded breakpoints.\n5. Give a short manual test matrix (widths × browsers) to verify the fixes.\n\nBe concrete about which property and line causes each break, and state the target\nbrowsers and breakpoints you're assuming.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "name": "Code Review & Refactoring",
+      "icon": "review",
+      "blurb": "Get a rigorous review of the current change, or restructure code safely without altering behavior.",
+      "prompts": [
+        {
+          "id": "review-pr-review",
+          "title": "Rigorous review of the current change",
+          "blurb": "Review the working diff the way a demanding senior engineer would.",
+          "summary": "Reads the working diff and reviews intent, correctness, design, risk, and test coverage, returning findings grouped Blocking / Should-fix / Nit with file:line and a concrete suggestion.",
+          "tags": [
+            "review"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Review the current change in this repository the way a demanding, fair senior\nengineer reviews a pull request — substance, not style nits a linter would catch.\nUse your tools to get the diff (the uncommitted changes, or this branch against\nits base) and read the surrounding code it touches. If there is no uncommitted\nchange and no branch-vs-base diff, say so and stop. Do not invent a review.\n\nStructure your review:\n1. Intent check: in one sentence, what does this change actually do? Infer the\n   goal if it isn't stated, and say you inferred it. Call out scope creep or\n   unrelated edits.\n2. Correctness: hunt for real bugs introduced or exposed — edge cases, error\n   paths, off-by-ones, concurrency, resource leaks, and broken invariants. Tie\n   each to a concrete failing scenario.\n3. Design: is this the right place and shape for the change? Note leaky\n   abstractions, duplicated logic that should be shared, or shared logic that\n   should be duplicated. Suggest a simpler structure only if it's clearly net\n   positive.\n4. Risk and blast radius: what could this break elsewhere? Backward compatibility,\n   migrations, performance, security, observability.\n5. Tests: are the right cases covered? Name the missing test that would have\n   caught the most likely regression.\n\nGroup findings as [Blocking] / [Should fix] / [Nit], each with file and line and a\nconcrete suggestion. If something is fine, say so — don't invent problems to look\nthorough.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "review-safe-refactor",
+          "title": "Refactor without changing behavior",
+          "blurb": "Restructure messy code while provably preserving its observable behavior.",
+          "summary": "Restructures messy code in small, individually behavior-preserving steps — and applies them — after agreeing the observable contract up front and verifying it with the existing tests.",
+          "tags": [
+            "refactor"
+          ],
+          "needs_input": false,
+          "makes_changes": true,
+          "body": "Refactor messy code in this codebase to be cleaner WITHOUT changing its observable\nbehavior. Behavior preservation is the hard requirement. Use your tools to read\nthe target before touching it; if I haven't named one, pick the worst offender you\nfind and note the runners-up.\n\nProceed carefully:\n1. First, summarize the current observable behavior, including edge cases and side\n   effects, so the contract being preserved is explicit. Call out any behavior\n   that looks accidental, and preserve it by default unless it's clearly a bug.\n2. Identify the specific smells worth fixing (duplication, deep nesting, long\n   parameter lists, unclear names, mixed responsibilities) and the ones not worth\n   touching right now.\n3. Plan the refactor as a sequence of small, individually safe steps, each\n   behavior-preserving on its own so it can be reviewed and reverted piecewise.\n   Do not apply the steps until I grant permission.\n4. Keep public signatures stable unless I approve a change. No new features, no\n   \"while I'm here\" fixes.\n5. After permission, verify equivalence: run the existing tests that cover this,\n   and add a characterization test first if coverage is thin.\n\nIf any step would change behavior to clean things up, stop and flag it as a\nseparate decision rather than folding it in silently.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "review-organization-cleanup-plan",
+          "title": "Audit organization and plan cleanup",
+          "blurb": "Review the whole repo layout and report cleanup opportunities.",
+          "summary": "Audits the entire codebase organization in read-only mode, prioritizes low-effort cleanup, and reports secrets, settings, oversized files, and stale docs — a plan only, no file writes.",
+          "tags": [
+            "audit",
+            "documentation",
+            "refactor"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit this codebase's organization in read-only mode and produce a cleanup\nplan. Do not move, rename, delete, or edit any file. Everything is a plan\nfor a human to review, not an action for you to take. Use your tools to walk\nevery file and directory; review the whole thing, not a sample.\n\nWork in this order:\n1. Understand the system first: what it's for, its main components, and how\n   the pieces relate. Map the current directory layout and note where files\n   actually live versus where they logically belong.\n2. Produce a cleanup plan optimized for minimal effort, not perfection. This\n   is a tidy-up, not a rewrite — no refactors, no renaming for taste, no\n   restructuring that forces broad import changes. Order the plan biggest\n   wins first: each item should state the change, the effort (small/medium/\n   large), the payoff, and what references (imports, scripts, CI, docs)\n   would need updating. A reader should be able to stop halfway down the\n   list and still have captured most of the value. As a reference point, a\n   well-organized project looks roughly like this (adapt to this project's\n   language and conventions — do not impose this layout):\n\n   project/\n   ├── src/            # application code, grouped by feature or layer\n   ├── tests/          # mirrors src/ structure\n   ├── config/         # non-secret settings: rates, thresholds, flags\n   ├── scripts/        # one-off and operational scripts\n   ├── docs/           # documentation\n   ├── .env            # secrets only — gitignored\n   ├── .env.example    # documents required env vars with placeholders\n   ├── .gitignore\n   ├── AGENTS.md\n   └── README.md\n\n3. Secrets pass (report only): find every token, API key, password, or\n   credential living in config files, .json files, or source code. For each,\n   report where it lives and plan its move to .env with an environment-\n   variable read, plus a .env.example entry. Do not move anything yourself.\n   Flag any secret already committed to git history for rotation — moving it\n   later is not enough.\n4. Settings pass (report only): assess how service configuration — rates,\n   thresholds, limits, feature flags, tunables — is organized. Plan how to\n   consolidate it into a clear, consistent location and format, and note\n   dead or duplicated config. Config is for settings; .env is for secrets —\n   the plan must keep the two separate.\n5. File-size pass (report only): list every file over 1500 lines with its\n   line count. Do not split, edit, or restructure these files. Just tell\n   the user these files are unusually large and should probably be broken\n   down, and suggest natural seams if obvious ones exist.\n6. Docs pass (report only): note whether AGENTS.md, README, or similar\n   agent/onboarding docs are missing, stale, or contradict the code as it\n   is today. Propose what to update. Do not write those files.\n\nReport only real findings — no praise, no restating what the code does.\nStructure the output as: (a) the prioritized cleanup plan, biggest wins\nfirst; (b) secrets found and rotation flags; (c) oversized files; (d) any\nfile you couldn't confidently categorize — list it, don't guess. If a pass\nturns up nothing, say so and move on.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "review-untangle",
+          "title": "Untangle a god function / module",
+          "blurb": "Decompose one giant function or class that does too much.",
+          "summary": "Inventories the responsibilities of an overgrown unit, proposes a clean decomposition along its natural seams, sequences safe extraction steps, and carries out the first one as a worked example.",
+          "tags": [
+            "refactor"
+          ],
+          "needs_input": false,
+          "makes_changes": true,
+          "body": "Find an overgrown function, class, or module in this codebase that does too many\nthings, and decompose it into something reasonable. Use your tools to read it and\nits callers; if I've pointed at one, use that.\n\nDo this:\n1. Inventory every distinct responsibility it currently has — a bulleted set of\n   \"this code is responsible for X.\" Note where responsibilities are interleaved\n   rather than separated.\n2. Identify the natural seams: where data flows from one concern to the next, and\n   the hidden dependencies (shared mutable state, ordering assumptions, side\n   effects) that make splitting risky.\n3. Propose a decomposition: the units it should become, each with a single clear\n   responsibility and a small interface. Show the boundaries and how data crosses\n   them.\n4. Sequence the extraction so each step is small and safe and the code keeps\n   working after every step. Identify the riskiest seam and how to de-risk it\n   (characterization tests first, for example).\n5. Propose the first extraction in full as a worked example. Do not apply it\n   until I grant permission.\n\nOptimize for \"the next reader understands it in 30 seconds,\" not cleverness or\nmaximum abstraction. Don't over-engineer — flag what's fine as-is.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "review-naming-ergonomics",
+          "title": "Naming & API ergonomics pass",
+          "blurb": "Make names and interfaces clear so the code reads itself.",
+          "summary": "Flags names that mislead and signatures that are easy to misuse, and proposes concrete, convention-matching renames with rationale — separating real confusion from taste, and noting ripple cost.",
+          "tags": [
+            "refactor",
+            "review"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Do a naming and interface ergonomics pass over this codebase (or the area I name)\nso the code reads itself without comments. Use your tools to read the functions,\ntypes, and public surfaces.\n\nFor each name and signature:\n1. Flag names that lie, mislead, or under-describe — booleans that aren't clearly\n   yes/no, vague nouns (`data`, `info`, `manager`, `helper`), units or meaning\n   hidden (`timeout` in what? `size` of what?), and abbreviations that cost more\n   than they save.\n2. Flag interface friction: parameters easy to pass in the wrong order, boolean\n   flags that should be enums, primitive obsession, functions that do something\n   surprising relative to their name, and return types that force the caller to\n   guess.\n3. Propose concrete renames and signature changes, with a one-line rationale each.\n   Keep them consistent with the codebase's existing conventions — match existing\n   patterns rather than importing new ones.\n4. Distinguish \"genuinely confusing\" from \"personal-taste nit\" so I can ignore the\n   latter.\n5. If a rename ripples to many call sites, note that cost so I can weigh it.\n\nPrefer fewer, higher-impact changes over renaming everything.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    },
+    {
+      "id": "testing",
+      "name": "Testing & QA",
+      "icon": "flask",
+      "blurb": "Design test plans, write the cases that actually catch bugs, and find the gaps in coverage.",
+      "prompts": [
+        {
+          "id": "testing-test-plan",
+          "title": "Build a test plan from the code",
+          "blurb": "Produce a thorough, prioritized test plan for a feature or change.",
+          "summary": "Turns a feature into a prioritized test plan — explicit and implicit requirements, cases by category with expected results, and an \"if you only test five things\" shortlist ranked by risk.",
+          "tags": [
+            "testing"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Build a thorough test plan for the feature or change at hand. I want the cases\nthat actually matter, prioritized, not an exhaustive dump. Use your tools to read\nthe relevant code so the plan reflects what's really there; if the feature isn't\nin the codebase yet, build the plan from whatever description is available and\nstate what you assumed.\n\nProduce:\n1. A short list of the explicit requirements, plus the IMPLICIT ones the code\n   assumes but doesn't state (auth, permissions, limits, error handling,\n   concurrency, idempotency). Flag any requirement that's ambiguous and needs a\n   decision before testing.\n2. Test cases by category: happy path, boundary and edge inputs, invalid inputs,\n   error and failure paths, state and permission variations, and integration\n   points. For each: precondition → action → expected result.\n3. The nastiest realistic cases — the ones a rushed developer would miss (empty or\n   huge inputs, concurrent actions, partial failures, retries, timezones, unicode,\n   network loss mid-operation).\n4. Which cases warrant automated tests versus one-time manual checks, and at which\n   level (unit, integration, e2e).\n5. A prioritized \"if you only test five things\" shortlist ranked by risk ×\n   likelihood.\n\nWhere behavior is ambiguous, state the assumption you're testing against and flag\nit as a decision to confirm rather than guessing silently.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "testing-edge-tests",
+          "title": "Write tests for the cases that break things",
+          "blurb": "Generate sharp tests targeting edge cases, not just the happy path.",
+          "summary": "Writes and runs sharp tests aimed at the inputs most likely to break the code, deriving cases from the input space rather than the happy path, in the project's existing framework and idiom.",
+          "tags": [
+            "testing"
+          ],
+          "needs_input": false,
+          "makes_changes": true,
+          "body": "Propose tests that target the cases most likely to break the code at hand — not\nthree happy-path tests, the ones that find bugs. Use your tools to read the target\ncode and the existing test suite, and match its framework and style.\n\nApproach:\n1. First, state the contract you're testing to: inputs, outputs, side effects, and\n   invariants. If the contract is unclear for some input, list it as an open\n   question rather than guessing the assertion.\n2. Derive cases from the input space, not the implementation: boundaries (0, 1,\n   max, max+1), empty, null, or missing, negative, duplicate, unsorted, very\n   large, malformed, and unusual-but-valid (unicode, whitespace, mixed types).\n3. Cover behavior, not lines: error paths and exceptions, idempotency, ordering,\n   and any documented guarantee. Include at least one test that would fail if a\n   plausible future \"optimization\" broke the contract.\n4. For each case, specify a test name that states the case\n   (\"returns_empty_when_input_is_empty\"), arrange/act/assert structure, and one\n   logical assertion focus. Do not write the files until I grant permission.\n5. Call out any case you suspect is a real bug (where the expected value is\n   uncertain) so I can decide the intended behavior.\n\nKeep tests deterministic — no reliance on real time, network, or ordering. After\npermission, write them, run them, and report what passes.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "testing-coverage-gaps",
+          "title": "Find untested branches & coverage gaps",
+          "blurb": "Existing tests pass but you suspect they miss real risk.",
+          "summary": "Separates what the tests truly assert from what they merely touch, surfaces high-risk uncovered paths and weak/over-mocked tests, and lists the specific tests to add, ranked by the risk they retire.",
+          "tags": [
+            "testing",
+            "audit"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "My tests pass, but passing tests aren't the same as tested code. Find the coverage\ngaps that matter in this codebase — where a real bug could hide and no test would\nnotice. Use your tools to read the code and its existing tests (and a coverage\nreport if you can generate one).\n\nAnalyze:\n1. Map what the existing tests actually exercise versus what they merely touch.\n   Identify branches, error paths, and conditions with NO meaningful assertion\n   behind them.\n2. Find the high-risk uncovered paths: error handling, fallbacks, edge\n   conditions, and the \"this should never happen\" branches that eventually do.\n3. Spot weak tests masquerading as coverage: tests that assert nothing meaningful,\n   over-mock the thing they claim to verify, or would still pass if the logic were\n   broken. Name them.\n4. Identify behavior coupled across units where a unit test passes but the\n   integration would fail — and say where an integration test is the right tool\n   instead of more unit tests.\n5. Give a prioritized list of specific tests to add, ranked by the risk they\n   retire, each with the exact scenario it should assert.\n\nDon't chase a coverage percentage — chase the cases whose failure would actually\nhurt.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    },
+    {
+      "id": "perf",
+      "name": "Performance & Optimization",
+      "icon": "gauge",
+      "blurb": "Find the real bottleneck with evidence before you optimize, then make a change you can measure.",
+      "prompts": [
+        {
+          "id": "perf-profile-first",
+          "title": "Optimize from a profile, not a hunch",
+          "blurb": "Find the actual bottleneck with evidence before changing anything.",
+          "summary": "Insists on a profile or measurement first, identifies the dominant cost from the numbers, and proposes the highest-leverage change ordered by win-per-effort with a before/after check.",
+          "tags": [
+            "performance"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Something in this codebase is too slow and I want to fix the bottleneck that\nactually matters, not the one I assume. Hold me to evidence. Use your tools to\nread the relevant code, but don't optimize from reading alone.\n\nGuide me:\n1. Before changing anything, tell me what to measure to locate the bottleneck and\n   how — the specific profile, trace, or timing breakdown that will show where the\n   time or allocations actually go. Insist on this first; if you can run or\n   suggest the exact command, do.\n2. Once there are numbers, identify the dominant cost and explain why it's\n   expensive (algorithmic complexity, IO and round-trips, contention,\n   serialization, allocation, cache misses).\n3. Propose the highest-leverage change for that dominant cost, with an estimate of\n   the expected win and the effort and risk. Order options by win-per-effort.\n4. Warn me away from micro-optimizations that won't move the needle given the\n   profile.\n5. Define how we'll confirm the improvement: the same measurement, before versus\n   after, plus a check that correctness and other metrics didn't regress.\n\nRefuse to optimize from a hunch: if there's no measurement yet, the first step is\nto produce one. Name exactly what to profile and how before proposing any change.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "perf-slow-query",
+          "title": "Find the slow query / N+1",
+          "blurb": "Hunt the database access for slow queries, N+1, and missing indexes.",
+          "summary": "Finds N+1 patterns and expensive queries, says exactly what EXPLAIN to run and which index to add (and its write-time cost), ranked by leverage with a before/after measurement.",
+          "tags": [
+            "performance",
+            "database"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Database access in this codebase is slow and I suspect query problems — slow\nqueries, N+1 patterns, missing indexes, or over-fetching. Use your tools to find\nthe queries and ORM calls and the code that issues them, then read them.\n\nAnalyze:\n1. Identify N+1 patterns: a query inside a loop, or per-record lazy loads that\n   should be a single batched or joined query. Quote the offending code with its\n   location.\n2. For each expensive query, walk what the engine must do: which indexes it can\n   use, where it'll do a full scan or sort, and whether the WHERE, JOIN, and ORDER\n   BY columns are indexed. Tell me the exact EXPLAIN or EXPLAIN ANALYZE to run and\n   what to look for.\n3. Flag over-fetching (selecting columns or rows that get discarded), missing\n   pagination, and unbounded result sets.\n4. Recommend fixes in order of leverage: query or JOIN restructuring, the specific\n   index to add (with column order and why), batching, or caching — and note the\n   write-time and storage cost of any index.\n5. Give the measurement that proves it: before/after timing or query count.\n\nDon't add indexes blindly — justify each against the queries that will use it.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "perf-memory-allocs",
+          "title": "Reduce memory / allocation pressure",
+          "blurb": "Cut high memory use, GC pressure, or allocation churn in a hot path.",
+          "summary": "Pinpoints per-iteration allocations and retained memory on the hot path and proposes impact-ordered fixes (reuse, pre-size, stream, borrow), with how to measure the difference.",
+          "tags": [
+            "performance"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Something in this codebase uses more memory or allocates more than it should —\nhigh RSS, GC pressure, or a slow hot loop from churn. Use your tools to find the\nhot path and its data structures and read them. Find the waste without hurting\nclarity needlessly.\n\nExamine:\n1. Identify allocations and retained memory on the hot path: temporary objects per\n   iteration, copies that could be borrows or views, repeated buffer growth,\n   boxing, and intermediate collections that could be streamed.\n2. Distinguish \"allocated once\" from \"allocated per call or iteration\" — the\n   latter is where the pressure is. Quote those lines.\n3. Look at data-structure choices: oversized or wrong containers, storing more\n   than needed, duplicated data that could be shared or interned, and capacity not\n   pre-sized when the size is known.\n4. Propose changes ordered by impact: reuse or pool buffers, pre-size, stream\n   instead of materialize, borrow instead of clone, choose a tighter type — and\n   flag any that trade meaningful readability for the win.\n5. Tell me how to measure the difference (allocation profiler, heap snapshot, peak\n   RSS) before and after.\n\nDon't sacrifice correctness or readability for a win the workload size makes\nirrelevant — say when an optimization isn't worth it.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    },
+    {
+      "id": "security",
+      "name": "Security Review",
+      "icon": "shield",
+      "blurb": "Threat-model a feature and audit the codebase for the vulnerability classes that actually get exploited.",
+      "prompts": [
+        {
+          "id": "security-threat-model",
+          "title": "Threat-model a feature",
+          "blurb": "Think through how a feature could be abused before shipping it.",
+          "summary": "Walks an attacker through the feature's entry points and enumerates concrete abuse cases by class, rated impact × likelihood, with the specific mitigation and where in the flow it belongs.",
+          "tags": [
+            "security",
+            "architecture"
+          ],
+          "needs_input": true,
+          "makes_changes": false,
+          "body": "Threat-model a feature before it ships — I want to know how it gets abused, not a\ngeneric OWASP recital. If the feature lives in this codebase, use your tools to\nread it; if it's still an idea, ask me to describe it and its trust boundaries\nfirst.\n\nWork it through:\n1. Identify the assets at risk (data, money, accounts, compute, reputation) and\n   who would want them. Sketch the attacker profiles that realistically apply.\n2. Map the trust boundaries and entry points: every place untrusted input enters\n   and every privileged action it can reach.\n3. For each entry point, enumerate concrete abuse cases — walk an attacker's\n   steps. Cover the classes that fit: injection, broken authn/authz (especially\n   horizontal and vertical privilege escalation and IDOR), SSRF, insecure\n   deserialization, rate and abuse limits, secrets exposure, and business-logic\n   abuse (replay, race, negative amounts, workflow skipping).\n4. Rate each by impact × likelihood, and call out the one or two that are\n   genuinely scary versus theoretical.\n5. For the top risks, give the specific mitigation and where it belongs in the\n   flow (validate and authorize at the boundary, not deep inside).\n\nBe concrete to this feature, not generic.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "security-vuln-audit",
+          "title": "Audit the codebase for injection & auth flaws",
+          "blurb": "Find exploitable vulnerabilities with concrete attack paths.",
+          "summary": "Sweeps the code for injection, broken authz/IDOR, SSRF, unsafe deserialization, data exposure, and XSS, showing each as a concrete attack with an example payload and the correct fix.",
+          "tags": [
+            "security",
+            "audit"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Audit this codebase for security vulnerabilities. For anything you flag, show the\nconcrete attack — the input plus the path it takes — not just a label. Use your\ntools to read request handling, queries, auth checks, and any file, network, or\nprocess execution.\n\nHunt specifically for:\n1. Injection: SQL, NoSQL, command, path traversal, template, and header/CRLF — any\n   place untrusted input reaches an interpreter, query, filesystem path, or shell\n   without proper parameterization or escaping. Quote the line and give an example\n   payload.\n2. AuthN/AuthZ: missing or bypassable authentication, and — more often missed —\n   missing authorization: can a user act on another user's resource (IDOR)? Can\n   they escalate privileges or skip a required check?\n3. Input trust: unvalidated redirects, SSRF (user-controlled URLs fetched\n   server-side), unsafe deserialization, and mass-assignment.\n4. Data exposure: secrets in code or logs, sensitive data in responses or errors,\n   missing encryption in transit or at rest where it matters.\n5. Output handling: XSS from unescaped output into HTML, JS, or attributes.\n\nFor each finding: severity, the exploit walk-through, and the correct fix\n(parameterize, authorize at the boundary, allowlist, encode on output). Where code\nis actually safe but looks risky, say so explicitly.\n\nDon't invent issues to look thorough. If a category is empty, say so and move on. No praise, no restating what the code does.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "security-deps-secrets",
+          "title": "Dependency & secrets review",
+          "blurb": "Check the supply chain and configuration for known-bad inputs.",
+          "summary": "Reviews dependencies, committed or leaked secrets, and risky config, names the audit command for your ecosystem, and returns a prioritized issue → risk → exact-fix list.",
+          "tags": [
+            "security"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Review this project's dependencies, secrets handling, and security-relevant\nconfiguration for risks I can act on. Use your tools to read the dependency\nmanifest and lockfile, the config, and the code that loads secrets.\n\nAssess:\n1. Dependencies: flag packages that are unmaintained, badly outdated, or known to\n   carry advisories, and run (or tell me) the authoritative audit command for this\n   ecosystem. Distinguish \"transitively pulled\" from \"directly used.\"\n2. Secrets: find any credential, key, or token committed in code, config, or\n   history, and any secret that's logged, sent to the client, or baked into a\n   build artifact. Recommend the correct handling (env or secret manager,\n   rotation, git-history scrubbing if exposed).\n3. Configuration: insecure defaults, debug or verbose modes left on, permissive\n   CORS, missing security headers, overbroad permissions, and anything safe in dev\n   but dangerous in prod.\n4. Supply-chain hygiene: are versions pinned and locked? Any unpinned or\n   install-time scripts that run arbitrary code?\n5. Output a prioritized remediation list: issue → risk → exact fix.\n\nWhere judging exploitability needs context not visible in the repo (how a\ndependency is used, where config is deployed), state that assumption explicitly\nand rate the risk under it rather than over- or under-stating it.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    },
+    {
+      "id": "arch",
+      "name": "Architecture & Design",
+      "icon": "layers",
+      "blurb": "Pressure-test designs, weigh trade-offs honestly, and plan migrations that don't take the system down.",
+      "prompts": [
+        {
+          "id": "arch-design-rfc",
+          "title": "Draft a design doc / RFC",
+          "blurb": "Turn a problem into a written design with trade-offs and a recommendation.",
+          "summary": "Drafts a design doc — problem, goals and non-goals, constraints, the proposed design and data flow, honest alternatives, trade-offs and risks, and open questions — and pushes on the weak points.",
+          "tags": [
+            "architecture",
+            "planning"
+          ],
+          "needs_input": true,
+          "makes_changes": false,
+          "body": "Help me write a design doc for a problem so reviewers can poke holes in the\nthinking, not just the prose. Start by asking me what the problem is and the\nconstraints (scale, latency, team, deadline, existing systems, hard must-nots) if\nI haven't said. Where the design touches this codebase, use your tools to ground\nit in what's actually there.\n\nDraft it with these sections, and push on the weak points:\n1. Problem and goals: the problem in plain terms, explicit goals, and explicit\n   NON-goals. Include the success criteria we'll judge it by.\n2. Constraints and assumptions: list them, and mark which assumptions are\n   load-bearing (if wrong, the design changes).\n3. Proposed design: the approach, the key components and how data flows between\n   them, and the main interfaces and contracts. Keep it concrete.\n4. Alternatives considered: at least two, each with why it wasn't chosen —\n   honestly, not as straw men.\n5. Trade-offs and risks: what we're giving up, the failure modes, the operational\n   cost, and how we'll observe and roll back. Call out the riskiest part.\n6. Open questions: the decisions that still need an owner or more data.\n\nWhere my input is thin, ask sharp questions instead of filling gaps with\nassumptions. Flag anything over-engineered for the stated scale.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "arch-tradeoffs",
+          "title": "Evaluate trade-offs between approaches",
+          "blurb": "Get an honest comparison of candidate approaches that ends in a pick.",
+          "summary": "Compares your candidate approaches across the dimensions that matter, makes the trade-offs explicit, and ends in a single recommendation with the assumptions it rests on and the early signal you chose wrong.",
+          "tags": [
+            "architecture",
+            "planning"
+          ],
+          "needs_input": true,
+          "makes_changes": false,
+          "body": "Help me choose between a few approaches with an honest comparison that ends in a\nrecommendation — not \"it depends.\" Ask me what I'm deciding, the candidate\noptions, and what matters most (correctness, latency, dev speed, operability,\ncost, team familiarity) if I haven't said. Use your tools to check how the options\nfit this codebase where that's relevant.\n\nDo this:\n1. Restate each option neutrally so we're comparing the same thing, and note any\n   I've framed unfairly.\n2. Build a comparison across the dimensions that matter (use mine, and add any\n   important one I forgot). For each option × dimension, give a concrete\n   assessment, not a vague rating — explain the \"why\" behind it.\n3. Make the trade-offs explicit: what each option is genuinely better and worse\n   at, and the conditions under which the ranking flips.\n4. Identify the deciding factors — the two or three dimensions that should\n   actually drive this decision given my priorities.\n5. Recommend one, state the assumptions it rests on, and name the early signal\n   that would tell us we chose wrong.\n\nIf a further option is obviously better than all of mine, say so.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "arch-safe-migration",
+          "title": "Plan a safe migration / rollout",
+          "blurb": "Change a schema, system, or API in production without an outage.",
+          "summary": "Produces a staged, reversible expand/contract rollout plan with per-step verification and rollback, a safe batched backfill, and the irreversible point and alerts to watch during cutover.",
+          "tags": [
+            "architecture",
+            "database"
+          ],
+          "needs_input": true,
+          "makes_changes": false,
+          "body": "Help me plan a production change — a schema, component, or API migration — with no\ndowntime or data loss, that I can execute and reverse. Ask me for the current\nstate, the target state, and the constraints (traffic, data volume, downtime\nbudget, dependents) if I haven't said. Use your tools to read the affected code\nand schema.\n\nProduce a staged plan:\n1. Define the invariant that must hold throughout (no lost writes, no broken\n   reads, consistent data) and the explicit rollback condition.\n2. Lay out the expand/contract sequence: add the new path alongside the old,\n   dual-write or dual-read or shadow as needed, backfill existing data, switch\n   reads, then remove the old path — each step independently deployable and safe\n   to pause.\n3. For each step, state how to verify success before proceeding and how to roll\n   back if it fails (and whether rollback is still safe after the next step).\n4. Address data: how to backfill safely (batched, idempotent, resumable), how to\n   handle records written during the migration, and how to reconcile and verify.\n5. Call out the irreversible point (if any), the riskiest step, and the monitoring\n   and alerts to watch during cutover.\n\nPrefer many small reversible steps over one big switch.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    },
+    {
+      "id": "explain",
+      "name": "Explain & Document",
+      "icon": "book",
+      "blurb": "Understand unfamiliar code fast and turn it into docs the next person can actually use.",
+      "prompts": [
+        {
+          "id": "explain-explain-code",
+          "title": "Explain unfamiliar code",
+          "blurb": "Understand what a part of the codebase does and why, fast.",
+          "summary": "Explains a chosen area in layers — purpose, shape and primary path, the non-obvious parts and why, the contract and sharp edges, and what's safe versus load-bearing to change.",
+          "tags": [
+            "documentation"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Explain how a part of this codebase works so I understand not just what it does\nbut why it's shaped that way. Assume I'm a competent engineer new to this code.\nUse your tools to read it; if I've named a file, function, or flow, start there,\notherwise pick the most central or load-bearing area and say why you chose it.\n\nExplain in layers, top to bottom:\n1. Purpose in one or two sentences: what problem it solves and where it sits in\n   the bigger flow (who calls it, what it calls).\n2. The shape: the main pieces (functions, types, branches) and how control and\n   data move through them. A short step-by-step of the primary path.\n3. The non-obvious parts: anything that would make a newcomer pause — a clever\n   trick, a workaround, an implicit assumption, an ordering dependency, or a\n   subtle edge case being handled. Explain the \"why\" behind each.\n4. The contract and the sharp edges: inputs and outputs, side effects, error\n   behavior, and the conditions under which it would misbehave.\n5. What I'd want to know before changing it: the parts that look safe to touch and\n   the parts that are load-bearing.\n\nIf something looks like a bug or a smell rather than intent, flag it separately as\n\"possible issue, not explanation.\" Don't invent rationale you can't see — say\n\"unclear why\" when it's unclear.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "explain-write-docs",
+          "title": "Write clear docs from the code",
+          "blurb": "Produce a README or reference doc grounded in the actual code.",
+          "summary": "Writes user-followable docs grounded strictly in the real API — overview, a working getting-started example, a precise reference, common-task recipes, and the gotchas that save a support ticket.",
+          "tags": [
+            "documentation"
+          ],
+          "needs_input": false,
+          "makes_changes": true,
+          "body": "Draft documentation for a module, API, or library in this codebase, grounded\nstrictly in the actual code — no invented behavior. Use your tools to read the\npublic surface (functions, types, endpoints, config, usage); if I haven't named\nthe target or audience, document the most prominent public surface and state who\nyou're assuming the reader is.\n\nProduce a draft a real user can follow (in the reply, not as file writes yet):\n1. A one-paragraph overview: what this is, what problem it solves, and when to use\n   it (and when not to).\n2. Getting started: the minimal end-to-end example that actually works,\n   copy-pasteable, with the expected result. Base it on the real API.\n3. Reference: each public function, endpoint, or option — purpose, parameters\n   (with types, units, defaults, required-ness), return or response, errors, and a\n   short example. Be precise about edge behavior.\n4. Common tasks: a few \"how do I X\" recipes for what people will actually want to\n   do.\n5. Gotchas and limits: footguns, constraints, side effects, and anything\n   surprising — the stuff that saves a support ticket.\n\nMatch the tone and format conventions already used in the project. If the code\ndoesn't reveal something a doc needs (a default, an error case), mark it as a TODO\nor question rather than guessing.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "explain-onboard-codebase",
+          "title": "Map an unfamiliar codebase",
+          "blurb": "Get oriented in this repo so you know where to make a change.",
+          "summary": "Reads the structure and entry points and builds an orientation map — the big-picture flow, which modules own what, the conventions to follow, the danger zones, and where your task likely lives.",
+          "tags": [
+            "documentation"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "I'm new to this codebase and need to get oriented enough to make a change\nconfidently. Use your tools to read the directory structure, entry points, build\nand config files, and any README, then build me a mental map.\n\nGuide me through orientation:\n1. The big picture: what this system does, its main components, and how a request\n   or job flows through it end to end. Name the entry point(s).\n2. The map: which directories or modules own which responsibility, and where the\n   important boundaries are (interfaces, layers, services). Point me at the 5–10\n   files worth reading first, in order, and why each.\n3. The conventions: the patterns this codebase repeats (error handling, config,\n   testing, naming, data access) so a change fits in instead of standing out.\n4. The danger zones: the parts that are fragile, heavily depended-on, or\n   surprising — where a careless change does the most damage.\n5. If I've described a task, tell me where that logic most likely lives and the\n   path to trace to confirm it; otherwise, point out the areas a change is most\n   likely to touch and what to read to go deeper.\n\nGround every claim in something you actually read. When you're inferring rather\nthan confirming, say so and tell me what to open to be sure.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    },
+    {
+      "id": "delivery",
+      "name": "Planning & Delivery",
+      "icon": "rocket",
+      "blurb": "Turn fuzzy ideas into specs, think out loud with a sharp partner, and write the artifacts shipping needs.",
+      "prompts": [
+        {
+          "id": "delivery-idea-to-spec",
+          "title": "Turn a vague idea into a spec",
+          "blurb": "Pin a rough idea down into a buildable spec before building.",
+          "summary": "Interrogates a rough idea with the highest-leverage questions, then drafts a spec — problem, users, flows, functional and non-functional requirements, non-goals, acceptance criteria — plus a minimal first slice.",
+          "tags": [
+            "planning"
+          ],
+          "needs_input": true,
+          "makes_changes": false,
+          "body": "Help me turn a rough idea into a clear, buildable spec before any code gets\nwritten. Don't write a spec from a vague prompt — interrogate it first. Start by\nasking me what the idea is; where it touches this codebase, use your tools to\nground it in what's there.\n\nThen:\n1. Play it back: restate what you think I want in one paragraph, and list the\n   assumptions you had to make. Mark the ones that materially change the build.\n2. Ask the questions that actually matter — the decisions that change scope,\n   effort, or design (who's the user, what's the core job, what's explicitly out\n   of scope, what are the hard constraints, what does \"done\" look like). Ask the\n   highest-leverage five to eight, not a survey.\n3. Once I answer, draft the spec: problem, users, user stories or core flows,\n   functional requirements, non-functional requirements (limits, performance,\n   security), explicit non-goals, and acceptance criteria.\n4. Flag the risky, ambiguous, or expensive parts so we can decide whether to cut\n   or de-scope them for a first version.\n5. Propose a minimal first slice that delivers the core value, and what to defer.\n\nBias toward the smallest thing that's genuinely useful. Push back if the idea is\nbigger than it needs to be.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "delivery-rubber-duck",
+          "title": "Rubber-duck a problem with a sharp partner",
+          "blurb": "Think out loud against a partner who challenges your reasoning.",
+          "summary": "Acts as a sharp pair-programming partner: reflects your approach, challenges assumptions you haven't verified, asks one focused question at a time, and calls out dead ends instead of letting you waste time.",
+          "tags": [
+            "planning"
+          ],
+          "needs_input": true,
+          "makes_changes": false,
+          "body": "Be my pair-programming partner on a problem I'm stuck on. I want pushback and good\nquestions, not immediate answers. Start by asking me what the problem is, what I've\ntried, and my current theory; use your tools to read the relevant code so your\nquestions are grounded.\n\nHow I want you to engage:\n1. First, reflect my problem and current approach back to me, and point out any\n   assumption I'm treating as fact that I haven't actually verified.\n2. Ask one focused question at a time, aimed at the part of my reasoning most\n   likely to be wrong, rather than dumping a solution.\n3. When I'm clearly heading down a dead end, say so directly and explain why —\n   don't let me waste an hour to be polite.\n4. If I ask for the answer, give it, but show the reasoning so I can follow it,\n   and note where I could have gotten there myself.\n5. Periodically summarize what we've established and what's still open, so we don't\n   go in circles.\n\nMatch my level — assume I'm technical. Prioritize getting me un-stuck and sharper\nover sounding agreeable.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        },
+        {
+          "id": "delivery-commit-changelog",
+          "title": "Write commit messages & changelog entries",
+          "blurb": "Turn the current change into clear history and release notes.",
+          "summary": "Reads the working diff and writes a clear commit message that explains the why, a user-facing categorized changelog entry where relevant, and a BREAKING CHANGE note when something is incompatible.",
+          "tags": [
+            "planning",
+            "documentation"
+          ],
+          "needs_input": false,
+          "makes_changes": false,
+          "body": "Turn the current change in this repository into a clear commit message (and a\nchangelog or release-notes entry) that the future reader will thank me for. Use\nyour tools to read the diff (staged or working changes) and enough surrounding\ncode to explain the why. If there is no staged or working diff, say so and stop.\nDo not invent a commit message.\n\nProduce:\n1. A commit message: a concise imperative subject line (around 50 characters, no\n   trailing period) that says what the change does, then a body that explains WHY —\n   the problem it solves and any context or trade-off — and notes anything risky or\n   non-obvious. Reference an issue or ticket if I give one. Match the repo's\n   existing commit style.\n2. If the change is user-facing, a changelog entry written for users (what changed\n   and what it means for them), categorized (Added / Changed / Fixed / Removed /\n   Security), not a restatement of the diff.\n3. A \"BREAKING CHANGE:\" note with migration guidance if anything is incompatible.\n\nKeep it honest and specific — no filler like \"various improvements.\" If the change\nbundles several unrelated things, point that out and suggest how to split it into\nseparate commits.\n\nBe concise: findings only, no preamble, no recap of working code.\n\nDo not modify files until I explicitly grant permission. You may propose a plan for file changes if applicable. Wait for the okay before touching anything."
+        }
+      ]
+    }
+  ]
+}
