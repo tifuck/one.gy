@@ -353,6 +353,22 @@ def register():
         # as an unhandled 500 with a poisoned session. Catch it, roll back, and
         # return the same clean 409 the pre-check returns.
         from sqlalchemy.exc import IntegrityError as _IntegrityError, DataError as _DataError
+
+        # The first account on a fresh instance becomes the admin. The lock is only
+        # taken while no user exists; under it a fresh snapshot re-checks, so two
+        # simultaneous first registrations across workers cannot both be granted.
+        _first_user_lock = None
+        if db.session.query(User.id).first() is None:
+            _first_user_lock = _open_flock_exclusive(
+                os.path.join(_advisory_lock_dir(), 'first_user_admin.lock'), timeout=10)
+            if _first_user_lock is None:
+                if is_ajax:
+                    return jsonify({'error': 'REGISTRATION IS BUSY, PLEASE TRY AGAIN'}), 503
+                flash('REGISTRATION IS BUSY, PLEASE TRY AGAIN', 'error')
+                return redirect(url_for('register'))
+            _refresh_quota_snapshot()
+            if db.session.query(User.id).first() is None:
+                user.is_admin = True
         try:
             db.session.add(user)
             db.session.commit()
@@ -371,8 +387,12 @@ def register():
                 return jsonify({'error': 'REGISTRATION DATA IS INVALID'}), 400
             flash('REGISTRATION DATA IS INVALID', 'error')
             return redirect(url_for('register'))
+        finally:
+            _release_user_quota_lock(_first_user_lock)
 
         print(f'[AUTH] New user registered: {username}')
+        if user.is_admin:
+            print(f'[AUTH] First account on this instance: {username} granted admin')
         
         # Create welcome folder with sample files if enabled
         create_welcome_folder(user)

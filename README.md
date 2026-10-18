@@ -3,64 +3,41 @@
 Self-hosted, end-to-end encrypted file sharing and backup: files, notes and a music library. Flask + MariaDB, a vanilla JS frontend and a Go CLI for E2EE uploads and downloads. Files can be replicated to S3-compatible or SSH storage nodes.
 
 ## Requirements
-- Linux, Python 3.12, MariaDB (or MySQL)
-- Go 1.22 (to build the CLI that the site serves)
-- A TLS certificate. Gunicorn serves HTTPS directly from `cert.pem` / `key.pem` in the app folder.
+- Linux with systemd (optional), Python 3.12 with `venv`, OpenSSL
+- MariaDB or MySQL
+- Go 1.22+ (optional; builds the CLI that the site serves for download)
 
-## Setup
+On Debian/Ubuntu: `sudo apt install python3 python3-venv mariadb-server openssl`, plus Go from https://go.dev/dl/.
+
+## Install
 ```bash
 git clone https://github.com/tifuck/one.gy.git && cd one.gy
-python3 -m venv venv && venv/bin/pip install -r requirements.txt
-
-# Database
-sudo mysql -e "CREATE DATABASE onegy CHARACTER SET utf8mb4; \
-  CREATE USER 'onegy'@'localhost' IDENTIFIED BY 'change-me'; \
-  GRANT ALL ON onegy.* TO 'onegy'@'localhost';"
-
-# Config: fill in SECRET_KEY, FERNET_KEY, DATABASE_URL and DOMAIN
-cp .env.example .env && chmod 600 .env
-python3 -c 'import secrets; print(secrets.token_hex(32))'                                          # SECRET_KEY
-venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'  # FERNET_KEY
-
-# TLS (self-signed shown; use a real cert or put a reverse proxy in front)
-openssl req -x509 -newkey rsa:4096 -nodes -days 365 -subj "/CN=localhost" -keyout key.pem -out cert.pem
-
-# CLI binaries (compiled with DOMAIN from .env, written to static/cli/)
-(cd cli_E2EE_binary && bash build.sh)
-
-# Run: creates and upgrades the schema, then starts gunicorn on BIND_HOST:WEB_PORT (default 0.0.0.0:5000)
-bash start.sh
+bash setup.sh
 ```
+`setup.sh` walks you through everything and is safe to re-run (it keeps an existing `venv/`, `.env` and certificate):
+1. installs the Python dependencies into `venv/`
+2. creates a database and user (or takes your own `DATABASE_URL`)
+3. writes `.env` with freshly generated `SECRET_KEY` and `FERNET_KEY`, your domain and port
+4. creates a self-signed certificate or links an existing one (gunicorn serves HTTPS from `cert.pem` / `key.pem`)
+5. creates the database schema and builds the CLI
+6. optionally installs and starts `onegy.service`
 
-Register an account in the browser, then make it an admin:
-```bash
-venv/bin/python manage_users.py promote <username>
-```
+## First admin
+Open `https://<your-domain>/register` and register. **The first account registered becomes the administrator.** Registration is open to anyone, so do this before you share the address. For a private instance, turn registration off afterwards in the admin settings.
 
 > [!WARNING]
 > Back up `.env`. Losing `FERNET_KEY` makes server-side encrypted data and storage-node credentials unrecoverable.
 
-## systemd
-```ini
-[Unit]
-Description=ONE.GY
-After=network.target mariadb.service
-
-[Service]
-WorkingDirectory=/opt/one.gy
-ExecStart=/bin/bash /opt/one.gy/start.sh
-Restart=always
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-```
+## Running
+- Run `bash start.sh` or use the systemd service. Either one upgrades the schema, runs startup maintenance, then starts gunicorn on `BIND_HOST:WEB_PORT`.
+- Logs: `journalctl -u onegy -f`.
+- To update: `git pull`, `venv/bin/pip install -r requirements.txt`, rebuild the CLI with `(cd cli_E2EE_binary && bash build.sh)`, then `sudo systemctl restart onegy`.
 
 ## Configuration
-- `.env` holds secrets and per-deployment settings; every variable is documented in `.env.example`.
+- `.env` holds secrets and per-deployment settings. Every variable is documented in `.env.example`.
 - Feature flags and tunables can be changed at runtime in the admin UI. These DB settings override the `.env` defaults.
 - Music library: set `MUSIC_LIBRARY_PATH` (default `<home>/music`). Keep it outside the app folder.
-- User uploads go to `uploads/`, `thumbnails/` and `notes/` in the app folder. Storage nodes are added in the admin UI.
+- User data lives in `uploads/`, `thumbnails/` and `notes/` in the app folder. Storage nodes are added in the admin UI.
 
 ## License
 MIT. See `LICENSE`.
