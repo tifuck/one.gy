@@ -249,24 +249,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
 .rd-hero-actions{display:flex;flex-wrap:wrap;gap:.8rem;margin-bottom:2.2rem}
 .rd-hero-visual{position:relative;min-height:340px}
 
-/* Blueprint grid behind public heroes: static, centred on the page, faint
-   hairlines with slightly stronger intersection nodes. Starts below the nav
-   (--bp-top) and fades in from the top, out toward the bottom and sides. */
-.rd-blueprint{position:relative;isolation:isolate;--bp-cell:88px;--bp-top:var(--nav-h);
-  --bp-line:rgba(var(--ink-rgb,15,23,32),.05);--bp-node:rgba(var(--ink-rgb,15,23,32),.18)}
-.rd-blueprint::before{content:"";position:absolute;inset:var(--bp-top) 0 0;z-index:-1;pointer-events:none;
-  background-image:radial-gradient(circle at 1px 1px,var(--bp-node) 1.2px,transparent 1.8px),
-    linear-gradient(var(--bp-line) 1px,transparent 1px),
-    linear-gradient(90deg,var(--bp-line) 1px,transparent 1px);
-  background-size:var(--bp-cell) var(--bp-cell);
-  background-position:calc(50% + var(--bp-cell) / 2) 0;
-  -webkit-mask-image:linear-gradient(180deg,transparent,black 160px,black 60%,transparent 97%),
-    linear-gradient(90deg,transparent 2%,black 24%,black 76%,transparent 98%);
-  -webkit-mask-composite:source-in;
-  mask-image:linear-gradient(180deg,transparent,black 160px,black 60%,transparent 97%),
-    linear-gradient(90deg,transparent 2%,black 24%,black 76%,transparent 98%);
-  mask-composite:intersect}
-
 /* ---- Stat / meta strip --------------------------------------------------- */
 .rd-metastrip{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem 1.1rem;
   font-family:var(--font-mono);font-size:.8rem;letter-spacing:.04em;color:var(--text-dim)}

@@ -109,9 +109,7 @@
 .fh-ledger .hash{color:var(--text-dim)}
 
 /* ---- CTA band ------------------------------------------------------------ */
-.fh-cta{background:var(--code-bg);color:var(--code-fg);padding-block:clamp(3.5rem,8vw,5.5rem);
-  --bp-top:0px;--bp-line:rgba(255,255,255,.045);--bp-node:rgba(255,255,255,.16)}
-.fh-cta.rd-blueprint::before{-webkit-mask-image:linear-gradient(90deg,transparent 30%,black 75%,transparent);mask-image:linear-gradient(90deg,transparent 30%,black 75%,transparent)}
+.fh-cta{background:var(--code-bg);color:var(--code-fg);padding-block:clamp(3.5rem,8vw,5.5rem)}
 .fh-cta-inner{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:2rem}
 .fh-cta .rd-h2{color:var(--code-fg)}
 .fh-cta-sub{margin-top:.8rem;color:rgba(255,255,255,.62);max-width:46ch}
