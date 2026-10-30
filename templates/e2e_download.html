@@ -39,7 +39,7 @@
         <div class="gw-prog-stats">
           <div class="gw-prog-stat"><span class="gw-prog-label">Status</span><span class="gw-prog-value" id="e2eProgressStatus">Preparing…</span></div>
           <div class="gw-prog-stat"><span class="gw-prog-label">Progress</span><span class="gw-prog-value" id="e2eProgressPercent">0%</span></div>
-          <div class="gw-prog-stat"><span class="gw-prog-label">Speed</span><span class="gw-prog-value" id="e2eProgressSpeed">—</span></div>
+          <div class="gw-prog-stat"><span class="gw-prog-label">Speed</span><span class="gw-prog-value" id="e2eProgressSpeed">-</span></div>
         </div>
       </div>
     </div>
@@ -57,7 +57,6 @@
 <script nonce="{{ csp_nonce }}">
 const fileId = {{ file.id | tojson }}
 let origName = {{ file.orig_name | tojson }}
-const fileSize = {{ file.size }}
 
 /**
  * Try to decrypt the real filename from E2EE encrypted name data.
@@ -274,8 +273,10 @@ _whenReady(async function() {
       return
     }
 
-    // Case 2: Master-key-wrapped (no file_key_salt and no fragment means owner access)
-    if (!keyInfo.file_key_salt) {
+    // Case 2: Master-key-wrapped (no file_key_salt and no fragment means owner access).
+    // has_file_key is only set for the owner; anyone else without a usable
+    // fragment holds an incomplete link (Case 3), not an account-password case.
+    if (!keyInfo.file_key_salt && keyInfo.has_file_key) {
       const masterKey = await OneGyCrypto.getMasterKeyFromSession()
       if (masterKey) {
         // Auto-decrypt with session master key
@@ -532,7 +533,7 @@ function _warnLegacyContainer() {
   try {
     if (OneGyCrypto && typeof OneGyCrypto.wasLastContainerLegacy === 'function' &&
         OneGyCrypto.wasLastContainerLegacy()) {
-      showFlash('FILE USES THE LEGACY V1 FORMAT: CHUNK ORDER AND TRUNCATION ARE NOT AUTHENTICATED. DOWNLOAD OK — RE-UPLOAD TO UPGRADE.', 'error')
+      showFlash('FILE USES THE LEGACY V1 FORMAT: CHUNK ORDER AND TRUNCATION ARE NOT AUTHENTICATED. DOWNLOAD OK. RE-UPLOAD TO UPGRADE.', 'error')
     }
   } catch (e) { /* non-critical */ }
 }

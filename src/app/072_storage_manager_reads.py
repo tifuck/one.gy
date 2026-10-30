@@ -450,21 +450,34 @@ class _StorageManagerReads:
         turns a recoverable local-corruption event into an unreadable file.
         A read path now only backfills when a replica on another node
         CORROBORATES the local bytes; otherwise the column stays NULL and the
-        gap is logged for the scrub to resolve."""
+        gap is logged for the scrub to resolve.
+
+        A positive verdict against File.payload_checksum is cached per path
+        with the file's stat signature, so repeat calls (HEAD, page renders,
+        ZIP admission) only stat() instead of re-hashing the whole payload;
+        any stat or checksum change forces a full re-hash."""
         if not file_obj or not local_path or not os.path.isfile(local_path):
             return False
         try:
-            local_size = os.path.getsize(local_path)
+            local_stat = os.stat(local_path)
         except Exception:
             return False
+        local_size = local_stat.st_size
         expected_size = int(file_obj.disk_size) if file_obj.disk_size is not None else None
         if expected_size is not None and int(local_size) != int(expected_size):
+            self._forget_local_integrity(local_path)
             print(f'[STORAGE] Local file size mismatch for {file_obj.id}: expected {expected_size}, got {local_size} ({context})')
             return False
+        cache_entry = (self._local_integrity_signature(local_stat), file_obj.payload_checksum)
+        if file_obj.payload_checksum:
+            with self._local_integrity_cache_lock:
+                if self._local_integrity_cache.get(local_path) == cache_entry:
+                    return True
         local_checksum = None
         try:
             local_checksum = self._sha256_file(local_path)
         except Exception as e:
+            self._forget_local_integrity(local_path)
             print(f'[STORAGE] Failed to checksum local file {file_obj.id}: {e}')
             return False
         if not file_obj.payload_checksum:
@@ -480,13 +493,34 @@ class _StorageManagerReads:
                       f'local copy; serving it but NOT adopting the local hash as authoritative ({context})')
             return True
         if local_checksum != file_obj.payload_checksum:
+            self._forget_local_integrity(local_path)
             _log_payload_corruption(
                 file_obj.id, 'local-payload',
                 file_obj.payload_checksum, local_checksum,
                 source_path=local_path,
             )
             return False
+        # Cache only if the file did not change while it was being hashed.
+        try:
+            unchanged = self._local_integrity_signature(os.stat(local_path)) == cache_entry[0]
+        except OSError:
+            unchanged = False
+        if unchanged:
+            with self._local_integrity_cache_lock:
+                cache = self._local_integrity_cache
+                cache.pop(local_path, None)
+                while len(cache) >= self.LOCAL_INTEGRITY_CACHE_MAX_ENTRIES:
+                    cache.pop(next(iter(cache)))
+                cache[local_path] = cache_entry
         return True
+
+    @staticmethod
+    def _local_integrity_signature(st):
+        return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+    def _forget_local_integrity(self, local_path):
+        with self._local_integrity_cache_lock:
+            self._local_integrity_cache.pop(local_path, None)
 
     def get_file_path(self, filename):
         """Get local path for a file. Stages from remote if needed.

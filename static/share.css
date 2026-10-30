@@ -2,15 +2,16 @@
    FROST SHARE — quick-share page: hero, temp-uploads table, context menu.
    Uploader styling lives in uploader.css; manage modal in manage.css.
    ========================================================================== */
-.share-hero-sec{text-align:center}
+.share-hero-sec{text-align:center;padding-top:calc(var(--nav-h) + clamp(2rem,5vw,3.5rem));padding-bottom:clamp(3rem,7vw,5rem)}
 .share-hero-sec .rd-container{max-width:660px}
-.share-badge{display:inline-flex;align-items:center;gap:.5rem;font-family:var(--font-mono);font-size:.7rem;
-  letter-spacing:.16em;text-transform:uppercase;color:var(--text-dim);margin-bottom:1.2rem}
-.share-badge-dot{width:8px;height:8px;background:var(--accent);border-radius:50%;box-shadow:0 0 0 4px var(--accent-soft)}
+.share-badge{display:inline-flex;align-items:center;gap:.6rem;padding:.42rem .75rem;margin-bottom:1.3rem;
+  border:1px solid rgba(var(--ink-rgb),.16);background:var(--surface);
+  font-family:var(--font-mono);font-size:.7rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
+.share-badge-dot{width:7px;height:7px;background:var(--accent)}
 .share-title{font-family:var(--font-display);font-weight:800;text-transform:uppercase;letter-spacing:-.02em;
-  font-size:clamp(2.4rem,6vw,4rem);margin-bottom:1rem}
-.share-subtitle{font-family:var(--font-mono);font-size:.82rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim);margin-bottom:2.2rem}
-.share-uploader-wrap{max-width:520px;margin-inline:auto;text-align:left}
+  font-size:clamp(2.4rem,6vw,4rem);margin-bottom:.9rem}
+.share-subtitle{font-size:clamp(1rem,1.5vw,1.15rem);color:var(--text-dim);margin-bottom:2.4rem}
+.share-uploader-wrap{max-width:540px;margin-inline:auto;text-align:left}
 
 /* ---- Temp uploads table ------------------------------------------------- */
 .share-files-area{max-width:var(--maxw);margin-inline:auto;padding:0 clamp(1.15rem,4vw,2.5rem) clamp(3rem,7vw,5rem)}

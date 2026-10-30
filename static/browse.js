@@ -30,7 +30,6 @@
   if (!root) return
 
   var TOKEN = root.dataset.token
-  var IS_OWNER = root.dataset.isOwner === 'true'
 
   // ── Link secret from the fragment (never leaves the browser) ──────────────
   var _frag = window.location.hash.substring(1)
@@ -52,7 +51,7 @@
     sort: 'name',
     open: Object.create(null),   // expanded tree nodes
     totalFiles: 0,
-    searching: false
+    e2e: false                   // share holds E2EE names: search must stay client-side
   }
   var requestEpoch = 0
   function nextRequestEpoch () { requestEpoch += 1; return requestEpoch }
@@ -158,7 +157,7 @@
         if (!k) return
         var n = await OneGyCrypto.decryptFileName(f.encrypted_name, f.name_nonce, k)
         if (epoch != null && !hasRequestAuthority(epoch)) return
-        if (n) { f.name = n; f.extension = (n.split('.').pop() || '').toLowerCase() }
+        if (n) { f.name = n; f._dec = true; f.extension = (n.split('.').pop() || '').toLowerCase() }
       } catch (e) {}
     }))
   }
@@ -173,7 +172,7 @@
         if (!k) return
         var n = await OneGyCrypto.decryptFolderName(fd.encrypted_name, fd.name_nonce, k)
         if (epoch != null && !hasRequestAuthority(epoch)) return
-        if (n) fd.name = n
+        if (n) { fd.name = n; fd._dec = true }
       } catch (e) {}
     }))
   }
@@ -183,7 +182,7 @@
     opts = opts || {}
     var epoch = opts.epoch == null ? nextRequestEpoch() : opts.epoch
     if (!hasRequestAuthority(epoch)) return
-    S.searching = false
+    searchIndex = null
     if (!opts.silent) renderSkeleton()
     var url = '/f/' + encodeURIComponent(TOKEN) + '/browse-data' + (folderId ? '?folder=' + encodeURIComponent(folderId) : '')
     var d
@@ -232,11 +231,13 @@
     S.totalFiles = d.total_file_count || 0
     S.sel = Object.create(null)
     S.rootName = rootName
+    S.e2e = !!(d.is_e2e_folder || d.root_folder_encrypted || tree.some(function (f) { return f.is_e2e }))
 
     render()
     hydrateThumbs()
 
-    if (!opts.noPush) {
+    if (opts.replace) history.replaceState({ bw: true, folderId: S.folderId }, '')
+    else if (!opts.noPush) {
       var q = (folderId && folderId !== S.rootId) ? ('?folder=' + folderId) : ''
       history.pushState({ bw: true, folderId: S.folderId },
         '', window.location.pathname + q + window.location.hash)
@@ -348,7 +349,7 @@
       '<input type="checkbox" class="bw-check folder-checkbox" data-folder-id="' + f.id + '" aria-label="Select folder">' +
       '<span class="bw-item-thumb">' + ICO.folder + '</span>' +
       '<span class="bw-item-name folder-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
-      '<span class="bw-item-size">' + (f.size_formatted || '—') + '</span>' +
+      '<span class="bw-item-size">' + (f.size_formatted || '') + '</span>' +
       '<span class="bw-item-date">' + esc(f.updated_at || '') + '</span>' +
       '<span class="bw-item-meta">' + badges + '</span>' +
       '<span class="bw-item-actions">' + dl +
@@ -404,6 +405,29 @@
   var thumbQueued = new Set()
   var thumbInFlight = 0
   var THUMB_CONCURRENCY = 32
+  // Decrypted E2EE thumbnails, by file id: re-renders (sort/view) reuse them and
+  // a replaced or evicted object URL is revoked.
+  var e2eThumbCache = new Map()
+  var E2E_THUMB_CACHE_MAX = 500
+  function rememberE2eThumb (id, url) {
+    var prev = e2eThumbCache.get(id)
+    if (prev && prev !== url) { try { URL.revokeObjectURL(prev) } catch (e) {} }
+    e2eThumbCache.delete(id)
+    e2eThumbCache.set(id, url)
+    while (e2eThumbCache.size > E2E_THUMB_CACHE_MAX) {
+      var oldest = e2eThumbCache.keys().next().value
+      try { URL.revokeObjectURL(e2eThumbCache.get(oldest)) } catch (e) {}
+      e2eThumbCache.delete(oldest)
+    }
+  }
+  function paintThumb (slot, url, revoke) {
+    return new Promise(function (resolve) {
+      var im = new Image(); im.alt = ''
+      im.onload = function () { slot.innerHTML = ''; slot.appendChild(im); if (revoke) URL.revokeObjectURL(url); resolve() }
+      im.onerror = function () { if (revoke) URL.revokeObjectURL(url); resolve() }
+      im.src = url
+    })
+  }
   function hydrateThumbs () {
     if (thumbObs) { try { thumbObs.disconnect() } catch (e) {} thumbObs = null }
     thumbQueue = []
@@ -458,31 +482,33 @@
       if (!f) return
       if (!f.is_e2e) {
         if (!canThumb(f)) return
-        return new Promise(function (resolve) {
-          var img = new Image(); img.alt = ''
-          img.onload = function () { slot.innerHTML = ''; slot.appendChild(img); resolve() }
-          img.onerror = function () { scheduleRetry(slot); resolve() }
-          img.src = '/f/' + encodeURIComponent(TOKEN) + '/thumb/' + encodeURIComponent(f.id)
-        })
+        return (async function () {
+          try {
+            var tr = await fetch('/f/' + encodeURIComponent(TOKEN) + '/thumb/' + encodeURIComponent(f.id))
+            // 404 is almost always permanent: one retry still picks up the
+            // server's on-demand fill, more only for 429 / transient errors.
+            if (!tr.ok) { if (tr.status !== 404 || !thumbRetries.has(id)) scheduleRetry(slot); return }
+            await paintThumb(slot, URL.createObjectURL(await tr.blob()), true)
+          } catch (e) { scheduleRetry(slot) }
+        })()
       }
       if (!f.enc_thumb_nonce || typeof OneGyCrypto === 'undefined') return
       return (async function () {
         try {
-          var key = await fileKeyFor(f)
-          if (!key) return
-          var r = await fetch('/f/' + encodeURIComponent(TOKEN) + '/e2e-thumb/' + encodeURIComponent(f.id))
-          if (r.status === 429) { scheduleRetry(slot); return }
-          if (!r.ok) return
-          var buf = await r.arrayBuffer()
-          if (!buf || buf.byteLength < 16) return
-          var plain = await OneGyCrypto.decryptThumbnail(buf, f.enc_thumb_nonce, key)
-          var url = URL.createObjectURL(new Blob([plain]))
-          await new Promise(function (resolve) {
-            var im = new Image(); im.alt = ''
-            im.onload = function () { slot.innerHTML = ''; slot.appendChild(im); resolve() }
-            im.onerror = function () { resolve() }
-            im.src = url
-          })
+          var url = e2eThumbCache.get(id)
+          if (!url) {
+            var key = await fileKeyFor(f)
+            if (!key) return
+            var r = await fetch('/f/' + encodeURIComponent(TOKEN) + '/e2e-thumb/' + encodeURIComponent(f.id))
+            if (r.status === 429) { scheduleRetry(slot); return }
+            if (!r.ok) return
+            var buf = await r.arrayBuffer()
+            if (!buf || buf.byteLength < 16) return
+            var plain = await OneGyCrypto.decryptThumbnail(buf, f.enc_thumb_nonce, key)
+            url = URL.createObjectURL(new Blob([plain]))
+            rememberE2eThumb(id, url)
+          }
+          await paintThumb(slot, url, false)
         } catch (e) {}
       })()
     }
@@ -567,7 +593,7 @@
       var key = await fileKeyFor(f)
       if (!key) {
         prog.fail('No key for this file')
-        toast('NO DECRYPTION KEY — THE SHARE LINK MAY BE INCOMPLETE', 'error')
+        toast('NO DECRYPTION KEY. THE SHARE LINK MAY BE INCOMPLETE', 'error')
         return
       }
       var buf = await xhrArrayBuffer('/f/' + encodeURIComponent(f.id) + '/encrypted', function (pct, l, t) {
@@ -765,12 +791,12 @@
           continue
         }
         if (bytes.length > ZIP32_MAX) {
-          skipped.push(zipPath + '  [FILE TOO LARGE FOR ZIP — DOWNLOAD INDIVIDUALLY]')
+          skipped.push(zipPath + '  [FILE TOO LARGE FOR ZIP: DOWNLOAD INDIVIDUALLY]')
           continue
         }
         var nameLen = new TextEncoder().encode(String(zipPath).replace(/\\/g, '/')).length
         if (zipOffset + 30 + nameLen + bytes.length > ZIP32_MAX) {
-          skipped.push(zipPath + '  [ARCHIVE TOO LARGE — DOWNLOAD INDIVIDUALLY]')
+          skipped.push(zipPath + '  [ARCHIVE TOO LARGE: DOWNLOAD INDIVIDUALLY]')
           continue
         }
         zipOffset += 30 + nameLen + bytes.length
@@ -786,7 +812,7 @@
       }
       prog.set(95, 'Building archive…')
       saveBlob(storeZip(entries), (zipName || 'download') + '.zip')
-      if (skipped.length) toast('ARCHIVE INCOMPLETE — SEE _DOWNLOAD_ERRORS.TXT', 'error')
+      if (skipped.length) toast('ARCHIVE INCOMPLETE: SEE _DOWNLOAD_ERRORS.TXT', 'error')
       prog.done()
       // One ticket per enumerated folder, each redeemed for its own folder id.
       var tickets = Array.isArray(ticket) ? ticket : (ticket ? [{ ticket: ticket, subfolderId: subfolderId }] : [])
@@ -846,7 +872,7 @@
     if (!hasE2e) { postServerZip(fileIds, folderIds); return }
     // The client-side ZIP only contains what was listed: a folder that could not
     // be listed would be missing from an archive reported as complete.
-    if (listFailed) { toast('COULD NOT LIST A SELECTED FOLDER — DOWNLOAD CANCELLED', 'error'); return }
+    if (listFailed) { toast('COULD NOT LIST A SELECTED FOLDER. DOWNLOAD CANCELLED', 'error'); return }
     var files = selectedFiles.slice()
     var folderNames = []
     var tickets = []
@@ -874,23 +900,77 @@
   }
 
   // ═══ SEARCH ══════════════════════════════════════════════════════════════
+  // A share with E2EE names is searched in the browser: the server only holds
+  // placeholders, and sending the query would tell it what the visitor looks
+  // for. The whole share (/all-files, the same listing Download all uses) is
+  // fetched and decrypted once per search session; load() drops it.
   var searchTimer = null
+  var searchIndex = null
+  var searchResults = []
+  function loadSearchIndex () {
+    if (searchIndex) return searchIndex
+    var p = searchIndex = (async function () {
+      var r = await fetch('/f/' + encodeURIComponent(TOKEN) + '/all-files', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      var d = await r.json()
+      var placeholders = Object.create(null)
+      ;(d.folder_names || []).forEach(function (fn) { placeholders[fn.placeholder] = fn.id })
+      var files = d.files || []
+      files.forEach(function (f) {
+        // name is "<folder>/.../<file>"; E2EE folder segments are unique placeholders.
+        var parts = String(f.name == null ? '' : f.name).split('/')
+        f.name = parts.pop()
+        f._dirs = parts.map(function (seg) { return placeholders[seg] != null ? placeholders[seg] : seg })
+      })
+      await decryptFileNames(files)
+      return files
+    })()
+    p.catch(function () { if (searchIndex === p) searchIndex = null })
+    return p
+  }
+  function treeFolder (id) { return S.tree.filter(function (x) { return String(x.id) === String(id) })[0] || null }
+  function searchFolderName (id) {
+    var fd = treeFolder(id)
+    return fd && (fd._dec || !fd.encrypted_name) ? fd.name : 'Encrypted folder'
+  }
+  function searchFilePath (f) {
+    return [S.rootName].concat(f._dirs.map(function (seg) { return typeof seg === 'number' ? searchFolderName(seg) : seg })).join(' / ')
+  }
+  function searchFolderPath (fd) {
+    var parts = []
+    for (var pid = fd.parent_id, depth = 0; pid != null && String(pid) !== String(S.rootId) && depth < 64; depth++) {
+      parts.unshift(searchFolderName(pid))
+      var parent = treeFolder(pid)
+      pid = parent ? parent.parent_id : null
+    }
+    return [S.rootName].concat(parts).join(' / ')
+  }
   async function runSearch (q, epoch) {
     epoch = epoch == null ? nextRequestEpoch() : epoch
     if (!hasRequestAuthority(epoch)) return
     if (!q || q.trim().length < 2) { load(S.folderId, { noPush: true, epoch: epoch }); return }
-    S.searching = true
     try {
-      var r = await fetch('/f/' + encodeURIComponent(TOKEN) + '/search?q=' + encodeURIComponent(q.trim()),
-        { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-      if (!hasRequestAuthority(epoch)) return
-      if (!r.ok) throw new Error('HTTP ' + r.status)
-      var d = await r.json()
-      if (!hasRequestAuthority(epoch)) return
-      var files = d.files || []
-      var folders = d.folders || []
-      await Promise.all([decryptFileNames(files, epoch), decryptFolderNames(folders, epoch)])
-      if (!hasRequestAuthority(epoch)) return
+      var files, folders
+      if (S.e2e) {
+        var needle = q.trim().toLowerCase()
+        // A name that did not decrypt is a server placeholder: never match it.
+        var hit = function (o) { return (!o.encrypted_name || o._dec) && String(o.name).toLowerCase().indexOf(needle) >= 0 }
+        var all = await loadSearchIndex()
+        if (!hasRequestAuthority(epoch)) return
+        files = all.filter(hit)
+        folders = S.tree.filter(hit)
+      } else {
+        var r = await fetch('/f/' + encodeURIComponent(TOKEN) + '/search?q=' + encodeURIComponent(q.trim()),
+          { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        if (!hasRequestAuthority(epoch)) return
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        var d = await r.json()
+        if (!hasRequestAuthority(epoch)) return
+        files = d.files || []
+        folders = d.folders || []
+        files.forEach(function (f) { if (!f.download_url) f.download_url = '/f/' + encodeURIComponent(TOKEN) + '/file/' + encodeURIComponent(f.id) })
+      }
+      searchResults = files
 
       var view = el('bwView')
       view.dataset.view = S.view
@@ -903,15 +983,15 @@
         return '<div class="bw-item folder-row" data-folder-id="' + fd.id + '" data-folder-name="' + esc(fd.name) + '">' +
           '<span class="bw-check"></span><span class="bw-item-thumb">' + ICO.folder + '</span>' +
           '<span class="bw-item-name folder-name">' + esc(fd.name) + '</span>' +
-          '<span class="bw-item-size"></span><span class="bw-item-date">' + esc(fd.path || '') + '</span>' +
+          '<span class="bw-item-size"></span><span class="bw-item-date">' + esc(fd.path != null ? fd.path : searchFolderPath(fd)) + '</span>' +
           '<span class="bw-item-meta"></span><span class="bw-item-actions"></span></div>'
       }).join('')
       html += files.map(function (f) {
-        return '<div class="bw-item file-row" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '" data-search-folder="' + (f.folder_id || '') + '">' +
+        return '<div class="bw-item file-row" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '" data-search-file="' + esc(f.id) + '">' +
           '<span class="bw-check"></span><span class="bw-item-thumb">' + iconFor((f.name.split('.').pop() || '')) + '</span>' +
           '<span class="bw-item-name file-name">' + esc(f.name) + '</span>' +
-          '<span class="bw-item-size">' + esc(f.size || '') + '</span>' +
-          '<span class="bw-item-date">' + esc(f.folder_path || '') + '</span>' +
+          '<span class="bw-item-size">' + esc(typeof f.size === 'number' ? fmtBytes(f.size) : (f.size || '')) + '</span>' +
+          '<span class="bw-item-date">' + esc(f._dirs ? searchFilePath(f) : (f.folder_path || '')) + '</span>' +
           '<span class="bw-item-meta">' + (f.is_e2e ? '<span class="bw-badge bw-badge-e2e">E2EE</span>' : '') + '</span>' +
           '<span class="bw-item-actions"></span></div>'
       }).join('')
@@ -968,7 +1048,12 @@
     var item = e.target.closest('.bw-item')
     if (item) {
       if (item.dataset.folderId) { load(item.dataset.folderId); return }
-      if (item.dataset.searchFolder) { load(item.dataset.searchFolder || null); return }
+      if (item.dataset.searchFile) {
+        // Results carry their own key material, so they open wherever they live.
+        var hitFile = searchResults.filter(function (x) { return String(x.id) === item.dataset.searchFile })[0]
+        if (hitFile) downloadFile(hitFile)
+        return
+      }
       var file = S.files.filter(function (x) { return String(x.id) === item.dataset.fileId })[0]
       if (file) downloadFile(file)
     }
@@ -1058,5 +1143,5 @@
     x.classList.toggle('is-active', x.dataset.view === S.view)
   })
   var initial = new URLSearchParams(window.location.search).get('folder')
-  load(initial || null, { noPush: true })
+  load(initial || null, { replace: true })
 })()

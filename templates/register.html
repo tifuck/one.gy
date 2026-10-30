@@ -6,12 +6,13 @@
 <div class="auth-container">
   <div class="auth-box">
     <h1>REGISTER</h1>
+    <p class="auth-subtitle">Your encryption keys are created in this browser.</p>
     <form id="registerForm" class="auth-form" autocomplete="off"
           action="{{ url_for('register') }}" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
       <div class="form-group">
         <label for="username">USERNAME</label>
-        <input type="text" id="username" name="username" class="form-input" required autofocus>
+        <input type="text" id="username" name="username" class="form-input" required autofocus autocomplete="username">
       </div>
       <div class="form-group">
         <label for="email">EMAIL (OPTIONAL)</label>
@@ -19,12 +20,12 @@
       </div>
       <div class="form-group">
         <label for="password">PASSWORD</label>
-        <input type="password" id="password" class="form-input" required minlength="6">
+        <input type="password" id="password" class="form-input" required minlength="6" autocomplete="new-password">
         <small class="auth-hint">MINIMUM 6 CHARACTERS</small>
       </div>
       <div class="form-group">
         <label for="confirm_password">CONFIRM PASSWORD</label>
-        <input type="password" id="confirm_password" class="form-input" required minlength="6">
+        <input type="password" id="confirm_password" class="form-input" required minlength="6" autocomplete="new-password">
       </div>
       <button type="submit" id="registerBtn" class="btn-primary">REGISTER</button>
     </form>
@@ -70,9 +71,9 @@ async function safeParseJSON(response) {
   }
   const text = await response.text()
   if (text.includes('CSRF')) {
-    throw new Error('SESSION EXPIRED — PLEASE REFRESH THE PAGE AND TRY AGAIN')
+    throw new Error('SESSION EXPIRED. PLEASE REFRESH THE PAGE AND TRY AGAIN')
   }
-  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS — PLEASE WAIT' : 'REQUEST FAILED — PLEASE REFRESH THE PAGE')
+  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS. PLEASE WAIT' : 'REQUEST FAILED. PLEASE REFRESH THE PAGE')
 }
 
 document.getElementById('registerForm').addEventListener('submit', async function(e) {
@@ -100,7 +101,7 @@ document.getElementById('registerForm').addEventListener('submit', async functio
   // The server-validated captcha below remains the hard gate.
   const signals = detectAutomation()
   if (signals.blocked) {
-    showFlash('AUTOMATED CLIENTS CANNOT REGISTER — PLEASE USE A STANDARD BROWSER', 'error')
+    showFlash('AUTOMATED CLIENTS CANNOT REGISTER. PLEASE USE A STANDARD BROWSER', 'error')
     return
   }
 

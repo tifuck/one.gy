@@ -1,4 +1,5 @@
 import os
+import sys
 import uuid
 import io
 import time
@@ -20,6 +21,7 @@ import click
 import qrcode
 import pyotp
 import fcntl
+import ipaddress
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, render_template, redirect, url_for, abort, send_file, send_from_directory, flash, jsonify, session, make_response, g, has_app_context, has_request_context
 from flask_sqlalchemy import SQLAlchemy
@@ -30,7 +32,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask.cli import with_appcontext
-from flask_wtf.csrf import CSRFProtect, generate_csrf
+from flask_wtf.csrf import CSRFProtect, CSRFError, generate_csrf
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_compress import Compress
@@ -41,6 +43,39 @@ from sqlalchemy.orm.exc import StaleDataError, ObjectDeletedError
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 import logging
+
+# journald splits stdout on newlines and the external log monitor trusts
+# '[PREFIX]' lines, so attacker-controlled text inside a print() must never
+# start a new line: each write keeps only its own trailing newline, and every
+# other line break / control character (except tab) is escaped.
+_LOG_CTRL_RE = re.compile('[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]')
+
+
+class _SingleLineStdout:
+    _onegy_line_guard = True
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, s):
+        try:
+            body, end = (s[:-1], '\n') if s.endswith('\n') else (s, '')
+            self._stream.write(_LOG_CTRL_RE.sub(
+                lambda m: m.group().encode('unicode_escape').decode('ascii'), body) + end)
+            return len(s)
+        except Exception:
+            return self._stream.write(s)
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+if sys.stdout is not None and not getattr(sys.stdout, '_onegy_line_guard', False) and not sys.stdout.isatty():
+    sys.stdout = _SingleLineStdout(sys.stdout)
 
 app = Flask(__name__)
 
@@ -121,13 +156,46 @@ try:
 except ValueError:
     TRUSTED_PROXY_HOPS = 0
 
+# Optional TRUSTED_PROXY_IPS (comma-separated IPs/CIDRs): when set, the
+# X-Forwarded-* headers are honoured only for connections whose peer address is
+# in the list; any other peer is served with its raw REMOTE_ADDR.
+_TRUSTED_PROXY_IPS_RAW = (os.environ.get('TRUSTED_PROXY_IPS', '') or '').strip()
+_TRUSTED_PROXY_NETWORKS = []
+for _proxy_entry in _TRUSTED_PROXY_IPS_RAW.split(','):
+    if _proxy_entry.strip():
+        try:
+            _TRUSTED_PROXY_NETWORKS.append(ipaddress.ip_network(_proxy_entry.strip(), strict=False))
+        except ValueError:
+            print(f'[WARNING] Ignoring invalid TRUSTED_PROXY_IPS entry: {_proxy_entry.strip()!r}')
+
+
+def _is_trusted_proxy_peer(remote_addr):
+    try:
+        peer = ipaddress.ip_address(remote_addr or '')
+    except ValueError:
+        return False
+    peer = getattr(peer, 'ipv4_mapped', None) or peer
+    return any(peer in network for network in _TRUSTED_PROXY_NETWORKS)
+
+
 if TRUSTED_PROXY_HOPS > 0:
-    app.wsgi_app = ProxyFix(
+    _proxy_fixed_wsgi_app = ProxyFix(
         app.wsgi_app,
         x_for=TRUSTED_PROXY_HOPS,
         x_proto=TRUSTED_PROXY_HOPS,
         x_host=TRUSTED_PROXY_HOPS,
     )
+    if _TRUSTED_PROXY_IPS_RAW:
+        _direct_wsgi_app = app.wsgi_app
+
+        def _trusted_proxy_wsgi_app(environ, start_response):
+            if _is_trusted_proxy_peer(environ.get('REMOTE_ADDR')):
+                return _proxy_fixed_wsgi_app(environ, start_response)
+            return _direct_wsgi_app(environ, start_response)
+
+        app.wsgi_app = _trusted_proxy_wsgi_app
+    else:
+        app.wsgi_app = _proxy_fixed_wsgi_app
 
 # Force HTTPS: redirect HTTP requests to HTTPS.
 # SESSION_COOKIE_SECURE=True requires HTTPS — without this redirect, users arriving

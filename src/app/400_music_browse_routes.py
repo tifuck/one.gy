@@ -72,7 +72,7 @@ def music_stream(song_id):
             resp.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
             resp.headers['Content-Length'] = str(length)
             resp.headers['Accept-Ranges'] = 'bytes'
-            resp.headers['Cache-Control'] = 'public, max-age=86400'
+            resp.headers['Cache-Control'] = 'private, max-age=86400'
             return resp
     # No range -- send full file
     def generate_full():
@@ -85,7 +85,7 @@ def music_stream(song_id):
     resp = Response(generate_full(), mimetype='audio/ogg', content_type='audio/ogg')
     resp.headers['Content-Length'] = str(file_size)
     resp.headers['Accept-Ranges'] = 'bytes'
-    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    resp.headers['Cache-Control'] = 'private, max-age=86400'
     return resp
 
 
@@ -97,21 +97,17 @@ def music_cover(cover_id):
     Checks album covers first, then falls back to per-song cover.jpg."""
     from werkzeug.utils import secure_filename as _sf
     safe_id = _sf(cover_id)
-    # Try album cover first
-    cover_path = os.path.join(MUSIC_LIBRARY_PATH, 'covers', f'{safe_id}.jpg')
-    if os.path.isfile(cover_path):
-        return send_file(cover_path, mimetype='image/jpeg',
-                         max_age=604800)  # 7 day cache
-    # Fallback: per-song cover (songs/<id>/cover.jpg)
-    song_cover_path = os.path.join(MUSIC_LIBRARY_PATH, 'songs', safe_id, 'cover.jpg')
-    if os.path.isfile(song_cover_path):
-        return send_file(song_cover_path, mimetype='image/jpeg',
-                         max_age=604800)  # 7 day cache
-    # Fallback: artist profile image (artists/<id>.jpg)
-    artist_path = os.path.join(MUSIC_LIBRARY_PATH, 'artists', f'{safe_id}.jpg')
-    if os.path.isfile(artist_path):
-        return send_file(artist_path, mimetype='image/jpeg',
-                         max_age=604800)  # 7 day cache
+    # Album cover, then per-song cover (songs/<id>/cover.jpg), then artist
+    # profile image (artists/<id>.jpg).
+    for path in (os.path.join(MUSIC_LIBRARY_PATH, 'covers', f'{safe_id}.jpg'),
+                 os.path.join(MUSIC_LIBRARY_PATH, 'songs', safe_id, 'cover.jpg'),
+                 os.path.join(MUSIC_LIBRARY_PATH, 'artists', f'{safe_id}.jpg')):
+        if os.path.isfile(path):
+            resp = send_file(path, mimetype='image/jpeg', max_age=604800)  # 7 day cache
+            # Auth-gated: shared caches must not store it.
+            resp.cache_control.public = False
+            resp.cache_control.private = True
+            return resp
     return '', 204
 
 
@@ -122,7 +118,7 @@ def music_cover(cover_id):
 @_music_required
 def music_api_home():
     """Home page data: recently added albums, top artists, featured albums."""
-    if not _AVAILABLE_SONG_IDS:
+    if not _AVAILABLE_SONG_IDS or not _music_library_available():
         return jsonify({'recently_added': [], 'top_artists': [], 'all_albums': []})
     conn = _get_music_db(with_available=True)
     try:
@@ -206,7 +202,7 @@ def music_api_home():
 def music_api_albums():
     """All albums with available songs."""
     artist_id = request.args.get('artist_id')
-    if not _AVAILABLE_SONG_IDS:
+    if not _AVAILABLE_SONG_IDS or not _music_library_available():
         return jsonify([])
     conn = _get_music_db(with_available=True)
     try:
@@ -268,6 +264,8 @@ def music_api_albums():
 @_music_required
 def music_api_album(album_id):
     """Album detail with track list."""
+    if not _music_library_available():
+        return jsonify({'error': 'ALBUM NOT FOUND'}), 404
     conn = _get_music_db()
     try:
         album = conn.execute('''
@@ -345,7 +343,7 @@ def music_api_album(album_id):
 @_music_required
 def music_api_artists():
     """All artists with available songs."""
-    if not _AVAILABLE_SONG_IDS:
+    if not _AVAILABLE_SONG_IDS or not _music_library_available():
         return jsonify([])
     conn = _get_music_db(with_available=True)
     try:
@@ -377,6 +375,8 @@ def music_api_artists():
 @_music_required
 def music_api_artist(artist_id):
     """Artist detail with albums, top songs, and featuring albums."""
+    if not _music_library_available():
+        return jsonify({'error': 'ARTIST NOT FOUND'}), 404
     conn = _get_music_db(with_available=True)
     try:
         artist = conn.execute('SELECT id, name FROM artists WHERE id = ?', [artist_id]).fetchone()
@@ -498,7 +498,7 @@ def music_api_search():
     tokens = _music_search_tokenize(query)
     if not tokens:
         return jsonify({'songs': [], 'albums': [], 'artists': []})
-    if not _AVAILABLE_SONG_IDS:
+    if not _AVAILABLE_SONG_IDS or not _music_library_available():
         return jsonify({'songs': [], 'albums': [], 'artists': []})
     conn = _get_music_db(with_available=True)
     try:
@@ -529,25 +529,27 @@ def music_api_search():
             song_artist_objs[sid].append({
                 'id': row['artist_id'], 'name': row['artist_name'], 'role': row['role']
             })
-        # Score and filter songs
+        # Score and filter songs; covers (a stat per song) only for the kept 30.
         scored_songs = []
         for s in all_songs:
             artist_str = ' '.join(song_artist_names.get(s['id'], []))
             album_str = s['album_name'] or ''
             score = _music_search_score(tokens, s['title'] or '', artist_str, album_str)
             if score > 0:
-                all_artists = song_artist_objs.get(s['id'], [])
-                primary = [a for a in all_artists if a['role'] == 'primary']
-                featured = [a for a in all_artists if a['role'] == 'featured']
-                scored_songs.append((score, {
-                    'id': s['id'], 'title': s['title'], 'duration_ms': s['duration_ms'],
-                    'track_number': s['track_number'], 'album_id': s['album_id'],
-                    'album_name': s['album_name'],
-                    'cover_path': _resolve_cover_path(s['cover_path'], s['id']),
-                    'artists': primary, 'featured_artists': featured, 'available': True,
-                }))
+                scored_songs.append((score, s))
         scored_songs.sort(key=lambda x: x[0], reverse=True)
-        song_results = [s[1] for s in scored_songs[:30]]
+        song_results = []
+        for _score, s in scored_songs[:30]:
+            all_artists = song_artist_objs.get(s['id'], [])
+            primary = [a for a in all_artists if a['role'] == 'primary']
+            featured = [a for a in all_artists if a['role'] == 'featured']
+            song_results.append({
+                'id': s['id'], 'title': s['title'], 'duration_ms': s['duration_ms'],
+                'track_number': s['track_number'], 'album_id': s['album_id'],
+                'album_name': s['album_name'],
+                'cover_path': _resolve_cover_path(s['cover_path'], s['id']),
+                'artists': primary, 'featured_artists': featured, 'available': True,
+            })
         # Search albums
         all_albums = conn.execute(f'''
             SELECT DISTINCT a.id, a.name, a.year, a.album_type, a.cover_path,
@@ -572,19 +574,18 @@ def music_api_search():
                 if aid not in album_artist_map:
                     album_artist_map[aid] = []
                 album_artist_map[aid].append(row['name'])
-        album_results = []
+        matched_albums = []
         for a in all_albums:
             artist_str = ' '.join(album_artist_map.get(a['id'], []))
-            combined = f"{a['name']} {artist_str}".lower()
-            if all(t in combined for t in tokens):
-                album_results.append({
-                    'id': a['id'], 'name': a['name'], 'year': a['year'],
-                    'album_type': a['album_type'],
-                    'cover_path': _resolve_album_cover(conn, a['id'], a['cover_path']),
-                    'available_count': a['available_count'],
-                    'artists': [{'name': n} for n in album_artist_map.get(a['id'], [])],
-                })
-        album_results = album_results[:10]
+            if all(t in f"{a['name']} {artist_str}".lower() for t in tokens):
+                matched_albums.append(a)
+        album_results = [{
+            'id': a['id'], 'name': a['name'], 'year': a['year'],
+            'album_type': a['album_type'],
+            'cover_path': _resolve_album_cover(conn, a['id'], a['cover_path']),
+            'available_count': a['available_count'],
+            'artists': [{'name': n} for n in album_artist_map.get(a['id'], [])],
+        } for a in matched_albums[:10]]
         # Search artists
         all_artists = conn.execute(f'''
             SELECT ar.id, ar.name, COUNT(DISTINCT sa.song_id) as song_count,
@@ -599,15 +600,12 @@ def music_api_search():
             GROUP BY ar.id
             HAVING song_count > 0
         ''').fetchall()
-        artist_results = []
-        for ar in all_artists:
-            if _music_fuzzy_match(tokens, ar['name']):
-                artist_results.append({
-                    'id': ar['id'], 'name': ar['name'],
-                    'song_count': ar['song_count'],
-                    'cover_path': _resolve_artist_cover(conn, ar['id'], ar['cover_path']),
-                })
-        artist_results = artist_results[:10]
+        matched_artists = [ar for ar in all_artists if _music_fuzzy_match(tokens, ar['name'])]
+        artist_results = [{
+            'id': ar['id'], 'name': ar['name'],
+            'song_count': ar['song_count'],
+            'cover_path': _resolve_artist_cover(conn, ar['id'], ar['cover_path']),
+        } for ar in matched_artists[:10]]
         return jsonify({
             'songs': song_results,
             'albums': album_results,
@@ -678,7 +676,7 @@ def music_api_suggest():
     exclude_set = set(e.strip() for e in exclude_raw.split(',') if e.strip()) if exclude_raw else set()
 
     # If no seed artists provided, fall back to random
-    if not seed_artists:
+    if not seed_artists or not _music_library_available():
         candidates = [sid for sid in _AVAILABLE_SONG_IDS if sid not in exclude_set]
         if not candidates:
             candidates = list(_AVAILABLE_SONG_IDS)
@@ -687,16 +685,21 @@ def music_api_suggest():
         _random.shuffle(songs)
         return jsonify({'songs': songs})
 
+    seed_artists = list(dict.fromkeys(seed_artists))
+    seed_set = set(seed_artists)
     conn = _get_music_db()
     try:
-        seed_ph = ','.join('?' for _ in seed_artists)
-
-        # Get all songs by seed artists
-        seed_song_rows = conn.execute(f'''
-            SELECT DISTINCT song_id FROM song_artists
-            WHERE artist_id IN ({seed_ph})
-        ''', seed_artists).fetchall()
-        seed_song_ids = [r['song_id'] for r in seed_song_rows]
+        # Get all songs by seed artists. Every IN (...) below is chunked: seed
+        # artists come from the client's whole queue and their songs are unbounded.
+        seed_song_ids = {}
+        for chunk in _music_chunks(seed_artists):
+            seed_ph = ','.join('?' for _ in chunk)
+            for r in conn.execute(f'''
+                SELECT DISTINCT song_id FROM song_artists
+                WHERE artist_id IN ({seed_ph})
+            ''', chunk).fetchall():
+                seed_song_ids[r['song_id']] = True
+        seed_song_ids = list(seed_song_ids)
 
         if not seed_song_ids:
             # Seed artists have no songs -- fall back to random
@@ -708,39 +711,37 @@ def music_api_suggest():
             _random.shuffle(songs)
             return jsonify({'songs': songs})
 
-        song_ph = ','.join('?' for _ in seed_song_ids)
-
         # Find co-collaborators: other artists on the same songs as seed artists
         # Score: primary role = 2 points, featured/other = 1 point per shared song
-        collab_rows = conn.execute(f'''
-            SELECT sa.artist_id,
-                   SUM(CASE WHEN sa.role = 'primary' THEN 2 ELSE 1 END) as score
-            FROM song_artists sa
-            WHERE sa.song_id IN ({song_ph})
-              AND sa.artist_id NOT IN ({seed_ph})
-            GROUP BY sa.artist_id
-            ORDER BY score DESC
-        ''', seed_song_ids + seed_artists).fetchall()
+        # (per-song sums add up across song chunks).
+        artist_scores = {}
+        for chunk in _music_chunks(seed_song_ids):
+            song_ph = ','.join('?' for _ in chunk)
+            for row in conn.execute(f'''
+                SELECT sa.artist_id,
+                       SUM(CASE WHEN sa.role = 'primary' THEN 2 ELSE 1 END) as score
+                FROM song_artists sa
+                WHERE sa.song_id IN ({song_ph})
+                GROUP BY sa.artist_id
+            ''', chunk).fetchall():
+                aid = row['artist_id']
+                if aid not in seed_set:
+                    artist_scores[aid] = artist_scores.get(aid, 0) + row['score']
 
         # Also find artists on the same albums (weaker signal)
-        album_collab_rows = conn.execute(f'''
-            SELECT DISTINCT aa2.artist_id
-            FROM song_artists sa
-            JOIN songs s ON s.id = sa.song_id
-            JOIN album_artists aa ON aa.album_id = s.album_id
-            JOIN album_artists aa2 ON aa2.album_id = aa.album_id
-            WHERE sa.artist_id IN ({seed_ph})
-              AND aa2.artist_id NOT IN ({seed_ph})
-        ''', seed_artists + seed_artists).fetchall()
-
-        # Merge collaboration scores
-        artist_scores = {}
-        for row in collab_rows:
-            artist_scores[row['artist_id']] = row['score']
-        for row in album_collab_rows:
-            aid = row['artist_id']
-            if aid not in artist_scores:
-                artist_scores[aid] = 0.5
+        for chunk in _music_chunks(seed_artists):
+            seed_ph = ','.join('?' for _ in chunk)
+            for row in conn.execute(f'''
+                SELECT DISTINCT aa2.artist_id
+                FROM song_artists sa
+                JOIN songs s ON s.id = sa.song_id
+                JOIN album_artists aa ON aa.album_id = s.album_id
+                JOIN album_artists aa2 ON aa2.album_id = aa.album_id
+                WHERE sa.artist_id IN ({seed_ph})
+            ''', chunk).fetchall():
+                aid = row['artist_id']
+                if aid not in seed_set and aid not in artist_scores:
+                    artist_scores[aid] = 0.5
 
         # Top 30 related artists by score
         related_sorted = sorted(artist_scores.items(), key=lambda x: x[1], reverse=True)

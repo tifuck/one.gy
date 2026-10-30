@@ -88,7 +88,15 @@
   ]
 
   function baseDraft(){
-    var d = {
+    var d = blankDraft()
+    applyDefaults(d, 'build', true)
+    return d
+  }
+
+  // Field values before any task defaults: what an auto field falls back to
+  // when the current task does not set it.
+  function blankDraft(){
+    return {
       version: VERSION,
       task: 'build',
       mode: 'implement',
@@ -153,8 +161,6 @@
       customInstructions: '',
       touched: {}
     }
-    applyDefaults(d, 'build', true)
-    return d
   }
 
   function clampText(v){
@@ -166,10 +172,14 @@
     return clampText(v).replace(/^\s+|\s+$/g, '')
   }
 
+  // Every untouched auto field (or all of them with force) gets the task's
+  // default, else its blank value: a previous task's hidden defaults (e.g.
+  // deployCheck, format:'plan') must not leak into the new task.
   function applyDefaults(d, task, force){
     var defs = TASK_DEFAULTS[task] || {}
-    Object.keys(defs).forEach(function(k){
-      if(force || !(d.touched && d.touched[k])) d[k] = defs[k]
+    var blank = blankDraft()
+    Object.keys(AUTO_FIELDS).forEach(function(k){
+      if(force || !(d.touched && d.touched[k])) d[k] = Object.prototype.hasOwnProperty.call(defs, k) ? defs[k] : blank[k]
     })
   }
 
@@ -484,7 +494,7 @@
     var restore = $('prRestore')
     if(restore) restore.addEventListener('click', function(){
       applyDefaults(draft, draft.task, true)
-      Object.keys(TASK_DEFAULTS[draft.task] || {}).forEach(function(k){
+      Object.keys(AUTO_FIELDS).forEach(function(k){
         if(draft.touched) delete draft.touched[k]
       })
       writeForm()

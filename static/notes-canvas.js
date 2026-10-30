@@ -37,7 +37,8 @@
   function id () { return 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) }
   function esc (value) { return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] }) }
   function formatBytes (value) { var size = +value || 0; if (!size) return '0 B'; var units = ['B', 'KB', 'MB', 'GB'], index = Math.min(units.length - 1, Math.floor(Math.log(size) / Math.log(1024))); return (size / Math.pow(1024, index)).toFixed(index ? 1 : 0) + ' ' + units[index] }
-  function safeUrl (raw, image) { if (typeof raw !== 'string') return ''; var value = raw.trim().replace(/[\u0000-\u001f\u007f]+/g, ''); if (!value) return ''; if (image && /^data:image\/(png|jpe?g|gif|webp|bmp);base64,/i.test(value)) return value; try { var parsed = new URL(value, window.location.origin), protocol = parsed.protocol.toLowerCase(); if (image && parsed.origin === window.location.origin && (protocol === 'http:' || protocol === 'https:')) return parsed.href; if (!image && (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:')) return parsed.href } catch (e) {}; return '' }
+  // Images are inline data: only (as in document notes): a URL src in a shared note would make the recipient's browser fire cookie-bearing GETs.
+  function safeUrl (raw, image) { if (typeof raw !== 'string') return ''; var value = raw.trim().replace(/[\u0000-\u001f\u007f]+/g, ''); if (!value) return ''; if (image) return /^data:image\/(png|jpe?g|gif|webp|bmp);base64,/i.test(value) ? value : ''; try { var parsed = new URL(value, window.location.origin), protocol = parsed.protocol.toLowerCase(); if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:') return parsed.href } catch (e) {}; return '' }
   function safeColor (value, fallback) { value = typeof value === 'string' ? value.trim() : ''; if (!value || /url\s*\(|expression\s*\(|javascript\s*:/i.test(value) || !window.CSS || !CSS.supports('color', value)) return fallback || ''; return value }
   // Text on a solid fill (swatch or highlight) must stay readable in either theme: palette ink on light fills, white on dark ones.
   function inkOn (fill) {
@@ -104,7 +105,7 @@
     var zoom = +source.zoom || 1
     var tool = 'select', color = '#0e8fd6', stroke = 3
     var selected = null, selectedIds = [], gesture = null, draw = null, spaceHeld = false
-    var pointers = {}, pinch = null, undo = [], redo = [], changeTimer = null, editSnapshotTimer = null, destroyed = false
+    var pointers = {}, pinch = null, undo = [], redo = [], changeTimer = null, editSnapshotTimer = null, destroyed = false, gestureFrame = 0
     var popover = null, savedRange = null, imageInsertPoint = null, longPress = null
     var provisionalText = {}, blockClipboard = SHARED_BLOCK_CLIPBOARD, imageReplaceId = null, dirtyPending = false
     var ac = new AbortController(), signal = ac.signal
@@ -174,7 +175,7 @@
       group.appendChild(el('span', 'fxc-sep'))
       group.appendChild(iconButton('ZOOM OUT', '<circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-4.3-4.3"/>', function () { zoomBy(1 / 1.2) }, 'fxc-zoomctl'))
       var level = el('button', 'fxc-zoom', '100%'); level.type = 'button'; level.id = 'fxcZoom'; level.title = 'RESET ZOOM'; level.setAttribute('aria-label', 'RESET ZOOM')
-      level.onclick = function () { zoom = 1; render(); vp.scrollLeft = 0; vp.scrollTop = 0; commit() }; group.appendChild(level)
+      level.onclick = function () { zoom = 1; render(); vp.scrollLeft = 0; vp.scrollTop = 0 }; group.appendChild(level)
       group.appendChild(iconButton('ZOOM IN', '<circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M21 21l-4.3-4.3"/>', function () { zoomBy(1.2) }, 'fxc-zoomctl'))
       return group
     }
@@ -185,6 +186,7 @@
     }
 
     function byId (blockId) { return blocks.filter(function (b) { return b.id === String(blockId) })[0] || null }
+    function blockNode (blockId) { return world.querySelector('[data-id="' + CSS.escape(String(blockId)) + '"]') }
     function isSelected (blockId) { return selectedIds.indexOf(String(blockId)) >= 0 }
     function selectedBlocks () { return selectedIds.map(byId).filter(Boolean) }
     function toWorld (clientX, clientY) { var rect = page.getBoundingClientRect(); return { x: Math.max(0, (clientX - rect.left) / zoom), y: Math.max(0, Math.min(CANVAS_MAX_Y, (clientY - rect.top) / zoom)) } }
@@ -226,18 +228,39 @@
       var pageRect = page.getBoundingClientRect()
       vp.scrollLeft += (pageRect.left + anchor.x * zoom) - cx
       vp.scrollTop += (pageRect.top + anchor.y * zoom) - cy
-      scheduleCommit()
     }
     function snapshotTyping () { if (!editSnapshotTimer) snapshot(); clearTimeout(editSnapshotTimer); editSnapshotTimer = setTimeout(function () { editSnapshotTimer = null }, 800) }
 
     function render () {
       if (destroyed) return
+      if (gestureFrame) { cancelAnimationFrame(gestureFrame); gestureFrame = 0 }
       world.style.transform = 'scale(' + zoom + ')'
       world.innerHTML = ''
       blocks.slice().sort(function (a, b) { return a.zIndex - b.zIndex }).forEach(function (block) { world.appendChild(renderBlock(block)) })
       world.querySelectorAll('.fxc-text-content, .fxc-table-card td').forEach(function (node) { inkHighlights(node) })
       syncAutoHeights(); renderOverlay(); hint.hidden = readonly || blocks.length > 0
-      var level = document.getElementById('fxcZoom'); if (level) level.textContent = Math.round(zoom * 100) + '%'
+      syncZoomLabel()
+    }
+    function syncZoomLabel () { var level = document.getElementById('fxcZoom'); if (level) level.textContent = Math.round(zoom * 100) + '%' }
+    // Pointer moves only reposition the blocks a gesture touches, once per frame;
+    // the full rebuild (images, sanitising) waits for pointerup.
+    function scheduleGesturePaint () { if (!gestureFrame) gestureFrame = requestAnimationFrame(paintGesture) }
+    function paintGesture () {
+      gestureFrame = 0
+      if (destroyed) return
+      world.style.transform = 'scale(' + zoom + ')'; syncZoomLabel()
+      var g = gesture
+      if (g && (g.type === 'move' || g.type === 'resize' || g.type === 'colresize')) {
+        (g.type === 'move' ? g.originals.map(function (original) { return byId(original.id) }) : [byId(g.id)]).forEach(function (block) {
+          var node = block && blockNode(block.id); if (!node) return
+          if (g.type === 'colresize') { var fresh = renderBlock(block); node.replaceWith(fresh); fresh.querySelectorAll('td').forEach(function (cell) { inkHighlights(cell) }); node = fresh }
+          node.style.left = block.x + 'px'; node.style.top = block.y + 'px'
+          if (g.type === 'move') return
+          node.style.width = block.w + 'px'
+          if (isAutoHeight(block)) syncBlockHeight(block, node); else node.style.height = block.h + 'px'
+        })
+      }
+      if (g && g.type === 'marquee') paintSelection(); else renderOverlay()
     }
     function isAutoHeight (block) { return block && (block.type === 'text' || block.type === 'todo' || block.type === 'table' || block.type === 'code') }
     function syncBlockHeight (block, node) {
@@ -246,7 +269,7 @@
       if (area) { area.style.height = 'auto'; area.style.height = area.scrollHeight + 'px' } // code grows with its content instead of scrolling in a fixed box
       node.style.height = 'auto'; block.h = Math.max(block.type === 'text' ? 40 : 36, Math.ceil(node.offsetHeight)); clampBlockY(block)
     }
-    function syncAutoHeights () { blocks.forEach(function (block) { if (isAutoHeight(block)) syncBlockHeight(block, world.querySelector('[data-id="' + block.id + '"]')) }) }
+    function syncAutoHeights () { blocks.forEach(function (block) { if (isAutoHeight(block)) syncBlockHeight(block, blockNode(block.id)) }) }
     function renderBlock (block) {
       var node
       if (block.type === 'draw' || block.type === 'line') node = renderSvg(block)
@@ -327,7 +350,7 @@
       return node
     }
     function focusTodoItem (blockId, index, atEnd) {
-      setTimeout(function () { var inputs = world.querySelectorAll('[data-id="' + blockId + '"] .fxc-todo-input'), input = inputs[index]; if (!input) return; input.focus(); if (atEnd) { var range = document.createRange(), selection = window.getSelection(); range.selectNodeContents(input); range.collapse(false); selection.removeAllRanges(); selection.addRange(range) } }, 0)
+      setTimeout(function () { var node = blockNode(blockId), input = node && node.querySelectorAll('.fxc-todo-input')[index]; if (!input) return; input.focus(); if (atEnd) { var range = document.createRange(), selection = window.getSelection(); range.selectNodeContents(input); range.collapse(false); selection.removeAllRanges(); selection.addRange(range) } }, 0)
     }
     function exitTodo (block, index) {
       block.items.splice(index, 1)
@@ -407,7 +430,7 @@
       }
       return node
     }
-    function focusTableCell (blockId, row, col) { setTimeout(function () { var cell = world.querySelector('[data-id="' + blockId + '"] td[data-row="' + row + '"][data-col="' + col + '"]'); if (cell) cell.focus() }, 0) }
+    function focusTableCell (blockId, row, col) { setTimeout(function () { var node = blockNode(blockId), cell = node && node.querySelector('td[data-row="' + row + '"][data-col="' + col + '"]'); if (cell) cell.focus() }, 0) }
     function insertSanitizedAtCaret (html, text) {
       var frag = sanitizeToFragment(html || '')
       if (!frag.childNodes.length) {
@@ -432,7 +455,10 @@
     function pasteEditable (event) {
       var dt = event.clipboardData || event.dataTransfer
       var html = dt && dt.getData('text/html'), text = dt && dt.getData('text/plain')
-      event.preventDefault(); insertSanitizedAtCaret(html, text)
+      event.preventDefault()
+      var clean = html ? safeHtml(html) : '', node = event.target.closest && event.target.closest('.fxc-block'), block = node && byId(node.dataset.id)
+      if (block && !fitsLimits(blocks.map(function (b) { return b === block ? Object.assign({}, b, { content: String(b.content || '') + (clean || text || '') }) : b }))) return
+      insertSanitizedAtCaret(clean, text)
     }
     function bindRichDrop (el) {
       if (readonly) return
@@ -498,19 +524,27 @@
       })
     }
 
+    // Same limits a save enforces (opts.validate from notes.js): refuse here rather
+    // than accept content that can never be saved.
+    function fitsLimits (next) {
+      if (typeof opts.validate !== 'function' || opts.validate({ blocks: next })) return true
+      if (window.showToast) window.showToast('CANVAS IS OVER ITS SIZE LIMITS: NOT ADDED', 'error')
+      return false
+    }
     function addBlock (block) { block.id = String(block.id || id()); block.zIndex = ++maxZ; block = normalize(block); clampBlockY(block); blocks.push(block); nextId = Math.max(+nextId || 1, blocks.length + 1); return blocks[blocks.length - 1] }
     function removeBlock (blockId) { if (!byId(blockId)) return; snapshot(); blocks = blocks.filter(function (block) { return block.id !== String(blockId) }); selectedIds = selectedIds.filter(function (idValue) { return idValue !== String(blockId) }); selected = selectedIds[selectedIds.length - 1] || null; render(); commit() }
     function removeSelected () { if (!selectedIds.length) return; snapshot(); var removing = selectedIds.slice(); blocks = blocks.filter(function (block) { return removing.indexOf(block.id) < 0 }); selectedIds = []; selected = null; render(); commit() }
     function selectBlock (blockId, additive) {
       var next = blockId == null ? null : String(blockId), previous = selected
-      if (previous && previous !== next && provisionalText[previous]) { var empty = byId(previous); if (empty) { blocks = blocks.filter(function (block) { return block.id !== previous }); delete provisionalText[previous]; var oldNode = world.querySelector('[data-id="' + previous + '"]'); if (oldNode) oldNode.remove() } }
+      if (previous && previous !== next && provisionalText[previous]) { var empty = byId(previous); if (empty) { blocks = blocks.filter(function (block) { return block.id !== previous }); delete provisionalText[previous]; var oldNode = blockNode(previous); if (oldNode) oldNode.remove() } }
       if (!next) selectedIds = []
       else if (additive) { var index = selectedIds.indexOf(next); if (index >= 0) selectedIds.splice(index, 1); else selectedIds.push(next) }
       else if (!isSelected(next) || selectedIds.length !== 1) selectedIds = [next]
       selected = selectedIds[selectedIds.length - 1] || null
-      renderOverlay(); world.querySelectorAll('.fxc-block').forEach(function (node) { var active = isSelected(node.dataset.id); node.classList.toggle('is-sel', active); node.setAttribute('aria-selected', active ? 'true' : 'false') })
+      paintSelection()
     }
-    function focusBlock (blockId) { setTimeout(function () { var node = world.querySelector('[data-id="' + blockId + '"]'); if (!node) return; var target = node.querySelector('[contenteditable="true"],input[type="text"],textarea,td') || node; target.focus() }, 20) }
+    function paintSelection () { renderOverlay(); world.querySelectorAll('.fxc-block').forEach(function (node) { var active = isSelected(node.dataset.id); node.classList.toggle('is-sel', active); node.setAttribute('aria-selected', active ? 'true' : 'false') }) }
+    function focusBlock (blockId) { setTimeout(function () { var node = blockNode(blockId); if (!node) return; var target = node.querySelector('[contenteditable="true"],input[type="text"],textarea,td') || node; target.focus() }, 20) }
     // A text block is positioned by its top-left corner, but the caret sits inside the border +
     // content padding and spans a whole line box. Placing the corner on the click point therefore
     // renders the caret down-right of the pointer. Measure that inset from live CSS (so it tracks
@@ -534,16 +568,19 @@
       } catch (err) { return fallback }
     }
     function createAt (kind, point, alignCaret) {
-      snapshot(); var block
+      var spec
       var fit = function (width) { return Math.max(0, Math.min(point.x, pageWidth() - width - 12)) }
-      if (kind === 'todo') block = addBlock({ type: 'todo', x: fit(240), y: point.y, w: 240, h: 40, items: [{ id: id(), text: '', checked: false }], style: { bgColor: 'transparent' } })
-      else if (kind === 'table') block = addBlock({ type: 'table', x: fit(360), y: point.y, w: 360, h: 150, rows: 3, cols: 3, cells: [['', '', ''], ['', '', ''], ['', '', '']], style: { bgColor: 'transparent' } })
-      else if (kind === 'code') block = addBlock({ type: 'code', x: fit(320), y: point.y, w: 320, h: 160, code: '', lang: 'text', style: { bgColor: '#0f1720' } })
+      if (kind === 'todo') spec = { type: 'todo', x: fit(240), y: point.y, w: 240, h: 40, items: [{ id: id(), text: '', checked: false }], style: { bgColor: 'transparent' } }
+      else if (kind === 'table') spec = { type: 'table', x: fit(360), y: point.y, w: 360, h: 150, rows: 3, cols: 3, cells: [['', '', ''], ['', '', ''], ['', '', '']], style: { bgColor: 'transparent' } }
+      else if (kind === 'code') spec = { type: 'code', x: fit(320), y: point.y, w: 320, h: 160, code: '', lang: 'text', style: { bgColor: '#0f1720' } }
       else {
         var inset = alignCaret ? textCaretInset() : { x: 0, y: 0 }
         point = { x: Math.max(0, point.x - inset.x), y: Math.max(0, point.y - inset.y) }
-        block = addBlock({ type: 'text', x: fit(260), y: point.y, w: 260, h: 40, content: '', style: { bgColor: 'transparent' } })
+        spec = { type: 'text', x: fit(260), y: point.y, w: 260, h: 40, content: '', style: { bgColor: 'transparent' } }
       }
+      spec.id = id()
+      if (!fitsLimits(blocks.concat([spec]))) return
+      snapshot(); var block = addBlock(spec)
       if (kind === 'text') provisionalText[block.id] = true
       render(); selectBlock(block.id); if (kind !== 'text') commit(); setTool('select'); focusBlock(block.id)
     }
@@ -563,8 +600,10 @@
           if (destroyed) return
           var width = Math.min(420, image.naturalWidth || 320), height = Math.max(80, Math.round((image.naturalHeight || 220) * width / (image.naturalWidth || 320)))
           var rect = vp.getBoundingClientRect(), insertPoint = point || toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)
-          snapshot(); var block = byId(replaceId)
-          if (block && block.type === 'image') { block.src = reader.result; block.alt = file.name || block.alt || ''; if (!block.w || !block.h) { block.w = width; block.h = height } }
+          var block = byId(replaceId), replacing = !!block && block.type === 'image'
+          if (!fitsLimits(replacing ? blocks.map(function (b) { return b === block ? { id: b.id, type: 'image', src: reader.result } : b }) : blocks.concat([{ id: id(), type: 'image', src: reader.result }]))) return
+          snapshot()
+          if (replacing) { block.src = reader.result; block.alt = file.name || block.alt || ''; if (!block.w || !block.h) { block.w = width; block.h = height } }
           else block = addBlock({ type: 'image', x: insertPoint.x - width / 2, y: insertPoint.y - height / 2, w: width, h: height, src: reader.result, alt: file.name || '', effects: { opacity: 100, radius: 0, flipH: false, flipV: false } })
           render(); selectBlock(block.id); commit(); setTool('select')
         }
@@ -606,7 +645,9 @@
     function applyBlockChange (block, mutate) { snapshot(); mutate(); render(); selectBlock(block.id); commit() }
     function duplicateBlocks (targets) {
       targets = targets && targets.length ? targets : selectedBlocks(); if (!targets.length) return
-      snapshot(); selectedIds = targets.map(function (block) { var copy = clone(block); copy.id = id(); copy.x += 20; copy.y += 20; copy.zIndex = ++maxZ; blocks.push(normalize(copy)); return copy.id }); selected = selectedIds[selectedIds.length - 1]; nextId = Math.max(+nextId || 1, blocks.length + 1); render(); commit()
+      var copies = targets.map(function (block) { var copy = clone(block); copy.id = id(); copy.x += 20; copy.y += 20; return normalize(copy) })
+      if (!fitsLimits(blocks.concat(copies))) return
+      snapshot(); selectedIds = copies.map(function (copy) { copy.zIndex = ++maxZ; blocks.push(copy); return copy.id }); selected = selectedIds[selectedIds.length - 1]; nextId = Math.max(+nextId || 1, blocks.length + 1); render(); commit()
     }
     function showBlockMenu (block, x, y) {
       if (!isSelected(block.id)) selectBlock(block.id)
@@ -624,7 +665,7 @@
       items.push({ node: layerControls(block) })
       if (block.type === 'image') {
         items.push(null)
-        items.push(menuItem('CROP PICTURE', function () { var node = world.querySelector('[data-id="' + block.id + '"]'), rect = node.getBoundingClientRect(); showImageCropMenu(block, rect.right + 8, rect.top) }))
+        items.push(menuItem('CROP PICTURE', function () { var node = blockNode(block.id), rect = node.getBoundingClientRect(); showImageCropMenu(block, rect.right + 8, rect.top) }))
         items.push(menuItem(block.isBackground ? 'UNLOCK BACKGROUND' : 'SET PICTURE AS BACKGROUND', function () { applyBlockChange(block, function () { block.isBackground = !block.isBackground; if (block.isBackground) block.zIndex = -1 }) }))
         items.push(menuItem('REPLACE PICTURE', function () { imageReplaceId = block.id; imageInput.value = ''; imageInput.click() }))
         items.push(menuItem('EDIT ALT TEXT', function () { var value = window.prompt('ENTER ALT TEXT', block.alt || ''); if (value != null) applyBlockChange(block, function () { block.alt = String(value).slice(0, 500) }) }))
@@ -697,8 +738,10 @@
     function cutBlock (block) { if (!block) return; selectBlock(block.id); cutBlocks([block]) }
     function pasteBlock (point) {
       if (!blockClipboard) return
-      snapshot(); var copies = Array.isArray(blockClipboard) ? clone(blockClipboard) : [clone(blockClipboard)], minX = Math.min.apply(null, copies.map(function (block) { return block.x })), minY = Math.min.apply(null, copies.map(function (block) { return block.y }))
-      selectedIds = copies.map(function (copy) { copy.id = id(); copy.x = point ? point.x + copy.x - minX : copy.x + 20; copy.y = point ? point.y + copy.y - minY : copy.y + 20; copy.zIndex = ++maxZ; blocks.push(normalize(copy)); return copy.id }); selected = selectedIds[selectedIds.length - 1]; render(); commit()
+      var copies = Array.isArray(blockClipboard) ? clone(blockClipboard) : [clone(blockClipboard)], minX = Math.min.apply(null, copies.map(function (block) { return block.x })), minY = Math.min.apply(null, copies.map(function (block) { return block.y }))
+      copies = copies.map(function (copy) { copy.id = id(); copy.x = point ? point.x + copy.x - minX : copy.x + 20; copy.y = point ? point.y + copy.y - minY : copy.y + 20; return normalize(copy) })
+      if (!fitsLimits(blocks.concat(copies))) return
+      snapshot(); selectedIds = copies.map(function (copy) { copy.zIndex = ++maxZ; blocks.push(copy); return copy.id }); selected = selectedIds[selectedIds.length - 1]; render(); commit()
     }
     function changeSelectedZ (front) { var targets = selectedBlocks(); if (!targets.length) return; snapshot(); targets.forEach(function (block) { block.zIndex = front ? ++maxZ : 0 }); render(); commit() }
     function changeBlockLayer (block, direction) {
@@ -822,11 +865,11 @@
     function beginMove (event, block) {
       event.preventDefault(); event.stopPropagation(); if (!isSelected(block.id)) selectBlock(block.id); snapshot(); vp.setPointerCapture(event.pointerId)
       var point = toWorld(event.clientX, event.clientY)
-      gesture = { type: 'move', pointerId: event.pointerId, id: block.id, sx: point.x, sy: point.y, before: JSON.stringify(blocks), originals: selectedBlocks().map(function (target) { return { id: target.id, x: target.x, y: target.y } }) }
+      gesture = { type: 'move', pointerId: event.pointerId, id: block.id, sx: point.x, sy: point.y, before: true, originals: selectedBlocks().map(function (target) { return { id: target.id, x: target.x, y: target.y } }) }
     }
     function startResize (event, block, handle) {
       snapshot(); vp.setPointerCapture(event.pointerId); var point = toWorld(event.clientX, event.clientY), v = visibleRect(block)
-      gesture = { type: 'resize', pointerId: event.pointerId, id: block.id, handle: handle, sx: point.x, sy: point.y, before: JSON.stringify(blocks), x: v.x, y: v.y, w: v.w, h: v.h }
+      gesture = { type: 'resize', pointerId: event.pointerId, id: block.id, handle: handle, sx: point.x, sy: point.y, before: true, x: v.x, y: v.y, w: v.w, h: v.h }
     }
     function startScrollDrag (event) { vp.setPointerCapture(event.pointerId); gesture = { type: 'scrollpan', pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, scrollLeft: vp.scrollLeft, scrollTop: vp.scrollTop } }
     function startMarquee (event, point) { vp.setPointerCapture(event.pointerId); gesture = { type: 'marquee', pointerId: event.pointerId, sx: point.x, sy: point.y, x: point.x, y: point.y, moved: false, additive: !!(event.ctrlKey || event.metaKey || event.shiftKey), originalSelection: selectedIds.slice() } }
@@ -834,7 +877,7 @@
       event.preventDefault(); event.stopPropagation(); if (!isSelected(block.id)) selectBlock(block.id)
       snapshot(); vp.setPointerCapture(event.pointerId)
       var widths = colWidthsPct(block).map(function (percent) { return percent * block.w / 100 })
-      gesture = { type: 'colresize', pointerId: event.pointerId, id: block.id, col: col, sx: toWorld(event.clientX, event.clientY).x, sy: 0, widths: widths, before: JSON.stringify(blocks) }
+      gesture = { type: 'colresize', pointerId: event.pointerId, id: block.id, col: col, sx: toWorld(event.clientX, event.clientY).x, sy: 0, widths: widths, before: true }
     }
     function marqueeArea (state) { return { x: Math.min(state.sx, state.x), y: Math.min(state.sy, state.y), w: Math.abs(state.x - state.sx), h: Math.abs(state.y - state.sy) } }
     function startDraw (event, point) {
@@ -865,7 +908,7 @@
     }, { capture: true })
     vp.addEventListener('pointerdown', function (event) {
       if (popover && !popover.contains(event.target)) closePopover()
-      if (Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }); pinch = { distance: distance(values[0], values[1]), zoom: zoom, changed: false }; gesture = null; draw = null; return }
+      if (Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }); pinch = { distance: distance(values[0], values[1]), zoom: zoom }; gesture = null; draw = null; return }
       if (readonly) return // native scroll + text selection
       if (event.button === 1 || spaceHeld) { event.preventDefault(); startScrollDrag(event); return }
       if (event.target.closest('.fxc-block,.fxc-handle,.fxc-colgrip')) return
@@ -885,12 +928,12 @@
     vp.addEventListener('pointermove', function (event) {
       if (pointers[event.pointerId]) { pointers[event.pointerId].x = event.clientX; pointers[event.pointerId].y = event.clientY }
       if (longPress && longPress.pointerId === event.pointerId && distance({ x: event.clientX, y: event.clientY }, longPress) > 10) { clearTimeout(longPress.timer); longPress = null }
-      if (pinch && Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }), d = distance(values[0], values[1]); zoom = Math.max(.2, Math.min(4, pinch.zoom * d / pinch.distance)); pinch.changed = pinch.changed || zoom !== pinch.zoom; render(); return }
+      if (pinch && Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }), d = distance(values[0], values[1]); zoom = Math.max(.2, Math.min(4, pinch.zoom * d / pinch.distance)); scheduleGesturePaint(); return }
       if (draw && draw.pointerId === event.pointerId) { var drawPoint = toWorld(event.clientX, event.clientY); if (draw.type === 'draw') draw.points.push([drawPoint.x, drawPoint.y]); else draw.points[1] = [drawPoint.x, drawPoint.y]; drawLive(); return }
       if (!gesture || gesture.pointerId !== event.pointerId) return
       if (gesture.type === 'tap') return
       if (gesture.type === 'scrollpan') { vp.scrollLeft = gesture.scrollLeft - (event.clientX - gesture.clientX); vp.scrollTop = gesture.scrollTop - (event.clientY - gesture.clientY); return }
-      if (gesture.type === 'marquee') { var marqueePoint = toWorld(event.clientX, event.clientY); gesture.x = marqueePoint.x; gesture.y = marqueePoint.y; gesture.moved = gesture.moved || Math.hypot(gesture.x - gesture.sx, gesture.y - gesture.sy) >= 4; if (gesture.moved) { var area = marqueeArea(gesture), hits = blocks.filter(function (item) { return item.x < area.x + area.w && item.x + item.w > area.x && item.y < area.y + area.h && item.y + item.h > area.y }).map(function (item) { return item.id }); selectedIds = gesture.additive ? gesture.originalSelection.concat(hits.filter(function (item) { return gesture.originalSelection.indexOf(item) < 0 })) : hits; selected = selectedIds[selectedIds.length - 1] || null; render() }; return }
+      if (gesture.type === 'marquee') { var marqueePoint = toWorld(event.clientX, event.clientY); gesture.x = marqueePoint.x; gesture.y = marqueePoint.y; gesture.moved = gesture.moved || Math.hypot(gesture.x - gesture.sx, gesture.y - gesture.sy) >= 4; if (gesture.moved) { var area = marqueeArea(gesture), hits = blocks.filter(function (item) { return item.x < area.x + area.w && item.x + item.w > area.x && item.y < area.y + area.h && item.y + item.h > area.y }).map(function (item) { return item.id }); selectedIds = gesture.additive ? gesture.originalSelection.concat(hits.filter(function (item) { return gesture.originalSelection.indexOf(item) < 0 })) : hits; selected = selectedIds[selectedIds.length - 1] || null; scheduleGesturePaint() }; return }
       var point = toWorld(event.clientX, event.clientY), block = byId(gesture.id); if (!block) return
       var dx = point.x - gesture.sx, dy = point.y - gesture.sy
       if (gesture.type === 'colresize') {
@@ -908,11 +951,11 @@
         block.colWidths = widths.map(function (width) { return width / block.w * 100 })
       } else if (gesture.type === 'move') { gesture.originals.forEach(function (original) { var target = byId(original.id); if (!target || target.isBackground) return; target.x = original.x + dx; target.y = original.y + dy; clampBlockY(target) }) }
       else { resizeBlock(block, gesture, dx, dy) }
-      render()
+      scheduleGesturePaint()
     })
     function endPointer (event) {
       if (longPress && longPress.pointerId === event.pointerId) { var fired = longPress.fired; clearTimeout(longPress.timer); longPress = null; if (fired) { delete pointers[event.pointerId]; return } }
-      delete pointers[event.pointerId]; if (pinch && Object.keys(pointers).length < 2) { var pinchChanged = pinch.changed; pinch = null; if (pinchChanged) commit() }
+      delete pointers[event.pointerId]; if (pinch && Object.keys(pointers).length < 2) pinch = null
       if (draw && draw.pointerId === event.pointerId) { finishDraw(); return }
       if (!gesture || gesture.pointerId !== event.pointerId) return
       var finished = gesture; gesture = null
@@ -928,7 +971,8 @@
     vp.addEventListener('pointercancel', function (event) {
       if (longPress) { clearTimeout(longPress.timer); longPress = null }
       delete pointers[event.pointerId]; pinch = null
-      if (gesture && gesture.pointerId === event.pointerId && gesture.before) { blocks = JSON.parse(gesture.before).map(normalize); if (undo.length) undo.pop() }
+      // The gesture's own snapshot is the top of the undo stack.
+      if (gesture && gesture.pointerId === event.pointerId && gesture.before && undo.length) blocks = unpackBlocks(undo.pop())
       if (draw && draw.pointerId === event.pointerId && undo.length) undo.pop()
       gesture = null; draw = null; render()
     })
@@ -974,17 +1018,37 @@
     function finishDraw () {
       var current = draw; draw = null; overlay.innerHTML = ''; if (!current || current.points.length < 2) { render(); return }
       var xs = current.points.map(function (p) { return p[0] }), ys = current.points.map(function (p) { return p[1] }), minX = Math.min.apply(null, xs), minY = Math.min.apply(null, ys), maxX = Math.max.apply(null, xs), maxY = Math.max.apply(null, ys)
-      var block
+      var spec
       minY = Math.max(0, minY); maxY = Math.min(CANVAS_MAX_Y, maxY)
-      if (current.type === 'draw') { var pathData = current.points.map(function (p, index) { return (index ? 'L' : 'M') + (p[0] - minX) + ',' + (Math.max(0, Math.min(CANVAS_MAX_Y, p[1])) - minY) }).join(' '); block = addBlock({ type: 'draw', x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), pathData: pathData, strokeColor: current.strokeColor, strokeWidth: current.strokeWidth }) }
-      else block = addBlock({ type: 'line', x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), lx1: current.points[0][0] - minX, ly1: Math.max(0, Math.min(CANVAS_MAX_Y, current.points[0][1])) - minY, lx2: current.points[1][0] - minX, ly2: Math.max(0, Math.min(CANVAS_MAX_Y, current.points[1][1])) - minY, strokeColor: current.strokeColor, strokeWidth: current.strokeWidth, arrowMode: 'end' })
+      if (current.type === 'draw') { var pathData = current.points.map(function (p, index) { return (index ? 'L' : 'M') + (p[0] - minX) + ',' + (Math.max(0, Math.min(CANVAS_MAX_Y, p[1])) - minY) }).join(' '); spec = { type: 'draw', x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), pathData: pathData, strokeColor: current.strokeColor, strokeWidth: current.strokeWidth } }
+      else spec = { type: 'line', x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), lx1: current.points[0][0] - minX, ly1: Math.max(0, Math.min(CANVAS_MAX_Y, current.points[0][1])) - minY, lx2: current.points[1][0] - minX, ly2: Math.max(0, Math.min(CANVAS_MAX_Y, current.points[1][1])) - minY, strokeColor: current.strokeColor, strokeWidth: current.strokeWidth, arrowMode: 'end' }
+      spec.id = id()
+      if (!fitsLimits(blocks.concat([spec]))) { if (undo.length) undo.pop(); render(); return } // drop startDraw's snapshot
+      var block = addBlock(spec)
       render(); selectBlock(block.id); commit(); if (current.type === 'line') setTool('select')
     }
 
-    function snapshot () { undo.push(JSON.stringify(blocks)); if (undo.length > 80) undo.shift(); redo = [] }
+    // Undo history: image data URLs (up to 16MB each) are stored once and
+    // referenced by token, and the whole history is capped by size as well as count.
+    // ponytail: interned images live until unmount; prune them if sessions churn through many images.
+    var HISTORY_MAX_CHARS = 64 * 1024 * 1024, srcTokens = new Map(), tokenSrcs = new Map()
+    function packSrc (key, value) {
+      if (key !== 'src' || typeof value !== 'string' || !value) return value
+      var token = srcTokens.get(value)
+      if (!token) { token = '\u0000src' + srcTokens.size; srcTokens.set(value, token); tokenSrcs.set(token, value) }
+      return token
+    }
+    function unpackSrc (key, value) { return key === 'src' && tokenSrcs.has(value) ? tokenSrcs.get(value) : value }
+    function packBlocks () { return JSON.stringify(blocks, packSrc) }
+    function unpackBlocks (packed) { return JSON.parse(packed, unpackSrc).map(normalize) }
+    function snapshot () {
+      undo.push(packBlocks()); redo = []
+      var total = undo.reduce(function (sum, entry) { return sum + entry.length }, 0)
+      while (undo.length > 1 && (undo.length > 80 || total > HISTORY_MAX_CHARS)) total -= undo.shift().length
+    }
     function rebuildProvisionals () { provisionalText = {}; blocks.forEach(function (block) { if (block.type === 'text' && !String(block.content || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim()) provisionalText[block.id] = true }) }
-    function doUndo () { if (!undo.length) return; redo.push(JSON.stringify(blocks)); blocks = JSON.parse(undo.pop()).map(normalize); rebuildProvisionals(); selectedIds = []; selected = null; render(); commit() }
-    function doRedo () { if (!redo.length) return; undo.push(JSON.stringify(blocks)); blocks = JSON.parse(redo.pop()).map(normalize); rebuildProvisionals(); selectedIds = []; selected = null; render(); commit() }
+    function doUndo () { if (!undo.length) return; redo.push(packBlocks()); blocks = unpackBlocks(undo.pop()); rebuildProvisionals(); selectedIds = []; selected = null; render(); commit() }
+    function doRedo () { if (!redo.length) return; undo.push(packBlocks()); blocks = unpackBlocks(redo.pop()); rebuildProvisionals(); selectedIds = []; selected = null; render(); commit() }
     function scheduleCommit () { if (!dirtyPending) { dirtyPending = true; onDirty() }; clearTimeout(changeTimer); changeTimer = setTimeout(commit, 350) }
     function commit () { clearTimeout(changeTimer); changeTimer = null; if (destroyed) { dirtyPending = false; return }; if (!dirtyPending) onDirty(); dirtyPending = false; onChange(getData()) }
     function flush (notify) { if (!changeTimer && !dirtyPending) return; clearTimeout(changeTimer); changeTimer = null; dirtyPending = false; if (notify !== false && !destroyed) onChange(getData()) }

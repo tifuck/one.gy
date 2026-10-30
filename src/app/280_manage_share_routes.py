@@ -35,7 +35,7 @@ def manage(token):
     # mutating share state on an object the owner believes is deleted and which
     # the retention job will reap. Refuse it consistently.
     if file.is_trashed:
-        print(f'[TRASH] Blocked manage page for trashed file: {file.orig_name}')
+        print(f'[TRASH] Blocked manage page for trashed file: {_log_safe(file.orig_name)}')
         abort(404)
 
     from datetime import datetime
@@ -122,7 +122,7 @@ def manage_post(token):
         # AUDIT FIX P15: never mutate share state (public / expires / max_downloads)
         # on a file the owner has already sent to trash.
         if file.is_trashed:
-            print(f'[TRASH] Blocked manage POST for trashed file: {file.orig_name}')
+            print(f'[TRASH] Blocked manage POST for trashed file: {_log_safe(file.orig_name)}')
             abort(404)
 
         expires = request.form.get('expires')
@@ -131,8 +131,10 @@ def manage_post(token):
         if 'public' in request.form:
             is_public = request.form.get('public') == 'on'
             file.is_public = is_public
-            # Clear E2E link keys when shareable is turned OFF so that
-            # toggling off then back on generates a fresh share URL
+            # Clear E2E link keys when shareable is turned OFF. Turning it back
+            # on does NOT give a fresh URL: the link secret is
+            # HKDF(master, 'file:' + id), so only regenerate-link (which rotates
+            # the id) invalidates a URL that was already handed out.
             if not is_public and file.is_e2e_encrypted:
                 file.link_encrypted_file_key = None
                 file.link_file_key_nonce = None
@@ -158,6 +160,12 @@ def manage_post(token):
                     file.expires_at = None
                 else:
                     file.expires_at = now + timedelta(days=7)
+            # Temp uploads never outlive MAX_RETENTION from their upload time,
+            # however often the expiry is re-extended.
+            if file.is_temp_upload and file.expires_at is not None:
+                retention_cap = file.get_upload_time_aware() + app.config['MAX_RETENTION']
+                if file.get_expires_at_aware() > retention_cap:
+                    file.expires_at = retention_cap
 
         max_downloads_str = request.form.get('max_downloads')
         if max_downloads_str:
@@ -240,7 +248,7 @@ def delete_file(token):
         _release_lifecycle_lock(lifecycle_lock)
     
     storage.purge_staged_locals(local_targets)
-    print(f'[DELETE] Deleted file: {file_name}')
+    print(f'[DELETE] Deleted file: {_log_safe(file_name)}')
     
     check_storage()
     
@@ -731,7 +739,7 @@ def browse_folder_download_file(share_token, file_id, filename=None):
     # so this delivery path fails closed on its own. Unlike download_file_logic()
     # this does NOT delete the row: an anonymous read path must not destroy data.
     if not _file_not_expired(file):
-        print(f'[BROWSE DOWNLOAD] Refused expired file through folder token: {file.orig_name}')
+        print(f'[BROWSE DOWNLOAD] Refused expired file through folder token: {_log_safe(file.orig_name)}')
         return render_template('notfound.html',
             title='FILE EXPIRED',
             subtitle='THIS FILE HAS PASSED ITS EXPIRATION DATE',
@@ -751,7 +759,7 @@ def browse_folder_download_file(share_token, file_id, filename=None):
             detail='THE DOWNLOAD CHECK FAILED. THE FILE MAY HAVE BEEN REMOVED'), 404
     
     # Decrypt and serve
-    print(f'[BROWSE DOWNLOAD] Serving file: {file.orig_name} from folder: {_log_safe(folder.name)}')
+    print(f'[BROWSE DOWNLOAD] Serving file: {_log_safe(file.orig_name)} from folder: {_log_safe(folder.name)}')
     
     if file.is_e2e_encrypted:
         if request.method == 'HEAD':
@@ -859,7 +867,7 @@ def browse_folder_download_file(share_token, file_id, filename=None):
                 return 'SERVER BUSY - TOO MANY DOWNLOADS IN PROGRESS. PLEASE TRY AGAIN LATER.', 503
 
             try:
-                print(f'[BROWSE DOWNLOAD] Streaming decrypted temp file to CLI: {file.orig_name} ({file.size} bytes)')
+                print(f'[BROWSE DOWNLOAD] Streaming decrypted temp file to CLI: {_log_safe(file.orig_name)} ({file.size} bytes)')
                 success, error = check_and_increment_download(file)
                 if not success:
                     _cleanup_tmp(False)

@@ -33,9 +33,9 @@ async function safeParseJSON(response) {
   }
   const text = await response.text()
   if (text.includes('CSRF')) {
-    throw new Error('SESSION EXPIRED — PLEASE REFRESH THE PAGE AND TRY AGAIN')
+    throw new Error('SESSION EXPIRED. PLEASE REFRESH THE PAGE AND TRY AGAIN')
   }
-  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS — PLEASE WAIT' : 'REQUEST FAILED — PLEASE REFRESH THE PAGE')
+  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS. PLEASE WAIT' : 'REQUEST FAILED. PLEASE REFRESH THE PAGE')
 }
 
 document.getElementById('twoFactorForm').addEventListener('submit', async function(e) {

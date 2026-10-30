@@ -432,7 +432,9 @@ class _StorageManagerNotesThumbnails:
             print(f'[STORAGE] Warning: failed to write .committed marker for note {note_id}: {e}')
 
     def write_staged_note_metadata(self, note_id, metadata, staging_id=None):
-        """Write expected DB metadata for a staged note before committing."""
+        """Write expected DB metadata for a staged note before committing.
+        Startup recovery finalizes a staged note only when this file matches the
+        committed row, so callers must not commit when this returns False."""
         meta_path = self._local_backend.get_path('notes', self._note_stage_id(note_id, staging_id, 'meta'))
         tmp_path = meta_path + '.tmp'
         try:
@@ -441,6 +443,7 @@ class _StorageManagerNotesThumbnails:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, meta_path)
+            return True
         except OSError as e:
             try:
                 if os.path.exists(tmp_path):
@@ -448,6 +451,7 @@ class _StorageManagerNotesThumbnails:
             except OSError:
                 pass
             print(f'[STORAGE] Warning: failed to write staged metadata for note {note_id}: {e}')
+            return False
 
     def finalize_staged_note(self, note_id, staging_id=None):
         """Atomically replace the original note with the staged .new copy.

@@ -65,7 +65,8 @@
       fetch('/notes/api/unread-count', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         .then(function (r) { return r.json() })
         .then(function (d) {
-          var n = (d.unread || 0) + (d.pending || 0)
+          // Pending (not yet accepted) notes have no accept/reject UI to clear them.
+          var n = d.unread || 0
           if (n > 0) { nb.textContent = n; nb.hidden = false }
         })
         .catch(function () {})

@@ -11,7 +11,12 @@ def login_required(f):
             flash('PLEASE LOGIN TO ACCESS THIS PAGE', 'error')
             return redirect(url_for('login'))
         # AUDIT FIX M14: reject a session that was explicitly revoked by /logout.
-        if _is_session_revoked():
+        revoked = _is_session_revoked()
+        if revoked is _REVOCATION_CHECK_FAILED:
+            if is_ajax:
+                return jsonify({'error': 'SERVICE TEMPORARILY UNAVAILABLE. PLEASE TRY AGAIN.'}), 503
+            return 'SERVICE TEMPORARILY UNAVAILABLE. PLEASE TRY AGAIN.', 503
+        if revoked:
             session.clear()
             if is_ajax:
                 return jsonify({'error': 'SESSION_EXPIRED', 'redirect': url_for('login')}), 401
@@ -37,16 +42,26 @@ def login_required(f):
 # ────────────────────────────────────────────────────────────────────
 # AUDIT FIX M14: per-session revocation (see the RevokedSession model)
 # ────────────────────────────────────────────────────────────────────
-# Process-local positive cache of revoked sid hashes. A positive is permanent
-# for the worker lifetime because the cookie expires no later than its DB row;
-# misses always consult the shared DB authority so every worker observes logout.
+# Process-local positive cache of revoked sid hashes; misses always consult the
+# shared DB authority so every worker observes logout. Each entry is kept until
+# no cookie it could match can still be valid (one session lifetime after it was
+# last seen revoked) and is then evicted by the cleanup_job refresh.
 _revoked_sid_cache = set()
+_revoked_sid_expiry = {}  # sid_hash -> time.time() after which it may be evicted
 _revoked_sid_lock = threading.Lock()
 _revoked_sid_loaded = False
+# Truthy, so callers that only test truthiness still fail closed.
+_REVOCATION_CHECK_FAILED = object()
 
 
 def _hash_session_sid(sid):
     return hashlib.sha256(str(sid).encode('utf-8')).hexdigest()
+
+
+def _remember_revoked_sid_locked(sid_hash, now):
+    """Caller must hold _revoked_sid_lock."""
+    _revoked_sid_cache.add(sid_hash)
+    _revoked_sid_expiry[sid_hash] = now + app.config['PERMANENT_SESSION_LIFETIME'].total_seconds()
 
 
 def _load_revoked_sids(force=False):
@@ -73,8 +88,14 @@ def _load_revoked_sids(force=False):
         with _revoked_sid_lock:
             _revoked_sid_loaded = True
         return
+    now = time.time()
     with _revoked_sid_lock:
-        _revoked_sid_cache.update(fresh)
+        for sid_hash in fresh:
+            _remember_revoked_sid_locked(sid_hash, now)
+        for sid_hash, expires in list(_revoked_sid_expiry.items()):
+            if expires <= now:
+                _revoked_sid_expiry.pop(sid_hash, None)
+                _revoked_sid_cache.discard(sid_hash)
         _revoked_sid_loaded = True
 
 
@@ -93,10 +114,12 @@ def _revoked_session_table_is_missing(error):
 def _is_session_revoked():
     """True if the CURRENT request's session id has been explicitly revoked.
 
-    DB failures fail closed once the revocation table should exist. The one
-    exception is an explicitly missing table while db-upgrade is creating the
-    schema; treating that as revoked would make every request fail during the
-    startup migration window.
+    DB failures fail closed once the revocation table should exist, returning
+    the truthy _REVOCATION_CHECK_FAILED so the auth decorators can answer 503
+    instead of clearing a session that was never revoked. The one exception is
+    an explicitly missing table while db-upgrade is creating the schema;
+    treating that as revoked would make every request fail during the startup
+    migration window.
     """
     sid = session.get('sid')
     if not sid:
@@ -122,10 +145,10 @@ def _is_session_revoked():
             print(f'[AUTH] Warning: revoked-session table is not available during schema migration: {e}')
             return False
         print(f'[AUTH] Revoked-session authority check failed closed: {e}')
-        return True
+        return _REVOCATION_CHECK_FAILED
     if revoked:
         with _revoked_sid_lock:
-            _revoked_sid_cache.add(sid_hash)
+            _remember_revoked_sid_locked(sid_hash, time.time())
     return revoked
 
 
@@ -143,7 +166,7 @@ def _revoke_current_session():
         return True
     sid_hash = _hash_session_sid(sid)
     with _revoked_sid_lock:
-        _revoked_sid_cache.add(sid_hash)
+        _remember_revoked_sid_locked(sid_hash, time.time())
     try:
         if not RevokedSession.query.filter_by(sid_hash=sid_hash).first():
             db.session.add(RevokedSession(
@@ -247,13 +270,14 @@ def _current_session_user():
         # below then resolves it to None like any missing user.
         _request_g = None
     # AUDIT FIX M14: a session explicitly revoked by /logout is dead everywhere.
-    if _is_session_revoked():
+    revoked = _is_session_revoked()
+    if revoked:
         user = None
     else:
         user = db.session.get(User, user_id)
         if user and int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0):
             user = None
-    if _request_g is not None:
+    if _request_g is not None and revoked is not _REVOCATION_CHECK_FAILED:
         try:
             _request_g._current_session_user_cache = (memo_key, user)
         except (RuntimeError, AttributeError):
@@ -269,7 +293,10 @@ def admin_required(f):
             flash('ADMIN ACCESS REQUIRED', 'error')
             return redirect(url_for('login'))
         # AUDIT FIX M14: reject a session that was explicitly revoked by /logout.
-        if _is_session_revoked():
+        revoked = _is_session_revoked()
+        if revoked is _REVOCATION_CHECK_FAILED:
+            return 'SERVICE TEMPORARILY UNAVAILABLE. PLEASE TRY AGAIN.', 503
+        if revoked:
             session.clear()
             flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
             return redirect(url_for('login'))
@@ -563,7 +590,7 @@ def check_download_allowed(file):
     if not file.max_downloads:
         return True, None
 
-    fresh = db.session.get(File, file.id)
+    fresh = db.session.get(File, file.id, populate_existing=True)
     if not fresh:
         return False, 'limit_reached'
 

@@ -281,16 +281,23 @@ func encryptFileName(filename string, fileKey []byte) (encryptedName []byte, non
 	return gcm.Seal(nil, nonce, []byte(filename), nil), nonce, nil
 }
 
-// extractExtension mirrors crypto.js:extractExtension, including compound .tar.* names.
+// extractExtension mirrors crypto.js:extractExtension. The extension is sent in
+// the clear, so anything but a short lowercase alphanumeric suffix is dropped.
 func extractExtension(filename string) string {
-	parts := strings.Split(filename, ".")
-	if len(parts) < 2 {
+	dot := strings.LastIndex(filename, ".")
+	if dot <= 0 {
 		return ""
 	}
-	if len(parts) >= 3 && strings.EqualFold(parts[len(parts)-2], "tar") {
-		return "." + parts[len(parts)-2] + "." + parts[len(parts)-1]
+	ext := strings.ToLower(filename[dot+1:])
+	if ext == "" || len(ext) > 10 {
+		return ""
 	}
-	return "." + parts[len(parts)-1]
+	for _, r := range ext {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return ""
+		}
+	}
+	return "." + ext
 }
 
 // decryptFileName decrypts an AES-256-GCM encrypted filename using the file key.

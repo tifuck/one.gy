@@ -442,12 +442,15 @@ trap '_cleanup_temps; exit 130' INT
 trap '_cleanup_temps; exit 143' TERM
 
 _finalize() {
-  # $1 = existing-mode source (optional): preserve it; else umask default.
+  # Replacing keeps the existing file's mode; a new ciphertext gets the umask
+  # default, a new plaintext stays owner-only (0600).
   local mode
   if [[ -e "$OUTPUT_FILE" ]]; then
     mode="$(_mode_of "$OUTPUT_FILE")"
-  else
+  elif [[ $MODE -eq 0 ]]; then
     mode="$(_default_mode)"
+  else
+    mode=600
   fi
   chmod "$mode" "$TMP_OUT" 2>/dev/null || true
   mv -f "$TMP_OUT" "$OUTPUT_FILE"
@@ -486,7 +489,8 @@ else
     IFS= read -r STORED_HMAC < <(sed -n '2p' "$INPUT_FILE") || true
     read -r _ M2_ITER M2_MACSALT _extra <<< "$LINE1" || true
 
-    if [[ ! "$M2_ITER" =~ ^[0-9]{4,10}$ ]] || [[ ! "$M2_MACSALT" =~ ^[0-9a-fA-F]{16}$ ]] \
+    if [[ ! "$M2_ITER" =~ ^[0-9]{4,10}$ ]] || (( 10#$M2_ITER > 10000000 )) \
+       || [[ ! "$M2_MACSALT" =~ ^[0-9a-fA-F]{16}$ ]] \
        || [[ ! "$STORED_HMAC" =~ ^[0-9a-fA-F]{64}$ ]]; then
       echo -e "  ${RED}✗ Corrupt header — nothing written${RESET}\n"
       exit 1
@@ -494,9 +498,11 @@ else
     # Byte offset of the openssl body: len(line1)+1 + len(line2)+1
     BODY_OFF=$(( ${#LINE1} + 1 + ${#STORED_HMAC} + 1 ))
 
-    # 1) Verify HMAC BEFORE decrypting anything (encrypt-then-MAC).
+    # 1) Verify HMAC BEFORE decrypting anything (encrypt-then-MAC). The body
+    #    is copied once so the bytes decrypted are exactly the bytes verified.
+    tail -c "+$((BODY_OFF + 1))" -- "$INPUT_FILE" > "$TMP_BODY"
     MACKEY="$(_derive_mac_key "$M2_MACSALT" "$M2_ITER")"
-    COMPUTED="$( { printf '%s\n' "$LINE1"; tail -c "+$((BODY_OFF + 1))" -- "$INPUT_FILE"; } | hmac_sha256 "$MACKEY")"
+    COMPUTED="$( { printf '%s\n' "$LINE1"; cat "$TMP_BODY"; } | hmac_sha256 "$MACKEY")"
     if [[ "${COMPUTED}" != "$(printf '%s' "$STORED_HMAC" | tr 'A-F' 'a-f')" ]]; then
       echo -e "  ${RED}✗ HMAC verification FAILED — wrong password or tampered file.${RESET}"
       echo -e "  ${DIM}  Nothing was written; your existing files are untouched.${RESET}\n"
@@ -505,7 +511,7 @@ else
 
     # 2) MAC good → decrypt the body into the temp file.
     if ! _pw_run openssl enc -d -aes-256-ctr -pbkdf2 -iter "$M2_ITER" \
-        -in <(tail -c "+$((BODY_OFF + 1))" -- "$INPUT_FILE") -out "$TMP_OUT"; then
+        -in "$TMP_BODY" -out "$TMP_OUT"; then
       echo -e "  ${RED}✗ Decryption failed — nothing written${RESET}\n"
       exit 1
     fi

@@ -26,6 +26,7 @@ class _StorageManagerInit:
     SINGLE_COPY_SNAPSHOT_TTL_SECONDS = 300
     SINGLE_COPY_AUDIT_INTERVAL_SECONDS = 900
     SINGLE_COPY_ALERT_AFTER_SECONDS = 3600
+    LOCAL_INTEGRITY_CACHE_MAX_ENTRIES = 4096
 
     def __init__(self, app_instance):
         self._app = app_instance
@@ -60,6 +61,10 @@ class _StorageManagerInit:
         # does not re-log the same warning every 10 seconds).
         self._single_copy_cache = None
         self._single_copy_audit_at = 0.0
+        # {local_path: (stat signature, expected checksum)} of local payloads
+        # whose full SHA-256 already matched; see _verify_local_file_integrity.
+        self._local_integrity_cache = {}
+        self._local_integrity_cache_lock = threading.Lock()
 
     def _backend_state_snapshot(self):
         """Return one consistent, operation-local backend state snapshot."""
@@ -280,6 +285,7 @@ class _StorageManagerInit:
         new_local_backend = _LocalBackend(local_paths)
         new_backends = {}
         new_local_node_id = None
+        nodes_loaded = False
         try:
             # AUDIT FIX (finding 1): previously EVERY enabled 'local' row was
             # handed the SAME _LocalBackend and new_local_node_id was simply
@@ -298,6 +304,7 @@ class _StorageManagerInit:
             with _FreshSession(db.engine) as fresh_session:
                 all_local_rows = fresh_session.query(StorageNode).filter_by(node_type='local').all()
                 nodes = fresh_session.query(StorageNode).filter_by(is_enabled=True).all()
+            nodes_loaded = True
             canonical_local_id = self._canonical_local_node_id(all_local_rows)
             if len(all_local_rows) > 1:
                 # Existing-DB-rows repair: a legacy duplicate local row may
@@ -307,7 +314,7 @@ class _StorageManagerInit:
                 # rows to 'error' with an explanatory reason — idempotent, only
                 # runs while duplicates exist.
                 extra_local_ids = [r.id for r in all_local_rows if r.id != canonical_local_id]
-                _dup_msg = 'NODE ALIASES THE PRIMARY LOCAL DISK — NOT A SEPARATE COPY'
+                _dup_msg = 'NODE ALIASES THE PRIMARY LOCAL DISK: NOT A SEPARATE COPY'
                 try:
                     changed = 0
                     for _model in (FileReplica, NoteReplica, ThumbnailReplica):
@@ -333,7 +340,7 @@ class _StorageManagerInit:
                             raise ValueError(
                                 'ADDITIONAL LOCAL STORAGE NODE ALIASES THE PRIMARY LOCAL DISK '
                                 f'(canonical local node id={canonical_local_id}); a separate '
-                                'path local backend is not supported — use an SSH or S3 node')
+                                'path local backend is not supported: use an SSH or S3 node')
                         backend = new_local_backend
                         new_local_node_id = node.id
                     else:
@@ -348,6 +355,11 @@ class _StorageManagerInit:
             db.session.commit()
         except Exception as e:
             print(f'[STORAGE] Failed to load storage nodes: {e}')
+            # A build without the node rows is partial (local-only or empty);
+            # publishing it as current would hide every remote node until the
+            # next version bump. Raise so refresh_backends() keeps the old state.
+            if not nodes_loaded:
+                raise
         if not new_backends:
             try:
                 local_node = StorageNode.query.filter_by(node_type='local').order_by(
@@ -600,7 +612,7 @@ class _StorageManagerInit:
                 raise ValueError(
                     f'Local storage node {node.id} ({node.name}) aliases the primary local disk '
                     f'(canonical local node id={canonical_id}); additional local nodes are not '
-                    'supported — remove this node and use an SSH or S3 node instead')
+                    'supported: remove this node and use an SSH or S3 node instead')
             _backends, local_backend, _local_node_id, _version = self._backend_state_snapshot()
             return local_backend
         elif node.node_type == 'ssh':

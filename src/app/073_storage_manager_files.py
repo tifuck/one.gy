@@ -687,7 +687,7 @@ class _StorageManagerFiles:
         if checksum:
             actual_checksum = self._sha256_file(local_path)
             if actual_checksum != checksum:
-                mismatch_msg = ('LOCAL PAYLOAD HASH DOES NOT MATCH File.payload_checksum — '
+                mismatch_msg = ('LOCAL PAYLOAD HASH DOES NOT MATCH File.payload_checksum: '
                                 'refusing to claim a verified local replica or replicate the '
                                 'possibly-corrupt source')
                 replica = None

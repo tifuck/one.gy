@@ -528,6 +528,7 @@ class _StorageManagerReplication:
                 'pending_thumbnails': 0,
                 'pending_remote_deletes': 0,
                 'stalled_remote_deletes': 0,
+                'oldest_pending_delete_age_hours': 0,
                 'exhausted_error_files': 0,
                 'exhausted_error_notes': 0,
                 'exhausted_error_thumbnails': 0,
@@ -1024,6 +1025,7 @@ class _StorageManagerReplication:
                         return result
                     if local_mismatch:
                         # Authority unchanged: the local bytes are corrupt, not newer.
+                        self._forget_local_integrity(source_path)
                         print(f'[REPLICATION] Local {category}/{item_id} does not match its recorded checksum; '
                               f'trying remote sources')
                         source_path = None
@@ -1090,9 +1092,12 @@ class _StorageManagerReplication:
                 )
             sources = self._find_replication_sources(sources_query, source_mode, primary_id, skip_nodes={target_node_id})
             if not sources and local_mismatch:
-                # Nothing better than the mismatching local copy: requeue as
-                # before rather than reporting the object missing.
-                result['status'] = 'stale'
+                # The only copy is corrupt. Report a counted failure (cooldown,
+                # then parked for admin action) rather than 'stale', which
+                # requeued it with no backoff and re-hashed it every cycle.
+                print(f'[ERROR] [REPLICATION] Local {category}/{item_id} is CORRUPT (does not match its '
+                      f'recorded checksum) and no other synced source exists; refusing to replicate it')
+                result['status'] = 'error'
                 result['error'] = f'LOCAL {category.upper()} CHECKSUM MISMATCH AND NO OTHER SOURCE: {item_id}'
                 return result
             if not sources:
@@ -1118,6 +1123,7 @@ class _StorageManagerReplication:
                         if verify_checksum or _always_checksum or expected_checksum:
                             source_checksum = self._sha256_file(source_path)
                         if expected_checksum and source_checksum != expected_checksum:
+                            self._forget_local_integrity(source_path)
                             source_replica.status = 'error'
                             source_replica.last_error = f'STALE {category.upper()} CHECKSUM ON SOURCE {source_replica.node_id}'[:500]
                             db.session.commit()

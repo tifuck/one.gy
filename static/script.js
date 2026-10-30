@@ -128,10 +128,10 @@ function _showUnsavedShareLinkPanel(shareUrl, alreadyCopied) {
           copyBtn.textContent = 'COPIED';
           acknowledged = true;
           if (ackBtn) ackBtn.disabled = false;
-          showToast('SHARE LINK COPIED — STORE IT SOMEWHERE SAFE', 'success');
+          showToast('SHARE LINK COPIED. STORE IT SOMEWHERE SAFE', 'success');
         } else {
           if (linkInput) linkInput.select();
-          showToast('COPY FAILED — SELECT THE LINK AND COPY IT MANUALLY', 'error');
+          showToast('COPY FAILED. SELECT THE LINK AND COPY IT MANUALLY', 'error');
           if (ackBtn) ackBtn.disabled = false;
         }
       });
@@ -152,7 +152,7 @@ function _showUnsavedShareLinkPanel(shareUrl, alreadyCopied) {
 function formatBytes(bytes) {
   for (let unit of ['B', 'KB', 'MB', 'GB']) {
     if (bytes < 1024) {
-      return bytes + ' ' + unit;
+      return Math.round(bytes * 100) / 100 + ' ' + unit;
     }
     bytes /= 1024;
     if (Math.floor(bytes) === 0 || !isFinite(bytes)) {
@@ -214,9 +214,11 @@ window.initShareUpload = function() {
   }
 
   // Always bind click on the (possibly new) drop zone to trigger the file dialog
-  // But NOT when clicking on toggles (checkboxes/sliders/labels)
+  // But NOT when clicking on toggles (checkboxes/sliders/labels), and never while
+  // an upload is in flight (its card's buttons and link input live in here too)
   dropZone.addEventListener('click', (e) => {
-    if (e.target.closest('.drop-zone-toggles')) return;
+    if (e.target.closest('.drop-zone-toggles, .upload-progress-card')) return;
+    if (_uploadInFlight || dropZone.classList.contains('uploading')) return;
     fileInput.value = '';
     fileInput.click();
   });
@@ -247,28 +249,27 @@ window.initShareUpload = function() {
   });
 
   dropZone.addEventListener('drop', async (e) => {
+    if (_uploadInFlight || dropZone.classList.contains('uploading')) return;
     const files = [];
     const items = e.dataTransfer.items;
 
     if (items && items.length > 0) {
-      for (let item of items) {
-        const entry = item.webkitGetAsEntry();
-        if (entry) {
-          if (entry.isFile) {
-            const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
-            Object.defineProperty(file, 'fullPath', {
-              value: file.name,
-              writable: false
-            });
-            files.push(file);
-          } else if (entry.isDirectory) {
-            await traverseDirectory(entry, files, '');
-          }
-        } else {
-          const file = item.getAsFile();
-          if (file) {
-            files.push(file);
-          }
+      // The DataTransferItemList is emptied once this handler first awaits, so
+      // take every entry synchronously before reading any of them.
+      const entries = Array.from(items, item => (item.webkitGetAsEntry && item.webkitGetAsEntry()) || item.getAsFile());
+      for (const entry of entries) {
+        if (!entry) continue;
+        if (entry instanceof File) {
+          files.push(entry);
+        } else if (entry.isFile) {
+          const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+          Object.defineProperty(file, 'fullPath', {
+            value: file.name,
+            writable: false
+          });
+          files.push(file);
+        } else if (entry.isDirectory) {
+          await traverseDirectory(entry, files, '');
         }
       }
     } else {
@@ -285,7 +286,21 @@ window.initShareUpload = function() {
 // Auto-initialize on page load (non-SPA path)
 initShareUpload();
 
+// Set for the whole of an upload, including the awaits before the progress
+// card exists, so a second drop/pick cannot start a parallel upload.
+let _uploadInFlight = false;
+
 async function uploadFiles(files) {
+  if (_uploadInFlight) return;
+  _uploadInFlight = true;
+  try {
+    return await _uploadFiles(files);
+  } finally {
+    _uploadInFlight = false;
+  }
+}
+
+async function _uploadFiles(files) {
   if (files.length === 0) {
     showToast('NO FILES TO UPLOAD', 'error');
     return;
@@ -322,7 +337,7 @@ async function uploadFiles(files) {
   
   // Warn about memory limits for client-side ZIP/E2E operations
   const MAX_BROWSER_ZIP_SIZE = 512 * 1024 * 1024; // 512MB
-  const isE2EChecked = document.getElementById('e2eToggle').checked;
+  const isE2EChecked = _e2eChecked;
   if ((files.length > 1 || isE2EChecked) && totalSize > MAX_BROWSER_ZIP_SIZE) {
     const msg = isE2EChecked
       ? `E2E encryption requires loading all files into browser memory. Total size ${formatBytes(totalSize)} may cause browser issues. For large files, consider uploading without E2E encryption. Continue anyway?`
@@ -334,7 +349,7 @@ async function uploadFiles(files) {
   const dropZoneHeight = dropZone.offsetHeight;
   dropZone.style.height = dropZoneHeight + 'px';
 
-  const isE2E = document.getElementById('e2eToggle').checked;
+  const isE2E = _e2eChecked;
 
   // Warn user if uploading without E2E encryption
   if (!isE2E && typeof showConfirm === 'function') {
@@ -621,7 +636,7 @@ async function uploadFiles(files) {
     // finalizing and may have committed the file. Aborting would leave a
     // committed upload whose passphrase was never persisted — unrecoverable.
     if (bodyFullySent) {
-      showToast('UPLOAD ALREADY SENT — THE SERVER IS SAVING IT AND IT CAN NO LONGER BE CANCELLED', 'error');
+      showToast('UPLOAD ALREADY SENT. THE SERVER IS SAVING IT AND IT CAN NO LONGER BE CANCELLED', 'error');
       return;
     }
     cancelled = true;
@@ -721,13 +736,8 @@ async function uploadFiles(files) {
     let uploadFinished = false;
     let progressPollInterval = null;
     let lastDisplayedPercent = 0;
-    // A retry re-opens the cancel window: nothing of this attempt is sent yet.
-    bodyFullySent = false;
-    const _retryCancelBtn = document.getElementById('progressCancel');
-    if (_retryCancelBtn) {
-      _retryCancelBtn.style.opacity = '';
-      _retryCancelBtn.title = 'CANCEL UPLOAD';
-    }
+    // bodyFullySent stays true across retries: an earlier attempt may already
+    // have committed the file server-side, so cancelling now would orphan it.
     
     function startProgressPolling() {
       progressPollInterval = setInterval(async () => {
@@ -830,7 +840,7 @@ async function uploadFiles(files) {
               const cancelNowBtn = document.getElementById('progressCancel');
               if (cancelNowBtn) {
                 cancelNowBtn.style.opacity = '.45';
-                cancelNowBtn.title = 'UPLOAD ALREADY SENT — CANNOT BE CANCELLED WHILE THE SERVER SAVES IT';
+                cancelNowBtn.title = 'UPLOAD ALREADY SENT. CANNOT BE CANCELLED WHILE THE SERVER SAVES IT';
               }
               lastDisplayedPercent = 0;
               document.getElementById('progressStatus').textContent = 'PROCESSING...';
@@ -974,13 +984,13 @@ async function uploadFiles(files) {
             dropZone.classList.remove('uploading');
             dropZone.innerHTML = originalHTML;
             dropZone.style.height = '';
-            showToast('UPLOAD COMPLETE — THE LINK YOU SAVED IS THE ONLY WAY TO DECRYPT IT', 'success');
+            showToast('UPLOAD COMPLETE. THE LINK YOU SAVED IS THE ONLY WAY TO DECRYPT IT', 'success');
             return;
           }
 
           if (!persisted) {
             // No share link could even be built — say so plainly.
-            showToast('UPLOADED, BUT THE DECRYPTION SECRET COULD NOT BE SAVED — THIS FILE MAY NOT BE RECOVERABLE', 'error');
+            showToast('UPLOADED, BUT THE DECRYPTION SECRET COULD NOT BE SAVED. THIS FILE MAY NOT BE RECOVERABLE', 'error');
           } else if (!copied) {
             showToast('SHARE LINK READY IN THE MANAGE PANEL', 'success');
           }
@@ -1114,13 +1124,17 @@ async function createZip(files) {
     return record.buffer;
   }
 
+  const crcTable = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c;
+  }
+
   function crc32(data) {
     let crc = 0xFFFFFFFF;
     for (let i = 0; i < data.length; i++) {
-      crc ^= data[i];
-      for (let j = 0; j < 8; j++) {
-        crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
-      }
+      crc = crcTable[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
     }
     return (crc ^ 0xFFFFFFFF) >>> 0;
   }

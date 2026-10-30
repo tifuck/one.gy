@@ -222,8 +222,8 @@ def _prompt_catalog_ids():
     return _PROMPT_ID_CACHE['ids']
 
 def _prompts_feedback_ip_hash():
-    ip = (request.remote_addr or '').strip()
-    if not ip:
+    ip = (get_real_ip() or '').strip()
+    if not ip or ip == 'unknown':
         return None
     key = app.config.get('SECRET_KEY') or ''
     if isinstance(key, bytes):
@@ -322,21 +322,4 @@ def prompts_feedback():
         return jsonify({'error': 'Could not send feedback.'}), 500
     print(f'[PROMPTS] Feedback id={row.id} kind={kind} prompt={prompt_id or "-"}')
     return jsonify({'success': True}), 201
-
-@app.route('/debug-session')
-@admin_required
-def debug_session():
-    """Debug route to check session data - restricted to admin users only"""
-    user = _current_session_user()
-    return jsonify({
-        'session_data': {
-            'logged_in_user_id': session.get('logged_in_user_id'),
-            'username': session.get('username'),
-        },
-        'user_from_db': {
-            'id': user.id if user else None,
-            'username': user.username if user else None,
-            'is_admin': user.is_admin if user else None
-        } if user else None
-    })
 

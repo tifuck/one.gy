@@ -21,7 +21,6 @@
   --bg:#eef1f5; --surface:#ffffff; --surface-2:#0f1720;
   --text:#0f1720; --text-dim:#5a6675; --border:#0f1720;
   --accent:#0e8fd6; --accent-contrast:#ffffff; --accent-soft:rgba(14,143,214,.12);
-  --redact-bg:#0f1720; --redact-fg:#0e8fd6;
   --ink-rgb:15,23,32; --accent-rgb:14,143,214;
   --good:#1f9d57; --warn:#e5940a; --bad:#d8231b;
   --nav-bg:rgba(238,241,245,.9);
@@ -40,7 +39,6 @@
   --bg:#161616; --surface:#202020; --surface-2:#0e0e0e;
   --text:#ececec; --text-dim:#9c9c9c; --border:#3d3d3d;
   --accent:#37b6ff; --accent-contrast:#0b0b0b; --accent-soft:rgba(55,182,255,.15);
-  --redact-bg:#ececec; --redact-fg:#37b6ff;
   --ink-rgb:236,236,236; --accent-rgb:55,182,255;
   --good:#3fce7e; --warn:#f0b45a; --bad:#ff5d55;
   --nav-bg:rgba(22,22,22,.85);

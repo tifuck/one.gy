@@ -153,7 +153,7 @@
   if (tfaConfirm) tfaConfirm.addEventListener('click', async function () {
     var code = (document.getElementById('tfaCode').value || '').trim()
     if (!code) { toast('ENTER YOUR 6-DIGIT CODE', 'error'); return }
-    if (!tfaPendingProof) { toast('SETUP EXPIRED — START AGAIN', 'error'); closeModal(tfaModal); return }
+    if (!tfaPendingProof) { toast('SETUP EXPIRED. START AGAIN', 'error'); closeModal(tfaModal); return }
     tfaConfirm.disabled = true
     try {
       await parse(await jpost('/account/2fa/confirm', proofBody(tfaPendingProof, { totp_code: code })), succeeded)
@@ -270,7 +270,7 @@
           })
           masterKey = unlocked.masterKey
         }
-        if (!masterKey) throw new Error('COULD NOT UNLOCK YOUR ENCRYPTION KEYS — CHECK YOUR CURRENT PASSWORD')
+        if (!masterKey) throw new Error('COULD NOT UNLOCK YOUR ENCRYPTION KEYS. CHECK YOUR CURRENT PASSWORD')
         var rewrapped = await OneGyCrypto.wrapMasterKey(masterKey, newSplit.wrappingKey, newSplit.salt)
         payload.encrypted_master_key = rewrapped.encryptedMasterKey
         payload.master_key_nonce = rewrapped.nonce
@@ -286,7 +286,7 @@
       _keyInfo = null
       ;[curEl, newEl, confEl].forEach(function (el) { if (el) el.value = '' })
       closeModal(document.getElementById('pwModal'))
-      toast('PASSWORD CHANGED — OTHER DEVICES SIGNED OUT', 'success')
+      toast('PASSWORD CHANGED. OTHER DEVICES SIGNED OUT', 'success')
     } catch (e) {
       console.error('[ACCOUNT] Password change failed:', e)
       toast(e && e.message ? e.message : 'PASSWORD CHANGE FAILED', 'error')
@@ -323,7 +323,7 @@
   // string id must still be URL/HTML-safe — anything else fails validation
   // (fail closed) instead of reaching markup or the request path.
   function validKeyId (id) { return Number.isInteger(id) || (typeof id === 'string' && /^[A-Za-z0-9._-]{1,62}$/.test(id)) }
-  function permStr (p) { if (!p) return '—'; return Object.keys(p).filter(function (k) { return p[k] }).join(' · ').toUpperCase() || 'NONE' }
+  function permStr (p) { if (!p) return 'NONE'; return Object.keys(p).filter(function (k) { return p[k] }).join(' · ').toUpperCase() || 'NONE' }
   async function loadKeys () {
     if (!keyList) return
     try {

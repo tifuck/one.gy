@@ -46,7 +46,7 @@
         <img class="acc-profile-avatar" src="{{ url_for('user_avatar_svg', user_id=user.id) }}" alt="" width="72" height="72">
         <dl class="acc-fields">
           <div class="acc-field"><dt>Username</dt><dd>{{ user.username }}</dd></div>
-          <div class="acc-field"><dt>Email</dt><dd>{{ user.email or '—' }}</dd></div>
+          <div class="acc-field"><dt>Email</dt><dd>{{ user.email or 'Not set' }}</dd></div>
           <div class="acc-field"><dt>Role</dt><dd>{{ 'Administrator' if user.is_admin else 'User' }}</dd></div>
           {% if user.created_at %}<div class="acc-field"><dt>Member since</dt><dd>{{ user.created_at.strftime('%b %d, %Y') }}</dd></div>{% endif %}
         </dl>
@@ -69,7 +69,7 @@
     <!-- APPEARANCE -->
     <section class="acc-section" id="appearance">
       <h1 class="acc-title">Appearance</h1>
-      <p class="acc-lead">Pick a theme — it applies instantly and is remembered on this device.</p>
+      <p class="acc-lead">Pick a theme. It applies instantly and is remembered on this device.</p>
       <div class="acc-theme-grid">
         {% for tid, tlabel, tdesc in [
           ('frost','Frost','Light · icy blue'),
@@ -309,13 +309,14 @@
       <input type="text" id="keyTotp" class="form-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"{% if not user.two_factor_enabled %} hidden{% endif %}>
       <label class="acc-mlabel" style="margin-top:1rem">Permissions</label>
       <div class="acc-perms">
-        {% for pid, plabel in [('read','Read'),('write','Write'),('delete','Delete'),('list','List')] %}
+        {# Same set as ApiKey.VALID_PERMISSIONS (src/app/040_models.py). #}
+        {% for pid, plabel in [('read','Read'),('download','Download'),('write','Write'),('delete','Delete'),('restore','Restore'),('manage_keys','Manage keys')] %}
         <label class="acc-perm"><input type="checkbox" data-perm="{{ pid }}"><span class="toggle-slider" aria-hidden="true"></span>{{ plabel }}</label>
         {% endfor %}
       </div>
       <button type="button" class="rd-btn rd-btn-primary" id="keySaveBtn" style="width:100%;margin-top:1rem">Create key</button>
       <div class="acc-keyreveal" id="keyReveal" hidden>
-        <p class="acc-hint">Copy this now — it won't be shown again.</p>
+        <p class="acc-hint">Copy this now. It won't be shown again.</p>
         <div class="acc-keycode"><code id="keyValue"></code><button type="button" class="rd-btn rd-btn-ghost" id="keyCopy">Copy</button></div>
       </div>
     </div>

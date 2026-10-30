@@ -6,7 +6,6 @@ _AVAILABLE_SONG_IDS = set()
 # and 404'd on stream. The cleanup job now re-scans on this interval.
 _AVAILABLE_SONGS_SCAN_LOCK = threading.Lock()
 _AVAILABLE_SONGS_SCANNED_AT = 0.0
-MUSIC_RESCAN_INTERVAL_SECONDS = 300
 # Name of the per-connection TEMP table holding the available song ids. Using a
 # temp table instead of inlining every id as a bind parameter keeps every music
 # query independent of library size.
@@ -39,16 +38,16 @@ def _scan_available_songs():
         print(f'[MUSIC] Found {len(available)} songs with audio on disk')
 
 def maybe_rescan_available_songs(force=False):
-    """Re-scan the music library at most once per MUSIC_RESCAN_INTERVAL_SECONDS.
+    """Re-scan the music library at most once per music_rescan_interval_seconds.
 
     AUDIT FIX A16: called from the 5-minute cleanup job so the library stays in
     sync with the disk without a restart. Never raises -- the cleanup tick must
     not fail because the music share is unavailable."""
     global _AVAILABLE_SONGS_SCANNED_AT
     try:
-        interval = get_numeric_setting('music_rescan_interval_seconds', MUSIC_RESCAN_INTERVAL_SECONDS)
+        interval = get_numeric_setting('music_rescan_interval_seconds')
     except Exception:
-        interval = MUSIC_RESCAN_INTERVAL_SECONDS
+        interval = int(_SETTING_DEFAULTS['music_rescan_interval_seconds'])
     if interval <= 0 and not force:
         return False
     if not force and (time.monotonic() - _AVAILABLE_SONGS_SCANNED_AT) < interval:
@@ -66,6 +65,10 @@ def maybe_rescan_available_songs(force=False):
         return False
     finally:
         _AVAILABLE_SONGS_SCAN_LOCK.release()
+
+def _music_library_available():
+    """True when library.db exists; ALLOW_MUSIC without a library must serve empty results, not 500s."""
+    return os.path.isfile(os.path.join(MUSIC_LIBRARY_PATH, 'library.db'))
 
 def _get_music_db(with_available=False):
     """Open a read-only connection to the music library database.
@@ -102,6 +105,15 @@ _MUSIC_AVAILABLE_SUBQUERY = f'(SELECT id FROM {_MUSIC_AVAILABLE_TABLE})'
 # String(36); MusicDevice.device_name is String(100).
 _MUSIC_DEVICE_ID_MAX = 36
 _MUSIC_DEVICE_NAME_MAX = 100
+# MusicLike.song_id / MusicPlaylistSong.song_id are String(36).
+_MUSIC_SONG_ID_MAX = 36
+_MUSIC_SYNC_STATE_MAX = 1024 * 1024
+# MusicDevice.last_seen is rewritten at most this often by sync polls; well
+# under the 30 s online window.
+_MUSIC_LAST_SEEN_WRITE_INTERVAL = timedelta(seconds=10)
+_MUSIC_COMMAND_ACTIONS = ('play', 'pause', 'next', 'prev', 'seek')
+_MUSIC_SEEK_MAX_SECONDS = 24 * 3600
+_MUSIC_SQL_CHUNK = 500
 _MUSIC_COMMAND_PAYLOAD_MAX = 1024 * 1024
 _MUSIC_COMMAND_RESULT_MAX = 16 * 1024
 _MUSIC_COMMAND_MAX_LIVE_PER_USER = 200
@@ -130,6 +142,72 @@ def _music_valid_device_id(device_id):
 
     AUDIT FIX A17: an over-long id used to reach the column as a DataError 500."""
     return bool(device_id) and len(device_id) <= _MUSIC_DEVICE_ID_MAX
+
+
+def _music_valid_song_id(song_id):
+    return isinstance(song_id, str) and 0 < len(song_id) <= _MUSIC_SONG_ID_MAX
+
+
+def _music_chunks(items, size=_MUSIC_SQL_CHUNK):
+    """Split a bind-parameter list so no IN (...) can trip SQLITE_MAX_VARIABLE_NUMBER."""
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+def _music_upsert_device(user_id, device_id, device_name, now):
+    """Create or refresh a device row. A concurrent first push that wins the
+    uq_user_device insert is adopted instead of surfacing an IntegrityError 500."""
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+    device = MusicDevice.query.filter_by(user_id=user_id, device_id=device_id).first()
+    if not device:
+        savepoint = db.session.begin_nested()
+        try:
+            device = MusicDevice(user_id=user_id, device_id=device_id, device_name=device_name,
+                                 last_seen=now, created_at=now)
+            db.session.add(device)
+            db.session.flush()
+            savepoint.commit()
+            return device
+        except _IntegrityError:
+            savepoint.rollback()
+            # Locking read: a consistent read would reuse this transaction's
+            # snapshot, taken before the other request committed its row.
+            device = MusicDevice.query.filter_by(
+                user_id=user_id, device_id=device_id).with_for_update().populate_existing().first()
+            if not device:
+                raise
+    device.last_seen = now
+    if device_name and device_name != 'Unknown Device':
+        device.device_name = device_name
+    return device
+
+
+def _music_prepare_sync_state(state, previous_json):
+    """Serialize a pushed playback state.
+
+    Clients send their queue window only when it changed and otherwise send the
+    server-issued queueKey; the stored window is reused while the key matches.
+    Returns (state_json, queue_key, need_playlist)."""
+    if not state:
+        return None, None, False
+    if 'playlist' in state:
+        queue_key = hashlib.sha256(json.dumps(
+            state['playlist'], sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()[:32]
+        state['queueKey'] = queue_key
+        return json.dumps(state, separators=(',', ':')), queue_key, False
+    queue_key = state.get('queueKey')
+    previous = None
+    if isinstance(queue_key, str) and previous_json:
+        try:
+            previous = json.loads(previous_json)
+        except ValueError:
+            previous = None
+    if isinstance(previous, dict) and previous.get('queueKey') == queue_key \
+            and isinstance(previous.get('playlist'), list):
+        state['playlist'] = previous['playlist']
+        return json.dumps(state, separators=(',', ':')), queue_key, False
+    state.pop('queueKey', None)
+    return json.dumps(state, separators=(',', ':')), None, True
 
 
 def _music_mailbox_lock(user_id):
@@ -354,7 +432,7 @@ def _music_search_score(tokens, song_title, artist_names, album_name):
 
 def _enrich_songs_from_library(song_ids):
     """Given a list of song IDs, return enriched song data from library.db."""
-    if not song_ids:
+    if not song_ids or not _music_library_available():
         return []
     song_ids = list(song_ids)
     conn = _get_music_db()
@@ -491,7 +569,12 @@ def _music_required(f):
                 return jsonify({'error': 'LOGIN REQUIRED'}), 401
             return redirect(url_for('login'))
         # AUDIT FIX M14: reject a session that was explicitly revoked by /logout.
-        if _is_session_revoked():
+        revoked = _is_session_revoked()
+        if revoked is _REVOCATION_CHECK_FAILED:
+            if is_ajax:
+                return jsonify({'error': 'SERVICE TEMPORARILY UNAVAILABLE. PLEASE TRY AGAIN.'}), 503
+            return 'SERVICE TEMPORARILY UNAVAILABLE. PLEASE TRY AGAIN.', 503
+        if revoked:
             session.clear()
             if is_ajax:
                 return jsonify({'error': 'SESSION_EXPIRED', 'redirect': url_for('login')}), 401

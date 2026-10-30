@@ -1,5 +1,150 @@
 class _StorageManagerReplicationCycle:
 
+    # A DB/in-memory node-set mismatch that refresh_backends() cannot resolve
+    # (an enabled node whose backend fails to build) is re-refreshed at most
+    # this often for the same mismatch instead of on every 10s cycle.
+    STALE_BACKEND_REFRESH_INTERVAL_SECONDS = 300
+
+    def _reconcile_notes_unlocked(self):
+        """Note reconciliation for the replication cycle, run WITHOUT
+        self._state_lock. reconcile_note_to_local falls back to downloading a
+        remote copy when the local note is missing or stale, so it must not
+        hold the lock (the HTTP note routes already call it unlocked). Covers
+        notes missing a replica row on an enabled node, stale replica state,
+        and errored replicas past their retry cooldown. Returns the note ids
+        self-healed from the error set so Phase-A triage skips their remaining
+        error rows."""
+        healed_error_note_ids = set()
+        try:
+            enabled_node_ids = [n.id for n in StorageNode.query.filter_by(is_enabled=True).all()]
+            if len(enabled_node_ids) <= 1:
+                return healed_error_note_ids
+            _preset_name, _preset = self._get_replication_preset()
+            _batch_size = _preset['batch']
+
+            def _reconcile(nid, verified_at):
+                try:
+                    repaired = self.reconcile_note_to_local(nid, verified_at=verified_at)
+                    db.session.commit()
+                    return repaired
+                except Exception as e:
+                    print(f'[REPLICATION] Note reconciliation failed for {nid}: {e}')
+                    try:
+                        db.session.rollback()
+                    except Exception:
+                        pass
+                    return None
+
+            # Notes missing a replica row on some enabled node (anti-join; a
+            # fully-tracked note's drift is handled by the stale pass below and
+            # its failures by error triage). Reconcile from the authoritative
+            # copy; if that is impossible, create the missing rows 'pending'.
+            missing_note_rows = {}
+            for nid, node_id in db.session.query(Note.id, StorageNode.id).join(
+                StorageNode, StorageNode.id.in_(enabled_node_ids)
+            ).outerjoin(NoteReplica, db.and_(
+                NoteReplica.note_id == Note.id, NoteReplica.node_id == StorageNode.id,
+            )).filter(NoteReplica.id.is_(None)).all():
+                missing_note_rows.setdefault(nid, []).append(node_id)
+            if missing_note_rows:
+                _skip_n = set(missing_note_rows) & {
+                    r[0] for r in db.session.query(PendingRemoteDelete.file_id)
+                        .filter(PendingRemoteDelete.category == 'notes').all()
+                }
+                if _skip_n:
+                    print(f'[REPLICATION] Skipping replica-row reconciliation for {len(_skip_n)} note(s) '
+                          f'with pending remote deletes (tombstone guard)')
+                healed_n = 0
+                healed_note_rows = 0
+                for nid in sorted(set(missing_note_rows) - _skip_n):
+                    if _reconcile(nid, datetime.now(timezone.utc)):
+                        healed_n += 1
+                        continue
+                    try:
+                        note_obj = db.session.get(Note, nid)
+                        if note_obj is None:
+                            continue
+                        note_version = int(note_obj.content_version or 1)
+                        for node_id in missing_note_rows[nid]:
+                            db.session.add(NoteReplica(
+                                note_id=nid,
+                                node_id=node_id,
+                                status='pending',
+                                target_version=note_version,
+                            ))
+                        db.session.commit()
+                        healed_n += 1
+                        healed_note_rows += len(missing_note_rows[nid])
+                    except Exception as e:
+                        print(f'[REPLICATION] Failed to create missing note replica rows for {nid}: {e}')
+                        try:
+                            db.session.rollback()
+                        except Exception:
+                            pass
+                if healed_note_rows:
+                    print(f'[REPLICATION] Reconciled {healed_note_rows} missing note replica row(s) across {healed_n} note(s)')
+
+            stale_note_ids = [
+                nid for (nid,) in db.session.query(Note.id).join(
+                    NoteReplica, NoteReplica.note_id == Note.id
+                ).filter(
+                    db.or_(
+                        NoteReplica.target_version.is_(None),
+                        NoteReplica.target_version != Note.content_version,
+                        db.and_(
+                            NoteReplica.status == 'synced',
+                            db.or_(
+                                NoteReplica.synced_version.is_(None),
+                                NoteReplica.synced_version != Note.content_version,
+                                db.and_(
+                                    Note.content_checksum.isnot(None),
+                                    NoteReplica.checksum.isnot(None),
+                                    NoteReplica.checksum != Note.content_checksum,
+                                ),
+                            ),
+                        ),
+                    )
+                ).distinct().limit(max(_batch_size * 10, 50)).all()
+            ]
+            repaired_stale_notes = 0
+            for nid in stale_note_ids:
+                if _reconcile(nid, datetime.now(timezone.utc)):
+                    repaired_stale_notes += 1
+            if repaired_stale_notes > 0:
+                print(f'[REPLICATION] Re-queued {repaired_stale_notes} stale note replication state entrie(s)')
+
+            # AUDIT FIX (note self-heal backoff): only errored replicas past the
+            # 5-minute cooldown and below the retry cap are reconciled, so a
+            # persistently-unhealable note is not re-hashed every cycle.
+            _now = datetime.now(timezone.utc)
+            _error_cooldown = timedelta(minutes=5)
+            _tried = set()
+            for nid, verified_at in db.session.query(NoteReplica.note_id, NoteReplica.verified_at).filter(
+                NoteReplica.status == 'error',
+                db.func.coalesce(NoteReplica.error_count, 0) < self.MAX_ERROR_RETRIES,
+            ).all():
+                if nid in _tried:
+                    continue
+                if verified_at and (_now - _utc_aware(verified_at)) < _error_cooldown:
+                    continue
+                _tried.add(nid)
+                repaired = _reconcile(nid, _now)
+                if repaired:
+                    healed_error_note_ids.add(nid)
+                    print(
+                        f'[REPLICATION] Self-healed note {nid} from local '
+                        f'({repaired["local_size"]} bytes, reset {repaired["remote_reset"]} remote replicas)'
+                    )
+            if healed_error_note_ids:
+                print(f'[REPLICATION] Self-healed {len(healed_error_note_ids)} note(s) from local authoritative data')
+        except Exception as e:
+            print(f'[REPLICATION] Note reconciliation pass failed: {e}')
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+        return healed_error_note_ids
+
     def _run_replication_cycle_locked(self):
         """Run one replication cycle — copy pending files/notes/thumbnails.
         Uses a thread pool for parallel replication to multiple nodes simultaneously.
@@ -11,6 +156,9 @@ class _StorageManagerReplicationCycle:
         import time as _time
         from concurrent.futures import ThreadPoolExecutor, as_completed
         _cycle_start = _time.monotonic()
+        # AUDIT FIX (remote I/O under the state lock): note reconciliation can
+        # download a remote copy, so it runs before Phase A takes the lock.
+        _healed_note_ids = self._reconcile_notes_unlocked()
         self._state_lock.acquire()
         _lock_held = True
         try:
@@ -23,13 +171,18 @@ class _StorageManagerReplicationCycle:
             cycle_backends, cycle_local_backend, cycle_local_node_id, _cycle_version = self._backend_state_snapshot()
             mem_node_ids = set(cycle_backends.keys())
             if db_node_ids != mem_node_ids:
-                print(f'[REPLICATION] Backend state stale (DB: {sorted(db_node_ids)}, mem: {sorted(mem_node_ids)}), refreshing...')
-                self.refresh_backends()
-                # Re-query after refresh
-                enabled_nodes = StorageNode.query.filter_by(is_enabled=True).all()
-                if len(enabled_nodes) <= 1:
-                    return
-                cycle_backends, cycle_local_backend, cycle_local_node_id, _cycle_version = self._backend_state_snapshot()
+                _mismatch = (frozenset(db_node_ids), frozenset(mem_node_ids))
+                _last_refresh = getattr(self, '_stale_backend_refresh', None)
+                if (_last_refresh is None or _last_refresh[0] != _mismatch
+                        or _time.monotonic() - _last_refresh[1] >= self.STALE_BACKEND_REFRESH_INTERVAL_SECONDS):
+                    self._stale_backend_refresh = (_mismatch, _time.monotonic())
+                    print(f'[REPLICATION] Backend state stale (DB: {sorted(db_node_ids)}, mem: {sorted(mem_node_ids)}), refreshing...')
+                    self.refresh_backends()
+                    # Re-query after refresh
+                    enabled_nodes = StorageNode.query.filter_by(is_enabled=True).all()
+                    if len(enabled_nodes) <= 1:
+                        return
+                    cycle_backends, cycle_local_backend, cycle_local_node_id, _cycle_version = self._backend_state_snapshot()
 
             # Read pacing config from admin setting
             _preset_name, _preset = self._get_replication_preset()
@@ -94,24 +247,23 @@ class _StorageManagerReplicationCycle:
             # file claiming no thumbnail is a contradiction that the scrub must
             # resolve first (it will mark the row 'error' if the object is really
             # gone, after which this sweep reaps it).
-            _no_thumb_ids = [row[0] for row in db.session.query(File.id).filter_by(has_thumbnail=False).all()]
-            if _no_thumb_ids:
-                _stale_thumb_replicas = ThumbnailReplica.query.filter(
-                    ThumbnailReplica.file_id.in_(_no_thumb_ids),
-                    ThumbnailReplica.status != 'synced',
-                ).all()
-                if _stale_thumb_replicas:
-                    for r in _stale_thumb_replicas:
-                        db.session.delete(r)
-                    print(f'[REPLICATION] Cleaned {len(_stale_thumb_replicas)} stale thumbnail replicas (file has_thumbnail=False)')
-                _contradictory_thumb_replicas = ThumbnailReplica.query.filter(
-                    ThumbnailReplica.file_id.in_(_no_thumb_ids),
-                    ThumbnailReplica.status == 'synced',
-                ).count()
-                if _contradictory_thumb_replicas:
-                    print(f'[REPLICATION] [WARNING] {_contradictory_thumb_replicas} SYNCED thumbnail replica row(s) '
-                          f'belong to file(s) with has_thumbnail=False — keeping the tracking rows so a live '
-                          f'payload can never be orphaned; the integrity scrub will resolve them')
+            _no_thumb_ids = db.session.query(File.id).filter_by(has_thumbnail=False)
+            _stale_thumb_replicas = ThumbnailReplica.query.filter(
+                ThumbnailReplica.file_id.in_(_no_thumb_ids),
+                ThumbnailReplica.status != 'synced',
+            ).all()
+            if _stale_thumb_replicas:
+                for r in _stale_thumb_replicas:
+                    db.session.delete(r)
+                print(f'[REPLICATION] Cleaned {len(_stale_thumb_replicas)} stale thumbnail replicas (file has_thumbnail=False)')
+            _contradictory_thumb_replicas = ThumbnailReplica.query.filter(
+                ThumbnailReplica.file_id.in_(_no_thumb_ids),
+                ThumbnailReplica.status == 'synced',
+            ).count()
+            if _contradictory_thumb_replicas:
+                print(f'[REPLICATION] [WARNING] {_contradictory_thumb_replicas} SYNCED thumbnail replica row(s) '
+                      f'belong to file(s) with has_thumbnail=False — keeping the tracking rows so a live '
+                      f'payload can never be orphaned; the integrity scrub will resolve them')
 
             # Clean up replicas pointing to deleted/non-existent storage nodes
             _valid_node_ids = db.session.query(StorageNode.id)
@@ -147,27 +299,25 @@ class _StorageManagerReplicationCycle:
             # reaps it. We accept this eventual-consistency window deliberately
             # rather than taking _state_lock on every delete (which would
             # serialize all deletes behind long replication cycles).
-            all_file_ids = set(r[0] for r in File.query.with_entities(File.id).all())
-            _pending_delete_file_ids = {
-                r[0].replace('.enc', '') if r[0].endswith('.enc') else r[0]
-                for r in db.session.query(PendingRemoteDelete.file_id)
-                    .filter(PendingRemoteDelete.category == 'files').all()
-            }
-            if _pending_delete_file_ids:
-                _skip = all_file_ids & _pending_delete_file_ids
+            # Perf: anti-join for the (file, enabled node) pairs that lack a
+            # replica row instead of loading every File id and passing them
+            # back as an IN list each 10s cycle.
+            _enabled_node_ids = [node.id for node in enabled_nodes]
+            _missing_file_pairs = db.session.query(File.id, StorageNode.id).join(
+                StorageNode, StorageNode.id.in_(_enabled_node_ids)
+            ).outerjoin(FileReplica, db.and_(
+                FileReplica.file_id == File.id, FileReplica.node_id == StorageNode.id,
+            )).filter(FileReplica.id.is_(None)).all()
+            if _missing_file_pairs:
+                _pending_delete_file_ids = {
+                    r[0].replace('.enc', '') if r[0].endswith('.enc') else r[0]
+                    for r in db.session.query(PendingRemoteDelete.file_id)
+                        .filter(PendingRemoteDelete.category == 'files').all()
+                }
+                _skip = {fid for fid, _nid in _missing_file_pairs} & _pending_delete_file_ids
                 if _skip:
                     print(f'[REPLICATION] Skipping replica-row reconciliation for {len(_skip)} file(s) '
                           f'with pending remote deletes (tombstone guard)')
-                    all_file_ids = all_file_ids - _skip
-            if all_file_ids:
-                _existing_file_pairs = {
-                    (fid, nid) for fid, nid in db.session.query(
-                        FileReplica.file_id, FileReplica.node_id
-                    ).filter(
-                        FileReplica.file_id.in_(all_file_ids),
-                        FileReplica.node_id.in_([node.id for node in enabled_nodes])
-                    ).all()
-                }
                 # AUDIT FIX H1: previously this performed a full backend
                 # list_files('files') for EVERY enabled remote node on every
                 # 10s replication cycle (S3 paginated list_objects_v2 / SSH
@@ -178,163 +328,61 @@ class _StorageManagerReplicationCycle:
                 # the replication/scrub loop then verifies size + checksum
                 # before promoting it to 'synced'. Dropping the dead listing
                 # removes constant, pointless remote API cost on every cycle.
-                healed = 0
+                healed_files = set()
                 healed_rows = 0
-                for fid in all_file_ids:
-                    repaired_any = False
-                    for node in enabled_nodes:
-                        if (fid, node.id) in _existing_file_pairs:
-                            continue
-                        db.session.add(FileReplica(file_id=fid, node_id=node.id, status='pending'))
-                        repaired_any = True
-                        healed_rows += 1
-                    if repaired_any:
-                        healed += 1
+                for fid, nid in _missing_file_pairs:
+                    if fid in _skip:
+                        continue
+                    db.session.add(FileReplica(file_id=fid, node_id=nid, status='pending'))
+                    healed_files.add(fid)
+                    healed_rows += 1
                 if healed_rows:
                     db.session.commit()
-                    print(f'[REPLICATION] Reconciled {healed_rows} missing file replica row(s) across {healed} file(s)')
+                    print(f'[REPLICATION] Reconciled {healed_rows} missing file replica row(s) across {len(healed_files)} file(s)')
 
-            all_note_ids = set(r[0] for r in Note.query.with_entities(Note.id).all())
-            _pending_note_delete_ids = {
-                r[0] for r in db.session.query(PendingRemoteDelete.file_id)
-                    .filter(PendingRemoteDelete.category == 'notes').all()
-            }
-            if _pending_note_delete_ids:
-                _skip_n = all_note_ids & _pending_note_delete_ids
-                if _skip_n:
-                    print(f'[REPLICATION] Skipping replica-row reconciliation for {len(_skip_n)} note(s) '
-                          f'with pending remote deletes (tombstone guard)')
-                    all_note_ids = all_note_ids - _skip_n
-            if all_note_ids:
-                _existing_note_pairs = {
-                    (nid, nodeid) for nid, nodeid in db.session.query(
-                        NoteReplica.note_id, NoteReplica.node_id
-                    ).filter(
-                        NoteReplica.note_id.in_(all_note_ids),
-                        NoteReplica.node_id.in_([node.id for node in enabled_nodes])
-                    ).all()
-                }
-                # AUDIT FIX H1: dropped the per-cycle full backend
-                # list_files('notes') for every node — like the file path, both
-                # branches created an identical status='pending' row, so the
-                # listing was dead weight. Missing rows are created 'pending'
-                # and verified by the replication/scrub loop before promotion.
-                _note_versions_map = {
-                    nid: int(ver or 1)
-                    for nid, ver in db.session.query(Note.id, Note.content_version).filter(
-                        Note.id.in_(all_note_ids)
-                    ).all()
-                }
-                healed_n = 0
-                healed_note_rows = 0
-                for nid in all_note_ids:
-                    if all((nid, node.id) in _existing_note_pairs for node in enabled_nodes):
-                        # Fully tracked: version/checksum drift is handled by the
-                        # stale pass below and failures by error triage. Reconciling
-                        # here reset every errored replica to pending each cycle.
-                        continue
-                    repaired_any = False
-                    repaired = self.reconcile_note_to_local(nid, verified_at=datetime.now(timezone.utc))
-                    if repaired:
-                        healed_n += 1
-                        continue
-                    note_version = _note_versions_map.get(nid, 1)
-                    for node in enabled_nodes:
-                        if (nid, node.id) in _existing_note_pairs:
-                            continue
-                        db.session.add(NoteReplica(
-                            note_id=nid,
-                            node_id=node.id,
-                            status='pending',
-                            target_version=note_version,
-                        ))
-                        repaired_any = True
-                        healed_note_rows += 1
-                    if repaired_any:
-                        healed_n += 1
-                if healed_note_rows:
-                    db.session.commit()
-                    print(f'[REPLICATION] Reconciled {healed_note_rows} missing note replica row(s) across {healed_n} note(s)')
-
-            stale_note_ids = [
-                nid for (nid,) in db.session.query(Note.id).join(
-                    NoteReplica, NoteReplica.note_id == Note.id
-                ).filter(
-                    db.or_(
-                        NoteReplica.target_version.is_(None),
-                        NoteReplica.target_version != Note.content_version,
-                        db.and_(
-                            NoteReplica.status == 'synced',
-                            db.or_(
-                                NoteReplica.synced_version.is_(None),
-                                NoteReplica.synced_version != Note.content_version,
-                                db.and_(
-                                    Note.content_checksum.isnot(None),
-                                    NoteReplica.checksum.isnot(None),
-                                    NoteReplica.checksum != Note.content_checksum,
-                                ),
-                            ),
-                        ),
-                    )
-                ).distinct().limit(max(_batch_size * 10, 50)).all()
-            ]
-            if stale_note_ids:
-                repaired_stale_notes = 0
-                for nid in stale_note_ids:
-                    repaired = self.reconcile_note_to_local(nid, verified_at=datetime.now(timezone.utc))
-                    if repaired:
-                        repaired_stale_notes += 1
-                if repaired_stale_notes > 0:
-                    db.session.commit()
-                    print(f'[REPLICATION] Re-queued {repaired_stale_notes} stale note replication state entrie(s)')
+            # Note replica rows, stale note state and note self-heal are handled
+            # by _reconcile_notes_unlocked() before this phase took the lock.
 
             # Self-heal: create missing thumbnail replica rows for any enabled
             # node, not just files with zero thumbnail replica rows.
-            thumb_file_rows = db.session.query(File.id, File.is_e2e_encrypted).filter_by(has_thumbnail=True).all()
-            _pending_delete_thumb_fids = {
-                (r[0].rsplit('.', 1)[0] if '.' in r[0] else r[0])
-                for r in db.session.query(PendingRemoteDelete.file_id)
-                    .filter(PendingRemoteDelete.category == 'thumbnails').all()
-            }
-            if _pending_delete_thumb_fids:
-                _skip_t = {fid for fid, _ in thumb_file_rows if fid in _pending_delete_thumb_fids}
+            # Anti-join on the thumbnail variant matching the file's CURRENT
+            # encryption mode ('e2e' if is_e2e_encrypted else 'jpg').
+            _missing_thumb_rows = db.session.query(File.id, File.is_e2e_encrypted, StorageNode.id).join(
+                StorageNode, StorageNode.id.in_(_enabled_node_ids)
+            ).outerjoin(ThumbnailReplica, db.and_(
+                ThumbnailReplica.file_id == File.id,
+                ThumbnailReplica.node_id == StorageNode.id,
+                ThumbnailReplica.thumb_type == case((File.is_e2e_encrypted == True, 'e2e'), else_='jpg'),
+            )).filter(
+                File.has_thumbnail == True,
+                ThumbnailReplica.id.is_(None),
+            ).all()
+            if _missing_thumb_rows:
+                _pending_delete_thumb_fids = {
+                    (r[0].rsplit('.', 1)[0] if '.' in r[0] else r[0])
+                    for r in db.session.query(PendingRemoteDelete.file_id)
+                        .filter(PendingRemoteDelete.category == 'thumbnails').all()
+                }
+                _skip_t = {fid for fid, _e2e, _nid in _missing_thumb_rows} & _pending_delete_thumb_fids
                 if _skip_t:
                     print(f'[REPLICATION] Skipping thumbnail replica-row reconciliation for {len(_skip_t)} item(s) '
                           f'with pending remote deletes (tombstone guard)')
-                    thumb_file_rows = [(fid, is_e2e) for fid, is_e2e in thumb_file_rows if fid not in _skip_t]
-            if thumb_file_rows:
-                _thumb_fids = {fid for fid, _ in thumb_file_rows}
-                _existing_thumb_triples = {
-                    (fid, ttype, nid)
-                    for fid, ttype, nid in db.session.query(
-                        ThumbnailReplica.file_id,
-                        ThumbnailReplica.thumb_type,
-                        ThumbnailReplica.node_id,
-                    ).filter(
-                        ThumbnailReplica.file_id.in_(_thumb_fids),
-                        ThumbnailReplica.node_id.in_([node.id for node in enabled_nodes])
-                    ).all()
-                }
                 # AUDIT FIX H1: dropped the per-cycle full backend
                 # list_files('thumbnails') for every node — identical-branch
                 # dead code like the file/note paths above. Missing rows are
                 # created 'pending' and verified before promotion to 'synced'.
-                healed_t = 0
+                healed_thumb_files = set()
                 healed_thumb_rows = 0
-                for fid, is_e2e in thumb_file_rows:
+                for fid, is_e2e, nid in _missing_thumb_rows:
+                    if fid in _skip_t:
+                        continue
                     thumb_type = 'e2e' if is_e2e else 'jpg'
-                    repaired_any = False
-                    for node in enabled_nodes:
-                        if (fid, thumb_type, node.id) in _existing_thumb_triples:
-                            continue
-                        db.session.add(ThumbnailReplica(file_id=fid, thumb_type=thumb_type, node_id=node.id, status='pending'))
-                        repaired_any = True
-                        healed_thumb_rows += 1
-                    if repaired_any:
-                        healed_t += 1
+                    db.session.add(ThumbnailReplica(file_id=fid, thumb_type=thumb_type, node_id=nid, status='pending'))
+                    healed_thumb_files.add(fid)
+                    healed_thumb_rows += 1
                 if healed_thumb_rows:
                     db.session.commit()
-                    print(f'[REPLICATION] Reconciled {healed_thumb_rows} missing thumbnail replica row(s) across {healed_t} file(s)')
+                    print(f'[REPLICATION] Reconciled {healed_thumb_rows} missing thumbnail replica row(s) across {len(healed_thumb_files)} file(s)')
 
             # Bulk-mark replicas as 'missing' where source data doesn't exist on any node.
             # Use 5-minute cooldown and max retry count to prevent infinite retry loops.
@@ -363,12 +411,22 @@ class _StorageManagerReplicationCycle:
             # comparison, so the two can never be mixed again.
             _now = datetime.now(timezone.utc)
             missing_marked = 0
-            exhausted_count = 0
-            note_self_healed = 0
-            _healed_note_ids = set()
+            # Exhausted (parked) replicas stay 'error' until an admin reset or a
+            # node revive; they are counted here and kept OUT of the triage
+            # listings below so a large parked backlog is not re-loaded (plus a
+            # full local directory listing) on every 10s cycle.
+            exhausted_counts = {
+                label: model.query.filter(
+                    model.status == 'error', model.error_count >= _MAX_ERROR_RETRIES,
+                ).count()
+                for model, label in ((FileReplica, 'file'), (NoteReplica, 'note'), (ThumbnailReplica, 'thumbnail'))
+            }
 
             # ── File replica error triage ─────────────────────────────────
-            error_file_replicas = FileReplica.query.filter_by(status='error').all()
+            error_file_replicas = FileReplica.query.filter(
+                FileReplica.status == 'error',
+                db.func.coalesce(FileReplica.error_count, 0) < _MAX_ERROR_RETRIES,
+            ).all()
             if error_file_replicas:
                 _error_file_ids = {r.file_id for r in error_file_replicas}
                 # Bulk-prefetch: which of these file_ids have ANY status='synced'
@@ -392,9 +450,6 @@ class _StorageManagerReplicationCycle:
                     filename = f'{r.file_id}.enc'
                     has_source = (filename in _local_files_set) or (r.file_id in _synced_file_ids)
                     if has_source:
-                        if (r.error_count or 0) >= _MAX_ERROR_RETRIES:
-                            exhausted_count += 1
-                            continue  # Leave as 'error' — admin must investigate
                         if r.verified_at and (_now - _utc_aware(r.verified_at)) < _error_cooldown:
                             continue
                         r.status = 'pending'
@@ -409,7 +464,10 @@ class _StorageManagerReplicationCycle:
                         missing_marked += 1
 
             # ── Note replica error triage ────────────────────────────────
-            error_note_replicas = NoteReplica.query.filter_by(status='error').all()
+            error_note_replicas = NoteReplica.query.filter(
+                NoteReplica.status == 'error',
+                db.func.coalesce(NoteReplica.error_count, 0) < _MAX_ERROR_RETRIES,
+            ).all()
             if error_note_replicas:
                 _error_note_ids = {r.note_id for r in error_note_replicas}
                 # Bulk-prefetch note versions, synced sibling versions, and local
@@ -433,29 +491,11 @@ class _StorageManagerReplicationCycle:
                     except Exception:
                         _local_notes_set = set()
                 for r in error_note_replicas:
+                    # Self-heal (reconcile_note_to_local) already ran, unlocked,
+                    # in _reconcile_notes_unlocked() for replicas past cooldown.
                     if r.note_id in _healed_note_ids:
                         continue
-                    # AUDIT FIX (note self-heal backoff): gate the expensive
-                    # reconcile_note_to_local (full local re-hash + DB writes +
-                    # remote fetch) behind the cooldown check, mirroring the
-                    # file/thumbnail triage. Previously reconcile ran for every
-                    # errored note replica on every 10s cycle before the
-                    # cooldown was consulted, driving a re-hash storm on
-                    # persistently-unhealable notes. The exhausted check still
-                    # skips replicas at the retry cap.
-                    if (r.error_count or 0) >= _MAX_ERROR_RETRIES:
-                        exhausted_count += 1
-                        continue
                     if r.verified_at and (_now - _utc_aware(r.verified_at)) < _error_cooldown:
-                        continue
-                    repaired = self.reconcile_note_to_local(r.note_id, verified_at=_now)
-                    if repaired:
-                        _healed_note_ids.add(r.note_id)
-                        note_self_healed += 1
-                        print(
-                            f'[REPLICATION] Self-healed note {r.note_id} from local '
-                            f'({repaired["local_size"]} bytes, reset {repaired["remote_reset"]} remote replicas)'
-                        )
                         continue
                     has_source = r.note_id in _local_notes_set
                     if not has_source:
@@ -472,7 +512,10 @@ class _StorageManagerReplicationCycle:
             # ── Thumbnail replica error triage ────────────────────────────
             thumb_missing_marked = 0
             thumb_flag_cleared = 0
-            error_thumb_replicas = ThumbnailReplica.query.filter_by(status='error').all()
+            error_thumb_replicas = ThumbnailReplica.query.filter(
+                ThumbnailReplica.status == 'error',
+                db.func.coalesce(ThumbnailReplica.error_count, 0) < _MAX_ERROR_RETRIES,
+            ).all()
             if error_thumb_replicas:
                 # Bulk-prefetch: which (file_id, thumb_type) pairs have a
                 # status='synced' sibling? Use a set of tuples.
@@ -503,8 +546,6 @@ class _StorageManagerReplicationCycle:
                         or (r.file_id, r.thumb_type) in _synced_thumb_pairs
                     )
                     if has_source:
-                        if (r.error_count or 0) >= _MAX_ERROR_RETRIES:
-                            continue
                         if r.verified_at and (_now - _utc_aware(r.verified_at)) < _error_cooldown:
                             continue
                         r.status = 'pending'
@@ -541,10 +582,10 @@ class _StorageManagerReplicationCycle:
                 print(f'[REPLICATION] Marked {thumb_missing_marked} thumbnail replicas as missing (source data gone)')
             if thumb_flag_cleared > 0:
                 print(f'[REPLICATION] Cleared has_thumbnail flag on {thumb_flag_cleared} file(s) with no thumbnail source on any node')
-            if note_self_healed > 0:
-                print(f'[REPLICATION] Self-healed {note_self_healed} note(s) from local authoritative data')
-            if exhausted_count > 0:
-                print(f'[REPLICATION] {exhausted_count} file replicas exceeded max retries ({_MAX_ERROR_RETRIES}) — skipping (admin action required)')
+            if any(exhausted_counts.values()):
+                print(f'[REPLICATION] {exhausted_counts["file"]} file, {exhausted_counts["note"]} note and '
+                      f'{exhausted_counts["thumbnail"]} thumbnail replicas exceeded max retries ({_MAX_ERROR_RETRIES}) '
+                      f'— skipping (admin action required)')
 
             replicated = 0
             errors = 0
@@ -566,20 +607,42 @@ class _StorageManagerReplicationCycle:
             _excluded_nodes = [n for n in enabled_nodes if n.id not in _active_node_ids]
             if _excluded_nodes:
                 self._audit_single_copy_payloads()
-                print(f'[WARNING] [REPLICATION] {len(_excluded_nodes)} enabled node(s) are excluded from '
-                      f'this cycle and are receiving NO new data: '
-                      + ', '.join(f'{n.name} (status={n.status})' for n in _excluded_nodes))
+                _excluded_key = tuple(sorted((n.id, n.status) for n in _excluded_nodes))
+                _last_excluded = getattr(self, '_excluded_nodes_warned', None)
+                if (_last_excluded is None or _last_excluded[0] != _excluded_key
+                        or _time.monotonic() - _last_excluded[1] >= self.SINGLE_COPY_AUDIT_INTERVAL_SECONDS):
+                    self._excluded_nodes_warned = (_excluded_key, _time.monotonic())
+                    print(f'[WARNING] [REPLICATION] {len(_excluded_nodes)} enabled node(s) are excluded from '
+                          f'this cycle and are receiving NO new data: '
+                          + ', '.join(f'{n.name} (status={n.status})' for n in _excluded_nodes))
             if not _active_node_ids:
                 return
 
             # Model lookup for re-querying replicas by ID in the main thread
             _replica_models = {'files': FileReplica, 'notes': NoteReplica, 'thumbnails': ThumbnailReplica}
 
+            # Targets still owned by an in-flight (possibly detached) worker are
+            # excluded in SQL, BEFORE the LIMIT, so they cannot fill the batch
+            # and starve everything behind them; ORDER BY id keeps it stable.
+            with self._inflight_lock:
+                _inflight_keys = list(self._inflight_writes)
+
+            def _not_inflight(category, cols, key_of):
+                keys = [key_of(disk_id) + (node_id,)
+                        for cat, disk_id, node_id in _inflight_keys if cat == category]
+                if not keys:
+                    return db.true()
+                return db.not_(db.or_(*[
+                    db.and_(*[col == value for col, value in zip(cols, key)]) for key in keys
+                ]))
+
             # Gather file replicas
             pending_files = FileReplica.query.filter(
                 FileReplica.status == 'pending',
                 FileReplica.node_id.in_(_active_node_ids),
-            ).limit(_batch_size).all()
+                _not_inflight('files', (FileReplica.file_id, FileReplica.node_id),
+                              lambda d: (d[:-4] if d.endswith('.enc') else d,)),
+            ).order_by(FileReplica.id).limit(_batch_size).all()
             for r in pending_files:
                 # AUDIT FIX (in-flight write guard): skip a target a detached
                 # worker from a prior cycle is still writing — it stays pending
@@ -595,7 +658,8 @@ class _StorageManagerReplicationCycle:
                 pending_notes = NoteReplica.query.filter(
                     NoteReplica.status == 'pending',
                     NoteReplica.node_id.in_(_active_node_ids),
-                ).limit(_batch_size).all()
+                    _not_inflight('notes', (NoteReplica.note_id, NoteReplica.node_id), lambda d: (d,)),
+                ).order_by(NoteReplica.id).limit(_batch_size).all()
                 for r in pending_notes:
                     note_obj = db.session.get(Note, r.note_id)
                     if not note_obj:
@@ -614,7 +678,10 @@ class _StorageManagerReplicationCycle:
                 pending_thumbs = ThumbnailReplica.query.filter(
                     ThumbnailReplica.status == 'pending',
                     ThumbnailReplica.node_id.in_(_active_node_ids),
-                ).limit(_batch_size).all()
+                    _not_inflight('thumbnails',
+                                  (ThumbnailReplica.file_id, ThumbnailReplica.thumb_type, ThumbnailReplica.node_id),
+                                  lambda d: (d.rsplit('.', 1)[0], 'e2e' if d.endswith('.e2e') else 'jpg')),
+                ).order_by(ThumbnailReplica.id).limit(_batch_size).all()
                 for r in pending_thumbs:
                     ext = '.e2e' if r.thumb_type == 'e2e' else '.jpg'
                     thumb_disk_id = f'{r.file_id}{ext}'
@@ -625,6 +692,7 @@ class _StorageManagerReplicationCycle:
                     _thread_args.append((r.id, 'thumbnails', thumb_disk_id, thumb_disk_id, r.node_id, None, None))
 
             if not _work_items:
+                self._audit_single_copy_payloads()
                 return
 
             # Mark all items as 'syncing' before starting (main thread only, safe)
@@ -1095,7 +1163,7 @@ class _StorageManagerReplicationCycle:
                         for remaining in _thread_args[i:]:
                             model = _replica_models[remaining[1]]
                             r = db.session.get(model, remaining[0])
-                            if r:
+                            if r and r.status == 'syncing':
                                 r.status = 'pending'
                         db.session.commit()
                         break
@@ -1127,6 +1195,8 @@ class _StorageManagerReplicationCycle:
                             replica = db.session.get(model, replica_id)
                             if replica:
                                 replica.status = 'error'
+                                replica.error_count = (replica.error_count or 0) + 1
+                                replica.last_error = str(e)[:500]
                                 db.session.commit()
                         except Exception:
                             try:
@@ -1146,6 +1216,7 @@ class _StorageManagerReplicationCycle:
             # prove the node is reachable even if head_bucket health checks fail
             if _succeeded_targets:
                 promoted = []
+                promoted_ids = []
                 for nid in _succeeded_targets:
                     node = db.session.get(StorageNode, nid)
                     if node and node.status != 'online':
@@ -1153,6 +1224,7 @@ class _StorageManagerReplicationCycle:
                         node.status = 'online'
                         node.last_seen_at = datetime.now(timezone.utc)
                         promoted.append(f'{node.name} ({old} -> online)')
+                        promoted_ids.append(nid)
                 if promoted:
                     db.session.commit()
                     print(f'[REPLICATION] Promoted nodes to online (successful writes): {", ".join(promoted)}')
@@ -1163,16 +1235,19 @@ class _StorageManagerReplicationCycle:
                 # — the triage loop skips exhausted rows and nothing else resets
                 # them. A successful write THIS cycle proves the node is accepting
                 # writes again, so give its exhausted replicas a fresh start now,
-                # not only on a health status transition.
+                # not only on a health status transition. Rate-limited per row
+                # (min_idle) so one good write per cycle cannot wipe every
+                # retry cap and cooldown on the node.
                 recovered_total = 0
                 for nid in _succeeded_targets:
-                    recovered_total += self._recover_exhausted_replicas_for_node(nid)
+                    recovered_total += self._recover_exhausted_replicas_for_node(
+                        nid, min_idle=self.EXHAUSTED_REPLICA_REVIVE_INTERVAL)
                 # AUDIT FIX (parked tombstones revived only on manual re-enable):
-                # a successful write this cycle proves the node is reachable, so
-                # its parked delete tombstones deserve the same fresh start as its
-                # exhausted replicas — without waiting for an admin to toggle the
-                # node off and on again.
-                for nid in _succeeded_targets:
+                # a node that just came (back) online gets its parked delete
+                # tombstones revived too — only on that transition, never on
+                # every successful write, or the retry cap/cooldown would never
+                # apply to a node that accepts writes but fails deletes.
+                for nid in promoted_ids:
                     try:
                         _revived = self.reactivate_pending_remote_deletes_for_node(nid)
                         if _revived:

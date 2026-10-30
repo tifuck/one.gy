@@ -74,10 +74,22 @@ def manage_folder(folder_id):
             if 'browsable' in request.form:
                 if not folder_inherited_browsable:
                     is_browsable = request.form.get('browsable') == 'on'
+                    was_shared = folder.is_browsable or folder.is_link_shared
                     folder.is_browsable = is_browsable
-                    # Clear E2E link keys when browsable is turned OFF so that
-                    # toggling off then back on generates a fresh share URL
+                    # Turning browsable OFF revokes the link: the folder link
+                    # secret is HKDF(master, 'folder:' + share_token), so the
+                    # token must rotate (like regenerate_folder_link) or
+                    # re-enabling would hand old holders the same URL again.
                     if not is_browsable:
+                        if was_shared:
+                            folder.share_token = str(uuid.uuid4())
+                            tree_ids = _collect_descendant_folder_ids([folder.id], include_roots=True)
+                            for tree_folder in Folder.query.filter(
+                                Folder.id.in_(list(tree_ids)),
+                                Folder.user_id == user.id,
+                            ).all():
+                                tree_folder.link_encrypted_name_key = None
+                                tree_folder.link_name_key_nonce = None
                         folder.link_secret = None
                         folder.is_link_shared = False
                         cleared = _clear_e2e_link_keys_for_folder_tree(folder.id)
@@ -89,7 +101,7 @@ def manage_folder(folder_id):
             # Update stored E2EE flag when explicitly toggled (cascades to all subfolders)
             if 'e2e' in request.form:
                 new_e2e = request.form.get('e2e') == 'on'
-                folder.is_e2e = new_e2e
+                folder.is_e2e = new_e2e or bool(folder.encrypted_name)
                 # Cascade to all descendant subfolders
                 # Iterative with a visited set: recursion hit RecursionError on
                 # ~1000-deep trees and never ended on a parent_id cycle.
@@ -110,7 +122,7 @@ def manage_folder(folder_id):
             _release_lifecycle_lock(lifecycle_lock)
         
         if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-            return jsonify({'success': True})
+            return jsonify({'success': True, 'share_token': folder.share_token})
         
         flash('FOLDER SETTINGS UPDATED', 'success')
         return redirect(url_for('manage_folder', folder_id=folder_id))
@@ -411,6 +423,7 @@ def move_folder(folder_id):
         tree_ids = _collect_descendant_folder_ids([folder.id], include_roots=True)
         tree_files = File.query.filter(
             File.folder_id.in_(list(tree_ids)),
+            File.registered_user_id == user.id,
             File.is_temp_upload == False,
             File.is_trashed == False,
             File.is_e2e_encrypted == True,
@@ -813,7 +826,7 @@ def set_file_password(file_id):
     if file.is_e2e_encrypted:
         return jsonify({'error': 'E2E encrypted files do not support passwords'}), 400
     
-    password = request.form.get('password', '').strip()
+    password = request.form.get('password', '')
     
     if password:
         # AUDIT FIX L5: pin pbkdf2:sha256 to stay consistent with the rest
@@ -853,7 +866,7 @@ def set_folder_password(folder_id):
     if not folder:
         return jsonify({'error': 'FOLDER NOT FOUND'}), 404
 
-    password = request.form.get('password', '').strip()
+    password = request.form.get('password', '')
 
     if password:
         # AUDIT FIX L5: pin pbkdf2:sha256 to stay consistent with the rest of the
@@ -1050,6 +1063,17 @@ def make_file_public(file_id):
         print(f'[ERROR] make-public failed for {file_id}: {e}')
         import traceback
         traceback.print_exc()
+        if not rewrite_committed:
+            try:
+                storage.rollback_staged_file(file.filename)
+            except Exception:
+                pass
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+        else:
+            print(f'[ERROR] make-public failed after commit for {file_id}; preserving staged recovery artifacts')
         return jsonify({'error': 'RE-ENCRYPTION FAILED'}), 500
     finally:
         _release_user_quota_lock(quota_lock)
@@ -1239,8 +1263,14 @@ def make_file_private(file_id):
             except ReplicaSessionRollbackError:
                 # AUDIT FIX H3: replica bookkeeping rolled back the shared DB
                 # session (expunging this request's pending changes). Aborting
-                # is the only safe move -- the outer handler fails the request
-                # and discards the staged rewrite.
+                # is the only safe move -- drop the .e2e that may already be on
+                # disk; the outer handler fails the request and discards the
+                # staged rewrite. The Fernet .jpg stays valid.
+                db.session.rollback()
+                try:
+                    storage._delete_thumbnail_by_basename(f'{file_id}.e2e')
+                except Exception:
+                    pass
                 raise
             except Exception as e:
                 print(f'[FILE] E2E thumbnail save failed (non-critical): {e}')
@@ -1254,10 +1284,11 @@ def make_file_private(file_id):
         except Exception:
             db.session.rollback()
             storage.rollback_staged_file(file.filename)
-            # Clean up new E2E thumbnail written before the failed commit
+            # Clean up new E2E thumbnail written before the failed commit; the
+            # file is still Fernet, so its .jpg thumbnail must survive.
             if _new_e2e_thumb_saved:
                 try:
-                    delete_thumbnail_from_disk(file.id)
+                    storage._delete_thumbnail_by_basename(f'{file_id}.e2e')
                 except Exception:
                     pass
             raise

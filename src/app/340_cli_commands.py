@@ -234,18 +234,43 @@ def db_copy_from_sqlite(source_path, allow_nonempty, chunk_size):
     source_engine.dispose()
     _run_post_schema_data_migrations()
 
+def _database_url_override_error():
+    """Return why destructive CLI work must not run against the configured
+    database, or None when it is the one this worktree's .env selects.
+
+    load_dotenv() never overrides an already-exported variable, so a shell
+    with another deployment's DATABASE_URL exported silently wins over this
+    worktree's .env, pairing this folder's storage with the wrong database.
+    Checking `'DATABASE_URL' in os.environ` is not enough: load_dotenv() has
+    already copied the .env value into os.environ by now."""
+    from dotenv import dotenv_values
+    env_path = os.path.join(basedir, '.env')
+    file_url = dotenv_values(env_path).get('DATABASE_URL') if os.path.isfile(env_path) else None
+    if os.environ.get('DATABASE_URL') != file_url:
+        return f'DATABASE_URL FROM THE ENVIRONMENT OVERRIDES {env_path}; UNSET IT'
+    return None
+
 @app.cli.command('cleanup')
 @with_appcontext
 def cleanup():
-    cleanup_expired_files()
-    cleanup_orphaned_files()
-    cleanup_orphaned_notes()
-    cleanup_stale_preps()
-    cleanup_stale_progress()
-    cleanup_stale_security_state()
-    cleanup_remote_staging_files()
-    cleanup_temp_dirs()
-    cleanup_stale_music_sync()
+    override_error = _database_url_override_error()
+    if override_error:
+        raise click.ClickException(f'REFUSING TO RUN CLEANUP: {override_error}')
+    run_lock = _acquire_cleanup_run_lock()
+    if run_lock is None:
+        raise click.ClickException('CLEANUP IS ALREADY RUNNING (SCHEDULER OR ADMIN); TRY AGAIN LATER')
+    try:
+        cleanup_expired_files()
+        cleanup_orphaned_files()
+        cleanup_orphaned_notes()
+        cleanup_stale_preps()
+        cleanup_stale_progress()
+        cleanup_stale_security_state()
+        cleanup_remote_staging_files()
+        cleanup_temp_dirs()
+        cleanup_stale_music_sync()
+    finally:
+        _release_cleanup_run_lock(run_lock)
 
 @app.cli.command('storage-remote-cleanup')
 @click.option('--node-id', 'node_ids', multiple=True, type=int, help='Limit cleanup to one or more remote storage node IDs.')
@@ -253,6 +278,10 @@ def cleanup():
 @with_appcontext
 def storage_remote_cleanup(node_ids, apply):
     """Dry-run or execute remote storage cleanup for stale temp keys and B2 history."""
+    if apply:
+        override_error = _database_url_override_error()
+        if override_error:
+            raise click.ClickException(f'REFUSING TO APPLY REMOTE CLEANUP: {override_error}')
     report = storage.cleanup_remote_storage(node_ids=node_ids, apply=apply)
     mode = 'APPLY' if apply else 'DRY RUN'
     print(f'[STORAGE] Remote cleanup mode: {mode}')
@@ -309,6 +338,12 @@ def purge():
         raise click.ClickException('REFUSING TO PURGE: SET ALLOW_DESTRUCTIVE_PURGE=true TO CONFIRM THIS DESTRUCTIVE DEV-ONLY OPERATION')
     if not os.path.basename(os.path.abspath(basedir)).lower().endswith('_dev'):
         raise click.ClickException(f'REFUSING TO PURGE OUTSIDE DEV WORKTREE: {basedir}')
+    override_error = _database_url_override_error()
+    if override_error:
+        raise click.ClickException(f'REFUSING TO PURGE: {override_error}')
+    _db_url = get_database_url()
+    if not ((_db_url.database if _db_url else None) or '').lower().endswith('_dev'):
+        raise click.ClickException(f'REFUSING TO PURGE A DATABASE WHOSE NAME DOES NOT END IN _dev: {redact_database_uri()}')
 
     # AUDIT FIX D12: purge claimed to wipe "database, uploads and thumbnails" but
     # never touched notes/ -- every encrypted note payload survived on local disk
@@ -317,26 +352,33 @@ def purge():
     # a PendingRemoteDelete tombstone queued now would itself be dropped with the
     # rest of the schema (and _remote_delete_target_node_ids() reads StorageNode,
     # which would be gone too). So the remote objects are deleted directly here.
-    _remote_note_ids = []
+    # File payloads and both thumbnail variants get the same treatment.
+    _remote_keys = []
     try:
-        _remote_note_ids = [row[0] for row in db.session.query(Note.id).all()]
+        for file_id, filename in db.session.query(File.id, File.filename).all():
+            _remote_keys.append(('files', filename))
+            _remote_keys.extend(('thumbnails', f'{file_id}{ext}') for ext in ('.jpg', '.e2e'))
+    except Exception as e:
+        print(f'[PURGE] Could not enumerate files for remote wipe: {e}')
+    try:
+        _remote_keys.extend(('notes', row[0]) for row in db.session.query(Note.id).all())
     except Exception as e:
         print(f'[PURGE] Could not enumerate notes for remote wipe: {e}')
-    if _remote_note_ids:
+    if _remote_keys:
         _remote_backends = [
             (nid, backend) for nid, backend in getattr(storage, '_backends', {}).items()
             if nid != getattr(storage, '_local_node_id', None)
         ]
         _remote_removed = 0
-        for note_id in _remote_note_ids:
+        for category, object_id in _remote_keys:
             for nid, backend in _remote_backends:
                 try:
-                    backend.delete('notes', note_id)
+                    backend.delete(category, object_id)
                     _remote_removed += 1
                 except Exception as e:
-                    print(f'[PURGE] Failed to remove note {note_id} from node {nid}: {e}')
+                    print(f'[PURGE] Failed to remove {category}/{object_id} from node {nid}: {e}')
         if _remote_backends:
-            print(f'[PURGE] Removed {_remote_removed} remote note object(s) across {len(_remote_backends)} node(s)')
+            print(f'[PURGE] Removed {_remote_removed} remote object(s) (files, thumbnails, notes) across {len(_remote_backends)} node(s)')
 
     db.session.remove()
     db.engine.dispose()
@@ -439,7 +481,8 @@ def cleanup_stale_preps():
         print(f'[CLEANUP] Cleaned up {tmp_count} stale prep .tmp files')
 
 def cleanup_stale_progress():
-    """Remove stale upload progress JSON files from /tmp/fileshare_progress/ older than 30 minutes."""
+    """Remove upload progress JSON files older than 30 minutes from this instance's
+    _PROGRESS_DIR (<tempdir>/fileshare_progress_<basedir tag>/)."""
     cutoff = time.time() - 1800  # 30 minutes
     count = 0
     try:
@@ -458,9 +501,16 @@ def cleanup_stale_progress():
     if count:
         print(f'[CLEANUP] Cleaned up {count} stale upload progress files')
 
+_STAGING_FILE_MIN_AGE_MINUTES = 30
+
 def cleanup_remote_staging_files():
-    """Remove stale temp cache/staging files from all storage directories."""
-    ttl_minutes = get_numeric_setting('storage_cache_ttl_minutes')
+    """Remove stale temp cache/staging files from all storage directories.
+
+    storage_cache_ttl_minutes can be set as low as 1 minute, but these files
+    back in-flight replication uploads, remote reads and temp writes, so one
+    younger than _STAGING_FILE_MIN_AGE_MINUTES or still held open by any
+    process is never removed."""
+    ttl_minutes = max(_STAGING_FILE_MIN_AGE_MINUTES, get_numeric_setting('storage_cache_ttl_minutes'))
     cutoff = time.time() - (ttl_minutes * 60)
     removed = 0
     for directory in [app.config['UPLOAD_FOLDER'], NOTES_DIR, THUMBNAILS_DIR]:
@@ -478,6 +528,8 @@ def cleanup_remote_staging_files():
                 path = os.path.join(directory, filename)
                 try:
                     if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                        if _path_held_open_by_any_process(path):
+                            continue
                         os.remove(path)
                         removed += 1
                 except Exception as e:
@@ -561,18 +613,18 @@ def cleanup_local_staged_files():
         ).count()
         if verified_remote < required_verified_copies:
             continue
+        file_obj = db.session.get(File, fid)
+        if not file_obj:
+            continue
+        if not file_obj.payload_checksum:
+            print(f'[CLEANUP] Skipping staged file purge for {fid}: no File.payload_checksum')
+            continue
         # Recompute local checksum fresh from disk (no legacy DB blob fallback)
         local_path = storage._local_backend.get_path('files', filename)
         try:
             local_checksum = storage._sha256_file(local_path)
             local_size = os.path.getsize(local_path)
         except Exception:
-            continue
-        file_obj = db.session.get(File, fid)
-        if not file_obj:
-            continue
-        if not file_obj.payload_checksum:
-            print(f'[CLEANUP] Skipping staged file purge for {fid}: no File.payload_checksum')
             continue
         if local_checksum != file_obj.payload_checksum:
             print(f'[CLEANUP] Skipping staged file purge for {fid}: local checksum mismatch')
@@ -758,6 +810,11 @@ _LEGACY_WORK_DIR_PATTERNS = [
 def _is_legacy_work_dir_name(name):
     return any(pattern.match(name) for pattern in _LEGACY_WORK_DIR_PATTERNS)
 
+# Upload staging dirs fall back to UPLOAD_FOLDER when the work-dir root is on
+# another filesystem; those are reaped only after a much longer idle window and
+# only when no file inside is still held open.
+_UPLOAD_FOLDER_WORK_DIR_IDLE_SECONDS = 6 * 3600
+
 def cleanup_temp_dirs():
     """Remove abandoned working directories left by interrupted operations.
 
@@ -770,7 +827,7 @@ def cleanup_temp_dirs():
     cutoff = time.time() - idle_seconds
     removed = 0
 
-    def _maybe_remove(path):
+    def _maybe_remove(path, cutoff=cutoff, check_open=False):
         nonlocal removed
         try:
             if not os.path.isdir(path):
@@ -781,6 +838,10 @@ def cleanup_temp_dirs():
                 print(f'[CLEANUP] [WARNING] Could not determine activity for {path}; leaving it in place')
                 return
             if last_activity >= cutoff:
+                return
+            if check_open and any(
+                    _path_held_open_by_any_process(os.path.join(root, name))
+                    for root, _dirs, names in os.walk(path) for name in names):
                 return
             shutil.rmtree(path)
             removed += 1
@@ -805,6 +866,15 @@ def cleanup_temp_dirs():
             _maybe_remove(os.path.join(tmp_root, name))
     except Exception as e:
         print(f'[CLEANUP] Error listing {tempfile.gettempdir()} for legacy work dirs: {e}')
+
+    upload_folder = app.config['UPLOAD_FOLDER']
+    upload_cutoff = time.time() - _UPLOAD_FOLDER_WORK_DIR_IDLE_SECONDS
+    try:
+        for name in os.listdir(upload_folder):
+            if name.startswith(('upload_', 'api_upload_')):
+                _maybe_remove(os.path.join(upload_folder, name), cutoff=upload_cutoff, check_open=True)
+    except Exception as e:
+        print(f'[CLEANUP] Error listing {upload_folder} for upload work dirs: {e}')
 
     if removed:
         print(f'[CLEANUP] Cleaned up {removed} abandoned work directories')

@@ -7,6 +7,10 @@
 # consecutive ticks instead of loaded in one allocation.
 CLEANUP_DELETE_BATCH_SIZE = 500
 
+# Reverse-orphan checks (DB rows whose local payload is missing) resolve their
+# candidates with chunked IN queries of this size instead of per-row lookups.
+_REVERSE_ORPHAN_CHUNK_SIZE = 500
+
 # M7 FIX: how long a burned (max_downloads reached) file lingers after it is
 # marked pending_delete_at before cleanup_expired_files() hard-deletes the
 # row and payload. The grace exists purely so streams that legitimately
@@ -41,13 +45,29 @@ def _take_capped_batch(rows, label):
     return rows
 
 
+def _acquire_cleanup_run_lock():
+    """Non-blocking cross-process mutex for one destructive cleanup pass.
+
+    Shared by the scheduler's cleanup_job, the admin "run cleanup" endpoint and
+    `flask cleanup`, so two passes never reap the same items concurrently.
+    Returns None when another pass already holds it."""
+    return _open_flock_exclusive(os.path.join(_advisory_lock_dir(), 'cleanup_run.lock'), blocking=False)
+
+
+def _release_cleanup_run_lock(lock_file):
+    _release_scoped_lock(lock_file)
+
+
 def cleanup_expired_files():
     now = datetime.now(timezone.utc)
     # Expiry comparison happens in SQL against the indexed expires_at column.
     # DB values are naive UTC and `now` is aware UTC; the driver formats only the
     # naive components, so this matches the old get_expires_at_aware() semantics.
+    # Candidates are plain (id, ...) rows: the per-item rollback/commit below
+    # expires ORM instances, and touching one whose row was deleted meanwhile
+    # would raise ObjectDeletedError and abort the whole tick.
     expired = _take_capped_batch(
-        _file_query_without_blobs().filter(
+        db.session.query(File.id, File.registered_user_id, File.is_trashed).filter(
             File.expires_at.isnot(None),
             File.expires_at < now
         ).order_by(File.expires_at.asc()).limit(CLEANUP_DELETE_BATCH_SIZE + 1).all(),
@@ -90,7 +110,7 @@ def cleanup_expired_files():
     # still hold, just delayed. Same capped-batch + lifecycle-lock + atomic
     # staging pattern as the expired-file branch above.
     burned = _take_capped_batch(
-        _file_query_without_blobs().filter(
+        db.session.query(File.id, File.registered_user_id).filter(
             File.pending_delete_at.isnot(None),
             File.pending_delete_at < now - DOWNLOAD_LIMIT_DELETE_GRACE
         ).order_by(File.pending_delete_at.asc()).limit(CLEANUP_DELETE_BATCH_SIZE + 1).all(),
@@ -127,7 +147,7 @@ def cleanup_expired_files():
     # Also recursively trash all files and subfolders within, and set parent_id=None
     # so the folder is found by the auto-purge query (which filters parent_id IS NULL)
     expired_folders = _take_capped_batch(
-        Folder.query.filter(
+        db.session.query(Folder.id, Folder.user_id).filter(
             Folder.expires_at.isnot(None),
             Folder.is_trashed == False,
             Folder.expires_at < now
@@ -174,7 +194,7 @@ def cleanup_expired_files():
     # AUDIT FIX A4: the retention comparison is in SQL, not a Python scan of
     # every trashed folder.
     trashed_folders = _take_capped_batch(
-        Folder.query.filter(
+        db.session.query(Folder.id, Folder.user_id).filter(
             Folder.is_trashed == True,
             Folder.trashed_at.isnot(None),
             Folder.parent_id.is_(None),
@@ -213,7 +233,7 @@ def cleanup_expired_files():
     # AUDIT FIX A4: SQL-side retention filter + deferred blob columns instead of
     # materialising every trashed file row.
     trashed_files = _take_capped_batch(
-        _file_query_without_blobs().filter(
+        db.session.query(File.id, File.registered_user_id).filter(
             File.is_trashed == True,
             File.trashed_at.isnot(None),
             File.trashed_at < trash_cutoff
@@ -604,6 +624,8 @@ def cleanup_orphaned_files():
     
     try:
         for filename in storage.list_thumbnails():
+            if _is_internal_storage_artifact(filename):
+                continue
             file_id_part = filename.rsplit('.', 1)[0] if '.' in filename else filename
             if file_id_part not in db_file_ids:
                 # AUDIT FIX D1: unknown mtime fails CLOSED (never delete).
@@ -644,42 +666,43 @@ def cleanup_orphaned_files():
         print(f'[CLEANUP] Error listing files for reverse-orphan check: {e}')
     
     reverse_count = 0
-    reverse_changed = False
     if disk_filenames:
-        for file_id, filename in _file_rows:
-            if filename not in disk_filenames:
-                try:
-                    file_record = db.session.get(File, file_id)
-                    if not file_record:
-                        continue
-                    local_node_id = getattr(storage, '_local_node_id', None)
-                    if local_node_id:
-                        local_replica = FileReplica.query.filter_by(file_id=file_id, node_id=local_node_id).first()
-                        if local_replica and local_replica.status != 'missing':
-                            local_replica.status = 'missing'
-                            local_replica.last_error = 'LOCAL PAYLOAD MISSING DURING CLEANUP; METADATA PRESERVED'
-                            local_replica.verified_at = datetime.now(timezone.utc)
-                            reverse_changed = True
-
-                    # If a synced remote replica exists, the file is still valid;
-                    # it is simply not present on the current local/cache node.
-                    remote_query = FileReplica.query.filter_by(file_id=file_id, status='synced')
-                    if local_node_id:
-                        remote_query = remote_query.filter(FileReplica.node_id != local_node_id)
-                    remote_synced = remote_query.first()
-                    if remote_synced:
-                        continue
-
-                    reverse_count += 1
-                    print(f'[CLEANUP] File metadata preserved but no local or synced remote payload was found: {file_id}')
-                except Exception as e:
-                    print(f'[CLEANUP] Error checking reverse-orphan DB record {file_id}: {e}')
-        if reverse_changed:
+        local_node_id = getattr(storage, '_local_node_id', None)
+        missing_ids = [file_id for file_id, filename in _file_rows if filename not in disk_filenames]
+        for start in range(0, len(missing_ids), _REVERSE_ORPHAN_CHUNK_SIZE):
+            chunk = missing_ids[start:start + _REVERSE_ORPHAN_CHUNK_SIZE]
             try:
+                live_ids = {row[0] for row in db.session.query(File.id).filter(File.id.in_(chunk)).all()}
+                if not live_ids:
+                    continue
+                if local_node_id:
+                    FileReplica.query.filter(
+                        FileReplica.file_id.in_(live_ids),
+                        FileReplica.node_id == local_node_id,
+                        db.or_(FileReplica.status.is_(None), FileReplica.status != 'missing'),
+                    ).update({
+                        FileReplica.status: 'missing',
+                        FileReplica.last_error: 'LOCAL PAYLOAD MISSING DURING CLEANUP; METADATA PRESERVED',
+                        FileReplica.verified_at: datetime.now(timezone.utc),
+                    }, synchronize_session=False)
+                # If a synced remote replica exists, the file is still valid;
+                # it is simply not present on the current local/cache node.
+                remote_query = db.session.query(FileReplica.file_id).filter(
+                    FileReplica.file_id.in_(live_ids),
+                    FileReplica.status == 'synced',
+                )
+                if local_node_id:
+                    remote_query = remote_query.filter(FileReplica.node_id != local_node_id)
+                remote_synced = {row[0] for row in remote_query.distinct().all()}
                 db.session.commit()
             except Exception as e:
                 db.session.rollback()
-                print(f'[CLEANUP] Failed to commit reverse-orphan file replica state: {e}')
+                print(f'[CLEANUP] Error checking reverse-orphan DB records: {e}')
+                continue
+            for file_id in chunk:
+                if file_id in live_ids and file_id not in remote_synced:
+                    reverse_count += 1
+                    print(f'[CLEANUP] File metadata preserved but no local or synced remote payload was found: {file_id}')
         if reverse_count > 0:
             print(f'[CLEANUP] Preserved {reverse_count} file DB records with missing payloads for admin review')
     
@@ -700,6 +723,8 @@ def cleanup_orphaned_notes():
     try:
         for filename in storage.list_notes():
             if filename not in db_note_ids:
+                if _is_internal_storage_artifact(filename):
+                    continue
                 # Skip staged save artifacts. Startup recovery owns these files;
                 # cleanup must not delete an old .new whose DB commit already landed.
                 if filename.endswith('.new') or filename.endswith('.committed') or filename.endswith('.meta'):
@@ -742,46 +767,51 @@ def cleanup_orphaned_notes():
         print(f'[CLEANUP] Error listing notes for reverse-orphan check: {e}')
     
     reverse_count = 0
-    reverse_changed = False
     if disk_note_ids:
-        for note_id, note_content_version, note_content_checksum in _note_rows:
-            if note_id not in disk_note_ids:
-                try:
-                    local_node_id = getattr(storage, '_local_node_id', None)
-                    if local_node_id:
-                        local_replica = NoteReplica.query.filter_by(note_id=note_id, node_id=local_node_id).first()
-                        if local_replica and local_replica.status != 'missing':
-                            local_replica.status = 'missing'
-                            local_replica.last_error = 'LOCAL NOTE PAYLOAD MISSING DURING CLEANUP; METADATA PRESERVED'
-                            local_replica.verified_at = datetime.now(timezone.utc)
-                            reverse_changed = True
-
-                    # If a current synced remote replica exists, the note is valid;
-                    # it is simply not present on the current local/cache node.
-                    note_version = int(note_content_version or 1)
-                    remote_query = NoteReplica.query.filter_by(
-                        note_id=note_id,
-                        status='synced',
-                        synced_version=note_version,
-                    )
-                    if note_content_checksum:
-                        remote_query = remote_query.filter_by(checksum=note_content_checksum)
-                    if local_node_id:
-                        remote_query = remote_query.filter(NoteReplica.node_id != local_node_id)
-                    remote_synced = remote_query.first()
-                    if remote_synced:
-                        continue
-
-                    reverse_count += 1
-                    print(f'[CLEANUP] Note metadata preserved but no local or current synced remote payload was found: {note_id}')
-                except Exception as e:
-                    print(f'[CLEANUP] Error checking reverse-orphan note {note_id}: {e}')
-        if reverse_changed:
+        local_node_id = getattr(storage, '_local_node_id', None)
+        missing_rows = [row for row in _note_rows if row[0] not in disk_note_ids]
+        for start in range(0, len(missing_rows), _REVERSE_ORPHAN_CHUNK_SIZE):
+            chunk = missing_rows[start:start + _REVERSE_ORPHAN_CHUNK_SIZE]
+            chunk_ids = [row[0] for row in chunk]
+            remote_synced = {}
             try:
+                if local_node_id:
+                    NoteReplica.query.filter(
+                        NoteReplica.note_id.in_(chunk_ids),
+                        NoteReplica.node_id == local_node_id,
+                        db.or_(NoteReplica.status.is_(None), NoteReplica.status != 'missing'),
+                    ).update({
+                        NoteReplica.status: 'missing',
+                        NoteReplica.last_error: 'LOCAL NOTE PAYLOAD MISSING DURING CLEANUP; METADATA PRESERVED',
+                        NoteReplica.verified_at: datetime.now(timezone.utc),
+                    }, synchronize_session=False)
+                remote_query = db.session.query(
+                    NoteReplica.note_id, NoteReplica.synced_version, NoteReplica.checksum
+                ).filter(
+                    NoteReplica.note_id.in_(chunk_ids),
+                    NoteReplica.status == 'synced',
+                )
+                if local_node_id:
+                    remote_query = remote_query.filter(NoteReplica.node_id != local_node_id)
+                for replica_note_id, synced_version, checksum in remote_query.all():
+                    remote_synced.setdefault(replica_note_id, []).append((synced_version, checksum))
                 db.session.commit()
             except Exception as e:
                 db.session.rollback()
-                print(f'[CLEANUP] Failed to commit reverse-orphan note replica state: {e}')
+                print(f'[CLEANUP] Error checking reverse-orphan notes: {e}')
+                continue
+            for note_id, note_content_version, note_content_checksum in chunk:
+                # If a current synced remote replica exists, the note is valid;
+                # it is simply not present on the current local/cache node.
+                note_version = int(note_content_version or 1)
+                if any(
+                    synced_version == note_version
+                    and (not note_content_checksum or checksum == note_content_checksum)
+                    for synced_version, checksum in remote_synced.get(note_id, ())
+                ):
+                    continue
+                reverse_count += 1
+                print(f'[CLEANUP] Note metadata preserved but no local or current synced remote payload was found: {note_id}')
         if reverse_count > 0:
             print(f'[CLEANUP] Preserved {reverse_count} note DB records with missing payloads for admin review')
     

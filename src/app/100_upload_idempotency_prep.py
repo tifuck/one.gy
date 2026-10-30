@@ -345,7 +345,7 @@ def _request_body_was_truncated():
 def _zip_skip_if_e2e(file_obj, zip_path, pre_skipped):
     """Server ZIPs cannot decrypt E2EE members. Omit them without consuming slots."""
     if file_obj and file_obj.is_e2e_encrypted:
-        pre_skipped.append(_zip_skip_entry(zip_path, 'E2EE FILE — DOWNLOAD INDIVIDUALLY'))
+        pre_skipped.append(_zip_skip_entry(zip_path, 'E2EE FILE: DOWNLOAD INDIVIDUALLY'))
         return True
     return False
 
@@ -363,7 +363,7 @@ def _reserve_zip_download_slot(file_obj):
     far the most common skip reason) appeared in neither _DOWNLOAD_ERRORS.txt nor
     the X-Incomplete-Archive header. The reason string must now be recorded."""
     if file_obj and file_obj.is_e2e_encrypted:
-        return None, 'E2EE FILE — DOWNLOAD INDIVIDUALLY'
+        return None, 'E2EE FILE: DOWNLOAD INDIVIDUALLY'
     success, error, reservation = check_and_reserve_download(file_obj)
     if success:
         return reservation, None

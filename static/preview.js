@@ -11,6 +11,10 @@
   'use strict'
 
   var EDITOR_MAX = 5 * 1024 * 1024
+  // Anything decrypted or read into page memory is refused above this size.
+  var PREVIEW_MAX = 512 * 1024 * 1024
+  // /file/<id>/preview answers a Range request for audio over 50 MB with 403.
+  var AUDIO_RANGE_MAX = 50 * 1024 * 1024
   var IMG = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
   var TXT = ['txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'py', 'js', 'html', 'css', 'sh', 'ini', 'cfg', 'conf', 'c', 'cpp', 'h', 'hpp', 'lua', 'rb', 'rs', 'go', 'java', 'ts', 'tsx', 'jsx', 'toml', 'bat', 'ps1', 'sql', 'r', 'swift', 'kt', 'php', 'pl', 'diff', 'makefile']
   var VID = ['mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv']
@@ -18,6 +22,8 @@
   var PDF = ['pdf']
 
   var _blobUrl = null
+  var _dlBlobUrl = null
+  var _zoomCleanup = null
   var _editorDirty = false
   var _openGeneration = 0
   var _previewAbort = null
@@ -28,7 +34,11 @@
   function toast (m, c) { if (window.showToast) window.showToast(m, c) }
   function haveKeys () { return typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys && OneGyCrypto.hasSessionKeys() }
   function extOf (item) { var e = item.extension || ''; e = String(e).replace(/^\./, '').toLowerCase(); if (e) return e; var m = /\.([a-z0-9]+)$/i.exec(item.name || ''); return m ? m[1].toLowerCase() : '' }
-  function revoke () { if (_blobUrl) { try { URL.revokeObjectURL(_blobUrl) } catch (e) {} _blobUrl = null } }
+  function revoke () {
+    if (_blobUrl) { try { URL.revokeObjectURL(_blobUrl) } catch (e) {} _blobUrl = null }
+    if (_dlBlobUrl) { try { URL.revokeObjectURL(_dlBlobUrl) } catch (e) {} _dlBlobUrl = null }
+  }
+  function detachZoom () { if (_zoomCleanup) { _zoomCleanup(); _zoomCleanup = null } }
   function isCurrent (generation) { return generation === _openGeneration }
   function beginOpen () {
     _openGeneration++
@@ -52,6 +62,7 @@
     var body = $('previewBody'), nameEl = $('previewFileName'), dl = $('previewDownloadBtn'), resEl = $('previewResolution')
     _editorDirty = false
     revoke()
+    detachZoom()
     if (body.__fxWheel) { body.removeEventListener('wheel', body.__fxWheel); body.__fxWheel = null }
     if (nameEl) nameEl.textContent = item.name || 'Preview'
     if (resEl) { resEl.textContent = ''; resEl.classList.remove('visible') }
@@ -70,6 +81,7 @@
     document.documentElement.style.overflow = ''
     _editorDirty = false
     revoke()
+    detachZoom()
     var body = $('previewBody'); if (body) { if (body.__fxWheel) { body.removeEventListener('wheel', body.__fxWheel); body.__fxWheel = null } body.innerHTML = '' }
     var badge = $('previewZoomBadge'); if (badge) { badge.textContent = ''; badge.classList.remove('visible') }
     _historyOpen = false
@@ -167,10 +179,31 @@
 
   async function render (item, body, dl, resEl, generation, signal) {
     var ext = extOf(item)
+    var known = IMG.indexOf(ext) >= 0 || TXT.indexOf(ext) >= 0 || VID.indexOf(ext) >= 0 || AUD.indexOf(ext) >= 0 || PDF.indexOf(ext) >= 0
+    // Plain files stream straight from the server into the media element /
+    // download link; only E2EE content, text and SVG (served as an attachment)
+    // have to be read into memory first.
+    var direct = !item.is_e2e && (!known || VID.indexOf(ext) >= 0 || PDF.indexOf(ext) >= 0 ||
+      (IMG.indexOf(ext) >= 0 && ext !== 'svg') || (AUD.indexOf(ext) >= 0 && (item.size || 0) <= AUDIO_RANGE_MAX))
+    var directUrl = '/file/' + encodeURIComponent(item.id) + '/preview'
+    if (!direct && (item.size || 0) > PREVIEW_MAX) {
+      body.innerHTML = '<div class="preview-none preview-error"><h3>Too large to preview</h3><p>Files over 512 MB are not opened in the browser. Download it to open it on your device.</p>' +
+        (item.is_e2e ? '' : '<a class="rd-btn rd-btn-primary" href="' + directUrl + '" download="' + esc(item.name || 'file') + '">Download</a>') + '</div>'
+      if (dl && !item.is_e2e) { dl.href = directUrl; dl.download = item.name || 'file' }
+      return
+    }
     try {
-      var bytes = await getBytes(item, signal)
+      var bytes = direct ? null : await getBytes(item, signal)
       if (!isCurrent(generation)) return
-      var blob = function (mime) { var b = new Blob([bytes], { type: mime }); _blobUrl = URL.createObjectURL(b); if (dl) { dl.href = _blobUrl; dl.download = item.name || 'file' } return _blobUrl }
+      var blob = function (mime) {
+        if (direct) { if (dl) { dl.href = directUrl; dl.download = item.name || 'file' } return directUrl }
+        var b = new Blob([bytes], { type: mime }); _blobUrl = URL.createObjectURL(b)
+        // A decrypted SVG opened from the download link would render as a
+        // same-origin document, so that link gets an opaque copy instead.
+        if (mime === 'image/svg+xml') _dlBlobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }))
+        if (dl) { dl.href = _dlBlobUrl || _blobUrl; dl.download = item.name || 'file' }
+        return _blobUrl
+      }
       if (IMG.indexOf(ext) >= 0) {
         var mimeI = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp', svg: 'image/svg+xml' }[ext] || 'image/jpeg'
         var url = blob(mimeI)
@@ -186,7 +219,7 @@
         body.innerHTML = ''
         if ((bytes.byteLength || 0) > EDITOR_MAX) {
           var pre = document.createElement('pre'); pre.className = 'preview-text'; pre.textContent = text.slice(0, 50000)
-          var note = document.createElement('div'); note.className = 'preview-ro-note'; note.textContent = 'FILE TOO LARGE TO EDIT — READ-ONLY'
+          var note = document.createElement('div'); note.className = 'preview-ro-note'; note.textContent = 'FILE TOO LARGE TO EDIT: READ-ONLY'
           body.appendChild(note); body.appendChild(pre)
         } else {
           body.appendChild(buildEditor(text, ext, item, decoded, generation))
@@ -244,8 +277,12 @@
     }
     stage.addEventListener('wheel', stage.__fxWheel, { passive: false })
     img.addEventListener('mousedown', function (e) { if (!isCurrent(generation) || scale <= 1) return; e.preventDefault(); dragging = true; sx = e.clientX - tx; sy = e.clientY - ty; apply() })
-    window.addEventListener('mousemove', function (e) { if (!isCurrent(generation) || !dragging) return; tx = e.clientX - sx; ty = e.clientY - sy; apply() })
-    window.addEventListener('mouseup', function () { if (isCurrent(generation) && dragging) { dragging = false; apply() } })
+    function onMove (e) { if (!isCurrent(generation) || !dragging) return; tx = e.clientX - sx; ty = e.clientY - sy; apply() }
+    function onUp () { if (isCurrent(generation) && dragging) { dragging = false; apply() } }
+    detachZoom()
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    _zoomCleanup = function () { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
     img.addEventListener('dblclick', function (e) { if (!isCurrent(generation)) return; e.stopPropagation(); scale = 1; tx = 0; ty = 0; apply() })
   }
 
@@ -315,7 +352,7 @@
     var out = null
     try { out = await r.json() } catch (e) {}
     if (!r.ok) return { success: false, error: (out && out.error) || ('SAVE FAILED (HTTP ' + r.status + ')') }
-    if (!out || out.success !== true) return { success: false, error: (out && out.error) || 'SAVE FAILED — UNEXPECTED SERVER RESPONSE' }
+    if (!out || out.success !== true) return { success: false, error: (out && out.error) || 'SAVE FAILED: UNEXPECTED SERVER RESPONSE' }
     return out
   }
 
@@ -336,9 +373,9 @@
     var md = null
     try {
       var mr = await fetch('/file/' + item.id + '/manage-data', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-      if (!mr.ok) return { success: false, error: 'COULD NOT CHECK SHARE STATUS (HTTP ' + mr.status + ') — NOT SAVING' }
+      if (!mr.ok) return { success: false, error: 'COULD NOT CHECK SHARE STATUS (HTTP ' + mr.status + '). NOT SAVING' }
       md = await mr.json()
-    } catch (e) { return { success: false, error: 'COULD NOT CHECK SHARE STATUS — NOT SAVING' } }
+    } catch (e) { return { success: false, error: 'COULD NOT CHECK SHARE STATUS. NOT SAVING' } }
 
     var needFileLink = !!(md && (md.has_file_link_key || (md.is_link_shared && !md.ancestor_share_token && !md.has_folder_link_key)))
     var needFolderLink = !!(md && (md.has_folder_link_key || md.ancestor_share_token))
@@ -349,14 +386,14 @@
         var fls = await OneGyCrypto.deriveLinkSecret(masterKey, 'file', item.id)
         fileLinkKey = fls && fls.linkKey
       } catch (e) { fileLinkKey = null }
-      if (!fileLinkKey) return { success: false, error: 'COULD NOT DERIVE THE SHARE-LINK KEY — NOT SAVING' }
+      if (!fileLinkKey) return { success: false, error: 'COULD NOT DERIVE THE SHARE-LINK KEY. NOT SAVING' }
     }
     if (needFolderLink) {
       try {
         var gls = await OneGyCrypto.deriveLinkSecret(masterKey, 'folder', md.ancestor_share_token)
         folderLinkKey = gls && gls.linkKey
       } catch (e) { folderLinkKey = null }
-      if (!folderLinkKey) return { success: false, error: 'COULD NOT DERIVE THE FOLDER SHARE-LINK KEY — NOT SAVING' }
+      if (!folderLinkKey) return { success: false, error: 'COULD NOT DERIVE THE FOLDER SHARE-LINK KEY. NOT SAVING' }
     }
 
     // Recover the real filename. `encrypted_<id>.<ext>` is the server-side
@@ -379,7 +416,7 @@
           }
         }
       } catch (e) { name = null }
-      if (!name) return { success: false, error: 'COULD NOT RECOVER THE ENCRYPTED FILENAME — NOT SAVING' }
+      if (!name) return { success: false, error: 'COULD NOT RECOVER THE ENCRYPTED FILENAME. NOT SAVING' }
     }
 
     // ---- Past this point the file key rotates.
@@ -402,14 +439,14 @@
         var lw = await OneGyCrypto.wrapFileKeyForLink(newKey, fileLinkKey)
         fd.append('link_encrypted_file_key', lw.encryptedFileKey)
         fd.append('link_file_key_nonce', lw.nonce)
-      } catch (e) { return { success: false, error: 'COULD NOT RE-WRAP THE SHARE-LINK KEY — NOT SAVING' } }
+      } catch (e) { return { success: false, error: 'COULD NOT RE-WRAP THE SHARE-LINK KEY. NOT SAVING' } }
     }
     if (folderLinkKey) {
       try {
         var fw = await OneGyCrypto.wrapFileKeyForLink(newKey, folderLinkKey)
         fd.append('folder_link_encrypted_file_key', fw.encryptedFileKey)
         fd.append('folder_link_file_key_nonce', fw.nonce)
-      } catch (e) { return { success: false, error: 'COULD NOT RE-WRAP THE FOLDER SHARE-LINK KEY — NOT SAVING' } }
+      } catch (e) { return { success: false, error: 'COULD NOT RE-WRAP THE FOLDER SHARE-LINK KEY. NOT SAVING' } }
     }
 
     // File key rotated — the previous E2EE thumbnail is undecryptable. The

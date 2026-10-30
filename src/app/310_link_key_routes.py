@@ -19,131 +19,144 @@ def regenerate_file_link(file_id):
     if not (guest_ok or cookie_ok or registered_ok or admin_ok):
         return jsonify({'error': 'ACCESS DENIED'}), 403
 
-    old_id = file.id
-    old_filename = file.filename
-    old_code = file.short_code
-    new_id = str(uuid.uuid4())
-    new_filename = f'{new_id}.enc'
-    new_short_code = generate_short_code() if file.short_code else None
-
-    # Copy physical file to new name (keeps original until DB commit succeeds).
-    # The StorageManager call also creates replica rows for the new object and
-    # queues remote nodes to copy new_filename instead of inheriting stale rows.
-    #
-    # AUDIT FIX (F6 connectivity-aware existence): do NOT gate on
-    # storage.file_exists(), which swallows per-backend connectivity errors and
-    # reports a healthy-but-unreachable remote replica as "missing" — that would
-    # 404 a regenerate even though the file exists on a temporarily unreachable
-    # node. Resolve the source through get_file_path() instead, which performs
-    # verified local/remote failover and only returns None when no node can
-    # actually serve the bytes.
+    rewrite_lock = _acquire_file_rewrite_lock(file.id)
+    lifecycle_lock = _acquire_file_lifecycle_lock(file)
     try:
-        old_path = storage.get_file_path(old_filename)
-        if old_path and os.path.exists(old_path):
-            storage.store_file_copy(new_filename, old_path)
-        else:
-            print(f'[FILE] Warning: physical file not retrievable during regenerate: {old_filename}')
-            return jsonify({'error': 'FAILED TO REGENERATE LINK — FILE DATA UNAVAILABLE'}), 404
-    except Exception as e:
-        print(f'[FILE] Error copying file during regenerate: {e}')
-        return jsonify({'error': 'FAILED TO REGENERATE LINK — FILE SYSTEM ERROR'}), 500
-
-    # Copy thumbnail files to new names (mirrors the file copy-first approach)
-    _thumb_copies = []  # list of (old_thumb_path, new_thumb_path) for rollback
-    _thumb_copy_failed = False  # AUDIT FIX (finding 15)
-    if file.has_thumbnail:
-        for _ext in ('.jpg', '.e2e'):
-            _old_tp = os.path.join(THUMBNAILS_DIR, f'{old_id}{_ext}')
-            if os.path.exists(_old_tp):
-                _new_tp = os.path.join(THUMBNAILS_DIR, f'{new_id}{_ext}')
-                try:
-                    shutil.copy2(_old_tp, _new_tp)
-                    _thumb_copies.append((_old_tp, _new_tp))
-                    _thumb_type = 'e2e' if _ext == '.e2e' else 'jpg'
-                    if storage._local_node_id and storage._local_node_id in storage._backends:
-                        storage._mark_replica_synced('thumbnail', f'{new_id}:{_thumb_type}', storage._local_node_id)
-                        storage._mark_pending_replicas('thumbnail', f'{new_id}:{_thumb_type}', storage._local_node_id)
-                    else:
-                        storage._mark_pending_replicas('thumbnail', f'{new_id}:{_thumb_type}', None)
-                except OSError as e:
-                    # AUDIT FIX (finding 15): a failed copy used to be a bare
-                    # warning -- the row then kept has_thumbnail=True under the
-                    # NEW id while the new-id thumb file never existed (broken
-                    # thumbnail for the file, with the old thumb about to be
-                    # tombstoned). Record it; has_thumbnail is cleared below
-                    # after the PK rotation so the response never advertises a
-                    # thumbnail that is not there.
-                    _thumb_copy_failed = True
-                    print(f'[FILE] Warning: failed to copy thumbnail {_ext} during regenerate: {e}')
-
-    # Update PK + filename via raw SQL (SQLAlchemy ORM does not support PK mutation)
-    # Also update replica tracking tables that reference file.id
-    _old_local_targets = []
-    try:
-        db.session.execute(
-            db.text('UPDATE file SET id = :new_id, filename = :new_filename WHERE id = :old_id'),
-            {'new_id': new_id, 'new_filename': new_filename, 'old_id': old_id}
-        )
-        # AUDIT FIX (regenerate atomic tombstone): the old object has been
-        # rotated away to new_id/new_filename. Stage the OLD file + OLD thumbnail
-        # remote-delete tombstones AND the old replica-row deletions into THIS
-        # transaction so they commit atomically with the PK rotation. Previously
-        # the old replica rows were deleted, the metadata committed, and the old
-        # object was only tombstoned afterwards via an `if file_existed:` branch
-        # whose variable was never defined — so the post-commit cleanup always
-        # raised NameError -> 500 while the regenerate had actually succeeded,
-        # leaving the old local/remote payload untracked with NO delete intent
-        # (a permanent backup-node orphan). stage_payload_deletes() also removes
-        # the old file_replica + thumbnail_replica rows for old_id, so the prior
-        # raw DELETE statements are folded into this single atomic step.
-        _old_delete_keys = [f'storage://files/{old_filename}']
-        for _old_tp, _new_tp in _thumb_copies:
-            _old_delete_keys.append(f'storage://thumbnails/{os.path.basename(_old_tp)}')
-        _old_local_targets = storage.stage_payload_deletes(_old_delete_keys)
-
-        db.session.expire_all()
-        file = db.session.get(File, new_id)
-
-        # AUDIT FIX (finding 15): fail safe when a thumbnail copy failed --
-        # the new id has no thumb file on disk, so stop advertising one
-        # (unless a legacy in-DB blob can still serve it).
-        if _thumb_copy_failed and file.has_thumbnail and not (
-                file.thumbnail_data or file.encrypted_thumbnail_data):
-            print(f'[FILE] Clearing has_thumbnail for {new_id}: thumbnail copy failed during regenerate '
-                  f'and no in-DB thumbnail blob is available')
-            file.has_thumbnail = False
-
-        # Rotate short_code if present
-        if new_short_code:
-            file.short_code = new_short_code
-
-        # Clear any existing link-wrapped keys (they reference the old URL context)
-        file.link_encrypted_file_key = None
-        file.link_file_key_nonce = None
-        file.link_secret = None
-        file.is_link_shared = False
-
-        # AUDIT FIX A20: same check-then-insert race as the upload path -- redraw
-        # the code on a uniqueness collision instead of 500ing a regenerate whose
-        # payload copy has already been written.
-        _commit_with_short_code_retry(file)
-    except Exception as e:
+        # Fresh snapshot under the locks: a concurrent trash/delete or staged
+        # rewrite of this file must not race the copy + PK rotation below.
         db.session.rollback()
-        # Remove the copy since the DB update failed (original file is still intact)
+        file = db.session.get(File, file_id, populate_existing=True)
+        if not file or file.is_trashed:
+            return jsonify({'error': 'FILE NOT FOUND'}), 404
+
+        old_id = file.id
+        old_filename = file.filename
+        old_code = file.short_code
+        new_id = str(uuid.uuid4())
+        new_filename = f'{new_id}.enc'
+        new_short_code = generate_short_code() if file.short_code else None
+
+        # Copy physical file to new name (keeps original until DB commit succeeds).
+        # The StorageManager call also creates replica rows for the new object and
+        # queues remote nodes to copy new_filename instead of inheriting stale rows.
+        #
+        # AUDIT FIX (F6 connectivity-aware existence): do NOT gate on
+        # storage.file_exists(), which swallows per-backend connectivity errors and
+        # reports a healthy-but-unreachable remote replica as "missing" — that would
+        # 404 a regenerate even though the file exists on a temporarily unreachable
+        # node. Resolve the source through get_file_path() instead, which performs
+        # verified local/remote failover and only returns None when no node can
+        # actually serve the bytes.
         try:
-            if storage.file_exists(new_filename):
-                storage.delete_file(new_filename)
-        except Exception:
-            pass
-        # Remove thumbnail copies since the DB update failed
-        for _old_tp, _new_tp in _thumb_copies:
+            old_path = storage.get_file_path(old_filename)
+            if old_path and os.path.exists(old_path):
+                storage.store_file_copy(new_filename, old_path)
+            else:
+                print(f'[FILE] Warning: physical file not retrievable during regenerate: {old_filename}')
+                return jsonify({'error': 'FAILED TO REGENERATE LINK: FILE DATA UNAVAILABLE'}), 404
+        except Exception as e:
+            print(f'[FILE] Error copying file during regenerate: {e}')
+            return jsonify({'error': 'FAILED TO REGENERATE LINK: FILE SYSTEM ERROR'}), 500
+
+        # Copy thumbnail files to new names (mirrors the file copy-first approach)
+        _thumb_copies = []  # list of (old_thumb_path, new_thumb_path) for rollback
+        _thumb_copy_failed = False  # AUDIT FIX (finding 15)
+        if file.has_thumbnail:
+            for _ext in ('.jpg', '.e2e'):
+                _old_tp = os.path.join(THUMBNAILS_DIR, f'{old_id}{_ext}')
+                if os.path.exists(_old_tp):
+                    _new_tp = os.path.join(THUMBNAILS_DIR, f'{new_id}{_ext}')
+                    try:
+                        shutil.copy2(_old_tp, _new_tp)
+                        _thumb_copies.append((_old_tp, _new_tp))
+                        _thumb_type = 'e2e' if _ext == '.e2e' else 'jpg'
+                        if storage._local_node_id and storage._local_node_id in storage._backends:
+                            storage._mark_replica_synced('thumbnail', f'{new_id}:{_thumb_type}', storage._local_node_id)
+                            storage._mark_pending_replicas('thumbnail', f'{new_id}:{_thumb_type}', storage._local_node_id)
+                        else:
+                            storage._mark_pending_replicas('thumbnail', f'{new_id}:{_thumb_type}', None)
+                    except OSError as e:
+                        # AUDIT FIX (finding 15): a failed copy used to be a bare
+                        # warning -- the row then kept has_thumbnail=True under the
+                        # NEW id while the new-id thumb file never existed (broken
+                        # thumbnail for the file, with the old thumb about to be
+                        # tombstoned). Record it; has_thumbnail is cleared below
+                        # after the PK rotation so the response never advertises a
+                        # thumbnail that is not there.
+                        _thumb_copy_failed = True
+                        print(f'[FILE] Warning: failed to copy thumbnail {_ext} during regenerate: {e}')
+
+        # Update PK + filename via raw SQL (SQLAlchemy ORM does not support PK mutation)
+        # Also update replica tracking tables that reference file.id
+        _old_local_targets = []
+        try:
+            db.session.execute(
+                db.text('UPDATE file SET id = :new_id, filename = :new_filename WHERE id = :old_id'),
+                {'new_id': new_id, 'new_filename': new_filename, 'old_id': old_id}
+            )
+            # AUDIT FIX (regenerate atomic tombstone): the old object has been
+            # rotated away to new_id/new_filename. Stage the OLD file + OLD thumbnail
+            # remote-delete tombstones AND the old replica-row deletions into THIS
+            # transaction so they commit atomically with the PK rotation. Previously
+            # the old replica rows were deleted, the metadata committed, and the old
+            # object was only tombstoned afterwards via an `if file_existed:` branch
+            # whose variable was never defined — so the post-commit cleanup always
+            # raised NameError -> 500 while the regenerate had actually succeeded,
+            # leaving the old local/remote payload untracked with NO delete intent
+            # (a permanent backup-node orphan). stage_payload_deletes() also removes
+            # the old file_replica + thumbnail_replica rows for old_id, so the prior
+            # raw DELETE statements are folded into this single atomic step.
+            _old_delete_keys = [f'storage://files/{old_filename}']
+            for _old_tp, _new_tp in _thumb_copies:
+                _old_delete_keys.append(f'storage://thumbnails/{os.path.basename(_old_tp)}')
+            _old_local_targets = storage.stage_payload_deletes(_old_delete_keys)
+
+            db.session.expire_all()
+            file = db.session.get(File, new_id)
+
+            # AUDIT FIX (finding 15): fail safe when a thumbnail copy failed --
+            # the new id has no thumb file on disk, so stop advertising one
+            # (unless a legacy in-DB blob can still serve it).
+            if _thumb_copy_failed and file.has_thumbnail and not (
+                    file.thumbnail_data or file.encrypted_thumbnail_data):
+                print(f'[FILE] Clearing has_thumbnail for {new_id}: thumbnail copy failed during regenerate '
+                      f'and no in-DB thumbnail blob is available')
+                file.has_thumbnail = False
+
+            # Rotate short_code if present
+            if new_short_code:
+                file.short_code = new_short_code
+
+            # Clear any existing link-wrapped keys (they reference the old URL context)
+            file.link_encrypted_file_key = None
+            file.link_file_key_nonce = None
+            file.link_secret = None
+            file.is_link_shared = False
+
+            # AUDIT FIX A20: same check-then-insert race as the upload path -- redraw
+            # the code on a uniqueness collision instead of 500ing a regenerate whose
+            # payload copy has already been written.
+            _commit_with_short_code_retry(file)
+        except Exception as e:
+            db.session.rollback()
+            # Remove the copy since the DB update failed (original file is still intact)
             try:
-                if os.path.exists(_new_tp):
-                    os.remove(_new_tp)
-            except OSError:
+                if storage.file_exists(new_filename):
+                    storage.delete_file(new_filename)
+            except Exception:
                 pass
-        print(f'[FILE] Error updating database during regenerate: {e}')
-        return jsonify({'error': 'FAILED TO REGENERATE LINK — DATABASE ERROR'}), 500
+            # Remove thumbnail copies since the DB update failed
+            for _old_tp, _new_tp in _thumb_copies:
+                try:
+                    if os.path.exists(_new_tp):
+                        os.remove(_new_tp)
+                except OSError:
+                    pass
+            print(f'[FILE] Error updating database during regenerate: {e}')
+            return jsonify({'error': 'FAILED TO REGENERATE LINK: DATABASE ERROR'}), 500
+    finally:
+        _release_lifecycle_lock(lifecycle_lock)
+        _release_file_rewrite_lock(rewrite_lock)
 
     # DB commit succeeded: the new object is tracked and the OLD file + thumbnail
     # objects were tombstoned and un-tracked atomically above. Purge the OLD
@@ -158,7 +171,7 @@ def regenerate_file_link(file_id):
         new_share_url = f'https://{domain}/s/{file.short_code}'
     else:
         new_share_url = f'https://{domain}/f/{new_id}/{urllib.parse.quote(file.orig_name)}'
-    print(f'[FILE] Regenerated share link for file: {file.orig_name} (old id: {old_id}, new id: {new_id}, old code: {old_code}, new code: {file.short_code})')
+    print(f'[FILE] Regenerated share link for file: {_log_safe(file.orig_name)} (old id: {old_id}, new id: {new_id}, old code: {old_code}, new code: {file.short_code})')
     return jsonify({'success': True, 'share_url': new_share_url, 'short_code': file.short_code, 'new_id': new_id})
 
 @app.route('/folder/<int:folder_id>/regenerate-link', methods=['POST'])
@@ -258,7 +271,7 @@ def set_link_key(file_id):
     # link_secret is no longer stored server-side — derived client-side via HKDF
     db.session.commit()
     
-    print(f'[FILE] Link key set for file: {file.orig_name}')
+    print(f'[FILE] Link key set for file: {_log_safe(file.orig_name)}')
     return jsonify({'success': True})
 
 @app.route('/folder/<int:folder_id>/link-secret', methods=['POST'])
@@ -602,10 +615,11 @@ def batch_file_key_info():
     # AUDIT FIX (finding 10): a list of non-scalar entries (dicts/objects)
     # reached File.id.in_() and raised a DBAPIError -> 500. Validate types
     # and answer 400 instead.
-    file_ids, id_error = _parse_bulk_id_list(data['file_ids'], label='FILE_IDS')
+    # Cap at 200 files per batch BEFORE parsing: the parser rejects oversized
+    # lists, and manage-modal.js sends every E2EE file id of a shared folder.
+    file_ids, id_error = _parse_bulk_id_list(data['file_ids'][:200], label='FILE_IDS')
     if id_error:
         return jsonify({'error': id_error}), 400
-    file_ids = file_ids[:200]  # Cap at 200 files per batch
     # AUDIT FIX H4: epoch-validated user resolution.
     _batch_user = _current_session_user()
     if not _batch_user:
@@ -663,7 +677,7 @@ def download_encrypted(file_id):
     if expires_at_aware and expires_at_aware < datetime.now(timezone.utc):
         file, deleted_name = _delete_immediately_expired_file(file)
         if deleted_name:
-            print(f'[ENCRYPTED] File expired, deleted: {deleted_name}')
+            print(f'[ENCRYPTED] File expired, deleted: {_log_safe(deleted_name)}')
             return render_template('notfound.html',
                 title='FILE EXPIRED',
                 subtitle='THIS FILE HAS PASSED ITS EXPIRATION DATE AND HAS BEEN REMOVED',
@@ -677,7 +691,7 @@ def download_encrypted(file_id):
     is_owner = _current_user_owns_file(file)
 
     if not _file_share_password_ok(file, is_owner):
-        return render_template('pw.html', file_id=file_id, error=bool(_get_share_password()))
+        return render_template('pw.html', file_id=file_id, error=bool(_get_share_password())), 401
 
     # Check access permissions
     # Also check if file is inside a public or browsable folder (folder inherits access)
@@ -685,20 +699,22 @@ def download_encrypted(file_id):
         public_folder = is_file_in_public_folder(file)
         browsable_folder = is_file_in_browsable_folder(file)
         if public_folder:
-            print(f'[ENCRYPTED] File {file.orig_name} accessible via public folder: {_log_safe(public_folder.name)}')
+            print(f'[ENCRYPTED] File {_log_safe(file.orig_name)} accessible via public folder: {_log_safe(public_folder.name)}')
         elif browsable_folder:
-            print(f'[ENCRYPTED] File {file.orig_name} accessible via browsable folder: {_log_safe(browsable_folder.name)}')
+            print(f'[ENCRYPTED] File {_log_safe(file.orig_name)} accessible via browsable folder: {_log_safe(browsable_folder.name)}')
         elif not is_owner and not file.password_hash:
             return render_template('notfound.html',
                 title='FILE NOT FOUND',
                 subtitle='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED',
                 detail='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED'), 404
 
-        if not is_owner and not _e2e_file_has_non_owner_key(file):
-            return render_template('notfound.html',
-                title='FILE NOT FOUND',
-                subtitle='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED',
-                detail='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED'), 404
+    # Same rule as download_file_logic(): a non-owner cannot decrypt an E2EE file
+    # without a link/passphrase-scoped key, public or not, so neither serve nor count it.
+    if not is_owner and not _e2e_file_has_non_owner_key(file):
+        return render_template('notfound.html',
+            title='FILE NOT FOUND',
+            subtitle='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED',
+            detail='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED'), 404
 
     encrypted_path = storage.get_file_path(file.filename)
     if not encrypted_path or not os.path.exists(encrypted_path):

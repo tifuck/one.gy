@@ -1,10 +1,10 @@
 .pr-layout{max-width:var(--maxw);margin-inline:auto;padding:clamp(1.4rem,3.5vw,2.5rem) clamp(1.1rem,4vw,2.2rem) 4rem}
 
 .pr-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:1rem 1.5rem;margin-bottom:1.6rem}
-.pr-head-side{display:flex;flex-direction:column;align-items:flex-end;gap:.65rem;flex:none}
+.pr-head-side{display:flex;align-items:stretch;gap:.6rem;flex:none}
 .pr-head-copy{min-width:0;max-width:52ch}
 .pr-kicker{font-family:var(--font-mono);font-size:.66rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--text-dim);margin-bottom:.45rem}
-.pr-title{font-family:var(--font-display);font-weight:800;letter-spacing:-.02em;font-size:clamp(1.7rem,3.4vw,2.4rem);line-height:1.05;margin:0 0 .45rem}
+.pr-title{font-family:var(--font-display);font-weight:800;letter-spacing:-.02em;text-transform:uppercase;font-size:clamp(2.2rem,4.6vw,3.4rem);line-height:1;margin:0 0 .6rem}
 .pr-lead{color:var(--text-dim);font-size:.95rem;line-height:1.55;margin:0}
 
 .pr-tabs{display:inline-flex;border:2px solid var(--border);flex:none}
@@ -16,9 +16,9 @@
 .pr-toolbar{display:flex;flex-wrap:wrap;gap:.7rem;align-items:center;margin-bottom:1.1rem}
 .pr-search{flex:1 1 16rem;min-width:12rem}
 .pr-hide-input{display:inline-flex;align-items:center;gap:.45rem;font-family:var(--font-mono);font-size:.7rem;letter-spacing:.04em;text-transform:uppercase;color:var(--text-dim);cursor:pointer;user-select:none}
-.pr-tags{display:flex;flex-wrap:wrap;gap:.4rem;width:100%}
-.pr-chip{font-family:var(--font-mono);font-size:.64rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-  color:var(--text-dim);border:2px solid var(--border);background:transparent;padding:.28rem .55rem;cursor:pointer}
+.pr-tags{display:flex;flex-wrap:wrap;gap:.35rem;width:100%}
+.pr-chip{font-family:var(--font-mono);font-size:.64rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--text-dim);border:2px solid var(--border);background:transparent;padding:.28rem .5rem;cursor:pointer}
 .pr-chip:hover{color:var(--text);border-color:var(--text)}
 .pr-chip.is-on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
 
@@ -122,7 +122,8 @@
   .pr-preview{position:static;max-height:none}
 }
 @media (max-width:560px){
-  .pr-head-side{align-items:flex-start}
+  .pr-head-side{width:100%}
+  .pr-head-side .pr-btn{margin-left:auto}
 }
 @media (prefers-reduced-motion:reduce){
   .pr-row{animation:none!important}

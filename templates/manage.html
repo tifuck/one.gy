@@ -37,8 +37,10 @@
     <p class="gw-sub" id="gwManageName">{{ folder.name if is_folder else file.orig_name }}</p>
 
     {# Share-link QR — only the file manage route passes qr_data (folder manage
-       does not), so this block is presence-gated. #}
-    {% if qr_data %}
+       does not), so this block is presence-gated. The QR carries no #key
+       fragment, so it is useless ("key missing") for E2EE files, and pointless
+       for a file nobody else can open. #}
+    {% if qr_data and not file.is_e2e_encrypted and (file.is_public or inherited_public or parent_is_browsable) %}
     <div class="gw-qr">
       <img src="data:image/png;base64,{{ qr_data }}" alt="Share link QR code" width="150" height="150">
     </div>
@@ -121,7 +123,8 @@
       onDownload: function (type, data) {
         var link = document.getElementById('manageShareLink')
         var url = (link && link.value) || (data && data.download_url) || ''
-        if (url) window.location.href = url
+        // replace(): the share link can carry #passphrase=; keep it out of history.
+        if (url) window.location.replace(url)
       }
       // Deliberately NO onClose redirect. ManageModal fires onClose for a failed
       // load and for the internal close during an E2E re-encrypt, so navigating

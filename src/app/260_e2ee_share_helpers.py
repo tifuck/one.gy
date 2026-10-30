@@ -122,6 +122,7 @@ def decrypt_file_chunked(input_path, expected_size=None,
 
     # Cheap up-front truncation check against File.disk_size (if provided)
     if expected_disk_size is not None and file_size != expected_disk_size:
+        storage._forget_local_integrity(input_path)
         _log_payload_corruption(
             file_id, 'fernet-disk-size',
             expected_payload_checksum or '(none)', '(none)',
@@ -187,6 +188,7 @@ def decrypt_file_chunked(input_path, expected_size=None,
             # loop would first release a complete advertised body to the client.
             if expected_size is not None and total_decrypted > expected_size:
                 print(f'[DECRYPT] ERROR: Size mismatch! Expected {expected_size} bytes, got more than that at chunk #{chunk_num} (corrupted)')
+                storage._forget_local_integrity(input_path)
                 _log_payload_corruption(
                     file_id, 'fernet-plaintext-size',
                     expected_payload_checksum or '(none)', '(none)',
@@ -205,6 +207,7 @@ def decrypt_file_chunked(input_path, expected_size=None,
     # Validate decrypted size matches expected size if provided (detects silent truncation)
     if expected_size is not None and total_decrypted != expected_size:
         print(f'[DECRYPT] ERROR: Size mismatch! Expected {expected_size} bytes, got {total_decrypted} bytes (truncated or corrupted)')
+        storage._forget_local_integrity(input_path)
         _log_payload_corruption(
             file_id, 'fernet-plaintext-size',
             expected_payload_checksum or '(none)', '(none)',
@@ -225,6 +228,7 @@ def decrypt_file_chunked(input_path, expected_size=None,
     if payload_hasher is not None:
         actual_checksum = payload_hasher.hexdigest()
         if actual_checksum != expected_payload_checksum:
+            storage._forget_local_integrity(input_path)
             _log_payload_corruption(
                 file_id, 'fernet-payload',
                 expected_payload_checksum, actual_checksum,
@@ -379,16 +383,25 @@ def _remember_folder_share_access(folder):
 # source addresses got a fresh 10-attempt allowance per address, bounded only by
 # the generic limiter. Each attempt also ran check_password_hash (a full PBKDF2
 # KDF) BEFORE the failure was recorded, so an authenticated attacker could pin
-# the CPU. There is now ALSO a per-resource global budget, and BOTH lockouts are
-# consulted before any KDF work happens, so the total number of KDF evaluations
-# an unauthenticated caller can force against one resource is bounded.
+# the CPU. Every attempt is charged before any KDF work happens.
+#
+# Share-password DoS fix: the per-resource global budget used to HARD-LOCK the
+# resource for everyone (5 addresses x 10 wrong guesses locked every visitor,
+# correct password included, out for 15-60 min) and a correct password CLEARED
+# it, handing an attacker a fresh budget after each legitimate unlock. The
+# global counter now never blocks on its own and is never cleared by an unlock
+# (only the owner changing the password resets it). Once a resource has seen
+# SHARE_PW_GLOBAL_MAX_ATTEMPTS failures inside the reset window it is treated as
+# under attack and every address's budget shrinks to
+# SHARE_PW_UNDER_ATTACK_MAX_ATTEMPTS before its escalating lockout: legitimate
+# visitors keep tries of their own, rotating attackers get 3 per address.
 _share_pw_failure_map = {}   # non-authoritative process-local mirror
 _share_pw_lock = threading.Lock()
 SHARE_PW_MAX_ATTEMPTS = 10
+SHARE_PW_UNDER_ATTACK_MAX_ATTEMPTS = 3
 SHARE_PW_LOCKOUT_SECONDS = 300
 SHARE_PW_GLOBAL_MAX_ATTEMPTS = 50
-SHARE_PW_GLOBAL_LOCKOUT_SECONDS = 900
-SHARE_PW_FAILURE_RESET_AFTER = SHARE_PW_GLOBAL_LOCKOUT_SECONDS
+SHARE_PW_FAILURE_RESET_AFTER = 900
 
 def _share_pw_lockout_key(kind, resource_id):
     return f'{kind}:{resource_id}:{get_remote_address()}'
@@ -418,53 +431,49 @@ def _write_share_pw_failure_state(key, state):
 
 def _share_pw_is_locked(kind, resource_id):
     now = time.time()
-    keys = (_share_pw_lockout_key(kind, resource_id),
-            _share_pw_global_lockout_key(kind, resource_id))
-    locks = _acquire_security_state_locks(
-        [('share_pw_failure', key) for key in keys])
+    key = _share_pw_lockout_key(kind, resource_id)
+    locks = _acquire_security_state_locks([('share_pw_failure', key)])
     try:
-        for key in keys:
-            entry = _read_share_pw_failure_state(key, now)
-            if entry and entry.get('until', 0) > now:
-                return True
-        return False
+        entry = _read_share_pw_failure_state(key, now)
+        return bool(entry and entry.get('until', 0) > now)
     finally:
         _release_security_state_locks(locks)
 
 def _share_pw_begin_attempt(kind, resource_id):
     """Charge one attempt to both budgets BEFORE the KDF runs, or return False
-    while locked out. Check and charge share one critical section, so concurrent
-    requests cannot all pass the check and overrun the budget; a correct
-    password then clears the charge via _share_pw_clear()."""
+    while this address is locked out. Check and charge share one critical
+    section, so concurrent requests cannot all pass the check and overrun the
+    budget; a correct password then refunds the charge via _share_pw_forgive()."""
     return _share_pw_record_failure(kind, resource_id, require_unlocked=True)
 
 def _share_pw_record_failure(kind, resource_id, require_unlocked=False):
     now = time.time()
     scoped_key = _share_pw_lockout_key(kind, resource_id)
     global_key = _share_pw_global_lockout_key(kind, resource_id)
-    entries = (
-        (scoped_key, SHARE_PW_MAX_ATTEMPTS, SHARE_PW_LOCKOUT_SECONDS,
-         get_remote_address()),
-        (global_key, SHARE_PW_GLOBAL_MAX_ATTEMPTS,
-         SHARE_PW_GLOBAL_LOCKOUT_SECONDS, 'all addresses'),
-    )
     locks = _acquire_security_state_locks(
         [('share_pw_failure', key) for key in (scoped_key, global_key)])
     try:
-        if require_unlocked:
-            for key in (scoped_key, global_key):
-                entry = _read_share_pw_failure_state(key, now)
-                if entry and entry.get('until', 0) > now:
-                    return False
-        for key, max_attempts, lockout_seconds, scope in entries:
-            entry = _read_share_pw_failure_state(key, now) or {'count': 0, 'until': 0, 'last': 0}
-            entry['count'] = entry.get('count', 0) + 1
-            entry['last'] = now
-            if entry['count'] >= max_attempts:
-                over = entry['count'] - max_attempts
-                entry['until'] = now + min(lockout_seconds * (2 ** min(over, 4)), 3600)
-                print(f'[RATELIMIT] Share-password lockout for {kind} {resource_id} '
-                      f'(attempt {entry["count"]} from {scope})')
+        scoped = _read_share_pw_failure_state(scoped_key, now) or {'count': 0, 'until': 0, 'last': 0}
+        shared = _read_share_pw_failure_state(global_key, now) or {'count': 0, 'last': 0}
+        if require_unlocked and scoped.get('until', 0) > now:
+            return False
+        max_attempts = SHARE_PW_MAX_ATTEMPTS
+        if shared.get('count', 0) >= SHARE_PW_GLOBAL_MAX_ATTEMPTS:
+            max_attempts = SHARE_PW_UNDER_ATTACK_MAX_ATTEMPTS
+        scoped['count'] = scoped.get('count', 0) + 1
+        scoped['last'] = now
+        if scoped['count'] >= max_attempts:
+            over = scoped['count'] - max_attempts
+            scoped['until'] = now + min(SHARE_PW_LOCKOUT_SECONDS * (2 ** min(over, 4)), 3600)
+            print(f'[RATELIMIT] Share-password lockout for {kind} {resource_id} '
+                  f'(attempt {scoped["count"]} from {get_remote_address()})')
+        shared['count'] = shared.get('count', 0) + 1
+        shared['last'] = now
+        if shared['count'] == SHARE_PW_GLOBAL_MAX_ATTEMPTS:
+            print(f'[RATELIMIT] Share-password failures for {kind} {resource_id} reached '
+                  f'{SHARE_PW_GLOBAL_MAX_ATTEMPTS} from all addresses; per-address budget '
+                  f'reduced to {SHARE_PW_UNDER_ATTACK_MAX_ATTEMPTS}')
+        for key, entry in ((scoped_key, scoped), (global_key, shared)):
             _write_share_pw_failure_state(key, entry)
             with _share_pw_lock:
                 _share_pw_failure_map[key] = dict(entry)
@@ -473,6 +482,49 @@ def _share_pw_record_failure(kind, resource_id, require_unlocked=False):
         return True
     finally:
         _release_security_state_locks(locks)
+
+def _share_pw_forgive(kind, resource_id):
+    """A correct password: forget this address's failures and refund the one
+    attempt _share_pw_begin_attempt() charged to the global counter, which is
+    otherwise left intact so an unlock never resets an attacker's budget."""
+    now = time.time()
+    scoped_key = _share_pw_lockout_key(kind, resource_id)
+    global_key = _share_pw_global_lockout_key(kind, resource_id)
+    locks = _acquire_security_state_locks(
+        [('share_pw_failure', key) for key in (scoped_key, global_key)])
+    try:
+        _write_share_pw_failure_state(scoped_key, None)
+        shared = _read_share_pw_failure_state(global_key, now)
+        if shared:
+            shared['count'] = max(int(shared.get('count', 0)) - 1, 0)
+            _write_share_pw_failure_state(global_key, shared)
+        with _share_pw_lock:
+            _share_pw_failure_map.pop(scoped_key, None)
+            if shared:
+                _share_pw_failure_map[global_key] = dict(shared)
+    finally:
+        _release_security_state_locks(locks)
+
+def _share_pw_try(kind, resource_id, password_hash, password):
+    """Verify a supplied share password against at most ONE resource per request.
+
+    The password a visitor submits is meant for the resource whose prompt they
+    answered -- the first locked resource the request's gate checks. Trying it
+    against every other protected folder/file the same request touches (chain
+    members, subfolders being listed) charged a failure and ran a KDF against
+    each of them, so one correct unlock locked visitors out of sibling shares.
+    Any later resource in the same request is reported locked without being
+    charged; it unlocks on the next request through its own prompt/marker."""
+    attempt = _walker_cache('share_pw_attempt')
+    if attempt:
+        return attempt['target'] == (kind, resource_id) and attempt['ok']
+    ok = False
+    if _share_pw_begin_attempt(kind, resource_id):
+        ok = check_password_hash(password_hash, password)
+        if ok:
+            _share_pw_forgive(kind, resource_id)
+    attempt.update(target=(kind, resource_id), ok=ok)
+    return ok
 
 def _share_pw_clear(kind, resource_id):
     keys = (_share_pw_lockout_key(kind, resource_id),
@@ -495,15 +547,10 @@ def _folder_share_password_ok(folder):
     if _share_unlock_valid('unlocked_folder_shares', folder.id, expected_marker):
         return True
     password = _get_share_password()
-    if password:
-        # AUDIT FIX M11/P16: reject (without running the KDF) while locked out,
-        # either per-IP or against the per-resource global budget.
-        if not _share_pw_begin_attempt('folder', folder.id):
-            return False
-        if check_password_hash(folder.password_hash, password):
-            _share_pw_clear('folder', folder.id)
-            _remember_folder_share_access(folder)
-            return True
+    # AUDIT FIX M11/P16: charged + lockout-gated before the KDF runs.
+    if password and _share_pw_try('folder', folder.id, folder.password_hash, password):
+        _remember_folder_share_access(folder)
+        return True
     return False
 
 def _folder_has_active_non_owner_share(folder, require_browsable=False, require_password=True):
@@ -560,6 +607,7 @@ def _guest_temp_storage_used_bytes(now=None):
     current_time = now or datetime.now(timezone.utc)
     guest_used = db.session.query(db.func.coalesce(db.func.sum(File.disk_size), 0)).filter(
         File.is_temp_upload == True,
+        File.registered_user_id.is_(None),
         File.is_trashed == False,
         db.or_(File.expires_at.is_(None), File.expires_at > current_time)
     ).scalar() or 0

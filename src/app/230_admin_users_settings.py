@@ -596,7 +596,6 @@ def admin_api_temp_files():
             'is_public': f.is_public,
             'is_e2e_encrypted': f.is_e2e_encrypted,
             'has_password': f.password_hash is not None,
-            'management_token': f.management_token,
             'short_code': f.short_code,
         } for f in files],
         'total': total,
@@ -605,11 +604,45 @@ def admin_api_temp_files():
         'pages': (total + per_page - 1) // per_page,
     })
 
+@app.route('/admin/api/temp-files/<file_id>', methods=['DELETE'])
+@limiter.limit(admin_rate_limit)
+@admin_required
+def admin_api_temp_file_delete(file_id):
+    """Delete one temp upload by id, so the console never handles the file's
+    management token (a full-owner bearer capability)."""
+    file = _file_query_without_blobs().filter_by(id=file_id, is_temp_upload=True).first()
+    if not file:
+        return jsonify({'error': 'FILE NOT FOUND'}), 404
+    lifecycle_lock = _acquire_file_lifecycle_lock(file)
+    try:
+        db.session.rollback()
+        file = _file_query_without_blobs().filter_by(id=file_id, is_temp_upload=True).first()
+        if not file:
+            return jsonify({'error': 'FILE NOT FOUND'}), 404
+        file_name = file.orig_name
+        local_targets = storage.stage_payload_deletes(_file_payload_delete_keys(file))
+        db.session.delete(file)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f'[ERROR] Admin delete of temp file {file_id} failed: {e}')
+        return jsonify({'error': 'FILE DELETION FAILED. PLEASE TRY AGAIN'}), 500
+    finally:
+        _release_lifecycle_lock(lifecycle_lock)
+
+    storage.purge_staged_locals(local_targets)
+    check_storage()
+    print(f'[ADMIN] Deleted temp file {file_id}: {_log_safe(file_name)}')
+    return jsonify({'success': True})
+
 @app.route('/admin/api/cleanup', methods=['POST'])
 @limiter.limit(admin_rate_limit)
 @admin_required
 def admin_api_cleanup():
     """Run cleanup tasks and return results"""
+    run_lock = _acquire_cleanup_run_lock()
+    if run_lock is None:
+        return jsonify({'error': 'CLEANUP IS ALREADY RUNNING. TRY AGAIN LATER'}), 409
     try:
         cleanup_expired_files()
         cleanup_orphaned_files()
@@ -625,6 +658,8 @@ def admin_api_cleanup():
     except Exception as e:
         print(f'[ADMIN] Cleanup error: {e}')
         return jsonify({'error': 'CLEANUP FAILED'}), 500
+    finally:
+        _release_cleanup_run_lock(run_lock)
 
 @app.route('/admin/api/settings')
 @limiter.limit(admin_rate_limit)
@@ -672,9 +707,10 @@ def admin_api_settings_update():
     numeric_keys = {'storage_cache_ttl_minutes', 'trash_retention_hours'}
     float_keys = {'temp_max_gb'}
 
-    # AUDIT FIX A10/A11: clamp numeric input to sane bounds and reject
-    # non-finite floats. `float('inf')`/`float('nan')` parse fine in Python and
-    # would otherwise be persisted as config.
+    # AUDIT FIX A10/A11: bound numeric input and reject non-finite floats.
+    # `float('inf')`/`float('nan')` parse fine in Python and would otherwise be
+    # persisted as config. Integer settings are rejected, not clamped, when out
+    # of range: clamping trash_retention_hours=0 to 1 h would purge the trash.
     numeric_bounds = {
         'storage_cache_ttl_minutes': (1, 10080),
         'trash_retention_hours': (1, 8760),
@@ -691,14 +727,23 @@ def admin_api_settings_update():
                 continue
             prepared.append((key, value))
         elif key in numeric_keys:
+            if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+                rejections[key] = 'MUST BE AN INTEGER'
+                continue
             try:
                 int_val = int(value)
             except (ValueError, TypeError, OverflowError):
                 rejections[key] = 'MUST BE AN INTEGER'
                 continue
             low, high = numeric_bounds.get(key, (1, 10 ** 9))
-            prepared.append((key, max(low, min(int_val, high))))
+            if not low <= int_val <= high:
+                rejections[key] = f'MUST BE BETWEEN {low} AND {high}'
+                continue
+            prepared.append((key, int_val))
         elif key in float_keys:
+            if isinstance(value, bool):
+                rejections[key] = 'MUST BE A NUMBER'
+                continue
             try:
                 float_val = float(value)
             except (ValueError, TypeError, OverflowError):

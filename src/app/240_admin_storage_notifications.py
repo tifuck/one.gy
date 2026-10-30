@@ -46,6 +46,49 @@ def admin_api_storage_nodes():
         })
     return jsonify({'nodes': result})
 
+# Config keys the admin API may set, per node type: exactly what _SSHBackend,
+# _S3Backend and the local node read. SSH `key_path` is deliberately absent: it
+# would let a web admin authenticate with any private key on this server (e.g.
+# ~/.ssh/*). Key auth over the API uses `key_data`.
+_STORAGE_NODE_CONFIG_KEYS = {
+    'local': frozenset({'path'}),
+    'ssh': frozenset({
+        'hostname', 'port', 'username', 'remote_path', 'auth_method', 'password',
+        'key_data', 'key_passphrase', 'host_key', 'host_key_sha256', 'host_key_fingerprint',
+    }),
+    's3': frozenset({
+        'endpoint_url', 'bucket', 'region', 'prefix', 'access_key', 'secret_key',
+        'provider', 'permanent_delete',
+    }),
+}
+
+# (key, backend default) pairs that select WHERE a node's objects live.
+_STORAGE_NODE_LOCATION_KEYS = {
+    'ssh': (('hostname', ''), ('port', 22), ('remote_path', '/opt/onegy-storage')),
+    's3': (('endpoint_url', ''), ('bucket', ''), ('prefix', '')),
+}
+
+def _storage_node_config_key_error(node_type, config):
+    allowed = _STORAGE_NODE_CONFIG_KEYS.get(node_type, frozenset())
+    unknown = sorted(str(key)[:64] for key in config if key not in allowed)
+    if unknown:
+        return f'UNSUPPORTED {node_type.upper()} CONFIG KEY(S): {", ".join(unknown)}'
+    return None
+
+def _storage_node_location(node_type, config):
+    return tuple(str(config.get(key) or default).strip()
+                 for key, default in _STORAGE_NODE_LOCATION_KEYS.get(node_type, ()))
+
+def _storage_node_has_placed_replicas(node_id):
+    """True while any replica row claims an object is (being) stored on the node."""
+    return any(
+        db.session.query(model.id).filter(
+            model.node_id == node_id,
+            model.status.in_(('synced', 'syncing')),
+        ).first() is not None
+        for model in (FileReplica, NoteReplica, ThumbnailReplica)
+    )
+
 @app.route('/admin/api/storage/nodes', methods=['POST'])
 @limiter.limit(admin_rate_limit)
 @admin_required
@@ -75,6 +118,9 @@ def admin_api_storage_nodes_create():
     config = data.get('config') or {}
     if not isinstance(config, dict):
         return jsonify({'error': 'INVALID NODE CONFIG'}), 400
+    config_key_error = _storage_node_config_key_error(node_type, config)
+    if config_key_error:
+        return jsonify({'error': config_key_error}), 400
 
     # AUDIT FIX (finding 1): a second 'local' node used to be accepted (with
     # any config path) while _create_backend aliased the SAME canonical local
@@ -187,9 +233,13 @@ def admin_api_storage_nodes_update(node_id):
     if 'config' in data:
         # Merge with existing config (so secrets don't need to be resent)
         existing_config = node.get_config()
+        old_location = _storage_node_location(node.node_type, existing_config)
         new_config = data.get('config') or {}
         if not isinstance(new_config, dict):
             return jsonify({'error': 'INVALID NODE CONFIG'}), 400
+        config_key_error = _storage_node_config_key_error(node.node_type, new_config)
+        if config_key_error:
+            return jsonify({'error': config_key_error}), 400
         for k, v in new_config.items():
             # Blank otherwise means "keep the stored value" (secrets are never
             # sent back); an S3 prefix, though, can legitimately be cleared.
@@ -228,6 +278,14 @@ def admin_api_storage_nodes_update(node_id):
                     or existing_config.get('host_key_fingerprint')):
                 print(f'[ADMIN] Rejected unpinned SSH password auth update for node {node_id}')
                 return jsonify({'error': 'SSH PASSWORD AUTH REQUIRES A PINNED HOST_KEY OR HOST_KEY_SHA256 FINGERPRINT'}), 400
+        # Replica rows say "this object is on node N" without recording where N
+        # pointed, so moving N would leave them claiming copies that the new
+        # location does not have (read failover, removal safety and cache-mode
+        # local purge all trust them). Refuse instead of guessing.
+        if (_storage_node_location(node.node_type, existing_config) != old_location
+                and _storage_node_has_placed_replicas(node.id)):
+            print(f'[ADMIN] Rejected location change for storage node {node_id}: it still holds synced replicas')
+            return jsonify({'error': 'CANNOT CHANGE THE LOCATION (HOST, PORT, PATH, ENDPOINT, BUCKET OR PREFIX) OF A NODE THAT HOLDS SYNCED DATA. ADD A NEW NODE INSTEAD'}), 409
         node.set_config(existing_config)
 
     db.session.commit()
@@ -716,6 +774,20 @@ def admin_api_notifications():
         })
     return jsonify(result)
 
+def _parse_notification_expiry(value):
+    """ISO-8601 expiry -> aware UTC datetime, or None when unparseable or
+    outside what the DATETIME column / UTC conversion can represent."""
+    try:
+        expires_at = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        expires_at = expires_at.astimezone(timezone.utc)
+    except (ValueError, AttributeError, OverflowError):
+        return None
+    if not 1970 <= expires_at.year <= 9999:
+        return None
+    return expires_at
+
 @app.route('/admin/api/notifications', methods=['POST'])
 @limiter.limit(admin_rate_limit)
 @admin_required
@@ -755,12 +827,8 @@ def admin_api_notifications_create():
 
     expires_at = None
     if data.get('expires_at'):
-        try:
-            expires_at = datetime.fromisoformat(data['expires_at'].replace('Z', '+00:00'))
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            expires_at = expires_at.astimezone(timezone.utc)
-        except (ValueError, AttributeError):
+        expires_at = _parse_notification_expiry(data['expires_at'])
+        if expires_at is None:
             return jsonify({'error': 'INVALID EXPIRY DATE FORMAT'}), 400
 
     auto_dismiss = data.get('auto_dismiss', False)
@@ -774,7 +842,7 @@ def admin_api_notifications_create():
                 dismiss_seconds = 1
             if dismiss_seconds > 3600:
                 dismiss_seconds = 3600
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             dismiss_seconds = 10
 
     notif = Notification(
@@ -863,7 +931,7 @@ def admin_api_notifications_update(notif_id):
             try:
                 ds = int(data['dismiss_seconds'])
                 notif.dismiss_seconds = max(1, min(3600, ds))
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 notif.dismiss_seconds = 10
         elif not notif.dismiss_seconds:
             notif.dismiss_seconds = 10
@@ -872,14 +940,11 @@ def admin_api_notifications_update(notif_id):
 
     if 'expires_at' in data:
         if data['expires_at']:
-            try:
-                exp = datetime.fromisoformat(data['expires_at'].replace('Z', '+00:00'))
-                if exp.tzinfo is None:
-                    exp = exp.replace(tzinfo=timezone.utc)
-                notif.expires_at = exp.astimezone(timezone.utc)
-            except (ValueError, AttributeError):
+            exp = _parse_notification_expiry(data['expires_at'])
+            if exp is None:
                 db.session.rollback()
                 return jsonify({'error': 'INVALID EXPIRY DATE FORMAT'}), 400
+            notif.expires_at = exp
         else:
             notif.expires_at = None
 

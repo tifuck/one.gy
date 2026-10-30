@@ -12,24 +12,36 @@ def music_api_likes():
 @limiter.limit(music_stream_rate_limit)
 @_music_required
 def music_api_toggle_like(song_id):
-    """Toggle like on a song. Returns {liked: bool}."""
+    """Set or toggle a like. Body {liked: true|false} sets it explicitly (a
+    stale client cannot flip it the wrong way); no body toggles (older clients).
+    Returns {liked: bool}."""
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
     user_id = session['logged_in_user_id']
     # AUDIT FIX L9: bound song_id length so a pathological client cannot
     # persist arbitrary multi-KB junk into the likes table.
-    if not isinstance(song_id, str) or len(song_id) == 0 or len(song_id) > 128:
+    if not _music_valid_song_id(song_id):
         return jsonify({'error': 'INVALID SONG ID'}), 400
+    liked = _json_object_body().get('liked')
+    if liked is not None and not isinstance(liked, bool):
+        return jsonify({'error': 'LIKED MUST BE TRUE OR FALSE'}), 400
     existing = MusicLike.query.filter_by(user_id=user_id, song_id=song_id).first()
-    if existing:
-        db.session.delete(existing)
-        db.session.commit()
-        print(f'[MUSIC] User {user_id} unliked song {song_id}')
+    if liked is None:
+        liked = existing is None
+    if not liked:
+        if existing:
+            MusicLike.query.filter_by(user_id=user_id, song_id=song_id).delete(synchronize_session=False)
+            db.session.commit()
+            print(f'[MUSIC] User {user_id} unliked song {song_id}')
         return jsonify({'liked': False})
-    else:
-        like = MusicLike(user_id=user_id, song_id=song_id, liked_at=datetime.now(timezone.utc))
-        db.session.add(like)
-        db.session.commit()
-        print(f'[MUSIC] User {user_id} liked song {song_id}')
-        return jsonify({'liked': True})
+    if not existing:
+        db.session.add(MusicLike(user_id=user_id, song_id=song_id, liked_at=datetime.now(timezone.utc)))
+        try:
+            db.session.commit()
+            print(f'[MUSIC] User {user_id} liked song {song_id}')
+        except _IntegrityError:
+            # A concurrent request inserted the same like first.
+            db.session.rollback()
+    return jsonify({'liked': True})
 
 
 @app.route('/music/api/liked-songs')
@@ -159,7 +171,7 @@ def music_api_playlist_detail(playlist_id):
     song_entries = MusicPlaylistSong.query.filter_by(playlist_id=playlist_id).order_by(MusicPlaylistSong.position).all()
     song_ids = [s.song_id for s in song_entries]
     songs = _enrich_songs_from_library(song_ids)
-    total_duration = sum(s.get('duration_ms', 0) for s in songs)
+    total_duration = sum(s.get('duration_ms') or 0 for s in songs)
     return jsonify({
         'id': playlist.id, 'name': playlist.name, 'description': playlist.description,
         'song_count': len(songs), 'total_duration_ms': total_duration,
@@ -215,12 +227,13 @@ def music_api_delete_playlist(playlist_id):
 def music_api_playlist_songs(playlist_id):
     """Add, remove, or reorder songs in a playlist.
     Actions: {action: 'add', song_id}, {action: 'remove', song_id}, {action: 'reorder', song_ids: [...]}"""
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
     user_id = session['logged_in_user_id']
     playlist = MusicPlaylist.query.filter_by(id=playlist_id, user_id=user_id).first()
     if not playlist:
         return jsonify({'error': 'PLAYLIST NOT FOUND'}), 404
-    data = request.get_json()
-    if not data or 'action' not in data:
+    data = _json_object_body()
+    if 'action' not in data:
         return jsonify({'error': 'INVALID REQUEST'}), 400
     action = data['action']
     if action == 'add':
@@ -228,7 +241,7 @@ def music_api_playlist_songs(playlist_id):
         if not song_id:
             return jsonify({'error': 'SONG ID REQUIRED'}), 400
         # AUDIT FIX L9: bound song_id length.
-        if not isinstance(song_id, str) or len(song_id) > 128:
+        if not _music_valid_song_id(song_id):
             return jsonify({'error': 'INVALID SONG ID'}), 400
         # Check if already in playlist
         existing = MusicPlaylistSong.query.filter_by(playlist_id=playlist_id, song_id=song_id).first()
@@ -242,13 +255,20 @@ def music_api_playlist_songs(playlist_id):
         )
         db.session.add(entry)
         playlist.updated_at = datetime.now(timezone.utc)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except _IntegrityError:
+            # A concurrent add of the same song won uq_playlist_song.
+            db.session.rollback()
+            return jsonify({'error': 'SONG ALREADY IN PLAYLIST'}), 409
         print(f'[MUSIC] Added song {song_id} to playlist {playlist_id}')
         return jsonify({'success': True, 'position': entry.position})
     elif action == 'remove':
         song_id = data.get('song_id')
         if not song_id:
             return jsonify({'error': 'SONG ID REQUIRED'}), 400
+        if not _music_valid_song_id(song_id):
+            return jsonify({'error': 'INVALID SONG ID'}), 400
         entry = MusicPlaylistSong.query.filter_by(playlist_id=playlist_id, song_id=song_id).first()
         if not entry:
             return jsonify({'error': 'SONG NOT IN PLAYLIST'}), 404
@@ -291,7 +311,8 @@ def music_api_playlist_songs(playlist_id):
 @limiter.limit(music_stream_rate_limit)
 @_music_required
 def music_api_sync_push():
-    """Push playback state from the active device. Also upserts device record."""
+    """Push playback state from the active device. Also upserts device record.
+    {register_only: true} only records the device: polls (GET) never create rows."""
     user_id = session['logged_in_user_id']
     data = _json_object_body()
     # AUDIT FIX A17: null / non-string values used to raise AttributeError -> 500.
@@ -302,21 +323,30 @@ def music_api_sync_push():
 
     if not _music_valid_device_id(device_id):
         return jsonify({'error': 'DEVICE ID REQUIRED'}), 400
+    if state is not None and not isinstance(state, dict):
+        return jsonify({'error': 'STATE MUST BE AN OBJECT'}), 400
+    if state:
+        if 'playlist' in state and not isinstance(state['playlist'], list):
+            return jsonify({'error': 'STATE PLAYLIST MUST BE A LIST'}), 400
+        try:
+            # allow_nan=False: a stored NaN would be served as invalid JSON to every other device.
+            state_size = len(json.dumps(state, separators=(',', ':'), allow_nan=False).encode('utf-8'))
+        except ValueError:
+            return jsonify({'error': 'INVALID STATE'}), 400
+        if state_size > _MUSIC_SYNC_STATE_MAX:
+            return jsonify({'error': 'SYNC STATE TOO LARGE'}), 413
 
     now = datetime.now(timezone.utc)
 
-    # Upsert device record
-    device = MusicDevice.query.filter_by(user_id=user_id, device_id=device_id).first()
-    if device:
-        device.last_seen = now
-        if device_name and device_name != 'Unknown Device':
-            device.device_name = device_name
-    else:
-        device = MusicDevice(user_id=user_id, device_id=device_id, device_name=device_name, last_seen=now, created_at=now)
-        db.session.add(device)
+    _music_upsert_device(user_id, device_id, device_name, now)
+    if data.get('register_only') is True:
+        db.session.commit()
+        return jsonify({'ok': True})
 
     import json as _json
     is_accepted_active = False
+    queue_key = None
+    need_playlist = False
 
     # Store a command result durably, then claim at most one FIFO command for
     # this active target. The per-user lock also gives SQLite test databases the
@@ -337,12 +367,13 @@ def music_api_sync_push():
             # This device can claim active if: it's already active, or the session is stale, or force flag
             if current_active == device_id or is_stale or data.get('force_active'):
                 sync.active_device_id = device_id
-                sync.state_json = _json.dumps(state) if state else None
+                sync.state_json, queue_key, need_playlist = _music_prepare_sync_state(state, sync.state_json)
                 sync.updated_at = now
                 is_accepted_active = True
             # If another device is active and not stale, just update last_seen (don't overwrite)
         else:
-            sync = MusicSyncState(user_id=user_id, active_device_id=device_id, state_json=_json.dumps(state) if state else None, updated_at=now)
+            state_json, queue_key, need_playlist = _music_prepare_sync_state(state, None)
+            sync = MusicSyncState(user_id=user_id, active_device_id=device_id, state_json=state_json, updated_at=now)
             db.session.add(sync)
             db.session.flush()
             is_accepted_active = True
@@ -390,6 +421,8 @@ def music_api_sync_push():
         'pending_command': pending_command,
         'command_result_acknowledged': command_result_acknowledged,
         'devices': device_list,
+        'queue_key': queue_key,
+        'need_playlist': need_playlist,
     }
     # If this device was NOT accepted as active, also return the current state so it can enter phantom
     if not is_accepted_active and sync.state_json:
@@ -421,15 +454,17 @@ def music_api_sync_poll():
 
     now = datetime.now(timezone.utc)
 
-    # Update this device's last_seen (upsert)
+    # Helper to make naive datetimes comparable with aware ones
+    def _aware(dt):
+        if dt and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    # A GET must not create rows (cross-site requests can trigger it): devices
+    # register via POST. last_seen writes are throttled so polls rarely write.
     device = MusicDevice.query.filter_by(user_id=user_id, device_id=device_id).first()
-    if device:
+    if device and (not device.last_seen or now - _aware(device.last_seen) >= _MUSIC_LAST_SEEN_WRITE_INTERVAL):
         device.last_seen = now
-    else:
-        device_name = ((request.args.get('device_name') or 'Unknown Device').strip()[:_MUSIC_DEVICE_NAME_MAX]
-                       or 'Unknown Device')
-        device = MusicDevice(user_id=user_id, device_id=device_id, device_name=device_name, last_seen=now, created_at=now)
-        db.session.add(device)
 
     # Get sync state
     import json as _json
@@ -444,12 +479,6 @@ def music_api_sync_poll():
         active_still_online = any(d.device_id == sync.active_device_id for d in all_devices)
         if not active_still_online:
             sync = _music_clear_stale_active_device(user_id, online_cutoff)
-
-    # Helper to make naive datetimes comparable with aware ones
-    def _aware(dt):
-        if dt and dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt
 
     device_list = []
     for d in all_devices:
@@ -495,6 +524,7 @@ def music_api_sync_poll():
         'devices': device_list,
         'transfer_to': sync.transfer_to if sync else None,
         'pending_result': pending_result,
+        'registered': device is not None,
     })
 
 
@@ -549,14 +579,23 @@ def music_api_sync_command():
     if not command or not isinstance(command, dict):
         return jsonify({'error': 'COMMAND REQUIRED'}), 400
 
-    action = command.get('action', '')
-    if action not in ('play', 'pause', 'next', 'prev', 'seek', 'set_volume', 'play_tracks'):
+    # Only what the player actually sends is relayed; any other key is dropped.
+    action = command.get('action')
+    if action not in _MUSIC_COMMAND_ACTIONS:
         return jsonify({'error': 'UNKNOWN COMMAND'}), 400
+    clean_command = {'action': action}
+    if action == 'seek':
+        import math
+        seek_time = command.get('seekTime')
+        if isinstance(seek_time, bool) or not isinstance(seek_time, (int, float)) \
+                or not math.isfinite(seek_time) or not 0 <= seek_time <= _MUSIC_SEEK_MAX_SECONDS:
+            return jsonify({'error': 'INVALID SEEK TIME'}), 400
+        clean_command['seekTime'] = seek_time
 
     requester_device_id = _music_json_str(data.get('requester_device_id'))
     if not _music_valid_device_id(requester_device_id):
         return jsonify({'error': 'REQUESTER DEVICE ID REQUIRED'}), 400
-    payload_json = _music_command_payload(command)
+    payload_json = _music_command_payload(clean_command)
     if payload_json is None:
         return jsonify({'error': 'COMMAND PAYLOAD TOO LARGE OR INVALID'}), 413
 

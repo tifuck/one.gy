@@ -59,10 +59,13 @@ def _order_by_nulls_first_asc(column):
 
 
 def _column_default_sql(column):
+    # Rendered exactly as CREATE TABLE would: string literals quoted and escaped
+    # for this dialect (incl. MySQL backslash escapes), text() emitted verbatim.
+    dialect = db.engine.dialect
     if column.server_default is not None:
-        default_arg = getattr(column.server_default, 'arg', None)
-        if default_arg is not None:
-            return str(default_arg)
+        default_sql = dialect.ddl_compiler(dialect, None).get_column_default_string(column)
+        if default_sql is not None:
+            return default_sql
     default = getattr(column, 'default', None)
     if default is None or not getattr(default, 'is_scalar', False):
         return None
@@ -72,7 +75,7 @@ def _column_default_sql(column):
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
+        return dialect.statement_compiler(dialect, None).render_literal_value(value, db.String())
     return None
 
 
@@ -93,7 +96,8 @@ def _ensure_missing_model_columns():
             column_type = column.type.compile(dialect=db.engine.dialect)
             sql = f'ALTER TABLE {_quote_identifier(table.name)} ADD COLUMN {_quote_identifier(column.name)} {column_type}'
             if default_sql is not None:
-                sql += f' DEFAULT {default_sql}'
+                # text() would read ':word' inside the literal as a bind parameter.
+                sql += ' DEFAULT ' + default_sql.replace(':', '\\:')
             if not column.nullable:
                 sql += ' NOT NULL'
             db.session.execute(text(sql))
@@ -127,8 +131,15 @@ def _widen_longtext_columns():
             sql = (f'ALTER TABLE {_quote_identifier(table.name)} MODIFY COLUMN '
                    f'{_quote_identifier(column.name)} LONGTEXT'
                    f'{"" if column.nullable else " NOT NULL"}')
-            db.session.execute(text(sql))
-            db.session.commit()
+            try:
+                db.session.execute(text(sql))
+                db.session.commit()
+            except Exception as e:
+                # A column left as TEXT only caps value size; aborting db-upgrade
+                # would keep the whole service from booting.
+                db.session.rollback()
+                print(f'[WARNING] [DB] Could not widen {table.name}.{column.name} to LONGTEXT: {e}')
+                continue
             print(f'[DB] Widened {table.name}.{column.name} to LONGTEXT')
 
 
@@ -663,8 +674,10 @@ def _run_post_schema_data_migrations():
             row[0] for row in db.session.query(File.id).filter(
                 File.has_thumbnail.is_(True),
                 db.or_(
-                    File.thumbnail_checksum.is_(None),
-                    File.thumbnail_e2e_checksum.is_(None),
+                    db.and_(File.is_e2e_encrypted.is_(True),
+                            File.thumbnail_e2e_checksum.is_(None)),
+                    db.and_(db.or_(File.is_e2e_encrypted.is_(False), File.is_e2e_encrypted.is_(None)),
+                            File.thumbnail_checksum.is_(None)),
                 ),
             ).all()
         ]
@@ -683,19 +696,21 @@ def _run_post_schema_data_migrations():
                 continue
             batch_changed = False
             for tf in batch:
-                for _is_e2e, _attr in ((False, 'thumbnail_checksum'), (True, 'thumbnail_e2e_checksum')):
-                    if getattr(tf, _attr) is not None:
-                        continue
-                    _ext = '.e2e' if _is_e2e else '.jpg'
-                    _disk_path = os.path.join(THUMBNAILS_DIR, f'{tf.id}{_ext}')
-                    if not os.path.isfile(_disk_path):
-                        continue
-                    try:
-                        setattr(tf, _attr, _sha256_file(_disk_path))
-                        batch_changed = True
-                        thumb_csum_filled += 1
-                    except Exception as e:
-                        print(f'[DB] Thumbnail checksum backfill failed for {tf.id}{_ext}: {e}')
+                # Only the thumbnail type that matches the file's mode exists.
+                _is_e2e = bool(tf.is_e2e_encrypted)
+                _attr = 'thumbnail_e2e_checksum' if _is_e2e else 'thumbnail_checksum'
+                if getattr(tf, _attr) is not None:
+                    continue
+                _ext = '.e2e' if _is_e2e else '.jpg'
+                _disk_path = os.path.join(THUMBNAILS_DIR, f'{tf.id}{_ext}')
+                if not os.path.isfile(_disk_path):
+                    continue
+                try:
+                    setattr(tf, _attr, _sha256_file(_disk_path))
+                    batch_changed = True
+                    thumb_csum_filled += 1
+                except Exception as e:
+                    print(f'[DB] Thumbnail checksum backfill failed for {tf.id}{_ext}: {e}')
             if batch_changed:
                 try:
                     db.session.commit()

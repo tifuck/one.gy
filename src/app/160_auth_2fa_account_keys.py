@@ -472,21 +472,26 @@ def confirm_2fa():
         return jsonify({'error': 'PLEASE ENTER A 2FA CODE'}), 400
 
     totp = pyotp.TOTP(secret)
-    if not totp.verify(totp_code, valid_window=1):
+    # Consume the enrolment code so it cannot be replayed at /verify-2fa.
+    if not totp.verify(totp_code, valid_window=1) or not _totp_try_consume(user.id, totp_code):
         # Failed enrolment: burn the pending secret rather than leaving it live
         # in the signed cookie. The user restarts setup with a fresh secret.
         _clear_pending_2fa_setup()
         print(f'[AUTH] 2FA confirm failed for user {user.username}: pending secret discarded')
         return jsonify({'error': 'INVALID CODE. PLEASE START SETUP AGAIN'}), 400
 
-    # Code verified — save secret (encrypted at rest) and enable 2FA
+    # Code verified — save secret (encrypted at rest) and enable 2FA. Rotate
+    # session_epoch so every OTHER session (possibly one that never passed the
+    # new second factor) is evicted; this session is re-synced below.
     user.two_factor_secret = _encrypt_totp_secret(secret)
     user.two_factor_enabled = True
+    user.session_epoch = db.func.coalesce(User.session_epoch, 0) + 1  # atomic in SQL: concurrent rotations must not collapse into one
     db.session.commit()
+    session['session_epoch'] = int(user.session_epoch or 0)
 
     _clear_pending_2fa_setup()
 
-    print(f'[AUTH] 2FA enabled for user: {user.username}')
+    print(f'[AUTH] 2FA enabled for user: {user.username} (session_epoch rotated -> all other sessions invalidated)')
 
     return jsonify({'success': True, 'message': '2FA HAS BEEN ENABLED'})
 

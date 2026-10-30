@@ -239,8 +239,11 @@ def check_folder_access(share_token):
     # creating a latent share-password bypass. We now require the password
     # for any password-protected folder (or password-protected ancestor)
     # before the caller can read it, regardless of public/browsable mode.
-    def _pw_block(target_folder):
-        return None, False, (render_template('pw.html', token=target_folder.share_token, is_folder=True, error=bool(_get_share_password())), 401)
+    # The prompt always posts back to the REQUESTED token: rendering the locked
+    # ancestor's token handed a sub-folder visitor the ancestor's link, and the
+    # password they needed anyway then unlocked the whole ancestor tree.
+    def _pw_block():
+        return None, False, (render_template('pw.html', token=share_token, is_folder=True, error=bool(_get_share_password())), 401)
 
     # Check access permissions
     if not folder.is_public:
@@ -252,25 +255,22 @@ def check_folder_access(share_token):
         # unusable (and the gate two lines down was dead code).
         if not is_owner and _folder_has_active_non_owner_share(folder, require_browsable=True, require_password=False):
             # E2E browsable folder: allow access (decryption happens client-side)
-            locked_folder = _locked_folder_share(folder, folder)
-            if locked_folder:
-                return _pw_block(locked_folder)
+            if _locked_folder_share(folder, folder):
+                return _pw_block()
             print(f'[FOLDER] E2E browsable folder accessed: {_log_safe(folder.name)}')
             return folder, is_owner, None
         # Check if it's inside a public or browsable ancestor
         public_ancestor = is_folder_in_public_ancestor(folder, require_password=False)
         if public_ancestor:
-            locked_folder = _locked_folder_share(folder, public_ancestor)
-            if locked_folder:
-                return _pw_block(locked_folder)
+            if _locked_folder_share(folder, public_ancestor):
+                return _pw_block()
             print(f'[FOLDER] Subfolder {_log_safe(folder.name)} accessible via public ancestor: {_log_safe(public_ancestor.name)}')
             return folder, is_owner, None
         # Check if inside a browsable ancestor (same ordering fix as above).
         browsable_ancestor = is_folder_in_browsable_ancestor(folder, require_password=False)
         if browsable_ancestor:
-            locked_folder = _locked_folder_share(folder, browsable_ancestor)
-            if locked_folder:
-                return _pw_block(locked_folder)
+            if _locked_folder_share(folder, browsable_ancestor):
+                return _pw_block()
             print(f'[FOLDER] Subfolder {_log_safe(folder.name)} accessible via browsable ancestor: {_log_safe(browsable_ancestor.name)}')
             return folder, is_owner, None
         if not is_owner:
@@ -279,9 +279,8 @@ def check_folder_access(share_token):
                 subtitle='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED',
                 detail='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED'), 404)
     # Public folders fall through here. Gate on the password if set.
-    locked_folder = _locked_folder_share(folder, folder)
-    if locked_folder:
-        return _pw_block(locked_folder)
+    if _locked_folder_share(folder, folder):
+        return _pw_block()
 
     return folder, is_owner, None
 

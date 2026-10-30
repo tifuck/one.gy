@@ -27,16 +27,20 @@ try {
          GET to the current URL and silently re-rendered the login page. Point it
          at the server-rendered POST handler so a plain submit degrades to the
          legacy password path instead of failing invisibly. -->
+    <noscript><p class="auth-subtitle">JAVASCRIPT IS REQUIRED TO SIGN IN. YOUR PASSWORD NEVER LEAVES THIS BROWSER.</p></noscript>
+    <p class="auth-subtitle">Your password never leaves this browser.</p>
     <form id="loginForm" class="auth-form" autocomplete="off"
           action="{{ url_for('login') }}" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
       <div class="form-group">
         <label for="username">USERNAME</label>
-        <input type="text" id="username" name="username" class="form-input" required autofocus>
+        <input type="text" id="username" name="username" class="form-input" required autofocus autocomplete="username">
       </div>
       <div class="form-group">
         <label for="password">PASSWORD</label>
-        <input type="password" id="password" name="password" class="form-input" required>
+        {# No name attribute: a no-JS submit must never post the raw password
+           (split-key accounts only ever send a derived auth token). #}
+        <input type="password" id="password" class="form-input" required autocomplete="current-password">
       </div>
       <div class="form-group" id="loginCaptchaGroup" style="display:none">
         <label for="loginCaptcha">CAPTCHA</label>
@@ -67,7 +71,7 @@ try {
       <div class="form-group">
         <label for="totp_code">AUTHENTICATION CODE</label>
         <input type="text" id="totp_code" name="totp_code" class="form-input auth-code-input" required
-               maxlength="6" inputmode="numeric" pattern="[0-9]{6}"
+               maxlength="6" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"
                placeholder="000000">
       </div>
       <button type="submit" id="verifyBtn" class="btn-primary">VERIFY</button>
@@ -82,7 +86,7 @@ try {
     <form id="recoveryFormInner" class="auth-form" autocomplete="off">
       <div class="form-group">
         <label for="rec_username">USERNAME</label>
-        <input type="text" id="rec_username" class="form-input" required>
+        <input type="text" id="rec_username" class="form-input" required autocomplete="username">
       </div>
       <div class="form-group">
         <label for="rec_key">RECOVERY KEY</label>
@@ -90,11 +94,11 @@ try {
       </div>
       <div class="form-group">
         <label for="rec_new_password">NEW PASSWORD</label>
-        <input type="password" id="rec_new_password" class="form-input" required minlength="6">
+        <input type="password" id="rec_new_password" class="form-input" required minlength="6" autocomplete="new-password">
       </div>
       <div class="form-group">
         <label for="rec_confirm_password">CONFIRM NEW PASSWORD</label>
-        <input type="password" id="rec_confirm_password" class="form-input" required minlength="6">
+        <input type="password" id="rec_confirm_password" class="form-input" required minlength="6" autocomplete="new-password">
       </div>
       <button type="submit" id="recoveryBtn" class="btn-primary">RECOVER ACCOUNT</button>
     </form>
@@ -137,9 +141,9 @@ async function safeParseJSON(response) {
   // Non-JSON response — extract a meaningful error from the HTML/text body
   const text = await response.text()
   if (text.includes('CSRF')) {
-    throw new Error('SESSION EXPIRED — PLEASE REFRESH THE PAGE AND TRY AGAIN')
+    throw new Error('SESSION EXPIRED. PLEASE REFRESH THE PAGE AND TRY AGAIN')
   }
-  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS — PLEASE WAIT' : 'REQUEST FAILED — PLEASE REFRESH THE PAGE')
+  throw new Error(response.status === 429 ? 'TOO MANY ATTEMPTS. PLEASE WAIT' : 'REQUEST FAILED. PLEASE REFRESH THE PAGE')
 }
 
 // ─── Login Flow ─────────────────────────────────────────────────────
@@ -169,10 +173,10 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
       body: JSON.stringify({ username })
     })
-    if (!preResp.ok) throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE — REFRESH AND RETRY')
+    if (!preResp.ok) throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE. REFRESH AND RETRY')
     const preData = await preResp.json()
     if (!preData || !Number.isInteger(preData.split_key_version) || preData.split_key_version < 0) {
-      throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE — REFRESH AND RETRY')
+      throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE. REFRESH AND RETRY')
     }
     splitKeyVersion = preData.split_key_version
     authTokenSalt = preData.auth_token_salt
@@ -185,7 +189,7 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
       try {
         if (typeof authTokenSalt !== 'string' || !authTokenSalt.trim() || !atob(authTokenSalt).length) throw new Error('INVALID SALT')
       } catch (saltErr) {
-        throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE — REFRESH AND RETRY')
+        throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE. REFRESH AND RETRY')
       }
       if (!window.crypto || !window.crypto.subtle) {
         throw new Error('SECURE LOGIN REQUIRES A MODERN HTTPS BROWSER WITH WEBCRYPTO ENABLED')
@@ -295,7 +299,7 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
           }
         } catch (keyErr) {
           console.error('[LOGIN] Key unlock failed:', keyErr)
-          showFlash('KEY UNLOCK FAILED — YOU MAY NEED TO RE-ENTER PASSWORD', 'error')
+          showFlash('KEY UNLOCK FAILED. YOU MAY NEED TO RE-ENTER PASSWORD', 'error')
         }
       } else {
         // Existing user WITHOUT keys — generate and store them now
@@ -343,7 +347,7 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
             showProvisioningRetry(keyData)
             return
           }
-          showFlash('KEY SETUP FAILED — WILL RETRY ON NEXT LOGIN', 'error')
+          showFlash('KEY SETUP FAILED. WILL RETRY ON NEXT LOGIN', 'error')
         }
       }
     }
@@ -447,7 +451,7 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
           }
         } catch (keyErr) {
           console.error('[LOGIN] Key unlock failed after 2FA:', keyErr)
-          showFlash('KEY UNLOCK FAILED — YOU MAY NEED TO RE-ENTER PASSWORD', 'error')
+          showFlash('KEY UNLOCK FAILED. YOU MAY NEED TO RE-ENTER PASSWORD', 'error')
         }
       } else if (!result.has_e2ee_keys) {
         // User without keys — generate and store them now
@@ -496,7 +500,7 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
             showProvisioningRetry(keyData)
             return
           }
-          showFlash('KEY SETUP FAILED — WILL RETRY ON NEXT LOGIN', 'error')
+          showFlash('KEY SETUP FAILED. WILL RETRY ON NEXT LOGIN', 'error')
         }
       }
     }

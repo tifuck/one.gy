@@ -108,7 +108,7 @@
     wrap.appendChild(sanitizeToFragment(html))
     return wrap.innerHTML
   }
-  function validateCanvasData (data) {
+  function validateCanvasData (data, maxTotal) {
     var types = { text: 1, image: 1, todo: 1, table: 1, code: 1, draw: 1, line: 1, attachment: 1 }
     if (!data || typeof data !== 'object' || !Array.isArray(data.blocks) || data.blocks.length > 1000) return null
     var ids = {}, totalCells = 0, totalItems = 0, totalPaths = 0, totalPoints = 0, totalText = 0
@@ -141,7 +141,7 @@
       // on load, and rejecting a canvas the server happily stored would lock
       // the owner out of their own note.
       if (typeof block.src === 'string') { if (block.src.length > NOTES_IMAGE_SRC_MAX_BYTES) return null; totalText += block.src.length }
-      if (totalCells > 20000 || totalItems > 20000 || totalPaths > 20000 || totalPoints > 200000 || totalText > NOTES_CONTENT_MAX_BYTES) return null
+      if (totalCells > 20000 || totalItems > 20000 || totalPaths > 20000 || totalPoints > 200000 || totalText > (maxTotal || NOTES_CONTENT_MAX_BYTES)) return null
     }
     return data
   }
@@ -202,10 +202,12 @@
     showLock(false)
     var mk = await masterKey(); if (!mk) { showLock(true); return }
     try {
-      var nbData = await apiGet('/notes/api/notebooks')
+      // trash_count also counts trashed notebooks, which the Trash view never lists.
+      var loaded = await Promise.all([apiGet('/notes/api/notebooks'), apiGet('/notes/api/notes?trash=true').catch(function () { return null })])
+      var nbData = loaded[0]
       S.notebooks = nbData.notebooks || []
       await Promise.all(S.notebooks.map(async function (nb) { nb._name = await decNotebookName(nb, mk) }))
-      S.trashCount = nbData.trash_count || 0
+      S.trashCount = loaded[1] ? (loaded[1].notes || []).length : (nbData.trash_count || 0)
       if (nbData.storage_used_bytes != null) S.storage = { used: nbData.storage_used_bytes, limit: nbData.storage_limit_gb }
       renderRail(true)
       await loadNotes()
@@ -250,7 +252,7 @@
         (nbs || '<div class="rd-side-hint">No notebooks</div>') +
       '</nav>' +
       '<div class="rd-side-foot">' + trash +
-        '<div class="rd-side-storage"><span>Storage</span><b id="ntStorageTxt">— / —</b></div>' +
+        '<div class="rd-side-storage"><span>Storage</span><b id="ntStorageTxt">…</b></div>' +
         '<div class="rd-meter"><div class="rd-meter-fill" id="ntMeter" style="width:0%"></div></div>' +
       '</div></div>'
     if (animate) {
@@ -276,6 +278,9 @@
     // Entrance only on fresh data loads — note clicks / search re-renders
     // rebuild the list for highlight state and must not replay it
     listEl.classList.toggle('is-anim', !!animate)
+    // Only a search box the user is typing in gets focus back; autosave/pin/colour
+    // re-renders must not pull the caret into the filter.
+    var oldSearch = $('ntSearch'), searchCaret = oldSearch && document.activeElement === oldSearch ? [oldSearch.selectionStart, oldSearch.selectionEnd] : null
     var head = '<div class="nt-list-head"><button class="nt-rail-toggle" id="ntRailToggle" aria-label="Notebooks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button><h2 class="nt-list-title">' + esc(viewTitle()) + '</h2>' +
       (S.view !== 'trash' ? '<span class="nt-newgroup"><button class="nt-newnote" id="ntNewCanvas" title="New canvas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button><button class="nt-newnote" id="ntNewNote" title="New note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button></span>' : '') + '</div>' +
       '<div class="nt-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input type="search" id="ntSearch" placeholder="Search notes…" autocomplete="off"></div>'
@@ -295,7 +300,8 @@
     }).join('')
     listEl.innerHTML = head + '<div class="nt-items">' + (items || '<div class="nt-empty-sm">No notes here yet.</div>') + '</div>'
     if (animate) { var its = listEl.querySelectorAll('.nt-item'); for (var ii = 0; ii < its.length; ii++) its[ii].style.setProperty('--i', ii) }
-    if (searchValue && $('ntSearch')) { $('ntSearch').value = searchValue; $('ntSearch').focus(); $('ntSearch').setSelectionRange(searchValue.length, searchValue.length) }
+    var search = $('ntSearch')
+    if (search) { search.value = searchValue; if (searchCaret) { search.focus(); search.setSelectionRange(searchCaret[0], searchCaret[1]) } }
   }
   function viewTitle () {
     if (S.view === 'all') return 'All notes'; if (S.view === 'unfiled') return 'Unfiled'; if (S.view === 'trash') return 'Trash'
@@ -430,7 +436,7 @@
       '<div class="nt-canvas-mount" id="ntCanvas"></div>'
     S.editorReady = false
     if (typeof FxCanvas !== 'undefined') {
-      try { S.canvas = FxCanvas.mount($('ntCanvas'), { data: data, readonly: readonly, onDirty: function () { if (!readonly) markDirty() } }) } catch (e) { S.canvas = null }
+      try { S.canvas = FxCanvas.mount($('ntCanvas'), { data: data, readonly: readonly, onDirty: function () { if (!readonly) markDirty() }, validate: function (d) { return !!validateCanvasData(d, NOTES_INLINE_BUDGET_BYTES) } }) } catch (e) { S.canvas = null }
     }
     var pin = editorEl.querySelector('[data-pin]'); if (pin) pin.onclick = togglePin
     var del = editorEl.querySelector('[data-delete]'); if (del) del.onclick = function () { deleteNote(false) }
@@ -440,7 +446,7 @@
     // would serialise this note as an empty body. Do NOT arm markDirty on the
     // title in that state — one keystroke used to be enough to wipe the note.
     if (!S.canvas) {
-      $('ntCanvas').innerHTML = errState('Canvas engine failed to load. Reload the page — this note was not changed.')
+      $('ntCanvas').innerHTML = errState('Canvas engine failed to load. Reload the page. This note was not changed.')
       setSaveState('Read-only')
       return
     }
@@ -491,7 +497,7 @@
   function firstImageFile (files) { return Array.prototype.slice.call(files || []).filter(function (file) { return file && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type) })[0] || null }
   function hasImageFile (files) { return !!firstImageFile(files) }
   function documentInlineSize () { var el = $('ntBody'); return el ? (el.innerHTML || '').length : 0 }
-  function budgetToast () { toast('NOTE IS FULL (LIMIT ' + mbLabel(NOTES_INLINE_BUDGET_BYTES) + ') — REMOVE AN IMAGE FIRST', 'error') }
+  function budgetToast () { toast('NOTE IS FULL (LIMIT ' + mbLabel(NOTES_INLINE_BUDGET_BYTES) + '). REMOVE AN IMAGE FIRST', 'error') }
   function insertDocumentImage (file) {
     if (!file || file.size > NOTES_IMAGE_MAX_BYTES) { toast('IMAGE TOO LARGE (MAX ' + mbLabel(NOTES_IMAGE_MAX_BYTES) + ')', 'error'); return }
     // A per-image cap with no total budget lets a note grow past the server
@@ -571,7 +577,7 @@
   }
   async function rescueUnsaved () {
     var payload = rescuePayload()
-    if (!payload) { toast('NOTHING TO EXPORT — THE EDITOR IS NOT MOUNTED', 'error'); return false }
+    if (!payload) { toast('NOTHING TO EXPORT. THE EDITOR IS NOT MOUNTED', 'error'); return false }
     var copied = false
     try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(payload.text); copied = true } } catch (e) { copied = false }
     var saved = downloadRescue(payload)
@@ -598,7 +604,7 @@
   }
   function showConflictState () {
     var state = $('ntSaveState'); if (!state) return
-    state.innerHTML = '<button type="button" class="nt-conflict-btn">Conflict — reopen</button>'
+    state.innerHTML = '<button type="button" class="nt-conflict-btn">Conflict: reopen</button>'
     state.title = 'This note was changed in another tab.'
     state.querySelector('button').onclick = async function () {
       if (!(await confirmAbandonUnsaved('THIS NOTE WAS CHANGED IN ANOTHER TAB, SO YOUR VERSION CANNOT BE SAVED OVER IT.'))) return
@@ -607,7 +613,7 @@
   }
   function showBlockedState (message) {
     var state = $('ntSaveState'); if (!state) return
-    state.innerHTML = '<button type="button" class="nt-conflict-btn">Not saved — export</button>'
+    state.innerHTML = '<button type="button" class="nt-conflict-btn">Not saved: export</button>'
     state.title = message || 'This note could not be saved.'
     state.querySelector('button').onclick = function () { rescueUnsaved() }
   }
@@ -634,6 +640,15 @@
   function snapshotIsCurrent (snap) {
     return !!snap && snap.id === S.noteId && snap.key === S.noteKey && snap.ver === S.ver && snap.type === S.currentType
   }
+  // Every note PUT (content save AND pin/colour/rename/move) runs through this
+  // one queue. The server bumps content_version on each of them, so two PUTs in
+  // flight with the same expected version always 409 one of them.
+  var writeQueue = Promise.resolve()
+  function queueWrite (fn) {
+    var run = writeQueue.then(fn)
+    writeQueue = run.catch(function () {})
+    return run
+  }
 
   async function saveNote () {
     if (!S.dirty) return
@@ -655,13 +670,16 @@
       setSaveState('Save failed')
       S.saveBlocked = true
       showBlockedState('The editor is not mounted, so this note was not saved.')
-      toast('EDITOR IS NOT READY — NOTE NOT SAVED', 'error')
+      toast('EDITOR IS NOT READY. NOTE NOT SAVED', 'error')
       return
     }
     if (snap.type === 'canvas' && !validateCanvasData(JSON.parse(body))) {
       // Saving would store a canvas openNote() refuses to load, locking the note.
+      // Blocked (not just failed) so openNote/createNote can offer export + discard.
       setSaveState('Save failed')
-      toast('CANVAS IS OVER ITS SIZE LIMITS — NOTE NOT SAVED', 'error')
+      S.saveBlocked = true
+      showBlockedState('This canvas is over its size limits, so it was not saved. Remove some content or export it.')
+      toast('CANVAS IS OVER ITS SIZE LIMITS. NOTE NOT SAVED', 'error')
       return
     }
     var title = titleEl.value.trim() || 'Untitled'
@@ -669,29 +687,36 @@
     var saveRevision = S.editRevision
     setSaveState('Saving…')
     try {
-      var titleEnc = await OneGyCrypto.encryptFileName(title, snap.key)
       var contentEnc = await encContent(body, snap.key)
       // Preflight against the REAL server limit (app.py
       // NOTES_NOTE_CONTENT_MAX_BYTES) instead of firing a doomed request.
       if (contentEnc.length > NOTES_CONTENT_MAX_BYTES) {
         var big = new Error('NOTE TOO LARGE'); big.status = 413; big.oversize = true; throw big
       }
-      // Re-verify the snapshot AFTER the awaits and BEFORE the PUT. The old
-      // check ran after the request had already been sent, so it prevented
-      // nothing.
-      if (!snapshotIsCurrent(snap)) { S.saveAgain = true; setSaveState('Unsaved'); return }
-      var resp = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(snap.id), {
-        encrypted_title: titleEnc.encryptedName, title_nonce: titleEnc.nameNonce,
-        encrypted_content: contentEnc, content_nonce: contentNonceOf(contentEnc), expected_content_version: snap.ver
+      var resp = await queueWrite(async function () {
+        // Read the title only now, so a rename that landed while the body was
+        // encrypting is not written back over.
+        if (titleEl.isConnected) title = titleEl.value.trim() || 'Untitled'
+        var titleEnc = await OneGyCrypto.encryptFileName(title, snap.key)
+        // A queued metadata PUT may have bumped the version of this same note.
+        if (snap.id === S.noteId && snap.key === S.noteKey && snap.type === S.currentType) snap.ver = S.ver
+        // Re-verify the snapshot AFTER the awaits and BEFORE the PUT. The old
+        // check ran after the request had already been sent, so it prevented
+        // nothing.
+        if (!snapshotIsCurrent(snap)) return null
+        var r = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(snap.id), {
+          encrypted_title: titleEnc.encryptedName, title_nonce: titleEnc.nameNonce,
+          encrypted_content: contentEnc, content_nonce: contentNonceOf(contentEnc), expected_content_version: snap.ver
+        })
+        // Inside the queue, so the next queued write already sends this version.
+        applyMetadataVersion(snap.id, { content_version: r.content_version || (snap.ver + 1) })
+        return r
       })
-      var savedVer = resp.content_version || (snap.ver + 1)
+      if (!resp) { S.saveAgain = true; setSaveState('Unsaved'); return }
       var n = S.notes.filter(function (x) { return x.id === snap.id })[0]
-      // The list copy feeds noteVersion() for list-menu actions once the note is closed.
-      if (n) n.content_version = savedVer
       if (S.noteId !== snap.id) return
       S.saveFailures = 0
       S.saveBlocked = false
-      S.ver = savedVer
       S.titles[snap.id] = title
       if (n) { n._title = title; n.updated_at = resp.updated_at || new Date().toISOString() }
       if (S.editRevision === saveRevision) { S.dirty = false; setSaveState('Saved'); setTimeout(function () { if (!S.dirty) setSaveState('') }, 1400) }
@@ -703,7 +728,7 @@
       S.saveAgain = false; saveRevision = S.editRevision
       if (status === 409) {
         S.saveBlocked = true
-        msg = 'NOTE CHANGED IN ANOTHER TAB — REOPEN IT BEFORE SAVING'
+        msg = 'NOTE CHANGED IN ANOTHER TAB. REOPEN IT BEFORE SAVING'
         showConflictState()
       } else if (status >= 400 && status < 500) {
         // Non-retryable. Retrying byte-identical content forever would pin
@@ -713,8 +738,8 @@
         S.saveBlocked = true
         if (e.oversize || status === 413) {
           msg = (e.body && e.body.error === 'STORAGE LIMIT EXCEEDED')
-            ? 'STORAGE LIMIT REACHED — FREE UP SPACE, THIS NOTE WAS NOT SAVED'
-            : 'NOTE IS TOO LARGE TO SAVE (LIMIT ' + mbLabel(NOTES_CONTENT_MAX_BYTES) + ' ENCRYPTED) — REMOVE SOME IMAGES'
+            ? 'STORAGE LIMIT REACHED. FREE UP SPACE, THIS NOTE WAS NOT SAVED'
+            : 'NOTE IS TOO LARGE TO SAVE (LIMIT ' + mbLabel(NOTES_CONTENT_MAX_BYTES) + ' ENCRYPTED). REMOVE SOME IMAGES'
         } else if (e.body && e.body.error) msg = String(e.body.error)
         setSaveState('Save failed')
         showBlockedState(msg)
@@ -804,9 +829,14 @@
     return (n && n.content_version) || 1
   }
 
-  function metadataPayload (id, payload) {
-    payload.expected_content_version = noteVersion(id)
-    return payload
+  // Waits its turn behind any in-flight save and only then reads the version.
+  function putMetadata (id, payload) {
+    return queueWrite(async function () {
+      payload.expected_content_version = noteVersion(id)
+      var resp = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(id), payload)
+      applyMetadataVersion(id, resp)
+      return resp
+    })
   }
 
   function applyMetadataVersion (id, response) {
@@ -835,8 +865,7 @@
     var n = noteById(id); if (!n) return
     var safe = normColor(color)
     try {
-      var resp = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(id), metadataPayload(id, { color: safe }))
-      applyMetadataVersion(id, resp)
+      await putMetadata(id, { color: safe })
       n.color = safe
       if (S.meta && S.meta.id === id) S.meta.color = safe
       renderList()
@@ -847,8 +876,7 @@
     var n = noteById(id); if (!n) return
     var np = !n.is_pinned
     try {
-      var resp = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(id), metadataPayload(id, { is_pinned: np }))
-      applyMetadataVersion(id, resp)
+      await putMetadata(id, { is_pinned: np })
       n.is_pinned = np
       if (S.meta && S.meta.id === id) S.meta.is_pinned = np
       renderList()
@@ -867,8 +895,7 @@
     try {
       var nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
       var enc = await OneGyCrypto.encryptFileName(next, nk)
-      var resp = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(id), metadataPayload(id, { encrypted_title: enc.encryptedName, title_nonce: enc.nameNonce }))
-      applyMetadataVersion(id, resp)
+      await putMetadata(id, { encrypted_title: enc.encryptedName, title_nonce: enc.nameNonce })
       n._title = next; S.titles[id] = next
       // Keep the open editor in sync or the next autosave writes the old title back.
       if (S.noteId === id && $('ntTitle')) $('ntTitle').value = next
@@ -923,14 +950,13 @@
       await apiSend('POST', '/notes/api/notes', payload)
       toast('NOTE DUPLICATED', 'success')
       await loadAll(); await loadNotes()
-    } catch (e) { toast('COULD NOT CONFIRM NOTE DUPLICATION — REFRESH TO CHECK', 'error') }
+    } catch (e) { toast('COULD NOT CONFIRM NOTE DUPLICATION. REFRESH TO CHECK', 'error') }
   }
 
   async function moveNoteById (id, notebookId) {
     var n = noteById(id); if (!n) return
     try {
-      var resp = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(id), metadataPayload(id, { notebook_id: notebookId }))
-      applyMetadataVersion(id, resp)
+      await putMetadata(id, { notebook_id: notebookId })
       n.notebook_id = notebookId
       if (S.meta && S.meta.id === id) S.meta.notebook_id = notebookId
       toast('NOTE MOVED', 'success')
@@ -970,10 +996,13 @@
 
   async function emptyTrash () {
     if (!window.confirm('PERMANENTLY DELETE EVERYTHING IN THE TRASH? THIS CANNOT BE UNDONE.')) return
+    // Only close the editor if it shows one of the deleted notes: a live note
+    // left open while browsing the trash may hold unsaved edits.
+    var trashed = S.view === 'trash' ? S.notes.map(function (n) { return n.id }) : []
     try {
       await apiSend('DELETE', '/notes/api/trash', null)
       toast('TRASH EMPTIED', 'success')
-      resetOpenState(emptyEditor()); S.noteId = null
+      trashed.forEach(clearEditorIfOpen)
       await loadAll(); loadNotes()
     } catch (e) { toast('COULD NOT EMPTY TRASH', 'error') }
   }

@@ -13,121 +13,13 @@ def files(folder_id=None):
             flash('FOLDER NOT FOUND', 'error')
             return redirect(url_for('files'))
     
-    # Get ALL user's non-trashed folders for the tree view
-    all_folders = Folder.query.filter_by(user_id=user.id, is_trashed=False).order_by(Folder.name).all()
-    
-    # Get ALL user's files for the tree view (filter expired, temp uploads, and trashed)
-    all_user_files = File.query.filter_by(registered_user_id=user.id, is_temp_upload=False, is_trashed=False).order_by(File.upload_time.desc()).all()
-    all_active_files = [f for f in all_user_files if f.get_expires_at_aware() is None or f.get_expires_at_aware() >= datetime.now(timezone.utc)]
-    
-    # Get non-trashed folders in current directory (for main view)
-    current_folders = Folder.query.filter_by(user_id=user.id, parent_id=folder_id, is_trashed=False).order_by(Folder.name).all()
-    
-    # Get user's files in current folder (exclude temp uploads and trashed)
-    user_files = File.query.filter_by(registered_user_id=user.id, folder_id=folder_id, is_temp_upload=False, is_trashed=False).order_by(File.upload_time.desc()).all()
-    
-    # Filter out expired files
-    active_files = [f for f in user_files if f.get_expires_at_aware() is None or f.get_expires_at_aware() >= datetime.now(timezone.utc)]
-    
-    # Build breadcrumb trail and check if any parent folder is public/browsable
-    breadcrumbs = []
-    parent_is_public = False
-    parent_is_browsable = False
-    if current_folder:
-        # AUDIT FIX (finding 7): walk via the already-loaded folder map
-        # (avoids one lazy-load SELECT per level) with a visited set, so a
-        # corrupt parent_id cycle can never spin this request forever.
-        _bc_folder_map = {fld.id: fld for fld in all_folders}
-        folder = current_folder
-        _bc_seen = set()
-        while folder and folder.id not in _bc_seen:
-            _bc_seen.add(folder.id)
-            breadcrumbs.insert(0, folder)
-            if folder.is_public:
-                parent_is_public = True
-            if folder.is_browsable:
-                parent_is_browsable = True
-            folder = _bc_folder_map.get(folder.parent_id) if folder.parent_id else None
-    
-    # Count trashed items for sidebar badge -- bulk load + in-memory BFS (1 query instead of O(N) recursive)
-    _all_trash_folders = Folder.query.filter_by(user_id=user.id, is_trashed=True).all()
-    _trash_top_folders = [f for f in _all_trash_folders if f.parent_id is None]
-    trashed_folder_count = len(_trash_top_folders)
-    _trash_ch_map = {}
-    for _tf in _all_trash_folders:
-        _trash_ch_map.setdefault(_tf.parent_id, []).append(_tf.id)
-    trashed_folder_ids_set = set()
-    _stk = [_tf.id for _tf in _trash_top_folders]
-    while _stk:
-        _fid = _stk.pop()
-        trashed_folder_ids_set.add(_fid)
-        _stk.extend(_trash_ch_map.get(_fid, []))
-    all_trashed_files = File.query.filter_by(registered_user_id=user.id, is_trashed=True).all()
-    standalone_trashed_file_count = sum(1 for f in all_trashed_files if f.folder_id not in trashed_folder_ids_set)
-    trash_count = standalone_trashed_file_count + trashed_folder_count
-    
-    # Build folder sizes from already-loaded files (no extra queries)
-    # Step 1: Sum direct file sizes per folder_id
-    direct_sizes = {}
-    direct_counts = {}
-    for f in all_active_files:
-        fid = f.folder_id
-        direct_sizes[fid] = direct_sizes.get(fid, 0) + (f.size or 0)
-        direct_counts[fid] = direct_counts.get(fid, 0) + 1
-    
-    # Step 2: Build parent->children map from all_folders
-    children_map = {}
-    for fld in all_folders:
-        children_map.setdefault(fld.parent_id, []).append(fld.id)
-    
-    # Step 3: Recursive sum with memoization
-    folder_sizes = {}
-    folder_counts = {}
-    _sizing = set()  # parent_id-cycle guard: a folder already on the stack adds nothing
-    def calc_folder_size(fld_id):
-        if fld_id in folder_sizes:
-            return folder_sizes[fld_id], folder_counts[fld_id]
-        if fld_id in _sizing:
-            return 0, 0
-        _sizing.add(fld_id)
-        total_size = direct_sizes.get(fld_id, 0)
-        total_count = direct_counts.get(fld_id, 0)
-        for child_id in children_map.get(fld_id, []):
-            child_size, child_count = calc_folder_size(child_id)
-            total_size += child_size
-            total_count += child_count
-        folder_sizes[fld_id] = total_size
-        folder_counts[fld_id] = total_count
-        _sizing.discard(fld_id)
-        return total_size, total_count
-    
-    for fld in _folders_deepest_first(all_folders):
-        calc_folder_size(fld.id)
-    
-    # Compute folder depths for move modal indentation
-    folder_depths = {}
-    parent_map = {fld.id: fld.parent_id for fld in all_folders}
-    for fld in all_folders:
-        depth = 0
-        current_pid = fld.parent_id
-        visited = set()
-        while current_pid is not None and current_pid not in visited:
-            visited.add(current_pid)
-            depth += 1
-            current_pid = parent_map.get(current_pid)
-        folder_depths[fld.id] = depth
-
-    # Determine if current folder has E2E content despite is_e2e=False (mixed state)
-    # Used by frontend to auto-select E2E upload instead of prompting
-    current_folder_has_e2e_content = False
-    if current_folder and not (current_folder.is_e2e is True):
-        # Iterative: a recursive walk hit RecursionError (HTTP 500) on deep trees.
-        subtree_ids = set(_bfs_folder_ids(current_folder.id, children_map))
-        has_e2e_files = any(f.is_e2e_encrypted for f in all_active_files if f.folder_id in subtree_ids)
-        has_e2e_subfolder = any(fld.is_e2e is True for fld in all_folders if fld.id in subtree_ids and fld.id != current_folder.id)
-        current_folder_has_e2e_content = has_e2e_files or has_e2e_subfolder
-
-    return render_template('files.html', user=user, files=active_files, folders=all_folders, all_files=all_active_files, current_folders=current_folders, current_folder=current_folder, breadcrumbs=breadcrumbs, parent_is_public=parent_is_public, parent_is_browsable=parent_is_browsable, datetime=datetime, timezone=timezone, timedelta=timedelta, is_trash_view=False, trash_count=trash_count, folder_sizes=folder_sizes, folder_counts=folder_counts, folder_depths=folder_depths, view_preference=user.view_preference or 'grid', files_background_theme=user.files_background_theme or 'topo', current_folder_has_e2e_content=current_folder_has_e2e_content, root_folder_name=user.root_folder_name or 'FILES')
+    # files.js loads the listing, tree, sizes and trash count from /files/list;
+    # the page shell only needs these values (same as /trash).
+    return render_template('files.html',
+                           user=user,
+                           is_trash_view=False,
+                           current_folder=current_folder,
+                           root_folder_name=user.root_folder_name or 'FILES')
 
 @app.route('/files/list')
 @app.route('/files/list/<int:folder_id>')
@@ -1036,8 +928,30 @@ def trash_folder_recursive(folder_id, trashed_at=None):
               f'(owner {file.registered_user_id} != {root_folder.user_id})')
         file.folder_id = None
 
-    # Bulk-update all affected folders
+    # Trash revokes every link in the tree. A folder link secret is
+    # HKDF(master, 'folder:' + share_token), so each shared folder gets a fresh
+    # token and the keys wrapped under the old secret are dropped (as in
+    # regenerate_folder_link); otherwise restore + re-share revives the old URL.
     folder_map = {fld.id: fld for fld in all_folders}
+    revoked_ids = set()
+    for fid in all_folder_ids:
+        fld = folder_map.get(fid)
+        if fld and (fld.is_public or fld.is_browsable or fld.is_link_shared):
+            fld.share_token = str(uuid.uuid4())
+            fld.link_secret = None
+            fld.is_link_shared = False
+            if fid not in revoked_ids:
+                revoked_ids.update(_bfs_folder_ids(fid, children_map))
+    for fid in revoked_ids:
+        fld = folder_map.get(fid)
+        if fld:
+            fld.link_encrypted_name_key = None
+            fld.link_name_key_nonce = None
+    for file in files_in_folders:
+        if file.folder_id in revoked_ids:
+            _clear_file_folder_link_key(file)
+
+    # Bulk-update all affected folders
     for fid in all_folder_ids:
         fld = folder_map.get(fid)
         if fld:

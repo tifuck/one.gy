@@ -9,9 +9,9 @@ cryptography==43.0.3
 python-dotenv==1.0.1
 qrcode[pil]==8.2
 Pillow==12.3.0
-# AUDIT FIX M9: gunicorn 22.0.0 is affected by CVE-2024-6827
-# (Transfer-Encoding request smuggling); fixed in 23.0.0.
-gunicorn==23.0.0
+# gunicorn <= 26.0.0 is affected by request smuggling (CVE-2024-6827 in 22.x,
+# AIKIDO-2026-10742 through 25.3.0, AIKIDO-2026-332632 through 26.0.0).
+gunicorn==26.2.0
 pyotp==2.9.0
 Pygments==2.19.2
 flask-compress==1.15

@@ -33,9 +33,11 @@
 .api-description{max-width:70ch}
 
 /* ---- Info cards --------------------------------------------------------- */
-.docs-info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:.9rem;margin-top:1.4rem}
-.docs-info-card{border:2px solid var(--border);padding:.9rem 1rem;background:var(--surface)}
-.docs-info-label{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim);margin-bottom:.4rem}
+/* Overview facts: one ruled spec table (rows never orphan, whatever the count) */
+.docs-info-grid{display:grid;margin-top:1.4rem;border:2px solid var(--border);background:var(--surface)}
+.docs-info-card{display:grid;grid-template-columns:minmax(9rem,14rem) minmax(0,1fr);align-items:center;gap:1rem;padding:.8rem 1rem}
+.docs-info-card + .docs-info-card{border-top:1px solid rgba(var(--ink-rgb),.14)}
+.docs-info-label{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim)}
 .docs-info-value code{font-size:.86rem;background:transparent;border:none;padding:0;color:var(--text);font-weight:600}
 
 /* ---- Endpoint header ---------------------------------------------------- */

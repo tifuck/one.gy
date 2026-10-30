@@ -28,6 +28,9 @@ keyfile = os.path.join(basedir, 'key.pem')
 worker_class = 'gthread'
 workers = int(os.environ.get('GUNICORN_WORKERS', '1'))
 threads = int(os.environ.get('GUNICORN_THREADS', '8'))
+# gunicorn >= 26 opens $HOME/.gunicorn/gunicorn.ctl by default; PROD and DEV share
+# root's HOME, so the second instance would clobber the first's socket.
+control_socket_disable = True
 
 # --- Timeouts ---
 # A 10GB upload at 10 MB/s = ~17 minutes transfer, plus up to 30 minutes
@@ -62,7 +65,7 @@ loglevel = 'info'
 # (operational logs) is completely untouched. If redaction itself ever fails,
 # the line is logged only with inert fields (fail closed — never a raw URI).
 import re as _re
-from urllib.parse import unquote_plus as _unquote_plus
+from urllib.parse import unquote as _unquote, unquote_plus as _unquote_plus
 
 from gunicorn.glogging import Logger as _GunicornLogger
 
@@ -74,7 +77,9 @@ _SENSITIVE_QKEY = _re.compile(
 # Opaque random-looking values (share ids, tokens) even under an innocent key.
 _TOKENISH_VALUE = _re.compile(r'^[A-Za-z0-9_\-]{16,}$')
 # Path segments whose NEXT segment is a bearer token.
-_TOKEN_PATH_PREFIXES = frozenset(('f', 'manage', 'delete', 'manage-data-by-token'))
+# Keep in sync with _LOG_TOKEN_PATH_PREFIXES in src/app/030_db_app_setup.py.
+_TOKEN_PATH_PREFIXES = frozenset((
+    'f', 's', 'manage', 'delete', 'manage-data-by-token', 'prepared', 'progress'))
 
 
 def redact_query_string(query):
@@ -108,7 +113,8 @@ def redact_uri(uri):
         path, sep, query = str(uri).partition('?')
         segments = path.split('/')
         for i in range(len(segments) - 1):
-            if segments[i] in _TOKEN_PATH_PREFIXES and segments[i + 1]:
+            # Match the DECODED segment: '/%66/<token>' routes to '/f/<token>'.
+            if _unquote(segments[i]) in _TOKEN_PATH_PREFIXES and segments[i + 1]:
                 segments[i + 1] = _REDACTED
         redacted = '/'.join(segments)
         if sep:
@@ -183,14 +189,15 @@ def post_fork(server, worker):
     lives inside start_scheduler()'s watchdog thread, which uses a DB heartbeat
     lease (detects hangs) plus the flock (instant failover on clean death). Every
     worker runs the watchdog; exactly one wins the lease and runs the scheduler."""
+    from app import app, storage
     try:
-        from app import app, storage
         with app.app_context():
             storage.init()
         print(f'[GUNICORN] Worker {worker.pid} initialized storage')
     except Exception as e:
-        print(f'[GUNICORN] Worker {worker.pid} storage init failed: {e}')
-        raise
+        # Not fatal: storage re-runs init() lazily (_ensure_local_backend_ready),
+        # whereas raising here is a WORKER_BOOT_ERROR that halts the master.
+        print(f'[GUNICORN] Worker {worker.pid} storage init failed, will retry lazily: {e}')
 
     try:
         from app import start_scheduler

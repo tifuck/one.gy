@@ -74,7 +74,7 @@ class _StorageManagerNodeAdmin:
         lock_acquired = self._state_lock.acquire(timeout=self.REMOVE_NODE_LOCK_TIMEOUT_SECONDS)
         if not lock_acquired:
             raise ValueError(
-                'STORAGE SUBSYSTEM IS BUSY — could not acquire the storage state lock within '
+                'STORAGE SUBSYSTEM IS BUSY: could not acquire the storage state lock within '
                 f'{self.REMOVE_NODE_LOCK_TIMEOUT_SECONDS}s. Node removal is destructive and will '
                 'not proceed without it; retry once the current replication/scrub cycle finishes.'
             )
@@ -102,7 +102,7 @@ class _StorageManagerNodeAdmin:
             outstanding = self._pending_deletes_targeting(node_id)
             if outstanding and not force:
                 raise ValueError(
-                    f'Node has {len(outstanding)} pending remote delete(s) targeting it — '
+                    f'Node has {len(outstanding)} pending remote delete(s) targeting it: '
                     'removing it now would orphan undeleted remote bytes (the tombstones can '
                     'never be replayed without this node). Run remote cleanup first, or force '
                     'removal to write a durable manifest and proceed.')
@@ -149,7 +149,7 @@ class _StorageManagerNodeAdmin:
                         timeout=self.REMOVE_NODE_LOCK_TIMEOUT_SECONDS)
                 if not lock_acquired:
                     raise ValueError(
-                        'STORAGE SUBSYSTEM IS BUSY — the storage state lock could not be '
+                        'STORAGE SUBSYSTEM IS BUSY: the storage state lock could not be '
                         're-acquired after the live redundancy re-verification. Node removal '
                         'is refused without any mutation; retry once the current '
                         'replication/scrub cycle finishes.')
@@ -172,7 +172,7 @@ class _StorageManagerNodeAdmin:
             if outstanding:
                 if not force:
                     raise ValueError(
-                        f'Node has {len(outstanding)} pending remote delete(s) targeting it — '
+                        f'Node has {len(outstanding)} pending remote delete(s) targeting it: '
                         'removing it now would orphan undeleted remote bytes. Run remote '
                         'cleanup first, or force removal to proceed.')
                 # AUDIT FIX (finding 10): force path — persist what this removal
@@ -193,14 +193,14 @@ class _StorageManagerNodeAdmin:
                 if exclusive.get('stale_evidence_failed'):
                     raise ValueError(
                         f"{exclusive['stale_evidence_failed']} surviving remote cop(ies) of this "
-                        'node\'s data FAILED live re-verification — the redundancy the DB claims '
+                        'node\'s data FAILED live re-verification: the redundancy the DB claims '
                         'does not exist. Repair replication first, or force removal to proceed.'
                     )
                 if exclusive.get('verification_incomplete'):
                     raise ValueError(
                         'Could not finish live re-verification of the surviving copies (node '
                         'unreachable, or too many stale replica rows to check within the time '
-                        'budget). Refusing a destructive removal on unverified evidence — run the '
+                        'budget). Refusing a destructive removal on unverified evidence. Run the '
                         'integrity scrub first, or force removal to proceed.'
                     )
 
@@ -219,7 +219,7 @@ class _StorageManagerNodeAdmin:
                 node_id, self.REMOVE_NODE_DRAIN_TIMEOUT_SECONDS)
             if not drain_lock:
                 raise ValueError(
-                    'NODE DRAIN TIMED OUT — one or more storage writes are still in flight after '
+                    'NODE DRAIN TIMED OUT: one or more storage writes are still in flight after '
                     f'{self.REMOVE_NODE_DRAIN_TIMEOUT_SECONDS}s. No replica or node rows were removed; '
                     'the node was restored and removal was refused.'
                 )
@@ -234,6 +234,30 @@ class _StorageManagerNodeAdmin:
             # commit — either way the promote below cannot race a demote into
             # two primaries.
             _locked_for_delete = self._lock_storage_node_rows()
+            if not force:
+                # The exclusivity verdict above was computed with the state lock
+                # released and before these row locks, so a concurrent removal
+                # (another worker) may have counted THIS node as its survivor
+                # while we counted it as ours. Re-check under the row locks:
+                # refuse while any other node is draining, then re-run the
+                # DB-only exclusivity check (which ignores disabled/draining
+                # nodes as survivors) against the now-serialised state.
+                _other_draining = [r.name for r in _locked_for_delete
+                                   if r.id != node_id and r.status == 'draining']
+                if _other_draining:
+                    raise ValueError(
+                        f'Another storage node is being removed ({", ".join(_other_draining)}): '
+                        'refusing a concurrent removal whose redundancy verdict could count that '
+                        'node as a surviving copy. Retry once it finishes.')
+                _recheck = self.check_node_exclusive_data(node_id)
+                if (_recheck.get('exclusive_files') or _recheck.get('exclusive_notes')
+                        or _recheck.get('exclusive_thumbnails')):
+                    raise ValueError(
+                        'Node has data with no other synced copy on an enabled node '
+                        f"(files={_recheck.get('exclusive_files', 0)}, "
+                        f"notes={_recheck.get('exclusive_notes', 0)}, "
+                        f"thumbnails={_recheck.get('exclusive_thumbnails', 0)}). "
+                        'Wait for replication to complete or force removal to proceed.')
             was_primary = next(
                 (bool(r.is_primary) for r in _locked_for_delete if r.id == node_id),
                 False)
@@ -833,7 +857,7 @@ class _StorageManagerNodeAdmin:
         if not node:
             raise ValueError(f'Storage node {node_id} not found')
         if not node.is_enabled:
-            raise ValueError(f'Storage node {node.name} is disabled — enable it before setting as primary')
+            raise ValueError(f'Storage node {node.name} is disabled: enable it before setting as primary')
         node_tbl = StorageNode.__table__
         db.session.execute(
             node_tbl.update().where(node_tbl.c.is_primary == True).values(is_primary=False)
@@ -869,6 +893,7 @@ class _StorageManagerNodeAdmin:
         # fresh so a drain fence published meanwhile is never overwritten.
         node_pk = None
         backend = None
+        temp_backend = None
         with self._state_lock:
             node = db.session.get(StorageNode, node_id)
             if not node:
@@ -878,6 +903,7 @@ class _StorageManagerNodeAdmin:
                 backend = self._backends.get(node_id)
                 if not backend:
                     backend = self._create_backend(node)
+                    temp_backend = backend
             except Exception as e:
                 node.status = 'error'
                 db.session.commit()
@@ -891,6 +917,11 @@ class _StorageManagerNodeAdmin:
         except Exception as e:
             health_ok = False
             health_error = e
+        finally:
+            # A backend built only for this probe is never published; close it
+            # (the discovered host-key fingerprint survives the close).
+            if temp_backend is not None:
+                self._close_backend_set({node_pk: temp_backend})
 
         with self._state_lock:
             # End the pre-probe transaction: otherwise get() returns the cached
@@ -1359,11 +1390,15 @@ class _StorageManagerNodeAdmin:
                     return cached
             except Exception:
                 pass  # Malformed cache entry — fall through to live query
+        if not node.is_enabled:
+            return None
         # Query live (outside the lock — backend.disk_usage() may be slow)
+        temp_backend = None
         try:
             backend = self._backends.get(node_id)
             if not backend:
                 backend = self._create_backend(node)
+                temp_backend = backend
             result = backend.disk_usage()
             if result:
                 cached_at = datetime.now(timezone.utc).isoformat()
@@ -1373,4 +1408,7 @@ class _StorageManagerNodeAdmin:
                 return entry
         except Exception as e:
             print(f'[STORAGE] disk_usage query failed for node {node_id}: {e}')
+        finally:
+            if temp_backend is not None:
+                self._close_backend_set({node_id: temp_backend})
         return None

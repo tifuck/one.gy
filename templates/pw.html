@@ -28,7 +28,7 @@
     <form method="post" action="{{ ('/f/' ~ token) if is_folder else ('/f/' ~ file_id) }}" class="gw-form e2ed-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <input type="password" name="{{ 'password' if is_folder else 'pw' }}" class="form-input e2ed-input"
-             placeholder="Enter password" required autofocus autocomplete="current-password">
+             placeholder="Enter password" required autofocus autocomplete="off">
       <button type="submit" class="gw-btn gw-btn-primary e2ed-submit">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="1"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         Unlock
@@ -36,4 +36,18 @@
     </form>
   </div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+// The fixed action drops ?folder= and the #key fragment, so an unlocked E2EE
+// share could never decrypt. Keep both (the fragment is never sent to the
+// server; the browser carries it over to the response page).
+(function () {
+  var form = document.querySelector('.e2ed-form')
+  if (!form) return
+  var base = form.getAttribute('action')
+  form.addEventListener('submit', function () { form.setAttribute('action', base + location.search + location.hash) })
+})()
+</script>
 {% endblock %}

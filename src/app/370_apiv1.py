@@ -17,6 +17,34 @@ def apiv1_list_keys():
         } for k in keys]
     })
 
+def _apiv1_e2e_file_fields(f):
+    """E2EE names are encrypted under the file key, so every listing that
+    returns encrypted_name must return the wrapped file key with it."""
+    return {
+        'encrypted_name': f.encrypted_name,
+        'name_nonce': f.name_nonce,
+        'encrypted_file_key': f.encrypted_file_key,
+        'file_key_nonce': f.file_key_nonce,
+        'stored_extension': f.stored_extension,
+    }
+
+def _apiv1_ips_within_caller(cleaned_ips, caller_ips):
+    """True when every whitelist entry lies inside one of the calling key's
+    own entries, so a manage_keys key cannot mint or widen access beyond its
+    IP restriction."""
+    import ipaddress
+    caller_nets = []
+    for entry in caller_ips:
+        try:
+            caller_nets.append(ipaddress.IPv4Network(entry, strict=False))
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, ValueError, TypeError):
+            continue
+    for entry in cleaned_ips:
+        net = ipaddress.IPv4Network(entry, strict=False)
+        if not any(net.subnet_of(caller_net) for caller_net in caller_nets):
+            return False
+    return True
+
 @app.route('/apiv1/keys', methods=['POST'])
 @csrf.exempt
 @api_key_required
@@ -43,7 +71,7 @@ def apiv1_create_key():
     for perm in ApiKey.VALID_PERMISSIONS:
         col = f'perm_{perm}'
         if perms.get(col) is True and not g.api_key.has_permission(perm):
-            return jsonify({'error': f'Cannot grant permission "{perm}" — your API key does not hold it'}), 403
+            return jsonify({'error': f'Cannot grant permission "{perm}": your API key does not hold it'}), 403
 
     # Parse and validate IP whitelist
     allowed_ips_raw = data.get('allowed_ips')
@@ -56,6 +84,13 @@ def apiv1_create_key():
             return jsonify({'error': ip_error}), 400
         if cleaned_ips:
             allowed_ips_json = json.dumps(cleaned_ips)
+
+    caller_ips = g.api_key.get_allowed_ips_list()
+    if caller_ips:
+        if allowed_ips_raw is None:
+            allowed_ips_json = json.dumps(caller_ips)
+        elif not allowed_ips_json or not _apiv1_ips_within_caller(cleaned_ips, caller_ips):
+            return jsonify({'error': 'Your API key is IP-restricted; allowed_ips must be a non-empty subset of its own allowed_ips'}), 403
 
     raw_key, api_key = _create_user_api_key(user.id, label, allowed_ips_json, perms)
     if api_key is None:
@@ -119,14 +154,18 @@ def apiv1_update_key(key_id):
         for perm in ApiKey.VALID_PERMISSIONS:
             col = f'perm_{perm}'
             if perms.get(col) is True and not g.api_key.has_permission(perm):
-                return jsonify({'error': f'Cannot grant permission "{perm}" — your API key does not hold it'}), 403
+                return jsonify({'error': f'Cannot grant permission "{perm}": your API key does not hold it'}), 403
         for col, val in perms.items():
             setattr(api_key, col, val)
 
     # Update IP whitelist if provided
     if 'allowed_ips' in data:
         allowed_ips_raw = data['allowed_ips']
+        caller_ips = g.api_key.get_allowed_ips_list()
+        ip_scope_error = 'Your API key is IP-restricted; allowed_ips must be a non-empty subset of its own allowed_ips'
         if allowed_ips_raw is None or (isinstance(allowed_ips_raw, list) and len(allowed_ips_raw) == 0):
+            if caller_ips:
+                return jsonify({'error': ip_scope_error}), 403
             api_key.allowed_ips = None
         else:
             if not isinstance(allowed_ips_raw, list):
@@ -134,6 +173,8 @@ def apiv1_update_key(key_id):
             cleaned_ips, ip_error = _validate_ip_whitelist(allowed_ips_raw)
             if ip_error:
                 return jsonify({'error': ip_error}), 400
+            if caller_ips and (not cleaned_ips or not _apiv1_ips_within_caller(cleaned_ips, caller_ips)):
+                return jsonify({'error': ip_scope_error}), 403
             api_key.allowed_ips = json.dumps(cleaned_ips) if cleaned_ips else None
 
     db.session.commit()
@@ -226,10 +267,19 @@ def apiv1_upload():
                 print(f'[API] Reused existing upload for idempotency key: {upload_key}')
                 return jsonify(_api_upload_payload(existing_upload)), 200
 
-        # AUDIT FIX S2: stage under UPLOAD_FOLDER (same filesystem as final)
-        # storage) instead of the default /tmp, which may be a small/RAM-backed
-        # tmpfs -- mirrors the main /upload route's staging location.
-        temp_dir = tempfile.mkdtemp(prefix=f'api_upload_{file_id}_', dir=app.config['UPLOAD_FOLDER'])
+        # AUDIT FIX S2: stage on the same filesystem as final storage instead of
+        # a possibly small/RAM-backed tmpfs -- mirrors the main /upload route:
+        # the reaped work-dir root when it shares UPLOAD_FOLDER's filesystem,
+        # otherwise a dir inside UPLOAD_FOLDER.
+        try:
+            _work_root_same_fs = (os.stat(_ensure_onegy_temp_root()).st_dev
+                                  == os.stat(app.config['UPLOAD_FOLDER']).st_dev)
+        except OSError:
+            _work_root_same_fs = False
+        if _work_root_same_fs:
+            temp_dir = create_work_dir(f'api_upload_{file_id}_')
+        else:
+            temp_dir = tempfile.mkdtemp(prefix=f'api_upload_{file_id}_', dir=app.config['UPLOAD_FOLDER'])
         total_files = 0
         saved_file_paths = []
         total_size = 0
@@ -637,13 +687,7 @@ def apiv1_list_files(folder_id=None):
             'downloads': f.download_count
         }
         if f.is_e2e_encrypted:
-            entry.update({
-                'encrypted_name': f.encrypted_name,
-                'name_nonce': f.name_nonce,
-                'encrypted_file_key': f.encrypted_file_key,
-                'file_key_nonce': f.file_key_nonce,
-                'stored_extension': f.stored_extension,
-            })
+            entry.update(_apiv1_e2e_file_fields(f))
         files_json.append(entry)
 
     return jsonify({
@@ -688,13 +732,7 @@ def apiv1_file_properties(file_id):
         'download_url': f'https://{domain}/f/{file.id}/{urllib.parse.quote(file.orig_name)}'
     }
     if file.is_e2e_encrypted:
-        result.update({
-            'encrypted_name': file.encrypted_name,
-            'name_nonce': file.name_nonce,
-            'encrypted_file_key': file.encrypted_file_key,
-            'file_key_nonce': file.file_key_nonce,
-            'stored_extension': file.stored_extension,
-        })
+        result.update(_apiv1_e2e_file_fields(file))
     return jsonify(result)
 
 @app.route('/apiv1/files/<file_id>', methods=['DELETE'])
@@ -886,7 +924,7 @@ def apiv1_search():
         'uploaded_at': f.get_upload_time_aware().strftime('%Y-%m-%dT%H:%M:%SZ'),
         'is_e2e': f.is_e2e_encrypted,
         'download_url': f'https://{domain}/f/{f.id}/{urllib.parse.quote(f.orig_name)}',
-        **({'encrypted_name': f.encrypted_name, 'name_nonce': f.name_nonce} if f.is_e2e_encrypted else {}),
+        **(_apiv1_e2e_file_fields(f) if f.is_e2e_encrypted else {}),
     } for f in files]
 
     folders_json = []
@@ -958,7 +996,7 @@ def apiv1_list_trash():
             'size': f.size,
             'remaining_hours': round(remaining_hours, 1),
             'trashed_at': f.trashed_at.strftime('%Y-%m-%dT%H:%M:%SZ') if f.trashed_at else None,
-            **({'encrypted_name': f.encrypted_name, 'name_nonce': f.name_nonce} if f.is_e2e_encrypted else {}),
+            **(_apiv1_e2e_file_fields(f) if f.is_e2e_encrypted else {}),
         })
 
     return jsonify({'folders': folders_json, 'files': files_json})
@@ -972,9 +1010,11 @@ def apiv1_restore_file(file_id):
     user = g.api_user
     quota_lock = _acquire_user_quota_lock(user.id)
     lifecycle_lock = None
+    tree_lock = None
     try:
         _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
+        tree_lock = _acquire_user_folder_tree_lock(user.id)
         db.session.rollback()
         user = db.session.get(User, user.id)
         file = File.query.filter_by(id=file_id, registered_user_id=user.id, is_trashed=True).first()
@@ -1033,6 +1073,7 @@ def apiv1_restore_file(file_id):
         print(f'[API] Restored file: {file.orig_name} by user: {user.username}')
         return jsonify({'success': True})
     finally:
+        _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
         _release_user_quota_lock(quota_lock)
 

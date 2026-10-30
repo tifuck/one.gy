@@ -1,6 +1,6 @@
 ;(function(){
   var catalog = {total:0, tags:[], categories:[]}
-  var byId = {}
+  var byId = Object.create(null)  // keyed by URL-supplied ids: no prototype keys like __proto__
   var activeTags = {}
   var hideInput = false
   var conciseMode = true
@@ -110,11 +110,20 @@
     }catch(e){}
   }
 
+  // Temporarily relabel a button. The original label is kept once, so a
+  // second click within the delay cannot capture "Copied" as the label.
+  function flashLabel(btn, text){
+    if(!btn.hasAttribute('data-label')) btn.setAttribute('data-label', btn.textContent)
+    btn.textContent = text
+    clearTimeout(btn._labelTimer)
+    btn._labelTimer = setTimeout(function(){ btn.textContent = btn.getAttribute('data-label') }, 1400)
+  }
+
   function copyPrompt(id, btn){
     var found = byId[id]
     if(!found || !window.PromptBuilder) return
     window.PromptBuilder.copyText(preparePrompt(found.prompt.body)).then(function(){
-      if(btn){ var old = btn.textContent; btn.textContent = 'Copied'; setTimeout(function(){ btn.textContent = old }, 1400) }
+      if(btn) flashLabel(btn, 'Copied')
       else if(typeof showToast === 'function') showToast('Copied', 'success')
     }).catch(function(){
       if(typeof showToast === 'function') showToast('Copy failed', 'error')
@@ -173,7 +182,7 @@
         var name = found && found.prompt ? found.prompt.title : 'this prompt'
         lead.textContent = 'About “' + name + '”. Say what doesn’t make sense, what you’d add, or that you don’t like it.'
       } else {
-        lead.textContent = 'About the prompts page as a whole — what’s useful, confusing, or missing.'
+        lead.textContent = 'About the prompts page as a whole: what’s useful, confusing, or missing.'
       }
     }
     if(msg){ msg.value = ''; msg.placeholder = fbKind === 'prompt' ? 'This part doesn’t make sense…' : 'What’s working, what’s confusing…' }
@@ -299,7 +308,9 @@
       if(!openId) return
       var url = location.origin + location.pathname + '#p/' + encodeURIComponent(openId)
       if(window.PromptBuilder) window.PromptBuilder.copyText(url).then(function(){
-        var old = mLink.textContent; mLink.textContent = 'Copied'; setTimeout(function(){ mLink.textContent = old }, 1400)
+        flashLabel(mLink, 'Copied')
+      }).catch(function(){
+        if(typeof showToast === 'function') showToast('Copy failed', 'error')
       })
     })
     var mCust = $('prModalCustomize')
@@ -319,7 +330,7 @@
 
   function indexCatalog(data){
     catalog = data || {total:0, tags:[], categories:[]}
-    byId = {}
+    byId = Object.create(null)
     ;(catalog.categories||[]).forEach(function(c){
       ;(c.prompts||[]).forEach(function(p){ byId[p.id] = {prompt:p, category:c} })
     })
@@ -329,7 +340,10 @@
     var h = location.hash || ''
     if(h === '#builder' && window.PromptBuilder) window.PromptBuilder.switchTab('builder')
     var m = h.match(/^#p\/(.+)$/)
-    if(m) openModal(decodeURIComponent(m[1]))
+    if(!m) return
+    var id
+    try{ id = decodeURIComponent(m[1]) }catch(e){ return }  // malformed escape, e.g. #p/%E0
+    openModal(id)
   }
 
   function init(){

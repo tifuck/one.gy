@@ -60,12 +60,12 @@ window.ManageModal = (function() {
 
   function _blockedByConversion() {
     if (regenerateInFlight) {
-      cfg.showToast('SHARE LINK REGENERATION STILL RUNNING — WAIT FOR IT TO FINISH', 'error')
+      cfg.showToast('SHARE LINK REGENERATION STILL RUNNING. WAIT FOR IT TO FINISH', 'error')
       return true
     }
     if (!conversionInFlight) return false
     const label = String(conversionInFlight.name || conversionInFlight.id || '').toUpperCase()
-    cfg.showToast(`ENCRYPTION CONVERSION STILL RUNNING FOR "${label}" — WAIT FOR IT TO FINISH`, 'error')
+    cfg.showToast(`ENCRYPTION CONVERSION STILL RUNNING FOR "${label}". WAIT FOR IT TO FINISH`, 'error')
     return true
   }
 
@@ -576,7 +576,10 @@ window.ManageModal = (function() {
       const data = await resp.json().catch(() => ({}))
       throw new Error(data.error || 'ERROR SAVING SETTINGS')
     }
-    return await resp.json()
+    const result = await resp.json()
+    // Turning folder sharing off rotates share_token server-side.
+    if (type === 'folder' && result && result.share_token) data.share_token = result.share_token
+    return result
   }
 
   // ─── Share Link Spinner Helpers ──────────────────────────────
@@ -724,22 +727,25 @@ window.ManageModal = (function() {
 
       const csrfToken = cfg.getCSRFToken()
 
-      // Batch-fetch all file keys in one request instead of N individual /key-info calls
+      // Batch-fetch file keys instead of N individual /key-info calls. The
+      // server answers at most 200 ids per request, so send them in chunks.
       if (e2eFiles.length) {
         const fileIds = e2eFiles.map(f => f.id)
-        let batchKeys = {}
-        try {
-          const batchResp = await fetch('/f/batch-key-info', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': csrfToken },
-            body: JSON.stringify({ file_ids: fileIds })
-          })
-          if (batchResp.ok) {
-            const batchData = await batchResp.json()
-            batchKeys = batchData.keys || {}
+        const batchKeys = {}
+        for (let i = 0; i < fileIds.length; i += 200) {
+          try {
+            const batchResp = await fetch('/f/batch-key-info', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': csrfToken },
+              body: JSON.stringify({ file_ids: fileIds.slice(i, i + 200) })
+            })
+            if (batchResp.ok) {
+              const batchData = await batchResp.json()
+              Object.assign(batchKeys, batchData.keys || {})
+            }
+          } catch (err) {
+            console.error('[MANAGE MODAL] Batch key-info fetch failed:', err)
           }
-        } catch (err) {
-          console.error('[MANAGE MODAL] Batch key-info fetch failed:', err)
         }
 
         for (const fileInfo of e2eFiles) {
@@ -912,7 +918,7 @@ window.ManageModal = (function() {
               await saveManageSetting('public', false, data, type)
               data.is_public = false
               if (refs.shareableToggle) refs.shareableToggle.checked = false
-              throw new Error('SHARE LINK KEY UPLOAD FAILED — SHARING WAS DISABLED')
+              throw new Error('SHARE LINK KEY UPLOAD FAILED. SHARING WAS DISABLED')
             }
           }
         } else {
@@ -929,7 +935,7 @@ window.ManageModal = (function() {
             await saveManageSetting('browsable', false, data, type)
             data.is_browsable = false
             if (refs.shareableToggle) refs.shareableToggle.checked = false
-            throw new Error('FOLDER SHARE LINK KEYS FAILED — SHARING WAS DISABLED')
+            throw new Error('FOLDER SHARE LINK KEYS FAILED. SHARING WAS DISABLED')
           }
         }
       } else {
@@ -1282,7 +1288,7 @@ window.ManageModal = (function() {
 
     updateModalBadges()
 
-    let encText = '—'
+    let encText = 'NO FILES'
     let encClass = ''
     if ((data.e2e_count > 0 && data.e2e_count < data.file_count) || data.has_mixed_e2e) {
       encText = 'MIXED'
@@ -1460,7 +1466,7 @@ window.ManageModal = (function() {
         el.textContent = 'SERVER-SIDE'
         el.classList.add('manage-modal-encryption-server')
       } else {
-        el.textContent = '—'
+        el.textContent = 'NO FILES'
       }
     }
   }
@@ -1542,7 +1548,7 @@ window.ManageModal = (function() {
               } catch (rollbackErr) {
                 if (!isTargetActive()) return
                 refs.shareableToggle.checked = true
-                throw new Error('E2E LINK KEY PROVISIONING FAILED AND SHARING MAY STILL BE ENABLED — RETRY DISABLING VISIBILITY')
+                throw new Error('E2E LINK KEY PROVISIONING FAILED AND SHARING MAY STILL BE ENABLED. RETRY DISABLING VISIBILITY')
               }
               targetData.is_public = false
               refs.shareableToggle.checked = false
@@ -1592,6 +1598,8 @@ window.ManageModal = (function() {
         if (!isTargetActive()) return
         if (!resp.ok) throw new Error(result.error || `FAILED TO UPDATE VISIBILITY (HTTP ${resp.status})`)
         if (result.success) {
+          // Turning sharing off rotates the token; re-enabling must use the new one.
+          if (result.share_token) targetData.share_token = result.share_token
           targetData.is_browsable = checked
           if (checked) {
             const newUrl = `https://${window.location.host}/f/${targetData.share_token}`
@@ -1611,7 +1619,7 @@ window.ManageModal = (function() {
                 } catch (rollbackErr) {
                   if (!isTargetActive()) return
                   refs.shareableToggle.checked = true
-                  throw new Error('E2E LINK KEY PROVISIONING FAILED AND SHARING MAY STILL BE ENABLED — RETRY DISABLING VISIBILITY')
+                  throw new Error('E2E LINK KEY PROVISIONING FAILED AND SHARING MAY STILL BE ENABLED. RETRY DISABLING VISIBILITY')
                 }
                 targetData.is_browsable = false
                 refs.shareableToggle.checked = false
@@ -1681,7 +1689,7 @@ window.ManageModal = (function() {
     }
 
     if (!OneGyCrypto.hasSessionKeys()) {
-      cfg.showToast('ENCRYPTION KEYS NOT AVAILABLE — PLEASE LOG IN AGAIN', 'error')
+      cfg.showToast('ENCRYPTION KEYS NOT AVAILABLE. PLEASE LOG IN AGAIN', 'error')
       toggle.checked = !checked
       return
     }
@@ -1726,7 +1734,8 @@ window.ManageModal = (function() {
 
         const dlResp = await fetch(`/file/${target.id}/preview`)
         if (!dlResp.ok) throw new Error('FAILED TO DOWNLOAD FILE')
-        const plainData = await dlResp.arrayBuffer()
+        // A Blob (not an ArrayBuffer) lets encryptFileData stream it in slices.
+        const plainData = await dlResp.blob()
 
         updateReencryptToast(t, 'ENCRYPTING...', 30)
 
@@ -1830,11 +1839,11 @@ window.ManageModal = (function() {
 
         updateReencryptToast(t, 'COMPLETE!', 100)
         if (shareRollbackFailure) {
-          cfg.showToast('FILE ENCRYPTED, BUT SHARE-LINK KEY PROVISIONING AND VISIBILITY ROLLBACK FAILED — SHARING MAY STILL BE ENABLED', 'error')
+          cfg.showToast('FILE ENCRYPTED, BUT SHARE-LINK KEY PROVISIONING AND VISIBILITY ROLLBACK FAILED. SHARING MAY STILL BE ENABLED', 'error')
         } else if (shareRestoreFailure) {
-          cfg.showToast('FILE ENCRYPTED, BUT ITS SHARE LINK COULD NOT BE PROVISIONED — SHARING WAS NOT RESTORED', 'error')
+          cfg.showToast('FILE ENCRYPTED, BUT ITS SHARE LINK COULD NOT BE PROVISIONED. SHARING WAS NOT RESTORED', 'error')
         } else if (inheritedLinkKeyFailure) {
-          cfg.showToast('FILE ENCRYPTED, BUT ITS INHERITED SHARE-LINK KEY FAILED — FOLDER RECIPIENTS CANNOT DECRYPT IT', 'error')
+          cfg.showToast('FILE ENCRYPTED, BUT ITS INHERITED SHARE-LINK KEY FAILED. FOLDER RECIPIENTS CANNOT DECRYPT IT', 'error')
         } else {
           cfg.showToast('FILE IS NOW END-TO-END ENCRYPTED', 'success')
         }
@@ -1867,7 +1876,7 @@ window.ManageModal = (function() {
           } catch (nameErr) {
             console.error('[MANAGE MODAL] Real filename decryption failed:', nameErr)
           }
-          if (!realName) throw new Error('FILENAME COULD NOT BE DECRYPTED — CONVERSION ABORTED TO AVOID LOSING THE FILE NAME')
+          if (!realName) throw new Error('FILENAME COULD NOT BE DECRYPTED. CONVERSION ABORTED TO AVOID LOSING THE FILE NAME')
         }
 
         updateReencryptToast(t, 'DOWNLOADING ENCRYPTED FILE...', 20, realName)
@@ -1941,6 +1950,40 @@ window.ManageModal = (function() {
     }
   }
 
+  // ─── Plaintext folder name restore (E2EE off) ───────────────
+  // Resolved BEFORE anything is converted, and never from populateFolderModal's
+  // un-awaited background decrypt. Returns null when the name is not encrypted.
+  async function _plainFolderNameForRestore(target) {
+    if (!target.encrypted_name) return null
+    const name = (target._name_decrypted && target.name) || await _tryDecryptFolderName(target)
+    if (!name) throw new Error('FOLDER NAME COULD NOT BE DECRYPTED. E2E WAS NOT DISABLED')
+    return name
+  }
+
+  // Must run before saveManageSetting('e2e', false): the server keeps is_e2e
+  // set while an encrypted folder name exists.
+  async function _restorePlainFolderName(target, name) {
+    if (!name) return
+    const renameForm = new FormData()
+    renameForm.append('name', name)
+    renameForm.append('csrf_token', cfg.getCSRFToken())
+    const resp = await fetch(`/folder/${target.id}/rename`, {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: renameForm
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(err.error || `FOLDER NAME RESTORE FAILED (HTTP ${resp.status})`)
+    }
+    target.name = name
+    target.encrypted_name = null
+    target.name_nonce = null
+    target.encrypted_name_key = null
+    target.name_key_nonce = null
+    console.log(`[MANAGE MODAL] Restored plaintext folder name for folder ${target.id}`)
+  }
+
   // ─── Folder E2E Toggle (batch re-encryption) ────────────────
   async function handleFolderE2EToggle(checked) {
     const toggle = refs.e2eToggle
@@ -1952,7 +1995,7 @@ window.ManageModal = (function() {
     }
 
     if (!OneGyCrypto.hasSessionKeys()) {
-      cfg.showToast('ENCRYPTION KEYS NOT AVAILABLE — PLEASE LOG IN AGAIN', 'error')
+      cfg.showToast('ENCRYPTION KEYS NOT AVAILABLE. PLEASE LOG IN AGAIN', 'error')
       toggle.checked = !checked
       return
     }
@@ -2014,7 +2057,7 @@ window.ManageModal = (function() {
           // empty listing must never be treated as success.
           const alreadyFullyE2E = allFiles.length > 0 && nonE2EFiles.length === 0
           if (!nonE2EFiles.length && !alreadyFullyE2E) {
-            throw new Error('FOLDER FILE LIST IS EMPTY — REFRESH AND TRY AGAIN')
+            throw new Error('FOLDER FILE LIST IS EMPTY. REFRESH AND TRY AGAIN')
           }
 
           let completed = 0
@@ -2027,7 +2070,7 @@ window.ManageModal = (function() {
               completed++
               continue
             }
-            const plainData = await dlResp.arrayBuffer()
+            const plainData = await dlResp.blob()
 
             const fileKey = await OneGyCrypto.generateFileKey()
             const encryptedData = await OneGyCrypto.encryptFileData(plainData, fileKey)
@@ -2139,9 +2182,9 @@ window.ManageModal = (function() {
           } else if (fullyConverted) {
             cfg.showToast(`${succeeded} FILE${succeeded > 1 ? 'S' : ''} ENCRYPTED END-TO-END`, 'success')
           } else if (succeeded > 0) {
-            cfg.showToast(`${succeeded}/${nonE2EFiles.length} FILES ENCRYPTED. ${nonE2EFiles.length - succeeded} FAILED — FOLDER IS IN A MIXED STATE`, 'error')
+            cfg.showToast(`${succeeded}/${nonE2EFiles.length} FILES ENCRYPTED. ${nonE2EFiles.length - succeeded} FAILED. FOLDER IS IN A MIXED STATE`, 'error')
           } else {
-            cfg.showToast('FAILED TO ENCRYPT FILES — CHECK CONSOLE FOR DETAILS', 'error')
+            cfg.showToast('FAILED TO ENCRYPT FILES. CHECK CONSOLE FOR DETAILS', 'error')
           }
 
           let _batchEncRefreshed = false
@@ -2167,7 +2210,7 @@ window.ManageModal = (function() {
           // the folder is now mixed rather than untouched.
           cfg.showToast(
             succeeded > 0
-              ? `${baseMsg} — ${succeeded}/${nonE2ETotal} FILE${succeeded > 1 ? 'S' : ''} ALREADY ENCRYPTED, FOLDER IS IN A MIXED STATE`
+              ? `${baseMsg}. ${succeeded}/${nonE2ETotal} FILE${succeeded > 1 ? 'S' : ''} ALREADY ENCRYPTED, FOLDER IS IN A MIXED STATE`
               : baseMsg,
             'error'
           )
@@ -2255,6 +2298,7 @@ window.ManageModal = (function() {
 
           const masterKey = await OneGyCrypto.getMasterKeyFromSession()
           if (!masterKey) throw new Error('MASTER KEY NOT AVAILABLE')
+          const plainFolderName = await _plainFolderNameForRestore(target)
 
           const listResp = await fetch(`/folder/${target.id}/files`)
           if (!listResp.ok) throw new Error(`FAILED TO LOAD FOLDER FILE LIST (HTTP ${listResp.status})`)
@@ -2267,7 +2311,7 @@ window.ManageModal = (function() {
           // never proof that every file is already server-side encrypted.
           const alreadyFullyPlain = allFiles.length > 0 && e2eFiles.length === 0
           if (!e2eFiles.length && !alreadyFullyPlain) {
-            throw new Error('FOLDER FILE LIST IS EMPTY — REFRESH AND TRY AGAIN')
+            throw new Error('FOLDER FILE LIST IS EMPTY. REFRESH AND TRY AGAIN')
           }
 
           // Pre-decrypt E2EE filenames for toast display and server restore
@@ -2337,26 +2381,11 @@ window.ManageModal = (function() {
           const fullyConverted = alreadyFullyPlain || (e2eFiles.length > 0 && succeeded === e2eFiles.length)
 
           if (fullyConverted) {
+            await _restorePlainFolderName(target, plainFolderName)
             await saveManageSetting('e2e', false, target, 'folder')
             target.is_e2e = false
             target.e2e_count = 0
             target.has_mixed_e2e = false
-            // Restore plaintext folder name when disabling E2EE
-            if (target._name_decrypted && target.name) {
-              try {
-                const renameForm = new FormData()
-                renameForm.append('name', target.name)
-                renameForm.append('csrf_token', cfg.getCSRFToken())
-                await fetch(`/folder/${target.id}/rename`, {
-                  method: 'POST',
-                  headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                  body: renameForm
-                })
-                console.log(`[MANAGE MODAL] Restored plaintext folder name for folder ${target.id}`)
-              } catch (fnErr) {
-                console.error('[MANAGE MODAL] Folder name restore failed (non-critical):', fnErr)
-              }
-            }
           } else if (succeeded > 0) {
             target.e2e_count = e2eFiles.length - succeeded
             target.has_mixed_e2e = true
@@ -2369,9 +2398,9 @@ window.ManageModal = (function() {
           } else if (fullyConverted) {
             cfg.showToast(`${succeeded} FILE${succeeded > 1 ? 'S' : ''} CONVERTED TO SERVER-SIDE ENCRYPTION`, 'success')
           } else if (succeeded > 0) {
-            cfg.showToast(`${succeeded}/${e2eFiles.length} FILES CONVERTED. ${e2eFiles.length - succeeded} FAILED — FOLDER IS IN A MIXED STATE`, 'error')
+            cfg.showToast(`${succeeded}/${e2eFiles.length} FILES CONVERTED. ${e2eFiles.length - succeeded} FAILED. FOLDER IS IN A MIXED STATE`, 'error')
           } else {
-            cfg.showToast('FAILED TO CONVERT FILES — CHECK CONSOLE FOR DETAILS', 'error')
+            cfg.showToast('FAILED TO CONVERT FILES. CHECK CONSOLE FOR DETAILS', 'error')
           }
 
           let _batchDecRefreshed = false
@@ -2397,7 +2426,7 @@ window.ManageModal = (function() {
           // the folder is now mixed rather than untouched.
           cfg.showToast(
             succeeded > 0
-              ? `${baseMsg} — ${succeeded}/${e2eTotal} FILE${succeeded > 1 ? 'S' : ''} ALREADY CONVERTED, FOLDER IS IN A MIXED STATE`
+              ? `${baseMsg}. ${succeeded}/${e2eTotal} FILE${succeeded > 1 ? 'S' : ''} ALREADY CONVERTED, FOLDER IS IN A MIXED STATE`
               : baseMsg,
             'error'
           )
@@ -2413,6 +2442,7 @@ window.ManageModal = (function() {
       }
 
       try {
+        await _restorePlainFolderName(target, await _plainFolderNameForRestore(target))
         await saveManageSetting('e2e', false, target, 'folder')
         target.is_e2e = false
         target.has_mixed_e2e = false

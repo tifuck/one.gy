@@ -810,13 +810,38 @@ def _read_zip_reservations_locked():
     except FileNotFoundError:
         return []
     except (OSError, json.JSONDecodeError) as e:
-        raise RuntimeError(f'could not read ZIP reservation state: {e}') from e
+        return _quarantine_zip_reservations(f'unreadable ledger: {e}')
     if not isinstance(state, dict) or state.get('version') != _ZIP_RESERVATION_STATE_VERSION:
-        raise RuntimeError('ZIP reservation state has an unsupported format')
+        return _quarantine_zip_reservations('unsupported ledger format')
     reservations = state.get('reservations')
     if not isinstance(reservations, list):
-        raise RuntimeError('ZIP reservation state has an invalid reservation list')
+        return _quarantine_zip_reservations('invalid reservation list')
     return reservations
+
+
+def _quarantine_zip_reservations(cause):
+    """Recover from a corrupt ZIP build reservation ledger instead of failing
+    every ZIP admission with 503 until an operator deletes the file.
+
+    Same policy as _quarantine_and_rebuild_prep_reservations(), except that ZIP
+    builds have no per-build state files to rebuild from: the ledger restarts
+    empty, so at most the builds already in flight go unaccounted until they
+    finish. If quarantine or the rewrite fails this raises and callers fail
+    CLOSED. Caller must hold the zip_build_reservations flock."""
+    state_path = _zip_reservation_state_path()
+    print(f'[ERROR] ZIP build reservation ledger unusable ({cause}); '
+          'quarantining and starting an empty ledger')
+    try:
+        quarantine_path = f'{state_path}.corrupt-{int(time.time())}'
+        os.replace(state_path, quarantine_path)
+        print(f'[ERROR] Quarantined corrupt ZIP ledger to '
+              f'{os.path.basename(quarantine_path)}')
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        raise RuntimeError(f'could not quarantine corrupt ZIP ledger: {e}') from e
+    _write_zip_reservations_locked([])
+    return []
 
 
 def _write_zip_reservations_locked(reservations):

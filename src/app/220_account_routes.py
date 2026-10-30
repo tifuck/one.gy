@@ -58,6 +58,8 @@ def list_api_keys():
         return jsonify({'error': 'API key access is disabled by the administrator'}), 403
 
     user = _current_session_user()
+    if not user:
+        return jsonify({'error': 'NOT AUTHENTICATED'}), 401
     keys = ApiKey.query.filter_by(user_id=user.id, is_active=True).order_by(ApiKey.created_at.desc()).all()
     return jsonify({
         'keys': [{
@@ -70,17 +72,54 @@ def list_api_keys():
         } for k in keys]
     })
 
+_API_KEY_STEP_UP_FIELDS = ('password', 'current_password', 'auth_token', 'current_auth_token', 'totp_code')
+
+
+def _api_key_step_up_error(user, data, action):
+    """Re-prove the password (and the TOTP code when 2FA is on) before a key is
+    minted or widened. Returns an error response, or None when the proof holds.
+    The code goes through the same lockout/replay/consume pipeline as
+    /verify-2fa and /account/2fa/disable."""
+    if not _verify_user_credentials(user,
+                                    password=data.get('password') or data.get('current_password'),
+                                    auth_token=data.get('auth_token') or data.get('current_auth_token')):
+        return jsonify({'error': f'PASSWORD IS REQUIRED TO {action}'}), 403
+    if not user.two_factor_enabled:
+        return None
+    totp_code = (data.get('totp_code') or '').strip()
+    if not totp_code:
+        return jsonify({'error': f'2FA CODE IS REQUIRED TO {action}'}), 400
+    lock_remaining = _totp_lockout_remaining(user.id)
+    if lock_remaining > 0:
+        print(f'[AUTH] API key 2FA blocked by lockout for user: {user.username} ({lock_remaining}s remaining)')
+        return jsonify({'error': f'TOO MANY INVALID 2FA CODES. TRY AGAIN IN {lock_remaining} SECONDS.'}), 429
+    totp = pyotp.TOTP(_decrypt_totp_secret(user.two_factor_secret, user))
+    if (_totp_is_replayed(user.id, totp_code)
+            or not totp.verify(totp_code, valid_window=1)
+            or not _totp_try_consume(user.id, totp_code)):
+        print(f'[AUTH] API key 2FA code rejected for user: {user.username}')
+        _record_failed_totp(user.id)
+        return jsonify({'error': 'INVALID 2FA CODE'}), 400
+    _clear_failed_totp(user.id)
+    return None
+
+
 @app.route('/account/api-keys', methods=['POST'])
+@limiter.limit("5 per minute")
 @login_required
 def create_api_key():
     """Generate a new API key (browser UI)."""
     user = _current_session_user()
+    if not user:
+        return jsonify({'error': 'NOT AUTHENTICATED'}), 401
 
     if not get_setting('allow_api_keys'):
         return jsonify({'error': 'API key access is disabled by the administrator'}), 403
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
+        return jsonify({'error': 'INVALID REQUEST'}), 400
+    if not _json_string_fields_valid(data, _API_KEY_STEP_UP_FIELDS):
         return jsonify({'error': 'INVALID REQUEST'}), 400
     label_value = data.get('label', 'API Key')
     if not isinstance(label_value, str):
@@ -94,19 +133,8 @@ def create_api_key():
     # Parse permissions (all default to False)
     perms = _parse_permissions_from_data(data)
 
-    if not _verify_user_credentials(user,
-                                    password=data.get('password') or data.get('current_password'),
-                                    auth_token=data.get('auth_token') or data.get('current_auth_token')):
-        return jsonify({'error': 'PASSWORD IS REQUIRED TO CREATE AN API KEY'}), 403
-    if user.two_factor_enabled:
-        totp_code = (data.get('totp_code') or '').strip()
-        if not totp_code:
-            return jsonify({'error': '2FA CODE IS REQUIRED TO CREATE AN API KEY'}), 400
-        totp = pyotp.TOTP(_decrypt_totp_secret(user.two_factor_secret, user))
-        if not totp.verify(totp_code, valid_window=1):
-            return jsonify({'error': 'INVALID 2FA CODE'}), 400
-
-    # Parse and validate IP whitelist
+    # Parse and validate IP whitelist (before the step-up, so a typo does not
+    # burn a credential attempt or a one-time 2FA code)
     allowed_ips_raw = data.get('allowed_ips')
     allowed_ips_json = None
     if allowed_ips_raw is not None:
@@ -118,11 +146,15 @@ def create_api_key():
         if cleaned_ips:
             allowed_ips_json = json.dumps(cleaned_ips)
 
+    step_up_error = _api_key_step_up_error(user, data, 'CREATE AN API KEY')
+    if step_up_error:
+        return step_up_error
+
     raw_key, api_key = _create_user_api_key(user.id, label, allowed_ips_json, perms)
     if api_key is None:
         return jsonify({'error': 'Maximum of 10 active API keys reached'}), 400
 
-    print(f'[API] Created API key "{label}" for user: {user.username} (via browser)')
+    print(f'[API] Created API key "{_log_safe(label)}" for user: {user.username} (via browser)')
     return jsonify({
         'id': api_key.id,
         'key': raw_key,
@@ -132,13 +164,20 @@ def create_api_key():
     }), 201
 
 @app.route('/account/api-keys/<key_id>', methods=['PATCH'])
+@limiter.limit("5 per minute")
 @login_required
 def update_api_key(key_id):
-    """Update permissions and/or IP whitelist on an existing API key (browser UI)."""
+    """Update permissions and/or IP whitelist on an existing API key (browser UI).
+
+    Narrowing edits (label, dropping permissions, tightening the whitelist) need
+    only the session. Granting a permission or loosening/removing the IP
+    whitelist needs the same password (+ 2FA) re-proof as creating a key."""
     if not get_setting('allow_api_keys'):
         return jsonify({'error': 'API key access is disabled by the administrator'}), 403
 
     user = _current_session_user()
+    if not user:
+        return jsonify({'error': 'NOT AUTHENTICATED'}), 401
 
     api_key = ApiKey.query.filter_by(id=key_id, user_id=user.id, is_active=True).first()
     if not api_key:
@@ -147,35 +186,51 @@ def update_api_key(key_id):
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({'error': 'INVALID REQUEST'}), 400
+    if not _json_string_fields_valid(data, _API_KEY_STEP_UP_FIELDS):
+        return jsonify({'error': 'INVALID REQUEST'}), 400
 
-    # Update label if provided
+    changes = {}
+    escalates = False
+
     if 'label' in data:
         label = str(data['label']).strip()
         if not label:
             return jsonify({'error': 'Label cannot be empty'}), 400
         if len(label) > 80:
             return jsonify({'error': 'Label too long (max 80 characters)'}), 400
-        api_key.label = label
+        changes['label'] = label
 
-    # Update permissions if provided
     if 'permissions' in data:
         perms = _parse_permissions_from_data(data)
-        for col, val in perms.items():
-            setattr(api_key, col, val)
+        changes.update(perms)
+        if any(val and getattr(api_key, col) is not True for col, val in perms.items()):
+            escalates = True
 
-    # Update IP whitelist if provided
     if 'allowed_ips' in data:
         allowed_ips_raw = data['allowed_ips']
-        if allowed_ips_raw is None or (isinstance(allowed_ips_raw, list) and len(allowed_ips_raw) == 0):
-            api_key.allowed_ips = None
-        else:
+        new_ips = None
+        if allowed_ips_raw is not None and not (isinstance(allowed_ips_raw, list) and len(allowed_ips_raw) == 0):
             if not isinstance(allowed_ips_raw, list):
                 return jsonify({'error': 'allowed_ips must be an array or null'}), 400
             cleaned_ips, ip_error = _validate_ip_whitelist(allowed_ips_raw)
             if ip_error:
                 return jsonify({'error': ip_error}), 400
-            api_key.allowed_ips = json.dumps(cleaned_ips) if cleaned_ips else None
+            new_ips = cleaned_ips or None
+        changes['allowed_ips'] = json.dumps(new_ips) if new_ips else None
+        if api_key.allowed_ips:
+            current_ips = api_key.get_allowed_ips_list()
+            if not isinstance(current_ips, list):
+                current_ips = []
+            if new_ips is None or any(ip not in current_ips for ip in new_ips):
+                escalates = True
 
+    if escalates:
+        step_up_error = _api_key_step_up_error(user, data, 'EXPAND AN API KEY')
+        if step_up_error:
+            return step_up_error
+
+    for attr, value in changes.items():
+        setattr(api_key, attr, value)
     db.session.commit()
 
     print(f'[API] Updated API key "{_log_safe(api_key.label)}" for user: {user.username} (via browser)')
@@ -194,6 +249,8 @@ def revoke_api_key(key_id):
         return jsonify({'error': 'API key access is disabled by the administrator'}), 403
 
     user = _current_session_user()
+    if not user:
+        return jsonify({'error': 'NOT AUTHENTICATED'}), 401
 
     api_key = ApiKey.query.filter_by(id=key_id, user_id=user.id, is_active=True).first()
     if not api_key:
@@ -294,7 +351,8 @@ def change_password():
         flash(message, 'error')
         return redirect(url_for('account') + '#section-security')
 
-    if is_ajax and data is None:
+    if is_ajax and (data is None or not _json_string_fields_valid(data, (
+            'current_password', 'new_password', 'confirm_password'))):
         return _chpw_fail('INVALID REQUEST', 400)
 
     # AUDIT FIX C3: validate the client key blobs BEFORE anything is written.

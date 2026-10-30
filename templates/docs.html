@@ -97,7 +97,7 @@
         </div>
         <div class="api-description">
           <p>Upload one or more files via multipart form data. Returns a management URL and a download URL. Multiple files are automatically bundled into a ZIP archive server-side.</p>
-          <p>Guest uploads are temporary and expire after 1 day by default. Authenticated users can upload to their cloud drive by setting <code>is_temp=false</code> for permanent retention.</p>
+          <p>Guest (anonymous) uploads are temporary and expire after 1 day by default. Authenticated requests that omit <code>is_temp</code> go to the cloud drive as private, non-expiring files; send <code>is_temp=true</code> for a temporary public upload.</p>
         </div>
 
         <h3>EXAMPLES</h3>
@@ -151,7 +151,6 @@ response = requests.post(
         ("files", ("report.pdf", open("report.pdf", "rb"))),
         ("files", ("data.csv", open("data.csv", "rb"))),
     ],
-    verify=False,  # Only if using self-signed certificate
 )
 result = response.json()
 print(f"Download: {result['download_url']}")
@@ -173,7 +172,7 @@ print(f"Manage:   https://{{ domain }}{result['redirect']}")</code></pre>
           <div class="param-row">
             <span class="param-name">is_temp</span>
             <span class="param-type">string</span>
-            <span class="param-desc"><code>"true"</code> (default) for temporary upload, <code>"false"</code> for cloud drive (requires login)</span>
+            <span class="param-desc"><code>"true"</code> for a temporary upload, <code>"false"</code> for cloud drive (requires login). Default: <code>"true"</code> for anonymous requests, <code>"false"</code> for authenticated ones</span>
           </div>
           <div class="param-row">
             <span class="param-name">folder_id</span>
@@ -227,7 +226,7 @@ print(f"Manage:   https://{{ domain }}{result['redirect']}")</code></pre>
           <div class="api-path">/f/{file_id}/{filename}</div>
         </div>
         <div class="api-description">
-          <p>Download a file by its UUID. Including the filename in the URL ensures <code>wget</code> and <code>curl -O</code> save with the correct name. Password-protected files require the <code>pw</code> query parameter.</p>
+          <p>Download a file by its UUID. Including the filename in the URL ensures <code>wget</code> and <code>curl -O</code> save with the correct name. Password-protected files require the password in the <code>X-Share-Password</code> header (or the <code>pw</code> form field of a <code>POST</code>); it is never accepted in the query string.</p>
           <p>Files uploaded with <code>short_url=true</code> can also be downloaded via <code>/s/{short_code}</code>, which redirects to the full URL (or serves directly for CLI clients).</p>
         </div>
 
@@ -267,7 +266,6 @@ wget --header="X-Share-Password: yourpassword" "https://{{ domain }}/f/{file_id}
 # Public file
 response = requests.get(
     "https://{{ domain }}/f/{file_id}/{filename}",
-    verify=False,
 )
 with open("photo.jpg", "wb") as f:
     f.write(response.content)
@@ -275,8 +273,7 @@ with open("photo.jpg", "wb") as f:
 # Password-protected file
 response = requests.get(
     "https://{{ domain }}/f/{file_id}/{filename}",
-    params={"pw": "yourpassword"},
-    verify=False,
+    headers={"X-Share-Password": "yourpassword"},
 )</code></pre>
         </div>
 
@@ -298,9 +295,9 @@ response = requests.get(
             <span class="param-desc">Original filename (optional, ensures correct save name)</span>
           </div>
           <div class="param-row">
-            <span class="param-name">pw</span>
-            <span class="param-type">query</span>
-            <span class="param-desc">Password for protected files</span>
+            <span class="param-name">X-Share-Password</span>
+            <span class="param-type">header</span>
+            <span class="param-desc">Password for protected files (or the <code>pw</code> form field when using <code>POST</code>)</span>
           </div>
         </div>
 
@@ -324,7 +321,7 @@ response = requests.get(
           <div class="api-path">/manage/{token}</div>
         </div>
         <div class="api-description">
-          <p>View file management page. The management token is returned in the upload response under <code>redirect</code>. Requires session ownership.</p>
+          <p>View file management page. The management token is returned in the upload response under <code>redirect</code>. Requires session ownership: for guest uploads that is the <code>onegy_manager</code> cookie set by the upload response, so keep a cookie jar (<code>curl -c cookies.txt</code> on upload, <code>-b cookies.txt</code> afterwards).</p>
         </div>
 
         <div class="api-endpoint">
@@ -342,7 +339,8 @@ response = requests.get(
             <span class="code-title"><span class="code-toggle-icon">▶</span> CURL - UPDATE SETTINGS</span>
             <button class="copy-btn">COPY</button>
           </div>
-          <pre><code class="language-bash">curl -X POST https://{{ domain }}/manage/{token} \
+          <pre><code class="language-bash"># Upload with: curl -c cookies.txt -X POST https://{{ domain }}/upload -F "files=@photo.jpg"
+curl -b cookies.txt -X POST https://{{ domain }}/manage/{token} \
   -H "X-Requested-With: XMLHttpRequest" \
   -d "public=on" \
   -d "expires=7d" \
@@ -395,7 +393,7 @@ response = requests.get(
           <div class="api-path">/delete/{token}</div>
         </div>
         <div class="api-description">
-          <p>Permanently delete a file from the server. Requires the management token and session ownership. The token is the last segment of the management URL returned during upload.</p>
+          <p>Permanently delete a file from the server. Requires the management token and session ownership (for guest uploads, the <code>onegy_manager</code> cookie saved from the upload response). The token is the last segment of the management URL returned during upload.</p>
         </div>
 
         <h3>EXAMPLES</h3>
@@ -405,7 +403,8 @@ response = requests.get(
             <span class="code-title"><span class="code-toggle-icon">▶</span> CURL</span>
             <button class="copy-btn">COPY</button>
           </div>
-          <pre><code class="language-bash">curl -X POST https://{{ domain }}/delete/{token} \
+          <pre><code class="language-bash"># Upload with: curl -c cookies.txt -X POST https://{{ domain }}/upload -F "files=@photo.jpg"
+curl -b cookies.txt -X POST https://{{ domain }}/delete/{token} \
   -H "X-Requested-With: XMLHttpRequest"</code></pre>
         </div>
 
@@ -426,7 +425,7 @@ response = requests.get(
         <div class="api-description">
           <p>End-to-end encrypted files are encrypted on the client before upload. The server never sees the plaintext data or the encryption key.</p>
           <p><strong>BROWSER (MODERN):</strong> The browser uses a MEGA-style zero-knowledge system with per-file AES-256-GCM keys, chunked 64MB encryption, and PBKDF2 key derivation with 600,000 iterations (split-key). Guest/CLI passphrase wraps use 210,000 iterations for compatibility. This is handled automatically and is not directly accessible via the API examples below.</p>
-          <p><strong>API (LEGACY SIMPLE):</strong> The examples below demonstrate a simpler single-file encryption scheme using AES-256-GCM with PBKDF2 key derivation (600,000 iterations). You derive a key from a passphrase using PBKDF2 with a random salt, encrypt the file with AES-256-GCM using a random IV, then upload the ciphertext along with the salt and IV as form parameters.</p>
+          <p><strong>API (LEGACY SIMPLE):</strong> The examples below demonstrate a simpler single-file encryption scheme using AES-256-GCM with PBKDF2 key derivation (600,000 iterations). You derive a key from a passphrase using PBKDF2 with a random salt, encrypt the file with AES-256-GCM using a random IV, then upload the ciphertext along with the salt and IV as form parameters. The multipart filename is stored in plaintext, so send a neutral name. Files uploaded this way can only be downloaded and decrypted through the API (as below), not in the browser.</p>
         </div>
 
         <h3>UPLOAD WITH E2E ENCRYPTION</h3>
@@ -475,13 +474,12 @@ ciphertext = aesgcm.encrypt(iv, plaintext, None)
 # Upload encrypted data with salt and IV
 response = requests.post(
     f"{DOMAIN}/upload",
-    files={"file": ("secret-document.pdf", ciphertext)},
+    files={"file": ("encrypted.bin", ciphertext)},  # never the real filename
     data={
         "e2e": "true",
         "e2e_salt": base64.b64encode(salt).decode(),
         "e2e_iv": base64.b64encode(iv).decode(),
     },
-    verify=False,
 )
 result = response.json()
 print(f"Download: {result['download_url']}")
@@ -517,7 +515,6 @@ OUTPUT_FILE = "decrypted-document.pdf"
 # Download encrypted data
 response = requests.get(
     f"{DOMAIN}/f/{FILE_ID}/encrypted",
-    verify=False,
 )
 
 # Extract salt and IV from response headers (comma-separated decimal byte values)
@@ -596,7 +593,7 @@ print(f"Decrypted file saved to {OUTPUT_FILE}")</code></pre>
       <h2 class="docs-section-title">AUTHENTICATION</h2>
       <div class="docs-section-content">
         <div class="api-description">
-          <p>All authenticated API endpoints require an API key sent via the <code>Authorization</code> header using the Bearer scheme. Generate API keys from your <a href="/account#section-api-keys" style="color: #DE1833;">account page</a>.</p>
+          <p>All authenticated API endpoints require an API key sent via the <code>Authorization</code> header using the Bearer scheme. Generate API keys from your <a href="/account#apikeys" style="color: #DE1833;">account page</a>.</p>
           <p>Each API key has individual <strong>permissions</strong> controlling which actions it can perform. You can also restrict keys to specific <strong>IP addresses</strong>. Users can create up to <strong>10 API keys</strong>, each with their own permissions and IP whitelist.</p>
         </div>
 
@@ -841,7 +838,6 @@ response = requests.post(
     "https://{{ domain }}/apiv1/upload",
     headers={"Authorization": "Bearer YOUR_API_KEY"},
     files={"file": ("report.pdf", open("report.pdf", "rb"))},
-    verify=False,
 )
 result = response.json()
 print(f"File ID:  {result['file_id']}")
@@ -927,7 +923,6 @@ print(f"Download: {result['download_url']}")</code></pre>
 response = requests.get(
     "https://{{ domain }}/apiv1/download/{file_id}",
     headers={"Authorization": "Bearer YOUR_API_KEY"},
-    verify=False,
 )
 with open("photo.jpg", "wb") as f:
     f.write(response.content)</code></pre>
@@ -985,7 +980,6 @@ curl https://{{ domain }}/apiv1/files/42 \
 response = requests.get(
     "https://{{ domain }}/apiv1/files",
     headers={"Authorization": "Bearer YOUR_API_KEY"},
-    verify=False,
 )
 data = response.json()
 for folder in data["folders"]:
@@ -1066,7 +1060,6 @@ response = requests.post(
         "Content-Type": "application/json",
     },
     json={"name": "Photos"},
-    verify=False,
 )
 print(f"Folder ID: {response.json()['id']}")</code></pre>
         </div>
@@ -1094,7 +1087,7 @@ print(f"Folder ID: {response.json()['id']}")</code></pre>
           <div class="api-path">/apiv1/folders/{folder_id}</div>
         </div>
         <div class="api-description">
-          <p>Move a file or folder to trash (soft delete). Trashed items are automatically permanently deleted after 48 hours. Use the trash endpoints to restore or permanently delete sooner.</p>
+          <p>Move a file or folder to trash (soft delete). Trashed items are automatically permanently deleted after the instance's trash retention period (set by the administrator; 48 hours by default). Use the trash endpoints to restore or permanently delete sooner.</p>
         </div>
 
         <h3>EXAMPLES</h3>
@@ -1124,7 +1117,6 @@ curl -X DELETE https://{{ domain }}/apiv1/folders/42 \
 response = requests.delete(
     "https://{{ domain }}/apiv1/files/{file_id}",
     headers={"Authorization": "Bearer YOUR_API_KEY"},
-    verify=False,
 )
 print(response.json())  # {"success": true}</code></pre>
         </div>
@@ -1173,7 +1165,6 @@ response = requests.get(
     "https://{{ domain }}/apiv1/search",
     params={"q": "photo"},
     headers={"Authorization": "Bearer YOUR_API_KEY"},
-    verify=False,
 )
 for f in response.json()["files"]:
     print(f"{f['name']} ({f['size_formatted']})")</code></pre>
@@ -1217,7 +1208,7 @@ for f in response.json()["files"]:
           <div class="api-path">/apiv1/trash/empty</div>
         </div>
         <div class="api-description">
-          <p>Manage trashed items. List trash contents, restore files, permanently delete individual files, or empty the entire trash. Trashed items are auto-deleted after 48 hours.</p>
+          <p>Manage trashed items. List trash contents, restore files, permanently delete individual files, or empty the entire trash. Trashed items are auto-deleted after the instance's trash retention period (48 hours by default).</p>
         </div>
 
         <h3>EXAMPLES</h3>

@@ -13,6 +13,26 @@ def _run_isolated_task(prefix, name, task_fn):
             pass
         print(f'[{prefix}] Sub-task {name!r} failed: {e}')
 
+def _skip_if_already_running(job_fn):
+    """Skip a job invocation while a previous run of it is still executing.
+
+    APScheduler's max_instances=1 is per BackgroundScheduler instance, but the
+    lease watchdog stops a scheduler with shutdown(wait=False) and may build a
+    fresh one while the old instance's jobs are still running, so the guard
+    has to be process-wide."""
+    lock = threading.Lock()
+
+    @functools.wraps(job_fn)
+    def wrapper():
+        if not lock.acquire(blocking=False):
+            print(f'[SCHEDULER] Skipping {job_fn.__name__}: previous run still in progress')
+            return None
+        try:
+            return job_fn()
+        finally:
+            lock.release()
+    return wrapper
+
 def cleanup_job():
     # BUG FIX M6 (scheduler split-brain): the DB lease can be stolen by another
     # worker while this (hung/slow) owner's in-flight APScheduler jobs keep
@@ -26,38 +46,48 @@ def cleanup_job():
         if not _scheduler_started or not _scheduler_owns_lease():
             print('[CLEANUP] Skipping cycle: scheduler lease no longer owned by this worker')
             return
-        for name, fn in (
-            ('expired_files',          cleanup_expired_files),
-            ('orphaned_files',         cleanup_orphaned_files),
-            ('orphaned_notes',         cleanup_orphaned_notes),
-            ('stale_preps',            cleanup_stale_preps),
-            ('stale_progress',         cleanup_stale_progress),
-            ('remote_staging_files',   cleanup_remote_staging_files),
-            ('local_staged_files',     cleanup_local_staged_files),
-            ('temp_dirs',              cleanup_temp_dirs),
-            ('stale_music_sync',       cleanup_stale_music_sync),
-            # AUDIT FIX M14: drop expired session-revocation rows and refresh the
-            # process-local revoked-sid cache (so extra Gunicorn workers converge).
-            ('revoked_sessions',       _prune_revoked_sessions),
-            ('security_state',         cleanup_stale_security_state),
-            # AUDIT FIX A8: reap advisory lock files that nothing has held for a day.
-            ('stale_lock_files',       cleanup_stale_lock_files),
-            # AUDIT FIX A9: drop dismissal rows that can never matter again.
-            ('notification_dismissals', cleanup_stale_notification_dismissals),
-            # AUDIT FIX A16: pick up songs added to / removed from disk without a restart.
-            ('music_library_rescan',   maybe_rescan_available_songs),
-        ):
-            # BUG FIX M6: re-verify ownership at every sub-task boundary.
-            if not _scheduler_owns_lease():
-                print(f'[CLEANUP] Aborting cycle before {name!r}: scheduler lease lost mid-run')
-                break
-            _run_isolated_task('CLEANUP', name, fn)
-        # Ensure no half-applied session state leaks into the next tick.
+        # Shared with the admin "run cleanup" endpoint and `flask cleanup`, and
+        # also covers an old scheduler instance's run still in flight.
+        run_lock = _acquire_cleanup_run_lock()
+        if run_lock is None:
+            print('[CLEANUP] Skipping cycle: another cleanup run is still in progress')
+            return
         try:
-            db.session.remove()
-        except Exception:
-            pass
+            for name, fn in (
+                ('expired_files',          cleanup_expired_files),
+                ('orphaned_files',         cleanup_orphaned_files),
+                ('orphaned_notes',         cleanup_orphaned_notes),
+                ('stale_preps',            cleanup_stale_preps),
+                ('stale_progress',         cleanup_stale_progress),
+                ('remote_staging_files',   cleanup_remote_staging_files),
+                ('local_staged_files',     cleanup_local_staged_files),
+                ('temp_dirs',              cleanup_temp_dirs),
+                ('stale_music_sync',       cleanup_stale_music_sync),
+                # AUDIT FIX M14: drop expired session-revocation rows and refresh the
+                # process-local revoked-sid cache (so extra Gunicorn workers converge).
+                ('revoked_sessions',       _prune_revoked_sessions),
+                ('security_state',         cleanup_stale_security_state),
+                # AUDIT FIX A8: reap advisory lock files that nothing has held for a day.
+                ('stale_lock_files',       cleanup_stale_lock_files),
+                # AUDIT FIX A9: drop dismissal rows that can never matter again.
+                ('notification_dismissals', cleanup_stale_notification_dismissals),
+                # AUDIT FIX A16: pick up songs added to / removed from disk without a restart.
+                ('music_library_rescan',   maybe_rescan_available_songs),
+            ):
+                # BUG FIX M6: re-verify ownership at every sub-task boundary.
+                if not _scheduler_owns_lease():
+                    print(f'[CLEANUP] Aborting cycle before {name!r}: scheduler lease lost mid-run')
+                    break
+                _run_isolated_task('CLEANUP', name, fn)
+        finally:
+            _release_cleanup_run_lock(run_lock)
+            # Ensure no half-applied session state leaks into the next tick.
+            try:
+                db.session.remove()
+            except Exception:
+                pass
 
+@_skip_if_already_running
 def replication_job():
     """Background replication cycle — copies pending files to other storage nodes
     and processes deferred remote deletions."""
@@ -83,9 +113,13 @@ def replication_job():
         except Exception:
             pass
 
+@_skip_if_already_running
 def metrics_snapshot_job():
     """Background metrics snapshot for admin history charts."""
     with app.app_context():
+        if not _scheduler_started or not _scheduler_owns_lease():
+            print('[ADMIN] Skipping metrics snapshot: scheduler lease not owned by this worker')
+            return
         try:
             capture_system_metrics_snapshot(force=False)
         except Exception as e:
@@ -104,6 +138,7 @@ _last_health_check_time = 0.0
 _last_integrity_scrub_time = 0.0
 _job_timestamps_loaded = False
 
+@_skip_if_already_running
 def health_check_job():
     """Periodic health check for storage nodes, gated by the configurable
     health_check_interval AppSetting (default 300s / 5 min).
@@ -119,6 +154,9 @@ def health_check_job():
     global _last_health_check_time, _last_integrity_scrub_time, _job_timestamps_loaded
     import time as _time
     with app.app_context():
+        if not _scheduler_started or not _scheduler_owns_lease():
+            print('[HEALTH] Skipping tick: scheduler lease not owned by this worker')
+            return
         now = _time.time()
         # AUDIT FIX F5: seed the last-run timers from persisted AppSetting values
         # once per process. Without this, the module globals reset to 0.0 on every
@@ -148,6 +186,7 @@ def health_check_job():
         except Exception:
             pass
 
+@_skip_if_already_running
 def integrity_scrub_job():
     """Replica integrity scrub on its own timer (default 900s / 15 min), gated
     by the configurable integrity_scrub_interval AppSetting. Runs as a SEPARATE
@@ -157,6 +196,9 @@ def integrity_scrub_job():
     global _last_health_check_time, _last_integrity_scrub_time, _job_timestamps_loaded
     import time as _time
     with app.app_context():
+        if not _scheduler_started or not _scheduler_owns_lease():
+            print('[SCRUB] Skipping tick: scheduler lease not owned by this worker')
+            return
         now = _time.time()
         if not _job_timestamps_loaded:
             _job_timestamps_loaded = True
@@ -227,6 +269,7 @@ _scheduler_started = False
 _scheduler_shutting_down = False  # set once the worker begins shutting down (see shutdown_scheduler_for_exit)
 _scheduler_watchdog_thread = None
 _scheduler_flock_fd = None
+_scheduler_lease_confirmed_at = 0.0  # time.monotonic() of the last successful lease claim/refresh
 _SCHEDULER_LEASE_KEY = 'scheduler_lease'
 _SCHEDULER_LOCK_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), '.scheduler.lock')
 SCHEDULER_HEARTBEAT_INTERVAL = 15   # seconds between lease refresh attempts
@@ -326,7 +369,8 @@ def _scheduler_try_flock():
 
 def _scheduler_acquire_or_refresh_lease():
     """Atomically claim or refresh the scheduler lease. Returns True if THIS
-    instance owns the lease after the call."""
+    instance owns the lease after the call, False if another instance holds a
+    fresh lease, and None when the DB call failed (ownership unknown)."""
     now = int(time.time())
     have_flock = _scheduler_try_flock()
     try:
@@ -363,7 +407,7 @@ def _scheduler_acquire_or_refresh_lease():
         except Exception:
             pass
         print(f'[SCHEDULER] Lease acquire/refresh error: {e}')
-        return False
+        return None
 
 def _scheduler_owns_lease():
     """BUG FIX M6 (scheduler split-brain): read-only lease check for job
@@ -398,12 +442,13 @@ def _scheduler_watchdog_loop():
     """Per-worker watchdog: keep trying to own the lease; run the scheduler iff
     we own it. The loop itself IS the heartbeat — if this thread (or the whole
     process) stalls, the lease goes stale and another worker takes over."""
+    global _scheduler_lease_confirmed_at
     while True:
         # Worker is shutting down: stop running/re-starting the scheduler and
         # let this watchdog thread exit so it can't resurrect jobs mid-teardown.
         if _scheduler_shutting_down:
             return
-        owns = False
+        owns = None
         try:
             with app.app_context():
                 owns = _scheduler_acquire_or_refresh_lease()
@@ -413,8 +458,18 @@ def _scheduler_watchdog_loop():
                     pass
         except Exception as e:
             print(f'[SCHEDULER] Watchdog iteration error: {e}')
-            # Don't tear down on a transient DB blip if we already own/run it.
-            owns = _scheduler_started
+        if owns:
+            _scheduler_lease_confirmed_at = time.monotonic()
+        elif owns is None:
+            # Ownership unknown (transient DB error): keep the current state.
+            # Jobs stay fenced by _scheduler_owns_lease(); only give up once no
+            # refresh has succeeded for as long as other workers wait before
+            # treating our heartbeat as stale.
+            if _scheduler_started and time.monotonic() - _scheduler_lease_confirmed_at > SCHEDULER_LEASE_TIMEOUT:
+                print(f'[SCHEDULER] Lease not refreshed for over {SCHEDULER_LEASE_TIMEOUT}s')
+                owns = False
+            else:
+                owns = _scheduler_started
         try:
             if _scheduler_shutting_down:
                 return

@@ -88,9 +88,9 @@
         '<div class="adm-kv"><span>Nodes</span><b>' + num(ro.nodes) + ' · ' + num(ro.online_nodes) + ' online</b></div>' +
         '<div class="adm-kv"><span>Pending items</span><b>' + num(ro.pending_items) + '</b></div>' +
         '<div class="adm-kv"><span>Errored items</span><b>' + num(ro.error_items) + '</b></div>' +
-        '<div class="adm-kv"><span>Speed</span><b>' + esc(rc.speed || '—') + '</b></div>' +
-        '<div class="adm-kv"><span>Source</span><b>' + esc(rc.source || '—') + '</b></div>' +
-        '<div class="adm-kv"><span>Workers</span><b>' + esc(rc.workers || '—') + '</b></div>' +
+        '<div class="adm-kv"><span>Speed</span><b>' + esc(rc.speed || 'None') + '</b></div>' +
+        '<div class="adm-kv"><span>Source</span><b>' + esc(rc.source || 'None') + '</b></div>' +
+        '<div class="adm-kv"><span>Workers</span><b>' + esc(rc.workers || 'None') + '</b></div>' +
         '<div class="adm-kv"><span>Checksum verify</span><b>' + (rc.checksum ? 'ON' : 'OFF') + '</b></div></div>'
       panel.innerHTML = tiles + '<div class="adm-grid2">' + storage + repl + '</div>'
     } catch (e) { if (isCurrentRender('overview', epoch)) panel.innerHTML = errState('Could not load statistics.') }
@@ -181,12 +181,12 @@
       var d = await jget('/admin/api/temp-files?page=' + S.tempPage + '&per_page=25')
       if (!isCurrentRender('temp-files', epoch)) return
       var rows = (d.files || []).map(function (f) {
-        return '<tr><td>' + esc(f.orig_name || '—') + (f.has_password ? ' <span class="adm-badge">LOCKED</span>' : '') + '</td>' +
+        return '<tr><td>' + esc(f.orig_name || 'Unnamed') + (f.has_password ? ' <span class="adm-badge">LOCKED</span>' : '') + '</td>' +
           '<td class="adm-num">' + fmtBytes(f.size) + '</td>' +
-          '<td class="adm-mono">' + esc(f.user_id || '—') + '</td>' +
+          '<td class="adm-mono">' + esc(f.user_id || 'None') + '</td>' +
           '<td class="adm-num">' + (f.download_count || 0) + (f.max_downloads ? ' / ' + f.max_downloads : '') + '</td>' +
           '<td class="adm-mono">' + esc((f.upload_time || '').slice(0, 16).replace('T', ' ')) + '</td>' +
-          '<td class="adm-actions-cell"><button class="adm-icon adm-icon-danger" data-temp-del="' + esc(f.management_token || f.short_code || '') + '" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button></td></tr>'
+          '<td class="adm-actions-cell"><button class="adm-icon adm-icon-danger" data-temp-del="' + esc(f.id) + '" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button></td></tr>'
       }).join('')
       panel.innerHTML = '<div class="adm-toolbar"><h2 class="adm-h2">Temporary files</h2><button class="rd-btn rd-btn-ghost" id="admCleanup">Run cleanup</button></div>' +
         '<div class="adm-tablewrap"><table class="adm-table"><thead><tr><th>Filename</th><th>Size</th><th>Owner</th><th>Downloads</th><th>Uploaded</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="adm-empty-row">No temporary files</td></tr>') + '</tbody></table></div>' + pager(d.page, d.pages, 'temp')
@@ -259,9 +259,9 @@
         var when = (f.created_at || '').slice(0, 16).replace('T', ' ')
         var kind = f.kind === 'prompt' ? 'Prompt' : 'General'
         return '<tr>' +
-          '<td class="adm-mono">' + esc(when || '—') + '</td>' +
+          '<td class="adm-mono">' + esc(when || 'Unknown') + '</td>' +
           '<td><span class="adm-badge">' + esc(kind) + '</span></td>' +
-          '<td class="adm-mono">' + esc(f.prompt_id || '—') + '</td>' +
+          '<td class="adm-mono">' + esc(f.prompt_id || 'None') + '</td>' +
           '<td>' + esc(f.username || 'Guest') + '</td>' +
           '<td class="adm-fb-msg" title="' + esc(f.message || '') + '">' + esc(f.message || '') + '</td>' +
           '<td class="adm-actions-cell"><button class="adm-icon adm-icon-danger" data-fb-del="' + f.id + '" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button></td>' +
@@ -301,7 +301,7 @@
         tog('welcome_folder_enabled', 'Welcome folder', 'Seed new accounts with a welcome folder.') +
         '</div><div class="adm-card"><div class="adm-card-head"><div><h3 class="adm-h3">Limits and retention</h3><p class="adm-card-copy">Bound temporary content and background housekeeping.</p></div></div>' +
         numRow('temp_max_gb', 'Temporary upload limit', 'Maximum size for one anonymous upload.', 0.01, 1024, 0.01, 'GB') +
-        numRow('storage_cache_ttl_minutes', 'Storage cache lifetime', 'How long computed storage totals remain cached.', 1, 10080, 1, 'minutes') +
+        numRow('storage_cache_ttl_minutes', 'Staging cache lifetime', 'How long local staging/cache copies (repl_, .cache_, temp files; in cache mode, fully replicated local payloads) are kept before cleanup. Temp files are never removed before 30 minutes.', 1, 10080, 1, 'minutes') +
         numRow('trash_retention_hours', 'Trash retention', 'Time before trashed content is permanently purged.', 1, 8760, 1, 'hours') +
         '<div class="adm-policy-note"><b>Permanent deletion</b><p>Retention is measured from each item’s trash date. Purged content cannot be recovered.</p></div></div></div>'
     } catch (e) { if (isCurrentRender('settings', epoch)) panel.innerHTML = errState('Could not load settings.') }
@@ -367,7 +367,7 @@
         '</div>'
     } else sub = '<div class="adm-st-count-sub">Complete</div>'
     return '<div class="adm-st-count"><div class="sn-node-count-label">' + label + '</div>' +
-      '<div class="adm-st-count-val">' + (disabled ? '—' : num(synced)) + '</div>' + sub + '</div>'
+      '<div class="adm-st-count-val">' + (disabled ? 'Off' : num(synced)) + '</div>' + sub + '</div>'
   }
   function metricCell (label, val, sub, tone) {
     return '<div class="adm-st-metric' + (tone ? ' is-' + tone : '') + '"><div class="adm-st-metric-val">' + esc(val) + '</div>' +
@@ -413,15 +413,15 @@
           stamp(state, tone) + '</div>' +
       '</header>' +
       '<div class="adm-st-node-sync">' +
-        '<div class="adm-st-sync-num">' + (sync == null ? '—' : Math.round(sync) + '%') + '</div>' +
+        '<div class="adm-st-sync-num">' + (sync == null ? 'n/a' : Math.round(sync) + '%') + '</div>' +
         '<div class="adm-st-sync-body">' +
           '<div class="adm-st-sync-lab">Replica sync</div>' +
           '<div class="adm-meter"><div class="adm-meter-fill' + syncTone + '" style="width:' + (sync == null ? 0 : Math.max(0, Math.min(100, sync))) + '%"></div></div>' +
           '<div class="adm-st-chips">' +
-            '<span class="adm-st-chip' + (pending ? ' is-warn' : '') + '">Pending <b>' + (disabled ? '—' : num(pending)) + '</b></span>' +
-            '<span class="adm-st-chip' + (errors ? ' is-bad' : '') + '">Error <b>' + (disabled ? '—' : num(errors)) + '</b></span>' +
-            '<span class="adm-st-chip' + (missing ? ' is-bad' : '') + '">Missing <b>' + (disabled ? '—' : num(missing)) + '</b></span>' +
-            '<span class="adm-st-chip' + (unverified ? ' is-warn' : '') + '">Unverified <b>' + (disabled ? '—' : num(unverified)) + '</b></span>' +
+            '<span class="adm-st-chip' + (pending ? ' is-warn' : '') + '">Pending <b>' + (disabled ? 'Off' : num(pending)) + '</b></span>' +
+            '<span class="adm-st-chip' + (errors ? ' is-bad' : '') + '">Error <b>' + (disabled ? 'Off' : num(errors)) + '</b></span>' +
+            '<span class="adm-st-chip' + (missing ? ' is-bad' : '') + '">Missing <b>' + (disabled ? 'Off' : num(missing)) + '</b></span>' +
+            '<span class="adm-st-chip' + (unverified ? ' is-warn' : '') + '">Unverified <b>' + (disabled ? 'Off' : num(unverified)) + '</b></span>' +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -482,7 +482,7 @@
       metricCell('Single copy', num(single), num(st.single_copy_files) + ' files · ' + num(st.single_copy_notes) + ' notes · ' + num(st.single_copy_thumbnails) + ' thumbs', (single && !st.single_node_mode) ? 'warn' : '') +
       metricCell('Past alert age', num(aged), num(st.aged_single_copy_files) + ' files · ' + num(st.aged_single_copy_notes) + ' notes', aged ? 'warn' : '') +
       '</div>' +
-      '<div class="adm-kv"><span>Alert age</span><b>' + (alertAfter ? Math.round(alertAfter / 60) + ' min' : '—') + '</b></div>' +
+      '<div class="adm-kv"><span>Alert age</span><b>' + (alertAfter ? Math.round(alertAfter / 60) + ' min' : 'Off') + '</b></div>' +
       '<div class="adm-kv"><span>Single-node mode</span><b>' + (st.single_node_mode ? 'Yes' : 'No') + '</b></div>' +
       '<p class="adm-note">A payload with a single synced copy is one disk failure away from total loss. ' +
       'Zero-copy items have no synced replica anywhere and need immediate attention. ' +
@@ -517,16 +517,16 @@
   function tuningCard () {
     var speedOpts = Object.keys(SPEEDS.presets || {}).map(function (k) {
       var p = SPEEDS.presets[k]
-      return [k, k.toUpperCase() + ' — ' + p.batch + ' per batch, ~' + p.approx_per_min + '/min']
+      return [k, k.toUpperCase() + ': ' + p.batch + ' per batch, ~' + p.approx_per_min + '/min']
     })
     var sourceOpts = Object.keys(SOURCES.modes || {}).map(function (k) {
-      return [k, k.replace(/_/g, ' ').toUpperCase() + ' — ' + (SOURCES.modes[k].description || '')]
+      return [k, k.replace(/_/g, ' ').toUpperCase() + ': ' + (SOURCES.modes[k].description || '')]
     })
     var workerOpts = Object.keys(WORKERS.presets || {}).map(function (k) {
-      return [k, WORKERS.presets[k].label + ' — ' + WORKERS.presets[k].desc]
+      return [k, WORKERS.presets[k].label + ': ' + WORKERS.presets[k].desc]
     })
     var healthOpts = Object.keys(HEALTH.presets || {}).map(function (k) {
-      return [k, HEALTH.presets[k].label + ' — ~' + HEALTH.presets[k].approx_per_day + '/day']
+      return [k, HEALTH.presets[k].label + ': ~' + HEALTH.presets[k].approx_per_day + '/day']
     })
     return '<div class="adm-card adm-st-panel adm-st-tune"><div class="adm-card-head"><h3 class="adm-h3">Replication tuning</h3>' +
       '<button class="rd-btn rd-btn-primary" id="admSaveTuning">Apply</button></div>' +
@@ -648,7 +648,7 @@
         fleetKpis(nodes, st) +
         sectionHead('01', 'Nodes', nodes.length + ' configured') +
         '<div class="adm-st-nodes" id="storageNodeList">' +
-          (cards || '<div class="adm-st-empty">No storage nodes configured — using local storage.</div>') +
+          (cards || '<div class="adm-st-empty">No storage nodes configured. Using local storage.</div>') +
         '</div>' +
         sectionHead('02', 'Fleet health') +
         '<div class="adm-grid2 adm-st-grid">' + residencyCard(st) + replicationCard(st) + '</div>' +
@@ -756,7 +756,7 @@
     epoch = startRender('statistics', epoch); if (epoch == null) return
     loading()
     try {
-      var d = S.stats || await jget('/admin/api/stats'); if (!isCurrentRender('statistics', epoch)) return; S.stats = d
+      var d = await jget('/admin/api/stats'); if (!isCurrentRender('statistics', epoch)) return; S.stats = d
       var o = d.overview || {}, st = d.storage || {}
       var det = d.details || {}
       var pairs = [
@@ -770,7 +770,7 @@
         return '<div class="adm-kv"><span class="adm-mono">' + esc(t.ext || 'other') + '</span><b>' + num(t.count) + '</b></div>'
       }).join('')
       panel.innerHTML = '<div class="adm-toolbar"><h2 class="adm-h2">System statistics</h2>' + (d.history && d.history.latest_snapshot_at ? '<span class="adm-mono">snapshot ' + esc(d.history.latest_snapshot_at.slice(0, 16).replace('T', ' ')) + '</span>' : '') + '</div>' +
-        '<div class="adm-statgrid">' + pairs.map(function (p) { return '<div class="adm-stat"><div class="adm-stat-label">' + esc(p[0]) + '</div><div class="adm-stat-val">' + esc(p[1] != null ? p[1] : '—') + '</div></div>' }).join('') + '</div>' +
+        '<div class="adm-statgrid">' + pairs.map(function (p) { return '<div class="adm-stat"><div class="adm-stat-label">' + esc(p[0]) + '</div><div class="adm-stat-val">' + esc(p[1] != null ? p[1] : 'n/a') + '</div></div>' }).join('') + '</div>' +
         (types ? '<div class="adm-card" style="margin-top:1rem"><div class="adm-card-head"><h3 class="adm-h3">File types</h3></div>' + types + '</div>' : '') +
         '<div class="adm-card"><div class="adm-card-head"><h3 class="adm-h3">Music library</h3>' +
         '<button class="rd-btn rd-btn-ghost" id="admMusicRescan">Rescan library</button></div>' +
@@ -781,6 +781,11 @@
 
   var TABS = { overview: tabOverview, users: tabUsers, 'temp-files': tabTemp, notifications: tabNotifs, feedback: tabFeedback, statistics: tabStats, storage: tabStorage, settings: tabSettings }
   function go (t) {
+    if (!Object.prototype.hasOwnProperty.call(TABS, t)) t = 'overview'
+    if (S.tab === 'settings' && S.settingsDirty) {
+      confirmThen('Discard unsaved settings changes?', function () { S.settingsDirty = false; go(t) })
+      return
+    }
     clearPurgeTimer()
     clearSearchTimers()
     S.tab = t
@@ -797,7 +802,7 @@
     if (window.history && window.history.replaceState) window.history.replaceState(null, '', '#' + t)
     var nav = $('admNav'); if (nav) nav.classList.remove('is-open')
     var toggle = $('admNavToggle'); if (toggle) toggle.setAttribute('aria-expanded', 'false')
-    ;(TABS[t] || tabOverview)(epoch)
+    TABS[t](epoch)
   }
 
   // ---- Actions -------------------------------------------------------------
@@ -859,8 +864,7 @@
       var tmp = t.closest('[data-temp-del]')
       if (tmp) {
         confirmThen('Delete this temporary file?', function () {
-          var fd2 = new FormData(); fd2.append('csrf_token', csrf())
-          jsend('POST', '/delete/' + tmp.getAttribute('data-temp-del'), fd2, true)
+          jsend('DELETE', '/admin/api/temp-files/' + encodeURIComponent(tmp.getAttribute('data-temp-del')), null)
             .then(function () { toast('DELETED', 'success'); refreshTab('temp-files', epoch) })
             .catch(function (err) { failToast(err, 'COULD NOT DELETE FILE') })
         })
@@ -1010,10 +1014,11 @@
     panel.querySelectorAll('[data-setting]').forEach(function (i) { body[i.getAttribute('data-setting')] = i.checked })
     panel.querySelectorAll('[data-setting-num]').forEach(function (i) { if (i.value !== '') body[i.getAttribute('data-setting-num')] = parseFloat(i.value) })
     var button = $('admSaveSettings'); if (button) button.disabled = true
+    S.settingsDirty = false
     jsend('POST', '/admin/api/settings', body)
-      .then(function () { S.settingsDirty = false; toast('SETTINGS SAVED', 'success') })
+      .then(function () { toast('SETTINGS SAVED', 'success') })
       // Still dirty: keep Save usable so the same values can be retried.
-      .catch(function (e) { if (button) button.disabled = false; failToast(e, 'COULD NOT SAVE SETTINGS') })
+      .catch(function (e) { if (button && button.isConnected) { S.settingsDirty = true; button.disabled = false } failToast(e, 'COULD NOT SAVE SETTINGS') })
   }
 
   function markSettingsDirty () {
@@ -1058,6 +1063,6 @@
 
   window.__admMock = function (tab, data) { panel = $('admPanel'); S.stats = data && data.stats; if (data && data._users) { window.__admU = data._users }; go(tab || 'overview') }
 
-  function boot () { panel = $('admPanel'); if (!panel) return; wire(); var initial = window.location.hash.slice(1); go(TABS[initial] ? initial : 'overview') }
+  function boot () { panel = $('admPanel'); if (!panel) return; wire(); go(window.location.hash.slice(1)) }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot()
 })()

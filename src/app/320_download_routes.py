@@ -109,15 +109,10 @@ def _file_share_password_ok(file, is_owner=None):
         return True
 
     password = _get_share_password()
-    if password:
-        # AUDIT FIX M11/P16: per-IP AND per-resource lockout to stop share-password
-        # brute force. Reject (without running the KDF) while locked out.
-        if not _share_pw_begin_attempt('file', file.id):
-            return False
-        if check_password_hash(file.password_hash, password):
-            _share_pw_clear('file', file.id)
-            _remember_file_share_access(file)
-            return True
+    # AUDIT FIX M11/P16: charged + lockout-gated before the KDF runs.
+    if password and _share_pw_try('file', file.id, file.password_hash, password):
+        _remember_file_share_access(file)
+        return True
     return False
 
 def _can_access_file_via_short_code(file):
@@ -199,20 +194,20 @@ def download_file_logic(file_id):
 
     # Block download of trashed files
     if file.is_trashed:
-        print(f'[DOWNLOAD] Blocked download of trashed file: {file.orig_name}')
+        print(f'[DOWNLOAD] Blocked download of trashed file: {_log_safe(file.orig_name)}')
         return render_template('notfound.html',
             title='FILE NOT FOUND',
             subtitle='THIS FILE HAS BEEN DELETED BY ITS OWNER'), 404
 
-    print(f'[DOWNLOAD] Request for file_id: {file_id}')
-    print(f'[DOWNLOAD] Found file: {file.orig_name} (filename: {file.filename})')
+    print(f'[DOWNLOAD] Request for file_id: {_log_safe(file_id)}')
+    print(f'[DOWNLOAD] Found file: {_log_safe(file.orig_name)} (filename: {file.filename})')
 
     # Check expiration FIRST
     expires_at_aware = file.get_expires_at_aware()
     if expires_at_aware and expires_at_aware < datetime.now(timezone.utc):
         file, deleted_name = _delete_immediately_expired_file(file)
         if deleted_name:
-            print(f'[DOWNLOAD] File expired, deleted: {deleted_name}')
+            print(f'[DOWNLOAD] File expired, deleted: {_log_safe(deleted_name)}')
             return render_template('notfound.html',
                 title='FILE EXPIRED',
                 subtitle='THIS FILE HAS PASSED ITS EXPIRATION DATE AND HAS BEEN REMOVED',
@@ -226,7 +221,7 @@ def download_file_logic(file_id):
     is_owner = _current_user_owns_file(file)
 
     if not _file_share_password_ok(file, is_owner):
-        return render_template('pw.html', file_id=file_id, error=bool(_get_share_password()))
+        return render_template('pw.html', file_id=file_id, error=bool(_get_share_password())), 401
 
     # Check access permissions
     # First check if the file itself is public
@@ -237,10 +232,10 @@ def download_file_logic(file_id):
         browsable_folder = is_file_in_browsable_folder(file)
         if public_folder:
             # File is accessible through its public folder
-            print(f'[DOWNLOAD] File {file.orig_name} accessible via public folder: {_log_safe(public_folder.name)}')
+            print(f'[DOWNLOAD] File {_log_safe(file.orig_name)} accessible via public folder: {_log_safe(public_folder.name)}')
         elif browsable_folder:
             # File is accessible through its browsable folder (E2E + browsable)
-            print(f'[DOWNLOAD] File {file.orig_name} accessible via browsable folder: {_log_safe(browsable_folder.name)}')
+            print(f'[DOWNLOAD] File {_log_safe(file.orig_name)} accessible via browsable folder: {_log_safe(browsable_folder.name)}')
         elif not is_owner and not file.password_hash:
             return render_template('notfound.html',
                 title='FILE NOT FOUND',
@@ -278,7 +273,7 @@ def download_file_logic(file_id):
                 title='DOWNLOAD UNAVAILABLE',
                 subtitle='THIS FILE COULD NOT BE DOWNLOADED AT THIS TIME',
                 detail='THE DOWNLOAD CHECK FAILED. THE FILE MAY HAVE BEEN REMOVED'), 404
-        print(f'[DOWNLOAD] E2E file, rendering decryption page: {file.orig_name}')
+        print(f'[DOWNLOAD] E2E file, rendering decryption page: {_log_safe(file.orig_name)}')
         return render_template('e2e_download.html', file=file)
 
     success, error = check_download_allowed(file)
@@ -294,7 +289,7 @@ def download_file_logic(file_id):
     # IMPORTANT: This path is ONLY for server-side encrypted files (non-E2E)
     # The file will be decrypted on the server using Fernet before sending to client
     try:
-        print(f'[DOWNLOAD] Decrypting server-side encrypted file: {file.orig_name}')
+        print(f'[DOWNLOAD] Decrypting server-side encrypted file: {_log_safe(file.orig_name)}')
         print(f'[DOWNLOAD] File is_e2e_encrypted: {file.is_e2e_encrypted}')
         print(f'[DOWNLOAD] Encrypted file size: {os.path.getsize(encrypted_path)} bytes')
 
@@ -364,7 +359,7 @@ def download_file_logic(file_id):
                     return 'SERVER BUSY - TOO MANY DOWNLOADS IN PROGRESS. PLEASE TRY AGAIN LATER.', 503
 
                 try:
-                    print(f'[DOWNLOAD] Streaming decrypted temp file to CLI: {file.orig_name} ({file.size} bytes)')
+                    print(f'[DOWNLOAD] Streaming decrypted temp file to CLI: {_log_safe(file.orig_name)} ({file.size} bytes)')
                     success, error = check_and_increment_download(file)
                     if not success:
                         _cleanup_tmp(False)
@@ -406,7 +401,7 @@ def download_file_logic(file_id):
                 subtitle='THIS FILE COULD NOT BE DOWNLOADED AT THIS TIME',
                 detail='THE STORED FILE FAILED AN INTEGRITY CHECK'), 500
 
-        print(f'[DOWNLOAD] Streaming decrypted file: {file.orig_name} (original size: {file.size} bytes)')
+        print(f'[DOWNLOAD] Streaming decrypted file: {_log_safe(file.orig_name)} (original size: {file.size} bytes)')
         success, error = check_and_increment_download(file)
         if not success:
             if error == 'limit_reached':

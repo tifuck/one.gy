@@ -14,6 +14,7 @@ main:has(.auth-container){display:flex;flex-direction:column}
 .auth-subtitle{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.04em;text-transform:uppercase;
   color:var(--text-dim);line-height:1.5;margin-bottom:1.4rem}
 .auth-form{display:flex;flex-direction:column;gap:1.1rem;margin-top:1.2rem}
+.auth-subtitle + .auth-form{margin-top:0}
 
 .form-group{display:flex;flex-direction:column;gap:.45rem}
 .form-group label{font-family:var(--font-mono);font-size:.66rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim)}

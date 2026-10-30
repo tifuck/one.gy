@@ -177,10 +177,10 @@
   // ---- Data load -----------------------------------------------------------
   async function loadFolder (id, opts) {
     opts = opts || {}
-    var previousFolderId = S.folderId
     var seq = newLoad()
     searchIndex = null
     S.trashMode = false
+    $('fxTrashBtn').classList.remove('is-active')
     var restoreAllBtn = $('restoreAllBtn'); if (restoreAllBtn) restoreAllBtn.hidden = true
     $('fxNewFolder').hidden = false; $('fxUploadBtn').hidden = false
     if (!opts.keepSel) resetSelState()
@@ -214,10 +214,10 @@
       render()
       if (window.MusicPlayer && MusicPlayer.onFolderChanged) MusicPlayer.onFolderChanged()
       updateSelbar()
-      if (!opts.noPush && String(previousFolderId) !== String(S.folderId)) {
-        var path = S.folderId == null ? '/files' : '/files/folder/' + S.folderId
-        history.pushState({ fx: true, folderId: S.folderId }, '', path)
-      }
+      // Compare with the URL, not the previous folder: leaving /trash for the
+      // root keeps S.folderId null but must still get its own history entry.
+      var path = S.folderId == null ? '/files' : '/files/folder/' + S.folderId
+      if (!opts.noPush && window.location.pathname !== path) history.pushState({ fx: true, folderId: S.folderId }, '', path)
     } catch (e) {
       if (stale(seq)) return
       S.loadFailed = true
@@ -261,7 +261,7 @@
       S.loadFailed = true
       S.folders = []; S.files = []; S.breadcrumbs = []
       var restoreAllBtn = $('restoreAllBtn'); if (restoreAllBtn) restoreAllBtn.hidden = true
-      el.view.innerHTML = errorState('Could not load the trash. Nothing has been deleted — reload to try again.')
+      el.view.innerHTML = errorState('Could not load the trash. Nothing has been deleted. Reload to try again.')
     }
     document.querySelectorAll('.fx-tree-row').forEach(function (r) { r.classList.remove('is-active') })
     $('fxTrashBtn').classList.add('is-active')
@@ -398,7 +398,6 @@
       else { S.treeOpen.add(key); S.treeReveal = key; renderSidebar() }
     })
     row.querySelector('.fx-tree-link').onclick = function () {
-      $('fxTrashBtn').classList.remove('is-active')
       loadFolder(f.id)
       closeSide()
     }
@@ -502,7 +501,7 @@
   function listRow (item, isFolder) {
     var k = keyOf(item, isFolder), nm = displayName(item, isFolder)
     var type = isFolder ? 'Folder' : (extOf(item.name, item.extension) || 'file').toUpperCase()
-    var size = isFolder ? ((item.file_count || 0) + ' items') : (item.size_formatted || '—')
+    var size = isFolder ? ((item.file_count || 0) + ' items') : (item.size_formatted || '')
     var date = isFolder ? (item.updated_at || '') : (item.upload_date || '')
     var rowIco = isFolder
       ? '<span class="fx-ico fx-row-ico" style="color:var(--accent)">' + ICON.folder + '</span>'
@@ -668,17 +667,14 @@
           rememberE2eThumb(id, blobUrl)
         }
       } else {
-        await new Promise(function (resolve) {
-          var img = new Image(); img.alt = ''
-          img.onload = function () {
-            node.innerHTML = ''
-            node.appendChild(img)
-            f.has_thumbnail = true
-            resolve()
-          }
-          img.onerror = function () { scheduleThumbRetry(node); resolve() }
-          img.src = '/file/' + encodeURIComponent(id) + '/thumbnail'
-        })
+        var tr
+        try { tr = await fetch('/file/' + encodeURIComponent(id) + '/thumbnail') } catch (e) { scheduleThumbRetry(node); return }
+        // 404 is almost always permanent: one retry still picks up the
+        // server's on-demand fill, more only for 429 / transient errors.
+        if (!tr.ok) { if (tr.status !== 404 || !thumbRetries.has(id)) scheduleThumbRetry(node); return }
+        blobUrl = URL.createObjectURL(await tr.blob())
+        await paintThumb(node, blobUrl, f)
+        URL.revokeObjectURL(blobUrl)
         return
       }
       await paintThumb(node, blobUrl, f)
@@ -810,7 +806,7 @@
       if (type === 'file' && data.needs_link_key && data.ancestor_share_token && data.file_id) linkRes = await genLinkKeys([data.file_id], 'folder', data.ancestor_share_token)
       if (linkRes && !linkRes.success) {
         var missed = Math.max((linkRes.total || 0) - (linkRes.keyed || 0), 1)
-        toast('MOVED, BUT SHARE-LINK KEYS FAILED FOR ' + missed + ' OF ' + (linkRes.total || missed) + ' FILE(S) — RECIPIENTS CANNOT DECRYPT THEM' + (linkRes.error ? ' (' + linkRes.error + ')' : ''), 'error')
+        toast('MOVED, BUT SHARE-LINK KEYS FAILED FOR ' + missed + ' OF ' + (linkRes.total || missed) + ' FILE(S). RECIPIENTS CANNOT DECRYPT THEM' + (linkRes.error ? ' (' + linkRes.error + ')' : ''), 'error')
       } else toast('MOVED', 'success')
       if (type === 'folder') revealTreeBranch(targetId)
       loadFolder(S.folderId)
@@ -829,10 +825,18 @@
   function openMoveModal (items) {
     if (!items || !items.length) return
     moveItemsPending = items.slice(); moveTarget = undefined
-    var selectedFolders = new Set(items.filter(function (it) { return it.isFolder }).map(function (it) { return String(it.item.id) }))
-    var rows = '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="root" role="option">' + ICON.folder + '<span>' + esc(S.rootName) + '</span></button>'
+    // A folder cannot move into itself or anything below it, and the folder
+    // every selected item already sits in is a no-op target. Search results
+    // carry folder_id/parent_id; a listing's items all live in S.folderId.
+    var kids = {}, blocked = new Set()
+    ;(S.sidebar || []).forEach(function (folder) { var p = folder.parent_id == null ? 'root' : String(folder.parent_id); (kids[p] = kids[p] || []).push(String(folder.id)) })
+    var stack = items.filter(function (it) { return it.isFolder }).map(function (it) { return String(it.item.id) })
+    while (stack.length) { var fid = stack.pop(); if (!blocked.has(fid)) { blocked.add(fid); stack = stack.concat(kids[fid] || []) } }
+    var homes = new Set(items.map(function (it) { var p = it.isFolder ? it.item.parent_id : it.item.folder_id; if (p === undefined) p = S.folderId; return p == null ? 'root' : String(p) }))
+    if (homes.size === 1) homes.forEach(function (home) { blocked.add(home) })
+    var rows = '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="root" role="option"' + (blocked.has('root') ? ' disabled' : '') + '>' + ICON.folder + '<span>' + esc(S.rootName) + '</span></button>'
     sortItems(S.sidebar || [], true).forEach(function (folder) {
-      var disabled = selectedFolders.has(String(folder.id))
+      var disabled = blocked.has(String(folder.id))
       rows += '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="' + folder.id + '" role="option"' + (disabled ? ' disabled' : '') + '>' + ICON.folder + '<span>' + esc(displayName(folder, true)) + '</span></button>'
     })
     $('moveFolderTree').innerHTML = rows
@@ -861,7 +865,7 @@
       closeMoveModal(); clearSel()
       if (linkRes && !linkRes.success) {
         var missed = Math.max((linkRes.total || 0) - (linkRes.keyed || 0), 1)
-        toast('MOVED, BUT SHARE-LINK KEYS FAILED FOR ' + missed + ' OF ' + (linkRes.total || missed) + ' FILE(S) — RECIPIENTS CANNOT DECRYPT THEM' + (linkRes.error ? ': ' + linkRes.error : ''), 'error')
+        toast('MOVED, BUT SHARE-LINK KEYS FAILED FOR ' + missed + ' OF ' + (linkRes.total || missed) + ' FILE(S). RECIPIENTS CANNOT DECRYPT THEM' + (linkRes.error ? ': ' + linkRes.error : ''), 'error')
       }
       else toast(expected === 1 ? 'MOVED' : ('MOVED ' + expected + ' ITEMS'), 'success')
       loadFolder(S.folderId)
@@ -931,8 +935,16 @@
     } catch (e) { toast('DOWNLOAD FAILED', 'error') }
   }
   function triggerDownload (url, name) {
-    if (typeof url === 'string' && url.charAt(0) === '/') { window.location.href = url; return }
     var a = document.createElement('a'); a.href = url; a.download = name || 'file'; document.body.appendChild(a); a.click(); a.remove()
+  }
+  // One file at a time: several location.href changes in one tick kept only
+  // the last download, and E2EE files were all fetched + decrypted in parallel.
+  async function downloadMany (items) {
+    var files = items.filter(function (s) { return !s.isFolder })
+    for (var i = 0; i < files.length; i++) {
+      if (i) await new Promise(function (resolve) { setTimeout(resolve, 400) })
+      await download(files[i].item)
+    }
   }
 
   // Delete → trash (in the trash view this becomes a permanent delete)
@@ -954,7 +966,7 @@
       }
       closeDrawer()
       if (!failed) toast(list.length > 1 ? ('MOVED ' + list.length + ' ITEMS TO TRASH') : 'MOVED TO TRASH', 'success')
-      else if (failed < list.length) toast('MOVED ' + (list.length - failed) + ' OF ' + list.length + ' ITEMS TO TRASH — ' + failed + ' FAILED' + (firstErr ? ': ' + firstErr : ''), 'error')
+      else if (failed < list.length) toast('MOVED ' + (list.length - failed) + ' OF ' + list.length + ' ITEMS TO TRASH: ' + failed + ' FAILED' + (firstErr ? ': ' + firstErr : ''), 'error')
       else toast((list.length > 1 ? 'COULD NOT MOVE ITEMS TO TRASH' : 'COULD NOT MOVE TO TRASH') + (firstErr ? ': ' + firstErr : ''), 'error')
       S.trashMode ? loadTrash() : loadFolder(S.folderId, { fallbackRoot: true })
     })
@@ -997,7 +1009,7 @@
   function emptyTrash () {
     // The listing failed to load: an empty S.files here means "unknown", not
     // "nothing to delete", so refuse instead of silently doing nothing.
-    if (S.loadFailed) { toast('TRASH COULD NOT BE LOADED — RELOAD BEFORE EMPTYING IT', 'error'); return }
+    if (S.loadFailed) { toast('TRASH COULD NOT BE LOADED. RELOAD BEFORE EMPTYING IT', 'error'); return }
     if (!S.files.length && !S.folders.length) return
     confirmThen('Empty trash', 'Permanently delete everything in the trash? This cannot be undone.', 'Empty trash', async function () {
       try {
@@ -1012,7 +1024,7 @@
     })
   }
   function restoreAll () {
-    if (S.loadFailed) { toast('TRASH COULD NOT BE LOADED — RELOAD BEFORE RESTORING IT', 'error'); return }
+    if (S.loadFailed) { toast('TRASH COULD NOT BE LOADED. RELOAD BEFORE RESTORING IT', 'error'); return }
     if (!S.files.length && !S.folders.length) return
     confirmThen('Restore all', 'Restore every item in the trash?', 'Restore all', async function () {
       try {
@@ -1060,19 +1072,23 @@
   // New folder (E2E-aware)
   function newFolder (parentId, explicitParent) {
     var parent = explicitParent ? parentId : ((parentId != null) ? parentId : S.folderId)
+    // Zero-knowledge: a folder name is never sent in the clear. Same UX as upload.
+    if (!haveKeys()) {
+      var lb = $('fxLockBar'); if (lb) lb.hidden = false
+      toast('UNLOCK YOUR KEYS TO CREATE A FOLDER', 'error'); return
+    }
     openNameModal('New folder', '', 'Create', async function (name) {
       try {
+        if (!haveKeys()) throw new Error('KEYS LOCKED')
         var fd = new FormData(); fd.append('csrf_token', csrf())
         fd.append('parent_id', parent == null ? 'null' : parent)
-        if (haveKeys()) {
-          var masterKey = await OneGyCrypto.getMasterKeyFromSession()
-          var nameKey = await OneGyCrypto.generateFolderNameKey()
-          var enc = await OneGyCrypto.encryptFolderName(name, nameKey)
-          var wrapped = await OneGyCrypto.wrapFolderNameKey(nameKey, masterKey)
-          fd.append('name', 'encrypted')
-          fd.append('encrypted_name', enc.encryptedName); fd.append('name_nonce', enc.nameNonce)
-          fd.append('encrypted_name_key', wrapped.encryptedNameKey); fd.append('name_key_nonce', wrapped.nonce)
-        } else { fd.append('name', name) }
+        var masterKey = await OneGyCrypto.getMasterKeyFromSession()
+        var nameKey = await OneGyCrypto.generateFolderNameKey()
+        var enc = await OneGyCrypto.encryptFolderName(name, nameKey)
+        var wrapped = await OneGyCrypto.wrapFolderNameKey(nameKey, masterKey)
+        fd.append('name', 'encrypted')
+        fd.append('encrypted_name', enc.encryptedName); fd.append('name_nonce', enc.nameNonce)
+        fd.append('encrypted_name_key', wrapped.encryptedNameKey); fd.append('name_key_nonce', wrapped.nonce)
         var r = await fetch('/folder/create', { method: 'POST', body: fd })
         if (!r.ok) throw new Error()
         revealTreeBranch(parent)
@@ -1128,7 +1144,7 @@
       // The tray is collapsible — force it back open so the FAILED rows (and
       // their per-row reason) are actually on screen next to the toast.
       tray.classList.add('is-open')
-      if (ok) toast('UPLOADED ' + ok + ' OF ' + files.length + ' FILES — ' + failed + ' FAILED' + (firstErr ? ': ' + firstErr : ''), 'error')
+      if (ok) toast('UPLOADED ' + ok + ' OF ' + files.length + ' FILES: ' + failed + ' FAILED' + (firstErr ? ': ' + firstErr : ''), 'error')
       else toast((files.length > 1 ? 'ALL ' + files.length + ' UPLOADS FAILED' : 'UPLOAD FAILED') + (firstErr ? ': ' + firstErr : ''), 'error')
     }
     // Only refresh if the user is still looking at the folder we uploaded into.
@@ -1323,7 +1339,7 @@
               }
             }
             if (!failures.length) toast('RESTORED ' + restored + ' ITEMS', 'success')
-            else if (restored) toast('RESTORED ' + restored + ' OF ' + items.length + ' — FAILED: ' + failures.join('; '), 'error')
+            else if (restored) toast('RESTORED ' + restored + ' OF ' + items.length + '. FAILED: ' + failures.join('; '), 'error')
             else toast('RESTORE FAILED FOR ALL ' + items.length + ' ITEMS: ' + failures.join('; '), 'error')
             S.sel.clear()
             loadTrash()
@@ -1335,7 +1351,7 @@
     }
     var hasFile = items.some(function (s) { return !s.isFolder })
     var menu = [{ header: n + ' items' }]
-    if (hasFile) menu.push({ label: 'Download', icon: CI.download, action: function () { items.forEach(function (s) { if (!s.isFolder) download(s.item) }) } })
+    if (hasFile) menu.push({ label: 'Download', icon: CI.download, action: function () { downloadMany(items) } })
     menu.push({ sep: true })
     menu.push({ label: 'Move to trash', icon: CI.trash, danger: true, action: function () { deleteItems(items) } })
     return menu
@@ -1426,11 +1442,14 @@
       var ls = await OneGyCrypto.deriveLinkSecret(masterKey, resourceType, resourceId)
       var linkKey = ls.linkKey
       var token = csrf(), keyed = 0, keyMap = {}, firstError = ''
-      try {
-        var br = await fetch('/f/batch-key-info', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': token }, body: JSON.stringify({ file_ids: fileIds }) })
-        if (br.ok) { keyMap = (await br.json()).keys || {} }
-        else firstError = 'BATCH KEY LOAD HTTP ' + br.status
-      } catch (e) { firstError = 'BATCH KEY LOAD FAILED' }
+      // The server answers at most 200 ids per request, so send them in chunks.
+      for (var b = 0; b < fileIds.length; b += 200) {
+        try {
+          var br = await fetch('/f/batch-key-info', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': token }, body: JSON.stringify({ file_ids: fileIds.slice(b, b + 200) }) })
+          if (br.ok) Object.assign(keyMap, (await br.json()).keys || {})
+          else if (!firstError) firstError = 'BATCH KEY LOAD HTTP ' + br.status
+        } catch (e) { if (!firstError) firstError = 'BATCH KEY LOAD FAILED' }
+      }
       for (var i = 0; i < fileIds.length; i++) {
         var fileId = fileIds[i]
         try {
@@ -1636,7 +1655,7 @@
     // Selection bar
     $('fxSelClear').onclick = function () { clearSel() }
     $('fxSelDelete').onclick = function () { deleteItems(selectedItems()) }
-    $('fxSelDownload').onclick = function () { selectedItems().forEach(function (s) { if (!s.isFolder) download(s.item) }) }
+    $('fxSelDownload').onclick = function () { downloadMany(selectedItems()) }
     $('fxSelMove').onclick = function () { openMoveModal(selectedItems()) }
     $('moveFolderTree').addEventListener('click', function (e) {
       var row = e.target.closest('[data-folder-id]'); if (!row || row.disabled) return
@@ -1701,7 +1720,7 @@
 
     // Drag & drop upload
     var dropOverlay = $('fxDrop'), dragDepth = 0
-    window.addEventListener('dragenter', function (e) { if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) { dragDepth++; dropOverlay.classList.add('is-active'); $('fxDropDest').textContent = 'to ' + (currentFolderLabel()) + ' — end-to-end encrypted' } })
+    window.addEventListener('dragenter', function (e) { if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) { dragDepth++; dropOverlay.classList.add('is-active'); $('fxDropDest').textContent = 'to ' + (currentFolderLabel()) + ', end-to-end encrypted' } })
     window.addEventListener('dragover', function (e) { if (dropOverlay.classList.contains('is-active')) e.preventDefault() })
     window.addEventListener('dragleave', function () { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dropOverlay.classList.remove('is-active') })
     window.addEventListener('drop', function (e) {
@@ -1811,6 +1830,7 @@
     // trash-only actions such as Delete forever must not be offered on them.
     if (S.trashMode) {
       S.trashMode = false; resetSelState()
+      $('fxTrashBtn').classList.remove('is-active')
       var restoreAllBtn = $('restoreAllBtn'); if (restoreAllBtn) restoreAllBtn.hidden = true
       $('fxNewFolder').hidden = false; $('fxUploadBtn').hidden = false
     }
@@ -1833,47 +1853,15 @@
       if (stale(seq)) return
       S.loadFailed = true
       S.folders = []; S.files = []
-      el.view.innerHTML = errorState('Search failed — this is not an empty result. Try again.')
+      el.view.innerHTML = errorState('Search failed. This is not an empty result. Try again.')
     }
   }
 
-  // ---- Mock hook (headless screenshots only) -------------------------------
-  window.__fxMock = function (data) {
-    el.view = $('fxView')
-    S.folders = data.folders || []; S.files = data.files || []
-    S.breadcrumbs = data.breadcrumbs || []; S.sidebar = data.sidebar_folders || []
-    S.rootName = data.root_folder_name || 'FILES'
-    if (data.view) { S.view = data.view; $('fxViewSeg').querySelectorAll('.fx-seg-btn').forEach(function (x) { x.classList.toggle('is-active', x.getAttribute('data-view') === S.view) }) }
-    renderStorage(data); renderTrashCount(data.trash_count || 0)
-    renderSidebar(); renderBreadcrumb(); render()
-    if (data.selected) {
-      data.selected.forEach(function (k) { S.sel.add(k) })
-      S.multi = S.sel.size > 1
-      S.lastFocus = data.selected[0] || null
-      S.anchor = S.lastFocus
-      markSel(); updateSelbar()
-    }
-  }
-
-  // ---- Cleanup hook --------------------------------------------------------
-  // Single exported hook so an SPA re-mount of this IIFE tears the previous
-  // instance's window-level listeners down (the beforeunload upload guard and
-  // the thumbnail observer) instead of stacking them.
+  // ---- History -------------------------------------------------------------
   function onPopState (e) {
-    if (e.state && e.state.fx) loadFolder(e.state.folderId, { noPush: true })
+    if (!e.state || !e.state.fx) return
+    if (e.state.trash) loadTrash(); else loadFolder(e.state.folderId, { noPush: true })
   }
-  function cleanup () {
-    upInFlight = 0
-    updateUnloadGuard()
-    if (thumbObs) { try { thumbObs.disconnect() } catch (e) {} thumbObs = null }
-    thumbQueue = []
-    thumbQueued = new Set()
-    thumbInFlight = 0
-    mobileViewMedia.removeEventListener('change', normalizeMobileView)
-    window.removeEventListener('popstate', onPopState)
-  }
-  if (window.FxFiles && window.FxFiles.cleanup) { try { window.FxFiles.cleanup() } catch (e) {} }
-  window.FxFiles = { cleanup: cleanup }
   window.addEventListener('popstate', onPopState)
 
   // ---- Boot ----------------------------------------------------------------
@@ -1892,7 +1880,7 @@
     if (!window.__FX_NO_AUTOLOAD__) {
       // /trash renders this same page and asks for the trash view up front, so
       // the legacy dashboard.html trash screen is no longer needed.
-      if (window.__FX_INITIAL_TRASH__) { loadTrash(); return }
+      if (window.__FX_INITIAL_TRASH__) { history.replaceState({ fx: true, trash: true }, ''); loadTrash(); return }
       var init = window.__FX_INITIAL_FOLDER__
       history.replaceState({ fx: true, folderId: init != null ? init : null }, '')
       loadFolder(init != null ? init : null, { noPush: true })

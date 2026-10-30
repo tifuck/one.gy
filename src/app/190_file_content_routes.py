@@ -143,28 +143,20 @@ def file_preview(file_id):
 
     import mimetypes
     mimetype, _ = mimetypes.guess_type(file.orig_name)
-    if not mimetype:
+
+    # Only types that cannot run script on this origin render inline; anything
+    # else (html, svg, every +xml flavour, js, ...) is an opaque download.
+    if mimetype and (
+        mimetype in ('application/pdf', 'text/plain')
+        or mimetype.startswith(('audio/', 'video/'))
+        or (mimetype.startswith('image/') and mimetype != 'image/svg+xml')
+    ):
+        _preview_disposition = 'inline'
+    else:
         mimetype = 'application/octet-stream'
+        _preview_disposition = 'attachment'
 
-    # MIME types that can execute scripts when served inline on the same origin.
-    # Force these to attachment so the browser downloads rather than renders them.
-    _inline_dangerous_mimes = {
-        'text/html', 'application/xhtml+xml',
-        'image/svg+xml',
-        'text/xml', 'application/xml',
-        'text/javascript', 'application/javascript', 'application/x-javascript',
-        'text/css',
-    }
-    _preview_disposition = 'attachment' if mimetype in _inline_dangerous_mimes else 'inline'
-
-    # Owner previews must not consume download slots intended for shared links.
-    # Audio plays are counted via the dedicated /file/<id>/track-play endpoint
-    # to avoid double-counting (browsers send both non-Range and Range requests
-    # for <audio> elements, and seeking also triggers additional requests).
-    audio_mimes_set = {'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'audio/aac', 'audio/flac'}
-    if not request.headers.get('Range') and mimetype not in audio_mimes_set:
-        pass
-    
+    # Owner previews never count toward max_downloads.
     try:
         # For audio files, support Range requests (needed for seeking in the music player).
         # We must serve from a concrete file path so that Flask/Werkzeug can correctly
@@ -245,23 +237,21 @@ def file_preview(file_id):
 @app.route('/file/<file_id>/track-play', methods=['POST'])
 @limiter.limit(download_rate_limit)
 def file_track_play(file_id):
-    """Increment download count when an audio file is played via the music player.
-    
-    The /file/<id>/preview endpoint skips counting for Range requests (to avoid
-    double-counting from audio seeking).  When the music player sets audio.src to
-    that endpoint, the browser always sends a Range header, so the play is never
-    counted.  This lightweight POST endpoint fills that gap.
+    """Acknowledge a music-player play of the caller's own audio file.
+
+    Only owners resolve here (registered owner, guest session, manager
+    cookie), and an owner playing their own audio is NOT a download. Counting
+    it consumed burn-after-N (max_downloads) slots and could hard-delete the
+    file via finalize_reserved_download() -- e.g. a burn-after-1 guest upload
+    died when its uploader previewed it. Nothing is counted.
     """
     file = None
-    is_registered_owner = False
 
     # Logged-in user: check files owned by this user
     if 'logged_in_user_id' in session:
         user = _current_session_user()
         if user:
             file = File.query.filter_by(id=file_id, registered_user_id=user.id, is_trashed=False).first()
-            if file:
-                is_registered_owner = True
 
     # Guest: check temp uploads owned by this guest session
     if not file and 'user_id' in session:
@@ -276,26 +266,7 @@ def file_track_play(file_id):
     if not file:
         return jsonify({'error': 'NOT FOUND'}), 404
 
-    # AUDIT FIX M5: a registered owner playing their own audio in the music
-    # player is NOT a download. [tool-probe] Counting it consumed burn-after-N
-    # (max_downloads) slots and could hard-delete the owner's own file via
-    # finalize_reserved_download() -> _mark_file_for_download_limit_delete(), and
-    # every repeat play inflated download_count. Owner plays skip both the
-    # increment and the finalize entirely. Guests / share viewers keep the
-    # counting behavior below (their plays are downloads), including the
-    # limit-reached 410.
-    if is_registered_owner:
-        print(f'[PLAY] Owner play not counted as download for: {file.orig_name}')
-        return jsonify({'ok': True})
-
-    success, error = check_and_increment_download(file)
-    if not success:
-        if error == 'limit_reached':
-            return jsonify({'error': 'LIMIT REACHED'}), 410
-        return jsonify({'error': 'UNAVAILABLE'}), 404
-    finalize_reserved_download(file.id, True)
-
-    print(f'[PLAY] Counted play as download for: {file.orig_name}')
+    print(f'[PLAY] Owner play not counted as download for: {file.orig_name}')
     return jsonify({'ok': True})
 
 
@@ -801,6 +772,15 @@ def file_save_content(file_id):
                 except Exception as _thumb_err:
                     print(f'[FILE] Could not restore previous thumbnail for {thumb_file_id}: {_thumb_err}')
 
+            def _abort_e2e_rewrite(thumb_written):
+                # Roll back BEFORE any undo: delete_thumbnail_from_disk() commits,
+                # and must never persist this request's new file key/checksum
+                # while the disk still holds the old ciphertext.
+                db.session.rollback()
+                storage.rollback_staged_file(_m4_staged_name)
+                if thumb_written:
+                    _undo_thumbnail_write()
+
             if save_enc_thumb and save_enc_thumb_nonce:
                 try:
                     # AUDIT FIX (upload/download integrity): bounded read so an
@@ -816,8 +796,10 @@ def file_save_content(file_id):
                 except ReplicaSessionRollbackError:
                     # AUDIT FIX H3: replica bookkeeping rolled back the shared
                     # DB session (expunging this request's pending changes).
-                    # Abort -- the outer handler fails the request with a 500
-                    # before any staged rewrite has been prepared.
+                    # The canonical .e2e may already hold the new bytes (or be
+                    # gone): discard the staged rewrite, undo the thumbnail and
+                    # let the outer handler fail the request with a 500.
+                    _abort_e2e_rewrite(True)
                     raise
                 except Exception as e:
                     print(f'[FILE] E2E thumbnail update failed (non-critical): {e}')
@@ -825,31 +807,26 @@ def file_save_content(file_id):
                 file.encrypted_thumbnail_nonce = None
             file.has_thumbnail = has_thumb
 
-            _prep_err = _prepare_staged_rewrite_commit(file, {
-                'file_id': file.id,
-                'size': encrypted_size,
-                'disk_size': encrypted_size,
-                'content_hash': encrypted_hash,
-                'payload_checksum': encrypted_hash,
-                'encrypted_name': file.encrypted_name,
-                'name_nonce': file.name_nonce,
-                'encrypted_file_key': encrypted_file_key,
-                'file_key_nonce': file_key_nonce,
-            })
-            if _prep_err:
-                if has_thumb:
-                    _undo_thumbnail_write()
-                return _prep_err
-
             try:
-                db.session.commit()
+                _prep_err = _prepare_staged_rewrite_commit(file, {
+                    'file_id': file.id,
+                    'size': encrypted_size,
+                    'disk_size': encrypted_size,
+                    'content_hash': encrypted_hash,
+                    'payload_checksum': encrypted_hash,
+                    'encrypted_name': file.encrypted_name,
+                    'name_nonce': file.name_nonce,
+                    'encrypted_file_key': encrypted_file_key,
+                    'file_key_nonce': file_key_nonce,
+                })
+                if not _prep_err:
+                    db.session.commit()
             except Exception:
-                db.session.rollback()
-                storage.rollback_staged_file(file.filename)
-                # Restore the thumbnail replaced before the failed commit
-                if has_thumb:
-                    _undo_thumbnail_write()
+                _abort_e2e_rewrite(has_thumb)
                 raise
+            if _prep_err:
+                _abort_e2e_rewrite(has_thumb)
+                return _prep_err
 
             # DB commit succeeded — safe to delete old thumbnail (no new one provided)
             if not has_thumb:

@@ -53,6 +53,11 @@ if(localStorage.getItem('onegy_rd_list_collapsed')==='1')r.setAttribute('data-rd
   function showToast(message, category){var c=document.getElementById('toastContainer');if(!c){c=document.createElement('div');c.id='toastContainer';c.className='toast-container';document.body.appendChild(c);}var t=document.createElement('div');t.className='toast-message toast-'+(category||'error');t.textContent=String(message).toUpperCase().replace(/[.!?]+$/,'');c.appendChild(t);setTimeout(function(){t.style.opacity='0';setTimeout(function(){t.remove();},400);},3500);}
   function showFlash(m,c){showToast(m,c);}
 </script>
+{% with flashes = get_flashed_messages(with_categories=true) %}{% if flashes %}
+<script nonce="{{ csp_nonce }}">
+  {{ flashes|tojson }}.forEach(function (f) { showToast(f[1], f[0] === 'success' || f[0] === 'error' ? f[0] : 'info'); });
+</script>
+{% endif %}{% endwith %}
 <script src="{{ versioned_static('core.js') }}"></script>
 <script src="{{ versioned_static('panel-resize.js') }}" defer></script>
 <script src="{{ versioned_static('context-menu.js') }}" defer></script>

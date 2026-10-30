@@ -38,6 +38,11 @@
     }
     function showFlash(m, c) { showToast(m, c); }
   </script>
+  {% with flashes = get_flashed_messages(with_categories=true) %}{% if flashes %}
+  <script nonce="{{ csp_nonce }}">
+    {{ flashes|tojson }}.forEach(function (f) { showToast(f[1], f[0] === 'success' || f[0] === 'error' ? f[0] : 'info'); });
+  </script>
+  {% endif %}{% endwith %}
 
   <script src="{{ versioned_static('core.js') }}"></script>
   <script src="{{ versioned_static('theme-switch.js') }}" defer></script>

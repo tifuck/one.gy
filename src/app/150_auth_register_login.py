@@ -471,6 +471,9 @@ def _recovery_key_server_verifier(recovery_key_hash):
     payload = ('recovery-key-v1:' + recovery_key_hash).encode('utf-8')
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()
 
+_CREDENTIAL_PROOF_LOCK_AT = 10
+_CREDENTIAL_PROOF_WINDOW = 900
+
 def _verify_user_credentials(user, password=None, auth_token=None):
     """Verify a user's CURRENT login credentials, using exactly the same rules as
     /login: split-key auth_token for split_key_version >= 1, legacy Werkzeug
@@ -481,7 +484,12 @@ def _verify_user_credentials(user, password=None, auth_token=None):
 
     Used by every route that must re-prove credential knowledge before touching
     key material or second-factor state (/api/keys, /change-password,
-    /account/2fa/*, /delete-account)."""
+    /account/2fa/*, /delete-account).
+
+    Wrong proofs are counted per user in the shared security state: after
+    _CREDENTIAL_PROOF_LOCK_AT failures every proof (even a correct one) is
+    refused until _CREDENTIAL_PROOF_WINDOW seconds after the last failure, so a
+    session holder cannot use these routes as an unthrottled password oracle."""
     if not user:
         return False
     # AUDIT FIX: non-string credential proofs (JSON numbers/objects/arrays)
@@ -492,6 +500,39 @@ def _verify_user_credentials(user, password=None, auth_token=None):
         return False
     if auth_token is not None and not isinstance(auth_token, str):
         return False
+    if not password and not auth_token:
+        return False
+    bypass = _login_bypass_active()
+    state_key = str(user.id)
+    locks = _acquire_security_state_locks([('credential_proof', state_key)])
+    try:
+        now = time.time()
+        state = _read_security_state('credential_proof', state_key)
+        if not _security_state_fresh(state, now):
+            state = {}
+        fails = int(state.get('fails', 0))
+        if fails >= _CREDENTIAL_PROOF_LOCK_AT and not bypass:
+            print(f'[AUTH] Credential proof refused for user {user.username}: locked after {fails} failures')
+            return False
+        ok = _credentials_match(user, password, auth_token)
+        if ok:
+            _write_security_state('credential_proof', state_key, None)
+        elif not bypass:
+            fails += 1
+            _write_security_state('credential_proof', state_key, {
+                'fails': fails,
+                'retain_until': now + _CREDENTIAL_PROOF_WINDOW,
+            })
+            if fails >= _CREDENTIAL_PROOF_LOCK_AT:
+                print(f'[AUTH] Credential proof locked for user {user.username} '
+                      f'for {_CREDENTIAL_PROOF_WINDOW}s after {fails} failed attempts')
+        return ok
+    finally:
+        _release_security_state_locks(locks)
+
+
+def _credentials_match(user, password, auth_token):
+    """Pure comparison behind _verify_user_credentials (no failure counting)."""
     import hashlib as _hashlib_verify
     import hmac as _hmac_verify
     if auth_token and user.split_key_version and user.split_key_version >= 1 and user.auth_token_hash:
@@ -990,14 +1031,20 @@ def login():
                 check_password_hash(_dummy_password_hash(), password or 'x')
                 auth_ok = False
         else:
-            check_password_hash(_dummy_password_hash(), password or 'x')
-            if auth_token:
+            # Unknown user (or a credential the account cannot use): do the SAME
+            # work the real branch for this credential type does, so timing does
+            # not reveal whether the username exists. Pre-login hands unknown
+            # names a pseudo-version, so honest clients send auth_token for them
+            # about half the time; a PBKDF2 dummy there was a timing oracle.
+            if auth_token and (not password or _build_opaque_prelogin_version(username) >= 1):
                 import hashlib as _hashlib_login_dummy
                 import hmac as _hmac_login_dummy
                 _hmac_login_dummy.compare_digest(
                     _hashlib_login_dummy.sha256(auth_token.encode('utf-8')).hexdigest(),
-                    _hashlib_login_dummy.sha256(b'onegy-timing-dummy').hexdigest(),
+                    '0' * 64,
                 )
+            else:
+                check_password_hash(_dummy_password_hash(), password or 'x')
         
         if auth_ok:
             # Check if 2FA is enabled — require TOTP verification before completing login

@@ -117,30 +117,12 @@
     })
   }
 
-  // Get passphrase, checking per-file keychain first, then legacy sessionStorage, then prompt.
-  async function _ensurePassphrase(fileId, signal) {
-    let pp = null
-    // 1. Try per-file keychain first (always correct for the specific file)
-    if (fileId && typeof TempKeychain !== 'undefined') {
-      try {
-        pp = await TempKeychain.get(fileId)
-        if (pp) return pp
-      } catch (e) {}
-    }
-    // 2. Fall back to legacy sessionStorage and migrate into the per-file keychain.
-    pp = _getPassphrase()
-    if (pp) {
-      try { sessionStorage.removeItem('e2e_passphrase') } catch (e) {}
-      return pp
-    }
-    // 3. Prompt the user
-    pp = await _promptPassphrase(signal)
-    return pp
-  }
-
-  // ─── Unified E2EE Decryption (master-key OR passphrase) ──────────
-  // Fetches key info, determines wrapping mode, decrypts file data.
-  // Returns decrypted ArrayBuffer or throws on failure.
+  // ─── Unified E2EE Key Unlock (master-key OR passphrase) ──────────
+  // Resolves the file key ONCE per operation (download / preview / save) so a
+  // passphrase is asked for at most once, and is verified by unwrapping the file
+  // key before anything uses it. A stored keychain entry is never deleted here:
+  // for guest uploads it can be the only copy of the secret, and an unwrap or
+  // AES-GCM failure may just as well mean corrupt or tampered ciphertext.
   function _throwIfAborted(signal) {
     if (signal && signal.aborted) {
       var error = new Error('ABORTED')
@@ -149,7 +131,7 @@
     }
   }
 
-  async function _decryptE2EEFile(fileId, encData, onProgress, signal) {
+  async function _unlockE2EEFile(fileId, signal) {
     _throwIfAborted(signal)
     var keyResp = await fetch('/f/' + fileId + '/key-info', signal ? { signal: signal } : undefined)
     if (!keyResp.ok) throw new Error('KEY FETCH FAILED')
@@ -158,40 +140,50 @@
     if (!keyInfo.encrypted_file_key) throw new Error('FILE KEY NOT FOUND')
 
     if (keyInfo.file_key_salt) {
-      // Passphrase-wrapped file key (guest upload)
-      var passphrase = await _ensurePassphrase(fileId, signal)
+      // Passphrase-wrapped file key (guest upload): per-file keychain, then the
+      // legacy sessionStorage slot, then ask the user.
+      var stored = null
+      if (fileId && typeof TempKeychain !== 'undefined') {
+        try { stored = await TempKeychain.get(fileId) } catch (e) {}
+      }
+      var legacy = stored ? null : _getPassphrase()
+      var passphrase = stored || legacy || await _promptPassphrase(signal)
       _throwIfAborted(signal)
       if (!passphrase) throw new Error('PASSPHRASE NOT AVAILABLE')
+      var fileKey
       try {
-        var decrypted = await OneGyCrypto.decryptFileForGuestDownload(
-          encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce,
-          keyInfo.file_key_salt, passphrase, onProgress
+        fileKey = await OneGyCrypto.unwrapFileKeyWithPassphrase(
+          keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase
         )
-        _throwIfAborted(signal)
-        if (fileId && typeof TempKeychain !== 'undefined') {
-          TempKeychain.store(fileId, passphrase).catch(function() {})
-        }
-        return decrypted
       } catch (e) {
-        if (fileId && typeof TempKeychain !== 'undefined' && e && e.name === 'OperationError') {
-          TempKeychain.remove(fileId).catch(function() {})
-        }
-        throw e
+        throw new Error(stored ? 'STORED PASSPHRASE DOES NOT UNLOCK THIS FILE' : 'WRONG PASSPHRASE')
       }
-    } else if (_hasMasterKey()) {
+      _throwIfAborted(signal)
+      if (!stored && fileId && typeof TempKeychain !== 'undefined') {
+        TempKeychain.store(fileId, passphrase).catch(function() {})
+      }
+      if (legacy) {
+        try { sessionStorage.removeItem('e2e_passphrase') } catch (e) {}
+      }
+      return { keyInfo: keyInfo, fileKey: fileKey, passphrase: passphrase, masterKey: null }
+    }
+    if (_hasMasterKey()) {
       // Master-key-wrapped file key (logged-in user)
       var masterKey = await OneGyCrypto.getMasterKeyFromSession()
       _throwIfAborted(signal)
       if (!masterKey) throw new Error('MASTER KEY NOT AVAILABLE')
-      var decryptedWithMasterKey = await OneGyCrypto.decryptFileForDownload(
-        encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce,
-        masterKey, onProgress
-      )
+      var masterFileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey)
       _throwIfAborted(signal)
-      return decryptedWithMasterKey
-    } else {
-      throw new Error('ENCRYPTION KEYS NOT AVAILABLE \u2014 LOG IN AGAIN')
+      return { keyInfo: keyInfo, fileKey: masterFileKey, passphrase: null, masterKey: masterKey }
     }
+    throw new Error('ENCRYPTION KEYS NOT AVAILABLE \u2014 LOG IN AGAIN')
+  }
+
+  async function _decryptE2EEFile(fileId, encData, onProgress, signal, unlocked) {
+    unlocked = unlocked || await _unlockE2EEFile(fileId, signal)
+    var decrypted = await OneGyCrypto.decryptFileData(encData, unlocked.fileKey, onProgress)
+    _throwIfAborted(signal)
+    return decrypted
   }
 
   // ─── Download Toast ───────────────────────────────────────────────
@@ -276,23 +268,6 @@
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
-  }
-
-  // ─── Try decrypt filename from key-info ────────────────────────────
-  async function _tryDecryptFileNameFromKeyInfo(fileId, keyInfo) {
-    if (!keyInfo || !keyInfo.encrypted_name || !keyInfo.name_nonce) return null
-    try {
-      let fileKey = null
-      if (keyInfo.file_key_salt) {
-        const pp = await _ensurePassphrase(fileId)
-        if (pp) fileKey = await OneGyCrypto.unwrapFileKeyWithPassphrase(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, pp)
-      } else if (_hasMasterKey()) {
-        const mk = await OneGyCrypto.getMasterKeyFromSession()
-        if (mk) fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, mk)
-      }
-      if (fileKey) return await OneGyCrypto.decryptFileName(keyInfo.encrypted_name, keyInfo.name_nonce, fileKey)
-    } catch (e) { /* non-critical */ }
-    return null
   }
 
   // Decrypt the filename and thumbnail shown in the quick-share listing. The
@@ -419,18 +394,18 @@
         return
       }
 
-      // Try to decrypt real filename before download
-      try {
-        const kiResp = await fetch('/f/' + fileId + '/key-info')
-        if (kiResp.ok) {
-          const ki = await kiResp.json()
-          const realName = await _tryDecryptFileNameFromKeyInfo(fileId, ki)
+      // One unlock for the whole download: the filename and the file share it.
+      const unlocked = await _unlockE2EEFile(fileId)
+      const ki = unlocked.keyInfo
+      if (ki.encrypted_name && ki.name_nonce) {
+        try {
+          const realName = await OneGyCrypto.decryptFileName(ki.encrypted_name, ki.name_nonce, unlocked.fileKey)
           if (realName) {
             fileName = realName
             _updateDownloadToast(t, 'LOADING KEY...', 2, fileName)
           }
-        }
-      } catch (e) { /* non-critical */ }
+        } catch (e) { /* non-critical */ }
+      }
 
       _updateDownloadToast(t, 'DOWNLOADING...', 5, fileName, '-')
 
@@ -472,7 +447,7 @@
       const decrypted = await _decryptE2EEFile(fileId, encData, (pct) => {
         const totalPct = Math.round(62 + (pct / 100) * 36)
         _updateDownloadToast(t, 'DECRYPTING ' + pct + '%', totalPct)
-      })
+      }, undefined, unlocked)
 
       _updateDownloadToast(t, 'SAVING...', 99)
       const blob = new Blob([decrypted], { type: 'application/octet-stream' })
@@ -485,61 +460,15 @@
     }
   }
 
-  // ─── Non-E2EE Download with Progress ──────────────────────────────
-  async function _downloadFile(fileId, fileName) {
-    const t = _showDownloadToast('DOWNLOADING FILE')
-    _updateDownloadToast(t, 'DOWNLOADING...', 2, fileName, '-')
-
-    try {
-      const data = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest()
-        xhr.open('GET', `/f/${fileId}/${encodeURIComponent(fileName)}`, true)
-        xhr.responseType = 'arraybuffer'
-        let lastTime = Date.now(), lastLoaded = 0
-        xhr.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const dlPct = Math.round(2 + (e.loaded / e.total) * 96)
-            const now = Date.now()
-            const dt = (now - lastTime) / 1000
-            let speedText = '-'
-            if (dt > 0.2) {
-              const bytesPerSec = (e.loaded - lastLoaded) / dt
-              speedText = bytesPerSec >= 1048576
-                ? (bytesPerSec / 1048576).toFixed(1) + ' MB/S'
-                : Math.round(bytesPerSec / 1024) + ' KB/S'
-              lastTime = now
-              lastLoaded = e.loaded
-            }
-            const mb = (e.loaded / 1048576).toFixed(1)
-            const totalMb = (e.total / 1048576).toFixed(1)
-            _updateDownloadToast(t, `DOWNLOADING ${mb} / ${totalMb} MB`, dlPct, undefined, speedText)
-          }
-        }
-        xhr.onload = () => {
-          if (xhr.status === 200) resolve(xhr.response)
-          else reject(new Error(`HTTP ${xhr.status}`))
-        }
-        xhr.onerror = () => reject(new Error('NETWORK ERROR'))
-        xhr.send()
-      })
-
-      _updateDownloadToast(t, 'SAVING...', 99)
-      const blob = new Blob([data], { type: 'application/octet-stream' })
-      _triggerBlobDownload(blob, fileName)
-
-      _completeDownloadToast(t)
-    } catch (err) {
-      console.error('[TEMP DOWNLOAD]', err)
-      _errorDownloadToast(t, 'DOWNLOAD FAILED')
-    }
-  }
-
   // ─── Preview: Open / Close ────────────────────────────────────────
   let _activeEditor = null
   let _previewBlobUrls = []  // Track blob URLs for cleanup
   let _previewGeneration = 0
   let _previewAbort = null
+  let _previewDocListeners = []  // document-level listeners owned by the open preview
   const previewModal = document.getElementById('previewModal')
+  // E2EE previews are decrypted in memory; refuse anything bigger than this.
+  const PREVIEW_MAX_SIZE = 512 * 1024 * 1024
 
   function _isPreviewCurrent(generation) {
     return generation === _previewGeneration && previewModal && previewModal.classList.contains('preview-visible')
@@ -550,12 +479,23 @@
     _previewBlobUrls = []
   }
 
+  function _onDocument(type, fn) {
+    document.addEventListener(type, fn)
+    _previewDocListeners.push([type, fn])
+  }
+
+  function _clearPreviewDocListeners() {
+    _previewDocListeners.forEach(([type, fn]) => document.removeEventListener(type, fn))
+    _previewDocListeners = []
+  }
+
   function _beginPreviewWork() {
     _previewGeneration++
     if (_previewAbort) _previewAbort.abort()
     _previewAbort = new AbortController()
     _activeEditor = null
     _clearPreviewBlobUrls()
+    _clearPreviewDocListeners()
     return { generation: _previewGeneration, signal: _previewAbort.signal }
   }
 
@@ -696,8 +636,8 @@
       seekThumb.style.left = (pct * 100) + '%'
     }
     seekWrap.addEventListener('mousedown', e => { e.stopPropagation(); _seeking = true; seekWrap.classList.add('pvp-seeking'); seekTo(e) })
-    document.addEventListener('mousemove', e => { if (_seeking) seekTo(e) })
-    document.addEventListener('mouseup', () => { if (_seeking) { _seeking = false; seekWrap.classList.remove('pvp-seeking') } })
+    _onDocument('mousemove', e => { if (_seeking) seekTo(e) })
+    _onDocument('mouseup', () => { if (_seeking) { _seeking = false; seekWrap.classList.remove('pvp-seeking') } })
     seekWrap.addEventListener('touchstart', e => { e.stopPropagation(); _seeking = true; seekWrap.classList.add('pvp-seeking'); seekTo(e.touches[0]) }, { passive: true })
     seekWrap.addEventListener('touchmove', e => { if (_seeking) seekTo(e.touches[0]) }, { passive: true })
     seekWrap.addEventListener('touchend', () => { _seeking = false; seekWrap.classList.remove('pvp-seeking') })
@@ -737,8 +677,8 @@
       const isFS = document.fullscreenElement === wrap || document.webkitFullscreenElement === wrap
       fsBtn.innerHTML = isFS ? SVG_FS_EXIT : SVG_FS
     }
-    document.addEventListener('fullscreenchange', onFSChange)
-    document.addEventListener('webkitfullscreenchange', onFSChange)
+    _onDocument('fullscreenchange', onFSChange)
+    _onDocument('webkitfullscreenchange', onFSChange)
 
     video.addEventListener('click', e => { e.stopPropagation(); togglePlay(); flashOverlay(video.paused) })
     video.addEventListener('dblclick', e => {
@@ -877,13 +817,13 @@
       _dragTxStart = tx; _dragTyStart = ty
       img.classList.add('pv-dragging')
     })
-    document.addEventListener('mousemove', e => {
+    _onDocument('mousemove', e => {
       if (!isCurrent() || !_dragging) return
       tx = _dragTxStart + (e.clientX - _dragStartX)
       ty = _dragTyStart + (e.clientY - _dragStartY)
       clampPan(); applyTransform()
     })
-    document.addEventListener('mouseup', () => { if (isCurrent() && _dragging) { _dragging = false; img.classList.remove('pv-dragging') } })
+    _onDocument('mouseup', () => { if (isCurrent() && _dragging) { _dragging = false; img.classList.remove('pv-dragging') } })
 
     let _touches = [], _pinchStartDist = 0, _pinchStartScale = 1
     let _touchDragging = false, _tdStartX = 0, _tdStartY = 0, _tdTxStart = 0, _tdTyStart = 0
@@ -949,7 +889,6 @@
   function _closePreviewInternal() {
     if (!previewModal || !previewModal.classList.contains('preview-visible')) return
     _cancelPreviewWork()
-    const closeGeneration = _previewGeneration
     const video = previewModal.querySelector('video')
     const audio = previewModal.querySelector('audio')
     if (video) video.pause()
@@ -964,15 +903,13 @@
     if (stage) stage.classList.remove('pv-zoom-active')
     // Revoke blob URLs from previous preview to free memory
     _clearPreviewBlobUrls()
+    _clearPreviewDocListeners()
     document.documentElement.classList.remove('preview-scroll-lock')
     document.documentElement.style.top = ''
     window.scrollTo(0, window._previewScrollY || 0)
-    previewModal.classList.add('preview-hiding')
-    previewModal.addEventListener('animationend', function handler() {
-      if (closeGeneration !== _previewGeneration) return
-      previewModal.classList.remove('preview-visible', 'preview-hiding')
-      previewModal.removeEventListener('animationend', handler)
-    }, { once: true })
+    // preview.css has no closing animation, so waiting for animationend would
+    // leave the modal open forever.
+    previewModal.classList.remove('preview-visible', 'preview-hiding')
   }
 
   function closePreview() {
@@ -986,11 +923,15 @@
     }
   }
 
-  // Handle back button closing preview
+  // Handle back button closing preview — with the same unsaved-edits guard as
+  // the close button (re-push the entry if the user keeps editing).
   window.addEventListener('popstate', function(e) {
-    if (previewModal && previewModal.classList.contains('preview-visible')) {
-      _closePreviewInternal()
+    if (!previewModal || !previewModal.classList.contains('preview-visible')) return
+    if (_activeEditor && _activeEditor.isModified() && !confirm('YOU HAVE UNSAVED CHANGES. CLOSE WITHOUT SAVING?')) {
+      history.pushState({ preview: true }, '')
+      return
     }
+    _closePreviewInternal()
   })
 
   // Close button
@@ -1149,53 +1090,44 @@
       return { success: false, error: 'CRYPTO NOT AVAILABLE' }
     }
 
-    // Determine wrapping mode from key info
-    var keyResp = await fetch('/f/' + fileId + '/key-info')
-    if (!keyResp.ok) return { success: false, error: 'KEY FETCH FAILED' }
-    var keyInfo = await keyResp.json()
+    // Unlock (and so verify) the CURRENT key before re-wrapping anything: an
+    // unverified typed passphrase would re-encrypt the file under a secret no
+    // existing share link holds.
+    var unlocked
+    try {
+      unlocked = await _unlockE2EEFile(fileId)
+    } catch (e) {
+      return { success: false, error: (e && e.message) || 'ENCRYPTION KEYS NOT AVAILABLE' }
+    }
+    var keyInfo = unlocked.keyInfo
+    var masterKey = unlocked.masterKey
 
     var plainBytes = encodeTextBytes(content, encInfo)
     var formData = new FormData()
     var fileKey = null
-    var masterKey = null
 
     if (keyInfo.file_key_salt) {
       // Passphrase-wrapped: re-encrypt with passphrase
-      var passphrase = await _ensurePassphrase(fileId)
-      if (!passphrase) return { success: false, error: 'PASSPHRASE NOT AVAILABLE' }
-
-      var result = await OneGyCrypto.encryptFileForGuestUpload(plainBytes, passphrase)
+      var result = await OneGyCrypto.encryptFileForGuestUpload(plainBytes, unlocked.passphrase)
       formData.append('file', result.encryptedBlob)
       formData.append('encrypted_file_key', result.encryptedFileKey)
       formData.append('file_key_nonce', result.fileKeyNonce)
       formData.append('file_key_salt', result.fileKeySalt)
       fileKey = result.fileKey
-    } else if (_hasMasterKey()) {
+    } else {
       // Master-key-wrapped: re-encrypt with master key
-      masterKey = await OneGyCrypto.getMasterKeyFromSession()
-      if (!masterKey) return { success: false, error: 'MASTER KEY NOT AVAILABLE' }
-
       var result = await OneGyCrypto.encryptFileForUpload(plainBytes, masterKey)
       formData.append('file', result.encryptedBlob)
       formData.append('encrypted_file_key', result.encryptedFileKey)
       formData.append('file_key_nonce', result.fileKeyNonce)
       fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(result.encryptedFileKey, result.fileKeyNonce, masterKey)
-    } else {
-      return { success: false, error: 'ENCRYPTION KEYS NOT AVAILABLE' }
     }
 
     if (keyInfo.encrypted_name && keyInfo.name_nonce) {
       var realName = fileName
       try {
         if (!realName || realName.indexOf('encrypted_') === 0) {
-          var oldFileKey = null
-          if (keyInfo.file_key_salt) {
-            var oldPassphrase = await _ensurePassphrase(fileId)
-            if (oldPassphrase) oldFileKey = await OneGyCrypto.unwrapFileKeyWithPassphrase(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, oldPassphrase)
-          } else if (masterKey) {
-            oldFileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey)
-          }
-          if (oldFileKey) realName = await OneGyCrypto.decryptFileName(keyInfo.encrypted_name, keyInfo.name_nonce, oldFileKey)
+          realName = await OneGyCrypto.decryptFileName(keyInfo.encrypted_name, keyInfo.name_nonce, unlocked.fileKey)
         }
         if (!realName || realName.indexOf('encrypted_') === 0) return { success: false, error: 'FILENAME KEY NOT AVAILABLE' }
         var nameResult = await OneGyCrypto.encryptFileName(realName, fileKey)
@@ -1210,21 +1142,21 @@
     if (masterKey && (keyInfo.link_encrypted_file_key || keyInfo.folder_link_encrypted_file_key || keyInfo.has_folder_link_key)) {
       try {
         var manageResp = await fetch('/file/' + fileId + '/manage-data', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-        if (!manageResp.ok) return { success: false, error: 'COULD NOT CHECK SHARE STATUS — NOT SAVING' }
+        if (!manageResp.ok) return { success: false, error: 'COULD NOT CHECK SHARE STATUS. NOT SAVING' }
         var manageData = await manageResp.json()
         var needFileLink = !!(manageData.has_file_link_key || keyInfo.link_encrypted_file_key)
         var needFolderLink = !!(manageData.has_folder_link_key || manageData.ancestor_share_token || keyInfo.folder_link_encrypted_file_key)
         if (needFileLink) {
           var fileLinkInfo = await OneGyCrypto.deriveLinkSecret(masterKey, 'file', fileId)
-          if (!fileLinkInfo || !fileLinkInfo.linkKey) return { success: false, error: 'COULD NOT DERIVE THE SHARE-LINK KEY — NOT SAVING' }
+          if (!fileLinkInfo || !fileLinkInfo.linkKey) return { success: false, error: 'COULD NOT DERIVE THE SHARE-LINK KEY. NOT SAVING' }
           var fileWrap = await OneGyCrypto.wrapFileKeyForLink(fileKey, fileLinkInfo.linkKey)
           formData.append('link_encrypted_file_key', fileWrap.encryptedFileKey)
           formData.append('link_file_key_nonce', fileWrap.nonce)
         }
         if (needFolderLink) {
-          if (!manageData.ancestor_share_token) return { success: false, error: 'COULD NOT DERIVE THE FOLDER SHARE-LINK KEY — NOT SAVING' }
+          if (!manageData.ancestor_share_token) return { success: false, error: 'COULD NOT DERIVE THE FOLDER SHARE-LINK KEY. NOT SAVING' }
           var folderLinkInfo = await OneGyCrypto.deriveLinkSecret(masterKey, 'folder', manageData.ancestor_share_token)
-          if (!folderLinkInfo || !folderLinkInfo.linkKey) return { success: false, error: 'COULD NOT DERIVE THE FOLDER SHARE-LINK KEY — NOT SAVING' }
+          if (!folderLinkInfo || !folderLinkInfo.linkKey) return { success: false, error: 'COULD NOT DERIVE THE FOLDER SHARE-LINK KEY. NOT SAVING' }
           var folderWrap = await OneGyCrypto.wrapFileKeyForLink(fileKey, folderLinkInfo.linkKey)
           formData.append('folder_link_encrypted_file_key', folderWrap.encryptedFileKey)
           formData.append('folder_link_file_key_nonce', folderWrap.nonce)
@@ -1250,6 +1182,9 @@
 
   // ─── Text Editor ──────────────────────────────────────────────────
   function buildTextEditor(text, extension, fileId, isE2E, fileName, encInfo, generation) {
+    // The contenteditable editor only round-trips '\n'; encodeTextBytes() puts
+    // the file's own line endings (encInfo.eol) back on save.
+    text = text.replace(/\r\n?/g, '\n')
     const lang = getHighlightLanguage(extension)
     const langName = getLanguageDisplayName(extension)
     let savedText = text
@@ -1685,8 +1620,8 @@
   }
 
   // ─── E2E Preview (passphrase-based decryption) ────────────────────
-  async function showE2EPreview(fileId, fileName, extension) {
-    // Route audio to music player
+  async function showE2EPreview(fileId, fileName, extension, fileSize) {
+    // Route audio to music player (only loaded on some pages; else the modal plays it)
     if (AUDIO_EXTS.includes(extension) && typeof window.MusicPlayer !== 'undefined') {
       window.MusicPlayer.open(fileId, fileName, extension, true)
       return
@@ -1710,6 +1645,12 @@
     downloadBtn.style.display = ''
 
     openPreview()
+
+    if (fileSize > PREVIEW_MAX_SIZE) {
+      downloadBtn.style.display = 'none'
+      previewBody.innerHTML = '<div class="preview-error">TOO LARGE TO PREVIEW IN THE BROWSER (OVER 512 MB). USE THE DOWNLOAD BUTTON IN THE FILE LIST</div>'
+      return
+    }
 
     try {
       if (typeof OneGyCrypto === 'undefined') {
@@ -1736,8 +1677,15 @@
         const blob = new Blob([decrypted], { type: mime })
         const blobUrl = URL.createObjectURL(blob)
         _previewBlobUrls.push(blobUrl)
+        // A decrypted SVG is attacker-controlled markup: an image/svg+xml blob
+        // opened from the download link would render as a same-origin document.
+        let downloadUrl = blobUrl
+        if (mime === 'image/svg+xml') {
+          downloadUrl = URL.createObjectURL(new Blob([decrypted], { type: 'application/octet-stream' }))
+          _previewBlobUrls.push(downloadUrl)
+        }
 
-        downloadBtn.href = blobUrl
+        downloadBtn.href = downloadUrl
         downloadBtn.download = fileName
 
         const img = document.createElement('img')
@@ -1854,8 +1802,8 @@
   }
 
   // ─── Non-E2E File Preview ─────────────────────────────────────────
-  function showFilePreview(fileId, fileName, extension) {
-    // Route audio to music player
+  function showFilePreview(fileId, fileName, extension, fileSize) {
+    // Route audio to music player (only loaded on some pages; else the modal plays it)
     if (AUDIO_EXTS.includes(extension) && typeof window.MusicPlayer !== 'undefined') {
       window.MusicPlayer.open(fileId, fileName, extension, false)
       return
@@ -1937,6 +1885,8 @@
       iframe.frameBorder = '0'
       previewBody.innerHTML = ''
       previewBody.appendChild(iframe)
+    } else if (TEXT_EXTS.includes(extension) && fileSize > PREVIEW_MAX_SIZE) {
+      previewBody.innerHTML = '<div class="preview-error">TOO LARGE TO PREVIEW IN THE BROWSER (OVER 512 MB). USE THE DOWNLOAD BUTTON BELOW</div>'
     } else if (TEXT_EXTS.includes(extension)) {
       fetch(previewUrl, { signal })
         .then(r => {
@@ -1984,19 +1934,18 @@
     const row = downloadBtn.closest('.temp-browser-row')
     if (!row) return
 
+    // Plain files download through the link itself (streamed by the browser,
+    // never buffered in page memory); only E2EE files need in-page decryption.
+    if (row.dataset.e2e !== 'true') return
+
     e.preventDefault()
     e.stopPropagation()
 
-    const fileId = row.dataset.fileId
-    const fileName = row.dataset.fileName
-    const isE2E = row.dataset.e2e === 'true'
-
-    if (isE2E) {
-      _e2eeDownloadFile(fileId, fileName)
-    } else {
-      _downloadFile(fileId, fileName)
-    }
+    _e2eeDownloadFile(row.dataset.fileId, row.dataset.fileName)
   })
+
+  // Used by the quick-share manage modal's Download button.
+  window.TempPreview = { downloadE2EE: _e2eeDownloadFile }
 
   // Intercept thumbnail / file icon clicks for preview
   document.addEventListener('click', (e) => {
@@ -2014,34 +1963,13 @@
     const fileName = row.dataset.fileName
     const extension = (row.dataset.extension || '').toLowerCase()
     const isE2E = row.dataset.e2e === 'true'
+    const fileSize = Number(row.dataset.size) || 0
 
     if (isE2E) {
-      showE2EPreview(fileId, fileName, extension)
+      showE2EPreview(fileId, fileName, extension, fileSize)
     } else {
-      showFilePreview(fileId, fileName, extension)
+      showFilePreview(fileId, fileName, extension, fileSize)
     }
   })
-
-  // Also intercept context menu download action for temp files
-  // (The context menu handler in index.html uses window.location.href — we override for E2E)
-  const origContextHandler = document.getElementById('contextMenu')
-  if (origContextHandler) {
-    origContextHandler.addEventListener('click', (e) => {
-      const item = e.target.closest('.context-menu-item[data-action="download"]')
-      if (!item) return
-
-      const target = window._tempContextMenuTarget
-      if (!target) return
-      if (!target.classList.contains('temp-browser-row')) return
-      if (target.dataset.e2e !== 'true') return
-
-      e.preventDefault()
-      e.stopImmediatePropagation()
-
-      const fileId = target.dataset.fileId
-      const fileName = target.dataset.fileName
-      _e2eeDownloadFile(fileId, fileName)
-    }, true) // capture phase to run before the existing handler
-  }
 
 })()

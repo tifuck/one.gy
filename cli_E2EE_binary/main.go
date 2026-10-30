@@ -15,6 +15,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -572,9 +573,9 @@ func cmdUpload(filePath string, insecure bool) error {
 		if resp.StatusCode != http.StatusOK {
 			var errResp uploadResponse
 			if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != "" {
-				return fmt.Errorf("upload failed: %s", errResp.Error)
+				return fmt.Errorf("upload failed: %s", sanitizeTerminalText(errResp.Error))
 			}
-			return fmt.Errorf("upload failed with HTTP %d: %s", resp.StatusCode, string(respBody))
+			return fmt.Errorf("upload failed with HTTP %d: %s", resp.StatusCode, sanitizeTerminalText(string(respBody)))
 		}
 
 		if err := json.Unmarshal(respBody, &result); err != nil {
@@ -661,8 +662,11 @@ func cmdDownload(rawURL string, insecure bool) error {
 	if len(pathParts) >= 2 && pathParts[0] == "s" {
 		// Short URL: resolve /s/<code> to the real file ID via server
 		shortCode := pathParts[1]
+		if !validPathID(shortCode) {
+			return fmt.Errorf("invalid short link code in URL")
+		}
 		fmt.Fprintf(os.Stderr, "Resolving short link %s... ", shortCode)
-		resolveURL := baseURL() + "/s/" + shortCode + "/resolve"
+		resolveURL := baseURL() + "/s/" + url.PathEscape(shortCode) + "/resolve"
 		rResp, err := client.Get(resolveURL)
 		if err != nil {
 			return fmt.Errorf("could not resolve short link: %w", err)
@@ -696,7 +700,10 @@ func cmdDownload(rawURL string, insecure bool) error {
 	} else {
 		return fmt.Errorf("invalid download URL path: %s\nExpected format: /f/<file_id>/... or /s/<short_code>", parsed.Path)
 	}
-	baseReqURL := baseURL() + "/f/" + fileID
+	if !validPathID(fileID) {
+		return fmt.Errorf("invalid file ID")
+	}
+	baseReqURL := baseURL() + "/f/" + url.PathEscape(fileID)
 
 	// 1. Fetch key info
 	fmt.Fprintf(os.Stderr, "Fetching file info... ")
@@ -712,7 +719,7 @@ func cmdDownload(rawURL string, insecure bool) error {
 	}
 	if kiResp.StatusCode != 200 {
 		body, _ := readBoundedResponse(kiResp.Body)
-		return fmt.Errorf("key-info request failed (HTTP %d): %s", kiResp.StatusCode, string(body))
+		return fmt.Errorf("key-info request failed (HTTP %d): %s", kiResp.StatusCode, sanitizeTerminalText(string(body)))
 	}
 
 	var keyInfo keyInfoResponse
@@ -747,7 +754,7 @@ func cmdDownload(rawURL string, insecure bool) error {
 	}
 	if encResp.StatusCode != 200 {
 		body, _ := readBoundedResponse(encResp.Body)
-		return fmt.Errorf("download failed (HTTP %d): %s", encResp.StatusCode, string(body))
+		return fmt.Errorf("download failed (HTTP %d): %s", encResp.StatusCode, sanitizeTerminalText(string(body)))
 	}
 
 	// Try to get filename from Content-Disposition header if not in URL
@@ -872,12 +879,21 @@ func cmdDownload(rawURL string, insecure bool) error {
 	// Security: strip directory components to prevent path traversal attacks
 	// (origName may come from server response, URL path, or decrypted filename)
 	outputPath := safePath(filepath.Base(origName))
+	interrupted := make(chan os.Signal, 1)
+	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(interrupted)
 	out, err := os.CreateTemp(filepath.Dir(outputPath), ".onegy-download-*")
 	if err != nil {
 		return fmt.Errorf("could not create temporary output file: %w", err)
 	}
 	tmpOutputPath := out.Name()
 	defer os.Remove(tmpOutputPath)
+	go func() {
+		<-interrupted
+		os.Remove(tmpOutputPath)
+		fmt.Fprintf(os.Stderr, "\nInterrupted; partial download removed\n")
+		os.Exit(1)
+	}()
 	if err := out.Chmod(0600); err != nil {
 		out.Close()
 		return fmt.Errorf("could not secure temporary output file: %w", err)
@@ -935,7 +951,7 @@ func sanitizeDownloadName(name string) string {
 	}
 	var b strings.Builder
 	for _, r := range name {
-		if r < 32 || r == 127 || unicode.IsControl(r) {
+		if r < 32 || r == 127 || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			continue
 		}
 		b.WriteRune(r)
@@ -946,6 +962,32 @@ func sanitizeDownloadName(name string) string {
 		return "download"
 	}
 	return out
+}
+
+// sanitizeTerminalText drops control and format (Cf: bidi overrides, zero-width)
+// runes so server-supplied text cannot inject terminal escapes or reorder output.
+func sanitizeTerminalText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return ' '
+		}
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func validPathID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, r := range id {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func safePath(name string) string {

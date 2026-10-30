@@ -47,11 +47,13 @@ def search_files():
 
     def get_folder_path(folder):
         path_parts = []
+        seen = set()
         current = folder
-        while current:
-            path_parts.insert(0, current.name)
+        while current and current.id not in seen and len(path_parts) < _MAX_FOLDER_WALK_STEPS:
+            seen.add(current.id)
+            path_parts.append(current.name)
             current = _folder_map.get(current.parent_id) if current.parent_id else None
-        return ' / '.join(path_parts)
+        return ' / '.join(reversed(path_parts))
 
     def get_file_folder_path(file):
         if file.folder_id:
@@ -169,6 +171,8 @@ def search_index():
 
     return jsonify({'files': file_results, 'folders': folder_results})
 
+_MAX_BULK_IDS = 1000
+
 def _parse_bulk_id_list(value, cast=None, label='IDS'):
     """AUDIT FIX (finding 10): bulk endpoints used to feed request JSON
     straight into SQL .in_() / int() -- a non-list payload (a bare int,
@@ -182,6 +186,8 @@ def _parse_bulk_id_list(value, cast=None, label='IDS'):
         return [], None
     if not isinstance(value, list):
         return None, f'{label} MUST BE A JSON ARRAY'
+    if len(value) > _MAX_BULK_IDS:
+        return None, f'TOO MANY {label} (MAX {_MAX_BULK_IDS})'
     ids = []
     for item in value:
         if isinstance(item, bool) or not isinstance(item, (str, int)):
@@ -223,6 +229,36 @@ def bulk_delete():
         # instead of one .first() per ID. With 100 selected items this turns 200
         # round-trips into 2.
         trashed_at = datetime.now(timezone.utc)
+        # Trash folders FIRST (recursive soft-delete - files and folders preserved
+        # in trash), so selected items inside a selected folder go to the trash
+        # with that folder instead of becoming separate trash roots.
+        if folder_ids:
+            try:
+                folder_ids_int = [int(fid) for fid in folder_ids]
+            except (TypeError, ValueError):
+                folder_ids_int = []
+            if folder_ids_int:
+                folders_to_trash = Folder.query.filter(
+                    Folder.id.in_(folder_ids_int),
+                    Folder.user_id == user.id,
+                    Folder.is_trashed == False,
+                ).all()
+                selected_folder_ids = {folder.id for folder in folders_to_trash}
+                for folder in folders_to_trash:
+                    # Already trashed with, or about to be trashed by, a selected ancestor.
+                    if folder.is_trashed:
+                        continue
+                    ancestor_chain = _folder_ancestor_ids(folder.parent_id)
+                    if _folder_ancestry_complete(ancestor_chain) and selected_folder_ids.intersection(ancestor_chain):
+                        continue
+                    if folder.parent_id:
+                        affected_folder_ids.add(folder.parent_id)
+                    trash_folder_recursive(folder.id)
+                    # Detach top-level folder from parent so it doesn't show in file browser
+                    folder.parent_id = None
+                    deleted_folders += 1
+
+        # Autoflush makes is_trashed == False skip files already trashed with a folder above.
         if file_ids:
             files_to_trash = File.query.filter(
                 File.id.in_(file_ids),
@@ -242,26 +278,6 @@ def bulk_delete():
                 file.is_public = False
                 file.short_code = None
                 trashed_files += 1
-
-        # Trash folders (recursive soft-delete - files and folders preserved in trash)
-        if folder_ids:
-            try:
-                folder_ids_int = [int(fid) for fid in folder_ids]
-            except (TypeError, ValueError):
-                folder_ids_int = []
-            if folder_ids_int:
-                folders_to_trash = Folder.query.filter(
-                    Folder.id.in_(folder_ids_int),
-                    Folder.user_id == user.id,
-                    Folder.is_trashed == False,
-                ).all()
-                for folder in folders_to_trash:
-                    if folder.parent_id:
-                        affected_folder_ids.add(folder.parent_id)
-                    trash_folder_recursive(folder.id)
-                    # Detach top-level folder from parent so it doesn't show in file browser
-                    folder.parent_id = None
-                    deleted_folders += 1
 
         for fid in affected_folder_ids:
             touch_folder(fid)
@@ -354,6 +370,12 @@ def _order_folders_ancestors_first(folders):
             ordered.append(folder)
     return ordered
 
+def _parent_would_form_cycle(folder_id, parent_id):
+    """True when parenting folder_id under parent_id would close a parent_id
+    cycle, or the bounded ancestor walk cannot rule one out."""
+    chain = _folder_ancestor_ids(parent_id)
+    return folder_id in chain or not _folder_ancestry_complete(chain)
+
 def _restore_folder_to_original_parent(folder, user):
     """Re-parent a folder that is coming out of the trash.
 
@@ -364,7 +386,10 @@ def _restore_folder_to_original_parent(folder, user):
     if not folder or not folder.original_parent_id:
         return
     original_parent = Folder.query.filter_by(id=folder.original_parent_id, user_id=user.id).first()
-    if original_parent and not original_parent.is_trashed:
+    # The original parent may have been moved under this folder's restored
+    # descendants while it sat in the trash; re-parenting would form a cycle.
+    if (original_parent and not original_parent.is_trashed
+            and not _parent_would_form_cycle(folder.id, folder.original_parent_id)):
         # While this folder sat detached in the trash, a retried creation may have
         # reused its dedupe token under the same parent; re-parenting would then
         # violate uq_folder_dedupe_sibling. The token only dedupes live creation
@@ -379,7 +404,7 @@ def _restore_folder_to_original_parent(folder, user):
         folder.parent_id = folder.original_parent_id
         folder.original_parent_id = None
     else:
-        print(f'[TRASH] Original parent {folder.original_parent_id} of folder {folder.id} is unavailable; '
+        print(f'[TRASH] Original parent {folder.original_parent_id} of folder {folder.id} is unavailable or would form a cycle; '
               f'restoring to drive root and KEEPING the original-parent reference')
         folder.parent_id = None
 
@@ -630,6 +655,10 @@ def restore_folder_recursive(folder_id):
         Folder.parent_id.is_(None),
         Folder.id != folder_id,
     ).all():
+        if _parent_would_form_cycle(fld.id, fld.original_parent_id):
+            print(f'[TRASH] Not re-joining folder {fld.id} to restored folder {fld.original_parent_id}: it would form a cycle; '
+                  f'keeping it at the drive root with its breadcrumb')
+            continue
         print(f'[TRASH] Re-joining folder {fld.id} to restored folder {fld.original_parent_id} (retained breadcrumb)')
         fld.parent_id = fld.original_parent_id
         fld.original_parent_id = None
@@ -871,9 +900,11 @@ def restore_all_files():
     # passed, and the account ended up over its storage limit.
     quota_lock = _acquire_user_quota_lock(user.id)
     lifecycle_lock = None
+    tree_lock = None
     try:
         _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
+        tree_lock = _acquire_user_folder_tree_lock(user.id)
         db.session.rollback()
         user = db.session.get(User, user.id)
         restored_files = 0
@@ -916,9 +947,19 @@ def restore_all_files():
             is_trashed=True
         ).all()
 
+        _original_folder_ids = {file.original_folder_id for file in trashed_files if file.original_folder_id}
+        _parent_lookup = {}
+        if _original_folder_ids:
+            _parent_lookup = {
+                f.id: f for f in Folder.query.filter(
+                    Folder.id.in_(list(_original_folder_ids)),
+                    Folder.user_id == user.id,
+                ).all()
+            }
+
         for file in trashed_files:
             if file.original_folder_id:
-                original_folder = Folder.query.filter_by(id=file.original_folder_id, user_id=user.id).first()
+                original_folder = _parent_lookup.get(file.original_folder_id)
                 if original_folder and not original_folder.is_trashed:
                     file.folder_id = file.original_folder_id
                     file.original_folder_id = None  # breadcrumb fulfilled
@@ -944,6 +985,7 @@ def restore_all_files():
         print(f'[TRASH] Restored all: {restored_files} files, {restored_folders} folders by user: {user.username}')
         return jsonify({'success': True, 'restored': restored_files + restored_folders})
     finally:
+        _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
         _release_user_quota_lock(quota_lock)
 
@@ -1063,9 +1105,11 @@ def restore_folder(folder_id):
     # so two concurrent folder restores cannot both pass a pre-restore check.
     quota_lock = _acquire_user_quota_lock(user.id)
     lifecycle_lock = None
+    tree_lock = None
     try:
         _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
+        tree_lock = _acquire_user_folder_tree_lock(user.id)
         db.session.rollback()
         user = db.session.get(User, user.id)
         folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=True).first()
@@ -1090,6 +1134,7 @@ def restore_folder(folder_id):
         print(f'[TRASH] Restored folder: {_log_safe(folder_name)} and all contents by user: {user.username}')
         return jsonify({'success': True})
     finally:
+        _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
         _release_user_quota_lock(quota_lock)
 
@@ -1143,9 +1188,11 @@ def bulk_restore():
     # AUDIT FIX D9: hold the per-user quota lock across the check AND the apply.
     quota_lock = _acquire_user_quota_lock(user.id)
     lifecycle_lock = None
+    tree_lock = None
     try:
         _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
+        tree_lock = _acquire_user_folder_tree_lock(user.id)
         db.session.rollback()
         user = db.session.get(User, user.id)
         restored = 0
@@ -1251,6 +1298,7 @@ def bulk_restore():
         print(f'[TRASH] Bulk restored {restored} items by user: {user.username}')
         return jsonify({'success': True, 'restored': restored})
     finally:
+        _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
         _release_user_quota_lock(quota_lock)
 

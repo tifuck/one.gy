@@ -131,7 +131,7 @@ for target in "${TARGETS[@]}"; do
     echo -n "  Building $PLATFORM... "
     mkdir -p "$OUTPATH"
 
-    CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -mod=readonly \
+    CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -mod=readonly -trimpath -buildvcs=false \
         -ldflags "-s -w -X main.serverDomain=$DOMAIN" \
         -o "$BINARY" .
 

@@ -191,7 +191,6 @@ def upload():
             return jsonify({'error': 'No files selected'}), 400
 
         is_e2e = request.form.get('e2e') == 'true'
-        payload_written = True  # from here on a payload may exist under encrypted_filename
         e2e_salt = request.form.get('e2e_salt') if is_e2e else None
         e2e_iv = request.form.get('e2e_iv') if is_e2e else None
         # Normalize salt/IV to comma-separated decimal format for consistent storage
@@ -377,11 +376,21 @@ def upload():
         individual_file_sizes = []
         total_size = 0
         
-        # Create temp directory for this upload INSIDE the upload folder so that
-        # the final move (shutil.move → os.rename) is always a same-filesystem
+        # The final move (shutil.move → os.rename) must be a same-filesystem
         # atomic rename. Cross-filesystem moves fall back to copy+delete which
         # is non-atomic and can leave partial files on crash. AUDIT FIX P0-2/P3-3.
-        temp_dir = tempfile.mkdtemp(prefix=f'upload_{file_id}_', dir=app.config['UPLOAD_FOLDER'])
+        # Use the reaped work-dir root (cleanup_temp_dirs) when it shares the
+        # upload folder's filesystem, so an abandoned dir holding plaintext parts
+        # is removed; otherwise fall back to a dir inside the upload folder.
+        try:
+            _work_root_same_fs = (os.stat(_ensure_onegy_temp_root()).st_dev
+                                  == os.stat(app.config['UPLOAD_FOLDER']).st_dev)
+        except OSError:
+            _work_root_same_fs = False
+        if _work_root_same_fs:
+            temp_dir = create_work_dir(f'upload_{file_id}_')
+        else:
+            temp_dir = tempfile.mkdtemp(prefix=f'upload_{file_id}_', dir=app.config['UPLOAD_FOLDER'])
         
         # Save files to disk first, then get sizes from disk
         # This avoids buffering entire files in memory for size checks
@@ -413,7 +422,7 @@ def upload():
                 total_size += size
                 # Zero-knowledge: log generic name for E2EE uploads, never the plaintext filename
                 log_filename = 'encrypted.bin' if is_e2e else file.filename
-                print(f'[UPLOAD] File: {log_filename}, Size: {size} bytes (saved to disk)')
+                print(f'[UPLOAD] File: {_log_safe(log_filename)}, Size: {size} bytes (saved to disk)')
 
         # AUDIT FIX (upload/download integrity): Werkzeug stops parsing when the
         # stream ends and only appends a FileStorage once its CLOSING boundary
@@ -428,7 +437,7 @@ def upload():
             print('[ERROR] Upload REJECTED: client disconnected mid-multipart; '
                   'refusing to commit a partial batch')
             return jsonify({
-                'error': 'UPLOAD WAS CUT SHORT BEFORE ALL FILES ARRIVED. NOTHING WAS SAVED — PLEASE RETRY.'
+                'error': 'UPLOAD WAS CUT SHORT BEFORE ALL FILES ARRIVED. NOTHING WAS SAVED. PLEASE RETRY.'
             }), 400
 
         if total_files == 0:
@@ -513,21 +522,25 @@ def upload():
                 # produced duplicate ZIP entries and most extractors keep only the
                 # last one -- silent data loss inside a "successful" upload.
                 # De-duplicate arcnames so no member can be shadowed.
+                # secure_filename() only names the on-disk staging files: it
+                # strips non-ASCII ('日本.txt' -> 'txt'), so archive members keep
+                # the Unicode-preserving sanitized name instead.
                 used_arcnames = set()
                 with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_STORED) as zipf:
                     for idx, (file_path, safe_name, orig_filename) in enumerate(saved_file_paths):
                         if safe_name:
-                            arcname = safe_name
+                            base_arcname = safe_zip_entry_name(sanitize_plaintext_name(orig_filename) or safe_name)
+                            arcname = base_arcname
                             if arcname in used_arcnames:
-                                stem, dot, ext = safe_name.rpartition('.')
+                                stem, dot, ext = base_arcname.rpartition('.')
                                 suffix = 1
                                 while arcname in used_arcnames:
                                     if dot:
                                         arcname = f'{stem}_{suffix}.{ext}'
                                     else:
-                                        arcname = f'{safe_name}_{suffix}'
+                                        arcname = f'{base_arcname}_{suffix}'
                                     suffix += 1
-                                print(f'[UPLOAD] Duplicate ZIP entry name {safe_name!r}; storing it as {arcname!r}')
+                                print(f'[UPLOAD] Duplicate ZIP entry name {_log_safe(base_arcname)!r}; storing it as {_log_safe(arcname)!r}')
                             used_arcnames.add(arcname)
                             zipf.write(file_path, arcname)
                             set_upload_progress(progress_id, 'zipping', (idx + 1) * 100 // total_files)
@@ -616,7 +629,12 @@ def upload():
                         print(f'[UPLOAD] Guest temp cap rejected finalized upload: used={_guest_used} new={upload_disk_size} cap={_temp_total_bytes}')
                         return jsonify({'error': 'Temp upload storage is full. Please try again later.'}), 507
             except Exception as _guest_err:
-                print(f'[UPLOAD] Guest storage cap finalize check failed (non-fatal): {_guest_err}')
+                # Fail closed: an unverified cap must not admit the upload.
+                clear_upload_progress(progress_id)
+                print(f'[UPLOAD] Guest storage cap finalize check failed; rejecting upload: {_guest_err}')
+                _resp = jsonify({'error': 'Temp upload storage is busy. Please try again later.'})
+                _resp.headers['Retry-After'] = '30'
+                return _resp, 503
 
         if registered_user and not registered_user.has_storage_available(upload_disk_size):
             clear_upload_progress(progress_id)
@@ -624,7 +642,9 @@ def upload():
                 'error': f'Storage limit exceeded. You have {registered_user.get_storage_remaining_gb():.2f}GB remaining.'
             }), 413
 
-        print(f'[UPLOAD] Individual files: {[f"{name} ({size} B)" for name, size in individual_file_sizes]}')
+        # Zero-knowledge: never log the multipart names of an E2EE upload.
+        if not is_e2e:
+            print(f'[UPLOAD] Individual files: {[f"{name} ({size} B)" for name, size in individual_file_sizes]}')
         print(f'[UPLOAD] Total files: {total_files}, Total size: {total_size} B, Total zip size: {total_zip_size} B, Disk size: {upload_disk_size} B')
 
         # Store file via StorageManager (move semantics for local, put for remote)
@@ -685,6 +705,12 @@ def upload():
             payload_checksum=upload_payload_checksum,
             disk_size=upload_disk_size
         )
+        # Take the owner's lifecycle lock BEFORE the File INSERT / touch_folder()
+        # can autoflush: those row locks on the parent folder, held while this
+        # request then blocked on the flock, stalled a folder delete (which holds
+        # the flock and UPDATEs that folder) for the full InnoDB lock-wait timeout.
+        if registered_user:
+            lifecycle_lock = _acquire_user_lifecycle_lock(registered_user.id)
         # AUDIT FIX P0-2/P1-13: add the File row to the session BEFORE
         # store_file so _mark_replica_synced (called inside store_file) can
         # see the pending File instance via SQLAlchemy's identity map and
@@ -697,6 +723,7 @@ def upload():
         _clear_pending_remote_deletes_for('files', [file_record.filename, file_record.id])
         touch_folder(folder_id)
         # Now store the file — the pending File row is visible to _mark_replica_synced.
+        payload_written = True  # from here on a payload may exist under encrypted_filename
         storage.store_file(encrypted_filename, temp_encrypted_path)
         print(f'[UPLOAD] Saved file: {encrypted_filename}, content size: {total_zip_size} bytes')
         # Save E2E encrypted thumbnail if provided (stored on disk, decrypted client-side)
@@ -711,6 +738,10 @@ def upload():
                     enc_thumb_file, _MAX_ENCRYPTED_THUMBNAIL_BYTES)
                 if thumb_oversized:
                     print(f'[UPLOAD] E2E thumbnail exceeds {_MAX_ENCRYPTED_THUMBNAIL_BYTES} bytes, skipping')
+                elif len(enc_thumb_nonce) > 255:
+                    # encrypted_thumbnail_nonce is String(255): an oversized value
+                    # would fail the File commit, not just the thumbnail.
+                    print('[UPLOAD] E2E thumbnail nonce exceeds 255 characters, skipping thumbnail')
                 elif thumb_data and save_thumbnail_to_disk(file_id, thumb_data, is_e2e=True):
                     thumbnail_written = True  # AUDIT FIX D15
                     file_record.encrypted_thumbnail_nonce = enc_thumb_nonce
@@ -744,7 +775,6 @@ def upload():
                 print(f'[UPLOAD] E2E thumbnail save failed (non-critical): {e}')
 
         if registered_user:
-            lifecycle_lock = _acquire_user_lifecycle_lock(registered_user.id)
             if not _lock_live_folder_for_placement(folder_id, registered_user.id):
                 db.session.rollback()
                 _release_lifecycle_lock(lifecycle_lock)

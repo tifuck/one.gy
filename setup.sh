@@ -51,12 +51,25 @@ if [[ -f .env ]]; then
 else
     step "Configuring .env"
     ask WEB_PORT "Port for the app to listen on" 5000
-    ask BIND_HOST "Address to bind (127.0.0.1 if only a local reverse proxy should reach it)" 0.0.0.0
     BEHIND_PROXY=0
+    TRUSTED_PROXY_IPS=""
     if yes_no "Will a reverse proxy (nginx, Caddy, Cloudflare...) sit in front of it?" N; then
         BEHIND_PROXY=1
+        echo "    Keep 127.0.0.1 if the proxy runs on this machine: anyone who can reach the app"
+        echo "    port directly could otherwise forge X-Forwarded-For."
+        ask BIND_HOST "Address to bind" 127.0.0.1
+        ask TRUSTED_PROXY_IPS "Proxy IPs/CIDRs allowed to set X-Forwarded-* (comma-separated)" \
+            "$([[ "$BIND_HOST" == 127.0.0.1 ]] && echo 127.0.0.1 || true)"
+        TRUSTED_PROXY_IPS="${TRUSTED_PROXY_IPS// /}"
+        venv/bin/python -c 'import ipaddress, sys; [ipaddress.ip_network(e, strict=False) for e in sys.argv[1].split(",") if e]' \
+            "$TRUSTED_PROXY_IPS" 2>/dev/null || die "TRUSTED_PROXY_IPS must be comma-separated IPs or CIDRs"
+        if [[ -z "$TRUSTED_PROXY_IPS" ]]; then
+            echo "    WARNING: X-Forwarded-* will be trusted from any peer. Firewall port $WEB_PORT so"
+            echo "    only the proxy can reach it, or set TRUSTED_PROXY_IPS in .env."
+        fi
         DOMAIN_DEFAULT="$(hostname -f 2>/dev/null || hostname)"
     else
+        ask BIND_HOST "Address to bind" 0.0.0.0
         DOMAIN_DEFAULT="$(hostname -f 2>/dev/null || hostname):$WEB_PORT"
     fi
     echo "    DOMAIN is the host users type in the browser, with :port unless served on 443."
@@ -67,10 +80,14 @@ else
         ask DB_USER "Database user" onegy
         DB_PASS="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
         [[ "$DB_NAME$DB_USER" =~ ^[A-Za-z0-9_]+$ ]] || die "database and user names may only use letters, digits and _"
-        as_root mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-            CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
-            ALTER USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
-            GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost'; FLUSH PRIVILEGES;"
+        # SQL goes in on stdin so the password never appears in ps or sudo logs.
+        as_root mysql <<SQL
+CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
+ALTER USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
+FLUSH PRIVILEGES;
+SQL
         DATABASE_URL="mysql+pymysql://$DB_USER:$DB_PASS@localhost:3306/$DB_NAME?charset=utf8mb4"
         echo "    created database '$DB_NAME' and user '$DB_USER' (random password stored in .env)"
     else
@@ -84,10 +101,11 @@ else
     SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
     FERNET_KEY="$(venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
     DATABASE_URL="$DATABASE_URL" DOMAIN="$DOMAIN" WEB_PORT="$WEB_PORT" BIND_HOST="$BIND_HOST" \
-    TRUSTED_PROXY_HOPS="$BEHIND_PROXY" \
+    TRUSTED_PROXY_HOPS="$BEHIND_PROXY" TRUSTED_PROXY_IPS="$TRUSTED_PROXY_IPS" \
     venv/bin/python - <<'PY'
 import os, re
-keys = ['SECRET_KEY', 'FERNET_KEY', 'DATABASE_URL', 'DOMAIN', 'WEB_PORT', 'BIND_HOST', 'TRUSTED_PROXY_HOPS']
+keys = ['SECRET_KEY', 'FERNET_KEY', 'DATABASE_URL', 'DOMAIN', 'WEB_PORT', 'BIND_HOST',
+        'TRUSTED_PROXY_HOPS', 'TRUSTED_PROXY_IPS']
 text = open('.env', encoding='utf-8').read()
 for key in keys:
     line = f'{key}={os.environ[key]}'
@@ -167,10 +185,12 @@ EOF
 fi
 
 # ─── 8. First admin ─────────────────────────────────────────────────────────
-step "Next: create the admin account"
+step "Next: create the admin account IMMEDIATELY"
 [[ "$STARTED" == 1 ]] || echo "    Start the server:  bash start.sh"
 echo "    Open https://$SITE/register and register NOW."
-echo "    The FIRST account registered becomes the administrator. Registration is"
-echo "    open to anyone, so do this before sharing the address. To run a private"
-echo "    instance, turn off registration afterwards in the Admin settings."
+echo "    WARNING: the FIRST account registered becomes the administrator, and"
+echo "    registration is open to anyone who can reach the server. Until you have"
+echo "    registered, whoever gets there first can claim admin, so do it before"
+echo "    opening the firewall or sharing the address. To run a private instance,"
+echo "    turn off registration afterwards in the Admin settings."
 echo "    (Local check: curl -kI https://127.0.0.1:$PORT/)"

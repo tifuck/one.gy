@@ -227,12 +227,14 @@ def sanitize_plaintext_name(name, max_length=255):
     """Sanitize a user-visible file/folder name without destroying Unicode."""
     if name is None:
         return ''
-    name = str(name).strip()
+    name = ''.join(
+        ch for ch in str(name)
+        if unicodedata.category(ch) != 'Cc' and ch not in '\u2028\u2029'
+    ).strip()
     if not name:
         return ''
     name = name.replace('/', '_').replace('\\', '_')
     name = name.replace('..', '_')
-    name = name.replace('\x00', '')
     return name[:max_length]
 
 
@@ -251,10 +253,10 @@ def build_safe_browse_path(path_prefix, name):
 def normalize_stored_extension(value):
     if not value:
         return None
-    value = str(value).strip()
+    value = str(value).strip().lower()
     if not value:
         return None
-    if not re.fullmatch(r'\.?[A-Za-z0-9]{1,16}', value):
+    if not re.fullmatch(r'\.?[a-z0-9]{1,10}', value):
         return None
     return value if value.startswith('.') else f'.{value}'
 
@@ -305,11 +307,18 @@ def _note_content_checksum(content):
 # a 128-bit tag, so its length is bounded by [16, 64 MiB + 16]. An empty file
 # still produces exactly one 16-byte (tag-only) chunk. The walk uses seek(), so
 # validating a multi-GB container costs a handful of 4-byte reads.
+#
+# Every producer (crypto.js, crypto-worker.js, crypto.go, crypto_helper.js)
+# writes full 64 MiB chunks and only the LAST one may be short. Tiny chunks are
+# therefore only possible in a crafted upload, where they would turn the walk
+# into tens of millions of Python seek+read iterations. The declared count is
+# capped as if every non-final chunk carried at least 1 MiB of plaintext.
 _E2EE_FILE_FORMAT_VERSIONS = frozenset((1, 2))
 _E2EE_HEADER_SIZE = 1 + 4 + 12
 _E2EE_GCM_TAG_SIZE = 16
 _E2EE_MAX_PLAINTEXT_CHUNK = 64 * 1024 * 1024
 _E2EE_MAX_CHUNK_RECORD = _E2EE_MAX_PLAINTEXT_CHUNK + _E2EE_GCM_TAG_SIZE
+_E2EE_MIN_NONFINAL_CHUNK_RECORD = 1024 * 1024 + _E2EE_GCM_TAG_SIZE
 
 
 def validate_e2ee_container(path):
@@ -337,9 +346,13 @@ def validate_e2ee_container(path):
             if chunk_count < 1:
                 return False, 'CONTAINER DECLARES ZERO CHUNKS'
             # Every chunk costs at least 4 (length prefix) + 16 (GCM tag) bytes,
-            # so a declared count that cannot physically fit is rejected before
-            # we walk anything.
-            max_possible = (total_size - _E2EE_HEADER_SIZE) // (4 + _E2EE_GCM_TAG_SIZE)
+            # and every non-final chunk at least the 1 MiB floor above, so a
+            # declared count that cannot fit is rejected before we walk anything.
+            payload_size = total_size - _E2EE_HEADER_SIZE
+            max_possible = min(
+                payload_size // (4 + _E2EE_GCM_TAG_SIZE),
+                payload_size // (4 + _E2EE_MIN_NONFINAL_CHUNK_RECORD) + 1,
+            )
             if chunk_count > max_possible:
                 return False, (f'CONTAINER DECLARES {chunk_count} CHUNKS BUT ONLY '
                                f'{max_possible} CAN FIT IN {total_size} BYTES')
@@ -441,6 +454,7 @@ def _iter_file_chunks(file_path, chunk_size=64 * 1024 * 1024,
         if expected_size is not None:
             actual_size = os.fstat(f.fileno()).st_size
             if actual_size != expected_size:
+                storage._forget_local_integrity(file_path)
                 _log_payload_corruption(
                     file_id, corruption_kind, expected_checksum or '(none)', '(none)',
                     expected_size=expected_size, actual_size=actual_size, source_path=file_path,
@@ -481,6 +495,7 @@ def _iter_file_chunks(file_path, chunk_size=64 * 1024 * 1024,
         except Exception:
             pass
     if expected_size is not None and total_bytes != expected_size:
+        storage._forget_local_integrity(file_path)
         _log_payload_corruption(
             file_id, corruption_kind, expected_checksum or '(none)', '(none)',
             expected_size=expected_size, actual_size=total_bytes, source_path=file_path,
@@ -492,6 +507,7 @@ def _iter_file_chunks(file_path, chunk_size=64 * 1024 * 1024,
     if hasher is not None:
         actual_checksum = hasher.hexdigest()
         if actual_checksum != expected_checksum:
+            storage._forget_local_integrity(file_path)
             _log_payload_corruption(
                 file_id, corruption_kind, expected_checksum, actual_checksum,
                 source_path=file_path,
@@ -743,9 +759,12 @@ def _acquire_user_lifecycle_lock(user_id):
     rewrite locks remain outermost. Batch/tree operations take one user lock,
     so they never acquire a client-ordered set of item locks.
 
-    Keep this lock around the final eligibility recheck and metadata commit only.
-    Upload parsing, encryption, payload publication, and post-commit local purge
-    must happen outside it.
+    Keep this lock around the final eligibility recheck, metadata commit, and
+    the local payload publication tied to them: upload takes it before the File
+    INSERT can autoflush parent-folder row locks, so store_file (a local rename)
+    and the E2E thumbnail write run inside it, as does regenerate-link's
+    payload/thumbnail copy. Upload parsing, encryption, and post-commit local
+    purge must happen outside it.
     """
     if user_id is None:
         return None

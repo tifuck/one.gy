@@ -678,11 +678,15 @@ def browse_folder_download_selected(share_token):
         except Exception as e:
             db.session.rollback()
             print(f'[BROWSE DOWNLOAD] Warning: Failed to increment root folder download count: {e}')
+        counted_folder_ids = set()
         for fid in folder_ids:
             try:
                 fid_int = int(fid)
             except (ValueError, TypeError):
                 continue
+            if fid_int in counted_folder_ids:
+                continue
+            counted_folder_ids.add(fid_int)
             # AUDIT FIX P2: only count folders that were actually downloadable.
             if _shared_subfolder_available(fid_int, folder):
                 increment_folder_download_counts(fid_int)

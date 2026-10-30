@@ -371,6 +371,7 @@ class _SSHBackend(_StorageBackend):
         # Track whether remote supports sha256sum for post-transfer hash verification
         # None = not yet tested, True = available, False = not available
         self._sha256sum_available = None
+        self._sha256sum_unavailable_at = None
         # Thread-local storage for per-thread SFTP connections (used in parallel replication)
         import threading as _threading
         self._thread_local = _threading.local()
@@ -391,6 +392,9 @@ class _SSHBackend(_StorageBackend):
     _TIMEOUT_DEFAULT = 120   # regular files
     _TIMEOUT_MAX = 1800      # 30 min cap for very large files
     _MIN_BANDWIDTH = 1024 * 1024  # 1 MB/s assumed minimum for timeout estimation
+    # How long a "sha256sum/shasum not available" verdict is honoured before the
+    # remote is re-probed (mirrors _S3Backend._CHECKSUM_UNSUPPORTED_RETRY_SECONDS).
+    _SHA256SUM_UNAVAILABLE_RETRY_SECONDS = 3600
 
     def _timeout_for_category(self, category, local_path=None):
         """Calculate an adaptive socket timeout based on category and file size.
@@ -424,7 +428,11 @@ class _SSHBackend(_StorageBackend):
             return None
         if normalized.upper().startswith('SHA256:'):
             return 'SHA256:' + normalized.split(':', 1)[1].strip().rstrip('=')
-        return normalized.replace(':', '').lower()
+        hostname = self._config.get('hostname', 'unknown-host')
+        raise ValueError(
+            f'UNSUPPORTED SSH HOST KEY FINGERPRINT PIN FOR {hostname}: expected SHA256:<base64> '
+            f'(ssh-keygen -lf); MD5/hex fingerprints are not supported'
+        )
 
     def _fingerprint_for_server_key(self, server_key):
         import base64 as _base64
@@ -702,10 +710,15 @@ class _SSHBackend(_StorageBackend):
     def _remote_sha256(self, remote_path, use_thread_conn=False):
         """Execute sha256sum on the remote host and return the hex digest.
         Uses the SSH transport's exec channel (separate from SFTP).
-        Caches availability — if sha256sum is not found on the remote,
-        logs one warning per node lifetime and returns None for all future calls."""
+        Caches availability — if sha256sum is not found on the remote, logs a
+        warning and returns None until the verdict expires and it is re-probed."""
         if self._sha256sum_available is False:
-            return None
+            if (self._sha256sum_unavailable_at is not None
+                    and (time.monotonic() - self._sha256sum_unavailable_at)
+                    < self._SHA256SUM_UNAVAILABLE_RETRY_SECONDS):
+                return None
+            self._sha256sum_available = None
+            self._sha256sum_unavailable_at = None
         try:
             if use_thread_conn:
                 transport = getattr(self._thread_local, 'transport', None)
@@ -752,9 +765,11 @@ class _SSHBackend(_StorageBackend):
                     channel.close()
             # Neither sha256sum nor shasum found on remote
             self._sha256sum_available = False
+            self._sha256sum_unavailable_at = time.monotonic()
             hostname = self._config.get('hostname', '?')
             print(f'[STORAGE] SSH node {hostname}: sha256sum/shasum not available on remote — '
-                  f'hash verification disabled for this node (size verification still active)')
+                  f'hash verification disabled for this node for up to '
+                  f'{self._SHA256SUM_UNAVAILABLE_RETRY_SECONDS}s (size verification still active)')
             return None
         except Exception as e:
             print(f'[STORAGE] SSH remote sha256 exec failed for {remote_path}: {e}')
@@ -797,6 +812,19 @@ class _SSHBackend(_StorageBackend):
                 f'SFTP SHA-256 mismatch after {label}: local={local_hash}, remote={remote_hash}'
             )
         return True
+
+    @staticmethod
+    def _sftp_fsync_best_effort(sftp, remote_path):
+        """Send the OpenSSH fsync@openssh.com extension on a handle to
+        remote_path. paramiko 3.x has no public fsync, so this uses its request
+        internals; any failure (unsupported extension, old paramiko) is ignored."""
+        try:
+            from paramiko.sftp import CMD_EXTENDED
+            with sftp.open(remote_path, 'r') as remote_file:
+                sftp._request(CMD_EXTENDED, 'fsync@openssh.com', remote_file.handle)
+            return True
+        except Exception:
+            return False
 
     @_serialize_shared_ssh_connection(use_thread_position=3)
     def put(self, category, file_id, local_path, use_thread_conn=False,
@@ -849,13 +877,9 @@ class _SSHBackend(_StorageBackend):
                     # AUDIT FIX P1-3: best-effort fsync of the temp file
                     # before the atomic rename, so the data is durable on
                     # the remote filesystem before the old file is replaced.
-                    # Paramiko's SFTPClient exposes fsync() on newer versions;
-                    # if unavailable, the size/hash verification above is the
-                    # remaining safeguard.
-                    try:
-                        sftp.fsync(tmp_path)
-                    except (AttributeError, IOError, OSError):
-                        pass
+                    # If the server lacks fsync@openssh.com, the size/hash
+                    # verification above is the remaining safeguard.
+                    self._sftp_fsync_best_effort(sftp, tmp_path)
                     # Atomic rename (POSIX rename overwrites existing file atomically)
                     try:
                         sftp.posix_rename(tmp_path, final_path)

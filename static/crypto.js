@@ -1795,18 +1795,15 @@ const OneGyCrypto = (function() {
   }
 
   /**
-   * Extract the compound extension from a filename.
-   * Handles double extensions like .tar.gz, .tar.bz2, etc.
-   * Returns the extension with leading dot, or empty string if none.
+   * Extract the plaintext extension sent alongside an encrypted filename.
+   * Only a short lowercase alphanumeric suffix is returned (e.g. ".pdf");
+   * anything else would leak part of the name, so it yields ''.
    */
   function extractExtension(filename) {
-    const parts = filename.split('.')
-    if (parts.length < 2) return ''
-    const compoundPrefixes = ['tar']
-    if (parts.length >= 3 && compoundPrefixes.includes(parts[parts.length - 2].toLowerCase())) {
-      return '.' + parts[parts.length - 2] + '.' + parts[parts.length - 1]
-    }
-    return '.' + parts[parts.length - 1]
+    const dot = filename.lastIndexOf('.')
+    if (dot <= 0) return ''
+    const ext = filename.slice(dot + 1).toLowerCase()
+    return /^[a-z0-9]{1,10}$/.test(ext) ? '.' + ext : ''
   }
 
   // ─── Thumbnail Encryption (simple, non-chunked) ──────────────────

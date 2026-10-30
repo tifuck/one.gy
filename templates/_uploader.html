@@ -54,7 +54,7 @@ document.addEventListener('DOMContentLoaded', function() {
     ManageModal.init({
       showToast: function(msg, cat) { if (typeof showToast === 'function') showToast(msg, cat); },
       showConfirm: window.showConfirm,
-      domain: '{{ domain }}',
+      domain: {{ domain|tojson }},
       getCSRFToken: function() { var t = document.getElementById('csrf_token'); return t ? t.value : ''; },
       onDelete: async function(type, data) {
         var confirmed = await showConfirm(data.name || 'THIS FILE',
@@ -75,10 +75,15 @@ document.addEventListener('DOMContentLoaded', function() {
         }
       },
       onDownload: function(type, data) {
+        // E2EE: decrypt in-page with the keychain secret. Navigating to the
+        // #passphrase= link would leave the secret in session history.
+        if (type === 'file' && data && data.is_e2e && window.TempPreview) { TempPreview.downloadE2EE(data.id, data.name); return; }
         var link = document.getElementById('manageShareLink');
         var url = link ? link.value : (data && data.download_url) || '';
-        if (url) window.location.href = url;
+        if (url) window.location.replace(url);
       },
+      // Regenerating a link rotates the file id the listing rows are keyed on.
+      onFileIdChanged: function() { _pendingUploadRefresh = true; },
       onAfterSave: function() {},
       onClose: function() {
         if (_pendingUploadRefresh) {

@@ -588,7 +588,8 @@ class MusicSyncState(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, unique=True, index=True)
     active_device_id = db.Column(db.String(36), nullable=True)  # Which device is outputting audio
-    state_json = db.Column(db.Text, nullable=True)  # JSON blob of playback state
+    # LONGTEXT: pushes accept up to _MUSIC_SYNC_STATE_MAX (1 MiB); TEXT caps at 64 KiB.
+    state_json = db.Column(db.Text().with_variant(LONGTEXT(), 'mysql', 'mariadb'), nullable=True)  # JSON blob of playback state
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     transfer_to = db.Column(db.String(36), nullable=True)  # Device ID that requested transfer
     pending_command = db.Column(db.Text, nullable=True)  # JSON: {action, seekTime?} from phantom device
@@ -659,6 +660,7 @@ _SETTING_DEFAULTS = {
     'storage_cache_ttl_minutes': '30',
     'temp_max_gb': '1.0',
     'temp_total_max_gb': '0',
+    'music_rescan_interval_seconds': '300',
 }
 
 # In-memory settings cache: avoids hitting DB on every page view.

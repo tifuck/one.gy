@@ -1,5 +1,6 @@
 NOTES_SHARED_INBOX_KEY = 'shared_inbox'
 NOTES_PENDING_LIMIT = 100
+NOTES_PENDING_PER_SENDER_LIMIT = 20
 NOTES_PENDING_MAX_CONTENT_SIZE = 25 * 1024 * 1024
 NOTES_PENDING_AGGREGATE_MAX_BYTES = 100 * 1024 * 1024
 NOTES_NOTE_CONTENT_MAX_BYTES = 100 * 1024 * 1024
@@ -10,7 +11,8 @@ _MARIADB_TEXT_MAX_BYTES = 65535
 NOTES_ENCRYPTED_FIELD_MAX_BYTES = _MARIADB_TEXT_MAX_BYTES
 NOTES_ENCRYPTED_TAGS_MAX_BYTES = _MARIADB_TEXT_MAX_BYTES
 NOTES_WRAPPED_KEY_MAX_BYTES = _MARIADB_TEXT_MAX_BYTES
-NOTES_NONCE_MAX_BYTES = 2048
+# Every nonce column is String(255).
+NOTES_NONCE_MAX_BYTES = 255
 NOTES_JSON_ENVELOPE_MAX_BYTES = (
     NOTES_ENCRYPTED_FIELD_MAX_BYTES +
     NOTES_ENCRYPTED_TAGS_MAX_BYTES +
@@ -24,12 +26,29 @@ def _notes_request_limit_bytes(max_content_bytes=0):
     return int(max_content_bytes or 0) + NOTES_JSON_ENVELOPE_MAX_BYTES
 
 
+def _read_notes_request_body(limit_bytes):
+    """Read at most limit_bytes + 1 body bytes. CSRFProtect's before_request
+    hook binds request.stream before the view runs, so neither a per-view
+    _set_request_upload_cap() nor get_data() bounds a chunked body (no
+    Content-Length) below MAX_CONTENT_LENGTH."""
+    stream = request.stream
+    chunks = []
+    remaining = int(limit_bytes) + 1
+    while remaining > 0:
+        chunk = stream.read(min(remaining, 1024 * 1024))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b''.join(chunks)
+
+
 def _load_notes_json_request(max_content_bytes, error_message):
     limit_bytes = _notes_request_limit_bytes(max_content_bytes)
     if _request_content_length_exceeds(limit_bytes):
         return None, (jsonify({'error': error_message}), 413)
     try:
-        raw = request.get_data(cache=True)
+        raw = _read_notes_request_body(limit_bytes)
     except Exception:
         return None, (jsonify({'error': error_message}), 413)
     if raw and len(raw) > limit_bytes:
@@ -123,11 +142,30 @@ def _notes_normalize_color(color):
         raise ValueError('INVALID COLOR')
     return color.upper()
 
+_NOTES_DB_INT_MIN = -2 ** 31
+_NOTES_DB_INT_MAX = 2 ** 31 - 1
+
 def _notes_parse_position(value, field_name='POSITION'):
     try:
-        return int(value)
+        position = int(value)
     except (TypeError, ValueError, OverflowError):  # JSON 1e309 decodes to inf
         raise ValueError(f'INVALID {field_name}')
+    if not _NOTES_DB_INT_MIN <= position <= _NOTES_DB_INT_MAX:
+        raise ValueError(f'INVALID {field_name}')
+    return position
+
+def _notes_parse_notebook_id(value):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError('INVALID NOTEBOOK ID')
+    try:
+        notebook_id = int(value)
+    except ValueError:
+        raise ValueError('INVALID NOTEBOOK ID')
+    if not _NOTES_DB_INT_MIN <= notebook_id <= _NOTES_DB_INT_MAX:
+        raise ValueError('INVALID NOTEBOOK ID')
+    return notebook_id
 
 def _notes_validate_wrapped_field_pair(data, value_key, nonce_key, label, required=False, value_max_bytes=NOTES_ENCRYPTED_FIELD_MAX_BYTES, nonce_max_bytes=NOTES_NONCE_MAX_BYTES):
     has_value = value_key in data
@@ -538,10 +576,10 @@ def notes_create_note():
         _notes_validate_content_field(data)
         color = _notes_normalize_color(data.get('color'))
         position = _notes_parse_position(data.get('position', 0), 'POSITION') if 'position' in data else 0
+        notebook_id = _notes_parse_notebook_id(data.get('notebook_id'))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     # Validate notebook ownership if specified
-    notebook_id = data.get('notebook_id')
     if notebook_id is not None:
         nb = Notebook.query.filter_by(id=notebook_id, user_id=user_id, is_trashed=False).first()
         if not nb:
@@ -572,7 +610,7 @@ def notes_create_note():
             encrypted_note_key=data['encrypted_note_key'],
             note_key_nonce=data['note_key_nonce'],
             note_type=note_type,
-            is_pinned=data.get('is_pinned', False),
+            is_pinned=bool(data.get('is_pinned', False)),
             color=color,
             size=content_size,
             content_version=1,
@@ -582,22 +620,27 @@ def notes_create_note():
             position=position,
         )
         # Write content first, then commit its metadata while the quota lock is held.
+        storage.write_note(n.id, encrypted_content or '')
+        created_id = n.id
+        # The lifecycle lock must precede the first flush: the Note INSERT's
+        # notebook FK check row-locks the notebook, which delete-notebook
+        # updates while holding this flock (flock vs InnoDB deadlock).
+        lifecycle_lock = _acquire_user_lifecycle_lock(user_id)
         db.session.add(n)
         # AUDIT FIX H4: drop any stale tombstone for this key before the note can
         # replicate (belt and braces; Phase B also checks).
         try:
             _clear_pending_remote_deletes_for('notes', [n.id])
         except Exception:
+            storage.delete_note(n.id)
+            created_id = None
             return jsonify({'error': 'FAILED TO CREATE NOTE'}), 500
-        storage.write_note(n.id, encrypted_content or '')
-        created_id = n.id
         repaired = storage.reconcile_note_to_local(n.id, verified_at=datetime.now(timezone.utc))
         if not repaired:
             db.session.rollback()
             storage.delete_note(n.id)
             created_id = None
             return jsonify({'error': 'FAILED TO TRACK NOTE REPLICATION'}), 500
-        lifecycle_lock = _acquire_user_lifecycle_lock(user_id)
         if not _lock_live_notebook_for_placement(notebook_id, user_id):
             db.session.rollback()
             _release_lifecycle_lock(lifecycle_lock)
@@ -651,6 +694,7 @@ def notes_update_note(note_id):
         _notes_validate_wrapped_field_pair(data, 'encrypted_note_key', 'note_key_nonce', 'ENCRYPTED KEY', value_max_bytes=NOTES_WRAPPED_KEY_MAX_BYTES)
         _notes_validate_wrapped_field_pair(data, 'encrypted_tags', 'tags_nonce', 'ENCRYPTED TAGS', value_max_bytes=NOTES_ENCRYPTED_TAGS_MAX_BYTES)
         _notes_validate_content_field(data)
+        notebook_id = _notes_parse_notebook_id(data.get('notebook_id'))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     if 'position' in data:
@@ -667,7 +711,6 @@ def notes_update_note(note_id):
             return jsonify({'error': str(e)}), 400
     else:
         normalized_color = None
-    notebook_id = data.get('notebook_id') if 'notebook_id' in data else None
     if 'notebook_id' in data and notebook_id is not None:
         nb = Notebook.query.filter_by(id=notebook_id, user_id=user_id, is_trashed=False).first()
         if not nb:
@@ -756,12 +799,17 @@ def notes_update_note(note_id):
             if parsed_position is not None:
                 update_values[Note.position] = parsed_position
 
-            storage.write_staged_note_metadata(n.id, {
+            # Startup recovery keeps a staged .new only when this .meta matches the
+            # committed row; committing without it would lose the edit on a crash.
+            if not storage.write_staged_note_metadata(n.id, {
                 'note_id': n.id,
                 'size': content_size,
                 'content_version': new_version,
                 'content_checksum': content_checksum,
-            }, staging_id=staging_id)
+            }, staging_id=staging_id):
+                db.session.rollback()
+                storage.rollback_staged_note(n.id, staging_id=staging_id)
+                return jsonify({'error': 'FAILED TO SAVE NOTE CONTENT'}), 500
             updated = Note.query.filter(
                 Note.id == note_id,
                 Note.user_id == user_id,
@@ -871,10 +919,13 @@ def notes_update_note(note_id):
             Note.id == note_id,
             Note.user_id == user_id,
             Note.content_version == expected_v,
+            Note.is_trashed == False,
         ).update(metadata_updates, synchronize_session=False)
         if rows == 0:
             db.session.rollback()
             latest = db.session.get(Note, note_id)
+            if latest and latest.is_trashed:
+                return jsonify({'error': 'TRASHED NOTES ARE READ ONLY'}), 409
             latest_version = int(latest.content_version or 1) if latest else current_version
             return jsonify({'error': 'NOTE CHANGED ELSEWHERE', 'content_version': latest_version}), 409
 
@@ -1092,6 +1143,7 @@ def notes_list_trash():
 # ──────────────────────────────────────────────────────────────
 
 @app.route('/notes/api/users/search', methods=['GET'])
+@limiter.limit("30 per minute")
 @login_required
 def notes_search_users():
     """Search for users with E2EE keys (for sending notes)."""
@@ -1107,6 +1159,7 @@ def notes_search_users():
     return jsonify({'users': [{'username': u.username} for u in results]})
 
 @app.route('/notes/api/notes/send', methods=['POST'])
+@limiter.limit("30 per minute")
 @login_required
 def notes_send_to_user():
     """Send an E2EE note copy to another user. Creates a PendingNote for acceptance."""
@@ -1120,7 +1173,8 @@ def notes_send_to_user():
     data = data if isinstance(data, dict) else {}  # a JSON array/scalar has no .get()
     if not data:
         return jsonify({'error': 'INVALID REQUEST'}), 400
-    recipient_username = data.get('recipient_username', '').strip()
+    recipient_username = data.get('recipient_username')
+    recipient_username = recipient_username.strip() if isinstance(recipient_username, str) else ''
     if not recipient_username:
         return jsonify({'error': 'RECIPIENT USERNAME REQUIRED'}), 400
     recipient = User.query.filter_by(username=recipient_username).first()
@@ -1136,6 +1190,8 @@ def notes_send_to_user():
     source_note_id = data.get('source_note_id')
     if not source_note_id:
         return jsonify({'error': 'SOURCE NOTE REQUIRED'}), 400
+    if not isinstance(source_note_id, str):
+        return jsonify({'error': 'INVALID SOURCE NOTE'}), 400
     source_note = Note.query.filter_by(id=source_note_id, user_id=sender_id, is_trashed=False).first()
     if not source_note:
         return jsonify({'error': 'SOURCE NOTE NOT FOUND'}), 404
@@ -1162,6 +1218,13 @@ def notes_send_to_user():
         # End the snapshot opened by the reads above: under REPEATABLE READ the
         # counts below would otherwise miss rows committed while we waited.
         db.session.rollback()
+        sender_to_recipient_pending = PendingNote.query.filter(
+            PendingNote.recipient_id == recipient.id,
+            PendingNote.sender_id == sender_id,
+            db.or_(PendingNote.sender_deleted.is_(None), PendingNote.sender_deleted == False),
+        ).count()
+        if sender_to_recipient_pending >= NOTES_PENDING_PER_SENDER_LIMIT:
+            return jsonify({'error': 'TOO MANY PENDING NOTES TO THIS RECIPIENT'}), 429
         if PendingNote.query.filter_by(recipient_id=recipient.id).count() >= NOTES_PENDING_LIMIT:
             return jsonify({'error': 'RECIPIENT HAS TOO MANY PENDING NOTES'}), 429
         sender_pending_bytes = _notes_pending_total_bytes('sender_id', sender_id)
@@ -1247,7 +1310,10 @@ def notes_accept_pending(pending_id):
         if user and content_size > 0 and not user.has_storage_available(content_size):
             return jsonify({'error': 'STORAGE LIMIT EXCEEDED'}), 413
         # Place into specified notebook (e.g. SHARED) or unfiled
-        notebook_id = data.get('notebook_id')
+        try:
+            notebook_id = _notes_parse_notebook_id(data.get('notebook_id'))
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
         if notebook_id is not None:
             nb = Notebook.query.filter_by(id=notebook_id, user_id=user_id, is_trashed=False).first()
             if not nb:
@@ -1275,6 +1341,10 @@ def notes_accept_pending(pending_id):
             is_read=False,
         )
         note_id = n.id
+        payload_needs_cleanup = True
+        storage.write_note(n.id, pending.encrypted_content or '')
+        # Lifecycle lock before the first flush; see notes_create_note().
+        lifecycle_lock = _acquire_user_lifecycle_lock(user_id)
         db.session.add(n)
         # AUDIT FIX H4: drop any stale tombstone for this key before the note can
         # replicate (belt and braces; Phase B also checks).
@@ -1282,13 +1352,10 @@ def notes_accept_pending(pending_id):
             _clear_pending_remote_deletes_for('notes', [n.id])
         except Exception:
             return jsonify({'error': 'FAILED TO ACCEPT NOTE'}), 500
-        payload_needs_cleanup = True
-        storage.write_note(n.id, pending.encrypted_content or '')
         repaired = storage.reconcile_note_to_local(n.id, verified_at=datetime.now(timezone.utc))
         if not repaired:
             db.session.rollback()
             return jsonify({'error': 'FAILED TO TRACK NOTE REPLICATION'}), 500
-        lifecycle_lock = _acquire_user_lifecycle_lock(user_id)
         if not _lock_live_notebook_for_placement(notebook_id, user_id):
             db.session.rollback()
             return jsonify({'error': 'NOTEBOOK NOT FOUND'}), 404

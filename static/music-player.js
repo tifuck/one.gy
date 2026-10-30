@@ -27,6 +27,14 @@
     }
   }
 
+  // Web Storage throws when disabled (privacy modes, sandboxed frames) or full;
+  // that must never take the whole player down.
+  function _lsGet(key) { try { return localStorage.getItem(key) } catch (e) { return null } }
+  function _lsSet(key, value) { try { localStorage.setItem(key, value) } catch (e) {} }
+  function _ssGet(key) { try { return sessionStorage.getItem(key) } catch (e) { return null } }
+  function _ssSet(key, value) { try { sessionStorage.setItem(key, value) } catch (e) {} }
+  function _ssRemove(key) { try { sessionStorage.removeItem(key) } catch (e) {} }
+
   // ─── State ──────────────────────────────────────────────────────
   let playlist = []          // [{id, name, extension, isE2E, sourceUrl, blobUrl}]
   let currentIndex = -1
@@ -39,7 +47,7 @@
   let _context = 'dashboard' // 'dashboard' | 'browse'
   let _browseShareToken = ''
   let _currentBlobUrl = null
-  let _autoplayEnabled = localStorage.getItem('mp_autoplay') !== '0'  // default: on
+  let _autoplayEnabled = _lsGet('mp_autoplay') !== '0'  // default: on
   let _suggestedStartIndex = -1  // index where suggested tracks begin in playlist
   let _crossfadeActive = false
   let _crossfadeAudio = null
@@ -53,10 +61,19 @@
   let _loadSeq = 0
 
   // ─── Cross-Device Sync State ───────────────────────────────────
-  let _syncEnabled = localStorage.getItem('mp_sync_enabled') !== '0'  // on by default
-  let _syncDeviceId = localStorage.getItem('mp_device_id') || null
-  let _syncDeviceName = localStorage.getItem('mp_device_name') || ''
-  let _syncInterval = null          // setInterval handle for polling
+  let _syncEnabled = _lsGet('mp_sync_enabled') !== '0'  // on by default
+  // Per tab (sessionStorage): two tabs are two players and must not share an id.
+  let _syncDeviceId = _ssGet('mp_device_id') || null
+  let _syncDeviceName = _lsGet('mp_device_name') || ''
+  const _SYNC_QUEUE_RADIUS = 100    // tracks pushed on each side of the current one
+  let _syncTimer = null             // setTimeout handle for the next sync tick
+  let _syncRunning = false          // sync loop wanted (logged in, enabled, music-library)
+  let _syncErrorCount = 0           // consecutive failed sync requests (exponential backoff)
+  let _syncEpoch = 0                // bumped on local play / transfer / phantom exit: older responses are dropped
+  let _syncPollInFlight = false     // at most one GET poll at a time
+  let _syncRegisterInFlight = false
+  let _syncPushedQueueJson = null   // queue window the server holds under _syncQueueKey
+  let _syncQueueKey = null
   let _syncIsActive = false         // true = this device is outputting audio
   let _syncPhantomMode = false      // true = showing remote state, no local audio
   let _syncLastPollData = null      // last poll response from server
@@ -64,7 +81,6 @@
   let _syncPushPending = false      // debounce flag for push
   let _syncForceActive = false      // send force_active on next push (explicit user action)
   let _syncLoggedIn = false         // whether user is logged in (set in init)
-  let _syncFastMode = false          // true = 1s polling (multi-device active), false = 3s
   let _syncPhantomTime = 0          // interpolated current time for phantom progress
   let _syncPhantomDuration = 0      // duration from last phantom state
   let _syncPhantomPlaying = false   // whether remote is playing (for interpolation)
@@ -199,16 +215,18 @@
   }
   // _volSlider tracks the slider position (0-1 linear, pre-curve).
   // localStorage stores this value so the slider restores to the same position.
-  var _volSlider = parseFloat(localStorage.getItem('mp_volume') || '0.5')
+  var _volSlider = parseFloat(_lsGet('mp_volume') || '0.5')
+  if (!(_volSlider >= 0 && _volSlider <= 1)) _volSlider = 0.5
   var _desiredVolume = _volCurve(_volSlider)
   audio.volume = _desiredVolume
   audio.muted = _volSlider === 0
 
-  // Set the playback volume. Once the Web Audio graph is connected, volume is
-  // controlled via the GainNode (so the analyser always sees full-strength
-  // signal). Before that, we fall back to audio.volume.
+  // Set the playback volume. Once the element is routed through the Web Audio
+  // graph, volume is controlled via the GainNode (so the analyser always sees
+  // full-strength signal). Before that -- even if the sync keepalive already
+  // created the context and gain node -- we use audio.volume.
   function _applyOutputVolume(v) {
-    if (_gainNode) {
+    if (_fxConnected) {
       _gainNode.gain.value = v
       audio.volume = 1  // keep element at full so analyser gets full signal
     } else {
@@ -300,6 +318,8 @@
     currentIndex = -1
     _suggestedStartIndex = -1
     _suggestApiUnavailable = false
+    _autoQueueFailures = 0
+    _autoQueueRetryAt = 0
     _crossfadeTriggered = false
     _cancelCrossfade()
     if (shuffleMode) {
@@ -320,6 +340,7 @@
 
     // Mark this device as actively playing for sync (force claim — explicit user action)
     if (_syncLoggedIn && _syncEnabled) {
+      _syncEpoch++
       _syncIsActive = true
       _syncForceActive = true
       if (devicesBtn) devicesBtn.style.display = ''
@@ -327,12 +348,24 @@
     }
   }
 
+  // Cover paths also arrive in remote sync state: only a library cover path
+  // ("covers/<id>.jpg" or "artists/<id>.jpg") ever becomes an image URL.
+  function _coverUrl(coverPath) {
+    var m = typeof coverPath === 'string' ? /^(covers|artists)\/([\w-]+)\.jpg$/.exec(coverPath) : null
+    return m ? '/music/cover/' + encodeURIComponent(m[2]) : ''
+  }
+
   function _updatePlayerArt(track) {
     var artEl = playerEl ? playerEl.querySelector('.music-player-art') : null
     if (!artEl) return
-    if (track && track.coverPath) {
-      var coverId = track.coverPath.replace('covers/', '').replace('.jpg', '')
-      artEl.innerHTML = '<img src="/music/cover/' + coverId + '" style="width:100%;height:100%;object-fit:cover;border-radius:8px" alt="">'
+    var src = track ? _coverUrl(track.coverPath) : ''
+    if (src) {
+      var img = document.createElement('img')
+      img.src = src
+      img.alt = ''
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:8px'
+      artEl.textContent = ''
+      artEl.appendChild(img)
     } else {
       artEl.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'
     }
@@ -343,10 +376,8 @@
     if (!('mediaSession' in navigator) || !track) return
     var title = _stripAudioExtension(track.name || '')
     var artwork = []
-    if (track.coverPath) {
-      var coverId = track.coverPath.replace('covers/', '').replace('.jpg', '')
-      artwork = [{ src: '/music/cover/' + coverId, type: 'image/jpeg' }]
-    }
+    var coverSrc = _coverUrl(track.coverPath)
+    if (coverSrc) artwork = [{ src: coverSrc, type: 'image/jpeg' }]
     var artist = ''
     if (track.artists && track.artists.length > 0) {
       artist = track.artists.map(function(a) { return a.name }).join(', ')
@@ -380,7 +411,8 @@
       }
       return
     }
-    if (_isIOS && document.visibilityState === 'hidden' && _wasPlayingBeforeBackground) {
+    // (Not when the track simply ended: play() would restart it.)
+    if (_isIOS && document.visibilityState === 'hidden' && _wasPlayingBeforeBackground && !audio.ended) {
       audio.play().catch(function() {})
       return
     }
@@ -415,8 +447,15 @@
     if (phantomLabel) phantomLabel.textContent = ''
     audio.loop = false
     audio.pause()
-    audio.src = ''
+    _clearAudioSrc()
     audio.muted = _volSlider === 0
+  }
+
+  // Detach the media resource without an error event. `audio.src = ''` loads
+  // the page URL as media, fails, and _onError would then auto-skip.
+  function _clearAudioSrc() {
+    audio.removeAttribute('src')
+    audio.load()
   }
 
   function _updateMediaSessionPositionState() {
@@ -675,19 +714,29 @@
           e.stopPropagation()
           var trackId = (currentIndex >= 0 && playlist[currentIndex]) ? playlist[currentIndex].id : null
           if (!trackId) return
-          fetch('/music/api/likes/' + trackId, {
+          // Ask for the state the heart shows the user, not a server-side toggle.
+          fetch('/music/api/likes/' + encodeURIComponent(trackId), {
             method: 'POST',
             headers: _jsonHeaders(),
-            credentials: 'same-origin'
+            credentials: 'same-origin',
+            body: JSON.stringify({ liked: !barHeartBtn.classList.contains('liked') })
           })
-            .then(function(r) { return r.json() })
+            .then(function(r) {
+              if (!r.ok) throw new Error('like failed: ' + r.status)
+              return r.json()
+            })
             .then(function(data) {
-              _setBarHeartState(data.liked)
-              _setFsHeartState(data.liked)
-              // Notify music-browse.js (if loaded) to sync browse list hearts + liked count
+              if (typeof data.liked !== 'boolean') throw new Error('like failed')
+              if (MusicPlayer.getCurrentTrackId() === trackId) {
+                _setBarHeartState(data.liked)
+                _setFsHeartState(data.liked)
+              }
+              // Notify music.js (if loaded) to sync browse list hearts + liked count
               document.dispatchEvent(new CustomEvent('musicplayer:likechanged', { detail: { id: trackId, liked: data.liked } }))
             })
-            .catch(function() {})
+            .catch(function() {
+              if (typeof showToast === 'function') showToast('COULD NOT UPDATE LIKE', 'error')
+            })
         })
       }
 
@@ -708,7 +757,7 @@
     _updateOwnLibraryState()
 
     // Restore FX toggle state (default: on for new users)
-    const savedFx = localStorage.getItem('mp_fx')
+    const savedFx = _lsGet('mp_fx')
     _fxEnabled = savedFx === null ? true : savedFx === '1'
     if (fxBtn && _fxEnabled) fxBtn.classList.add('mp-btn-active')
 
@@ -753,7 +802,7 @@
         _volSlider = e.target.value / 100
         _setVolume(_volCurve(_volSlider))
         audio.muted = _volSlider === 0
-        localStorage.setItem('mp_volume', _volSlider)
+        _lsSet('mp_volume', _volSlider)
         _updateVolumeIcon()
       })
     }
@@ -771,7 +820,7 @@
           audio.muted = false
         }
         if (volumeSlider) volumeSlider.value = Math.round(_volSlider * 100)
-        localStorage.setItem('mp_volume', _volSlider)
+        _lsSet('mp_volume', _volSlider)
         _updateVolumeIcon()
       })
     }
@@ -1001,24 +1050,20 @@
     // Mobile browsers require a user gesture to allow audio.play().
     // Phantom mode enters from a fetch() callback (no gesture), so the
     // silent keepalive may be blocked by autoplay policy.  On the very
-    // first user interaction, we briefly play+pause the silent blob to
-    // establish autoplay permission before phantom mode is ever needed.
+    // first user interaction, resume the AudioContext and play+pause the
+    // silent blob on a throwaway element. The shared element is never
+    // touched: this capture-phase click may be the one starting a track, or
+    // a restored track may already own it.
     if (_silentBlobUrl && _context === 'music-library' && _syncLoggedIn && _syncEnabled) {
       document.addEventListener('click', function _primeAutoplay() {
-        if (_audioPlayPrimed || _syncPhantomKeepaliveActive) return
-        // If audio is already playing locally, autoplay is established
-        if (!audio.paused) { _audioPlayPrimed = true; return }
+        if (_audioPlayPrimed) return
         _audioPlayPrimed = true
-        _resumeAudioContext()
-        audio.src = _silentBlobUrl
-        audio.play().then(function() {
-          // Autoplay permission established — clean up
-          audio.pause()
-          audio.src = ''
-        }).catch(function() {
-          // Not critical — permission may still work via MEI
-          audio.src = ''
-        })
+        if (_ensureAudioContext()) _resumeAudioContext()
+        if (currentIndex >= 0 || !audio.paused || _syncPhantomKeepaliveActive) return
+        try {
+          var primer = new Audio(_silentBlobUrl)
+          primer.play().then(function() { primer.pause() }).catch(function() {})
+        } catch (e) {}
       }, { once: true, capture: true })
     }
   }
@@ -1212,15 +1257,19 @@
     if (currentTimeEl) currentTimeEl.textContent = '0:00'
     if (durationEl) durationEl.textContent = '0:00'
 
-    // Revoke previous blob URL
-    if (_currentBlobUrl) {
-      URL.revokeObjectURL(_currentBlobUrl)
-      _currentBlobUrl = null
-    }
+    // The previous blob URL may still be the element's source: revoke it only
+    // once the element no longer uses it.
+    const oldBlobUrl = _currentBlobUrl
+    _currentBlobUrl = null
 
     _resumeAudioContext()
 
     if (track.isE2E) {
+      // Stop the previous track now instead of letting it play on during the
+      // fetch + decrypt.
+      audio.pause()
+      _clearAudioSrc()
+      if (oldBlobUrl) URL.revokeObjectURL(oldBlobUrl)
       await _loadE2ETrack(track, loadSeq)
       // A newer _loadTrack started while decrypting: it owns the metadata and
       // trackchange events, so this superseded load must not publish them.
@@ -1237,6 +1286,7 @@
         }).catch(() => {})
       }
       audio.src = track.sourceUrl
+      if (oldBlobUrl) URL.revokeObjectURL(oldBlobUrl)
       audio.play().then(function() {
         console.log('[MUSIC PLAYER] Play started OK for:', track.name)
       }).catch(function(err) {
@@ -1276,11 +1326,13 @@
         const keyResp = await fetch(`/f/${track.id}/key-info`)
         if (loadSeq !== _loadSeq) return
         const keyInfo = await keyResp.json()
+        if (loadSeq !== _loadSeq) return
         if (!keyInfo.encrypted_file_key) {
           _setTitle(track.name + ' (FILE KEY NOT FOUND)')
           return
         }
         const encResp = await fetch(`/f/${track.id}/encrypted?preview=1`)
+        if (loadSeq !== _loadSeq) return
         if (!encResp.ok) {
           _setTitle(track.name + ' (FETCH FAILED)')
           return
@@ -1311,11 +1363,13 @@
         var keyResp = await fetch('/f/' + track.id + '/key-info')
         if (loadSeq !== _loadSeq) return
         var keyInfo = await keyResp.json()
+        if (loadSeq !== _loadSeq) return
         if (!keyInfo.encrypted_file_key) {
           _setTitle(track.name + ' (FILE KEY NOT FOUND)')
           return
         }
         var encResp = await fetch('/f/' + track.id + '/encrypted?preview=1')
+        if (loadSeq !== _loadSeq) return
         if (!encResp.ok) {
           _setTitle(track.name + ' (FETCH FAILED)')
           return
@@ -1328,10 +1382,9 @@
           var passphrase = null
           if (typeof TempKeychain !== 'undefined') {
             try { passphrase = await TempKeychain.get(track.id) } catch (e) {}
+            if (loadSeq !== _loadSeq) return
           }
-          if (!passphrase) {
-            try { passphrase = sessionStorage.getItem('e2e_passphrase') } catch (e) {}
-          }
+          if (!passphrase) passphrase = _ssGet('e2e_passphrase')
           if (!passphrase) {
             _setTitle(track.name + ' (PASSPHRASE UNAVAILABLE)')
             return
@@ -1342,6 +1395,7 @@
         } else if (OneGyCrypto.hasSessionKeys()) {
           // Master-key-wrapped
           var masterKey = await OneGyCrypto.getMasterKeyFromSession()
+          if (loadSeq !== _loadSeq) return
           decrypted = await OneGyCrypto.decryptFileForDownload(
             encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
           )
@@ -1375,6 +1429,7 @@
         const keyResp = await fetch(`/f/${track.id}/key-info`)
         if (loadSeq !== _loadSeq) return
         const keyInfo = await keyResp.json()
+        if (loadSeq !== _loadSeq) return
         const encKey = keyInfo.link_encrypted_file_key || keyInfo.encrypted_file_key
         const encNonce = keyInfo.link_file_key_nonce || keyInfo.file_key_nonce
         if (!encKey) {
@@ -1382,6 +1437,7 @@
           return
         }
         const encResp = await fetch(`/f/${track.id}/encrypted?preview=1`)
+        if (loadSeq !== _loadSeq) return
         if (!encResp.ok) {
           _setTitle(track.name + ' (FETCH FAILED)')
           return
@@ -1402,6 +1458,7 @@
         audio.play().catch(err => console.warn('[MUSIC PLAYER] E2E browse play failed:', err.message))
       }
     } catch (err) {
+      if (loadSeq !== _loadSeq) return
       console.error('[MUSIC PLAYER] E2E decrypt error:', err)
       _setTitle(track.name + ' (DECRYPT FAILED)')
     }
@@ -1450,23 +1507,20 @@
             // Bail if a newer load started during the fetch (e.g. the user
             // clicked a different track), otherwise we'd clobber their choice.
             if (seqAtQueue !== _loadSeq) return
-            if (added) {
-              // _autoQueueSuggested already called _generateShuffleOrder().
-              // shuffleOrder[0] is currentIndex (the track that just ended),
-              // so advance past it to play a new track.
-              shufflePos = 0
-              if (shuffleOrder.length > 1 && shuffleOrder[0] === currentIndex) {
-                shufflePos = 1
-              }
+            // _autoQueueSuggested appended a shuffled order of only the new
+            // tracks after the current one (indices may have shifted on trim).
+            var pos = shuffleOrder.indexOf(currentIndex) + 1
+            if (added && pos > 0 && pos < shuffleOrder.length) {
+              shufflePos = pos
               _loadTrack(shuffleOrder[shufflePos])
             } else {
-              audio.pause()
+              _pauseAtQueueEnd()
             }
           })
           return
         } else {
           shufflePos = shuffleOrder.length - 1
-          audio.pause()
+          _pauseAtQueueEnd()
           return
         }
       }
@@ -1489,17 +1543,25 @@
               // shifting all indices. currentIndex is adjusted during trim.
               _loadTrack(currentIndex + 1)
             } else {
-              audio.pause()
+              _pauseAtQueueEnd()
             }
           })
           return
         } else {
-          audio.pause()
+          _pauseAtQueueEnd()
           return
         }
       }
     }
     _loadTrack(nextIdx)
+  }
+
+  // The queue ran out: this pause is not an interruption to undo when the
+  // tab returns to the foreground.
+  function _pauseAtQueueEnd() {
+    _wasPlayingBeforeBackground = false
+    _stopIOSBackgroundKeepalive()
+    audio.pause()
   }
 
   function playPrevious() {
@@ -1571,7 +1633,7 @@
     _wasPlayingBeforeBackground = false
     audio.loop = false  // clear silent keepalive loop flag if set
     audio.pause()
-    audio.src = ''
+    _clearAudioSrc()
     if (_currentBlobUrl) {
       URL.revokeObjectURL(_currentBlobUrl)
       _currentBlobUrl = null
@@ -1593,11 +1655,13 @@
     isPlaying = false
     currentIndex = -1
     playlist = []
-    sessionStorage.removeItem('mp_state')
+    _ssRemove('mp_state')
     _suggestedStartIndex = -1
     _suggestApiUnavailable = false
     _autoQueueLoading = false
     _autoQueuePromise = null
+    _autoQueueFailures = 0
+    _autoQueueRetryAt = 0
     _crossfadeTriggered = false
     if (playerEl) {
       playerEl.classList.remove('mp-visible', 'mp-fx-active', 'mp-fx-chaos')
@@ -1653,8 +1717,11 @@
           }
         } else if (repeatMode !== 'all' && !shuffleMode && currentIndex === playlist.length - 1) {
           // Last track with no suggested tracks yet -- crossfade will happen after auto-queue
-          // Pre-fetch suggestions so crossfade can work
-          if (timeRemaining <= 10 && !_autoQueueLoading) {
+          // Pre-fetch suggestions so crossfade can work: once per loaded track
+          // (timeupdate fires ~4/s; a failed fetch must not be retried at that rate).
+          var prefetchKey = _loadSeq + ':' + currentIndex
+          if (timeRemaining <= 10 && !_autoQueueLoading && _autoQueuePrefetchKey !== prefetchKey) {
+            _autoQueuePrefetchKey = prefetchKey
             _autoQueueSuggested()
           }
         }
@@ -1693,6 +1760,9 @@
 
   function _onError(e) {
     if (_syncPhantomMode) return  // silent keepalive — ignore errors
+    // No source (cleared on stop/phantom exit): nothing failed to play, and an
+    // auto-skip here would start playback on its own.
+    if (!audio.getAttribute('src')) return
     console.error('[MUSIC PLAYER] Audio error:', e)
     var track = playlist[currentIndex]
     if (track) _setTitle(track.name + ' (PLAYBACK ERROR)')
@@ -1968,12 +2038,12 @@
       if (track && track.artists && track.artists.length > 0) {
         // Render each artist as a separate clickable link
         var artistHtml = track.artists.map(function(a) {
-          return '<span class="mp-artist-link" data-artist-id="' + _escMp(a.id) + '">' + _escMp(a.name.toUpperCase()) + '</span>'
+          return '<span class="mp-artist-link" data-artist-id="' + _escMp(a.id) + '">' + _escMp(String(a.name == null ? '' : a.name).toUpperCase()) + '</span>'
         }).join('<span class="mp-artist-sep">, </span>')
         artistEl.innerHTML = artistHtml
         artistEl.style.display = ''
       } else if (track && track.artistName) {
-        artistEl.textContent = track.artistName.toUpperCase()
+        artistEl.textContent = String(track.artistName).toUpperCase()
         artistEl.style.display = ''
       } else {
         artistEl.textContent = ''
@@ -2093,6 +2163,18 @@
     }
   }
 
+  // Shuffle only the tracks appended from `start` and queue them after the
+  // existing order: played and already-queued tracks keep their places.
+  function _appendShuffleOrder(start) {
+    var added = []
+    for (var i = start; i < playlist.length; i++) added.push(i)
+    for (var j = added.length - 1; j > 0; j--) {
+      var k = Math.floor(Math.random() * (j + 1))
+      var tmp = added[j]; added[j] = added[k]; added[k] = tmp
+    }
+    shuffleOrder = shuffleOrder.concat(added)
+  }
+
   // ─── Playlist Panel ─────────────────────────────────────────────
   function _renderPlaylist() {
     if (!playlistPanel) return
@@ -2193,7 +2275,7 @@
     }
 
     _fxEnabled = !_fxEnabled
-    localStorage.setItem('mp_fx', _fxEnabled ? '1' : '0')
+    _lsSet('mp_fx', _fxEnabled ? '1' : '0')
     if (fxBtn) fxBtn.classList.toggle('mp-btn-active', _fxEnabled)
 
     if (_fxEnabled && isVisible) {
@@ -2284,6 +2366,7 @@
       _analyser.connect(_gainNode)
       _gainNode.connect(_audioCtx.destination)
       _fxConnected = true
+      _setVolume(_desiredVolume)  // volume moves from the element to the gain node
       _resumeAudioContext()
     } catch (e) {
       console.warn('[MUSIC PLAYER] Failed to connect audio source:', e)
@@ -2477,7 +2560,7 @@
       // Force FX on if it wasn't already
       if (!_fxEnabled) {
         _fxEnabled = true
-        localStorage.setItem('mp_fx', '1')
+        _lsSet('mp_fx', '1')
         if (fxBtn) fxBtn.classList.add('mp-btn-active')
         if (isVisible) _startFx()
       }
@@ -2748,18 +2831,18 @@
    */
   function _saveState() {
     if (!isVisible || currentIndex < 0 || playlist.length === 0) {
-      sessionStorage.removeItem('mp_state')
+      _ssRemove('mp_state')
       return
     }
     // Don't persist phantom mode state (it's remote, not local)
     if (_syncPhantomMode) {
-      sessionStorage.removeItem('mp_state')
+      _ssRemove('mp_state')
       return
     }
     // Don't persist E2E playlists (can't restore without keys)
     var hasE2E = playlist.some(function(t) { return t.isE2E })
     if (hasE2E) {
-      sessionStorage.removeItem('mp_state')
+      _ssRemove('mp_state')
       return
     }
     try {
@@ -2803,9 +2886,9 @@
    * the player re-appears with the saved playlist and resumes playback.
    */
   function _restoreState() {
-    var raw = sessionStorage.getItem('mp_state')
+    var raw = _ssGet('mp_state')
     if (!raw) return false
-    sessionStorage.removeItem('mp_state')
+    _ssRemove('mp_state')
     try {
       var state = JSON.parse(raw)
       var requestedContext = _context || 'dashboard'
@@ -2874,11 +2957,14 @@
         document.dispatchEvent(new CustomEvent('musicplayer:trackchange', { detail: { id: track.id, name: track.name } }))
       } catch(e) {}
 
-      // Set up the audio source and seek
+      // Set up the audio source and seek (only while this restore is still
+      // the latest load: a track clicked before canplay owns the element).
       _resumeAudioContext()
+      var restoreSeq = ++_loadSeq
       audio.src = track.sourceUrl
       var onCanPlay = function() {
         audio.removeEventListener('canplay', onCanPlay)
+        if (restoreSeq !== _loadSeq) return
         if (savedTime > 0 && !isNaN(audio.duration) && savedTime < audio.duration) {
           audio.currentTime = savedTime
         }
@@ -2935,6 +3021,8 @@
         }
       }
     } else if (document.visibilityState === 'visible') {
+      // Sync slows down or stops while hidden: catch up right away.
+      _syncKick()
       // ── Foreground resume ──
       _stopIOSBackgroundKeepalive()
       if (_wasPlayingBeforeBackground && !_syncPhantomMode) {
@@ -2976,17 +3064,13 @@
 
   function _navigateMusic(type, id) {
     if (!type || !id) return
-    var onMusicPage = !!document.querySelector('.music-app')
-    if (onMusicPage) {
-      // Dispatch event for music-browse.js to handle
-      try {
-        document.dispatchEvent(new CustomEvent('musicplayer:navigate', {
-          detail: { type: type, id: id }
-        }))
-      } catch(e) {}
+    if (window.MusicBrowse && typeof window.MusicBrowse.navigate === 'function') {
+      // On the music page: open the view in place (fullscreen would hide it)
+      if (_isFullscreen) _collapseFullscreen()
+      window.MusicBrowse.navigate(type, id)
     } else {
-      // Navigate to the music page with hash for deep-link
-      window.location.href = '/music#' + type + ':' + id
+      // Navigate to the music page with hash for deep-link (read by music.js)
+      window.location.href = '/music#' + type + ':' + encodeURIComponent(id)
     }
   }
 
@@ -2994,7 +3078,7 @@
 
   function _toggleAutoplay() {
     _autoplayEnabled = !_autoplayEnabled
-    localStorage.setItem('mp_autoplay', _autoplayEnabled ? '1' : '0')
+    _lsSet('mp_autoplay', _autoplayEnabled ? '1' : '0')
     if (autoplayBtn) {
       autoplayBtn.classList.toggle('mp-btn-active', _autoplayEnabled)
       autoplayBtn.title = _autoplayEnabled ? 'AUTOPLAY ON' : 'AUTOPLAY OFF'
@@ -3006,6 +3090,9 @@
   var _autoQueueLoading = false
   var _autoQueuePromise = null       // in-flight promise so callers can piggyback
   var _suggestApiUnavailable = false  // set true on 401/403 to avoid repeated failed calls
+  var _autoQueueFailures = 0          // consecutive failed fetches (exponential backoff)
+  var _autoQueueRetryAt = 0           // Date.now() before which no new fetch is started
+  var _autoQueuePrefetchKey = null    // track the end-of-track prefetch already ran for
 
   /**
    * When the playlist runs out of songs, fetch collaboration-graph-based
@@ -3023,6 +3110,7 @@
     if (!_canAutoQueueSuggested()) return Promise.resolve(false)
     if (_autoQueueLoading && _autoQueuePromise) return _autoQueuePromise
     if (_suggestApiUnavailable) return Promise.resolve(false)
+    if (Date.now() < _autoQueueRetryAt) return Promise.resolve(false)
     _autoQueueLoading = true
 
     var basePlaylist = playlist  // replaced (not mutated) when another playlist opens
@@ -3054,18 +3142,18 @@
       if (r.status === 401 || r.status === 403) {
         // Music library unavailable (not logged in or disabled) -- stop retrying
         _suggestApiUnavailable = true
-        _autoQueueLoading = false
-        _autoQueuePromise = null
         return null
       }
+      if (!r.ok) throw new Error('suggest failed: ' + r.status)
       return r.json()
     })
     .then(function(data) {
-      if (!data) return false  // API was unavailable
       _autoQueueLoading = false
       _autoQueuePromise = null
+      if (!data) return false  // API was unavailable
       if (playlist !== basePlaylist) return false  // a different playlist is playing now
-      if (!data.songs || !data.songs.length) return false
+      if (!data.songs || !data.songs.length) throw new Error('no suggestions')
+      _autoQueueFailures = 0
 
       // Mark the boundary where suggestions begin
       if (_suggestedStartIndex < 0) {
@@ -3088,7 +3176,9 @@
           suggested: true,
         }
       })
+      var firstNewIndex = playlist.length
       playlist = playlist.concat(newTracks)
+      if (shuffleMode) _appendShuffleOrder(firstNewIndex)
 
       // Cap playlist at 200 tracks -- trim already-played tracks from the front
       if (playlist.length > 200 && currentIndex > 20) {
@@ -3097,16 +3187,20 @@
           playlist = playlist.slice(trimCount)
           currentIndex -= trimCount
           if (_suggestedStartIndex >= 0) _suggestedStartIndex = Math.max(0, _suggestedStartIndex - trimCount)
+          shuffleOrder = shuffleOrder.filter(function(i) { return i >= trimCount }).map(function(i) { return i - trimCount })
+          if (shuffleMode) shufflePos = shuffleOrder.indexOf(currentIndex)
         }
       }
 
-      if (shuffleMode) _generateShuffleOrder()
       _renderPlaylist()
       return true
     })
     .catch(function() {
       _autoQueueLoading = false
       _autoQueuePromise = null
+      // Back off (2 s, 4 s, ... 60 s) instead of retrying on every caller.
+      _autoQueueFailures++
+      _autoQueueRetryAt = Date.now() + Math.min(60000, 1000 * Math.pow(2, _autoQueueFailures))
       return false
     })
 
@@ -3256,11 +3350,11 @@
         var r = Math.random() * 16 | 0
         return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
       }))
-      localStorage.setItem('mp_device_id', _syncDeviceId)
+      _ssSet('mp_device_id', _syncDeviceId)
     }
     if (!_syncDeviceName) {
       _syncDeviceName = _detectDeviceName()
-      localStorage.setItem('mp_device_name', _syncDeviceName)
+      _lsSet('mp_device_name', _syncDeviceName)
     }
   }
 
@@ -3287,40 +3381,130 @@
     return browser + ' on ' + platform
   }
 
+  // Sync runs as one setTimeout chain whose delay follows the current role.
+  // Calling it again (local play, panel open) runs a tick right away.
   function _syncStart() {
-    if (_syncInterval) return  // already running
     if (!_syncLoggedIn || !_syncEnabled) return
-    // Poll immediately, then at the current interval
-    _syncPoll()
-    var ms = _syncFastMode ? 1000 : 3000
-    _syncInterval = setInterval(_syncPoll, ms)
+    _syncRunning = true
+    _syncKick()
   }
 
   function _syncStop() {
-    if (_syncInterval) {
-      clearInterval(_syncInterval)
-      _syncInterval = null
+    _syncRunning = false
+    if (_syncTimer) {
+      clearTimeout(_syncTimer)
+      _syncTimer = null
     }
-    _syncFastMode = false
     _syncStopKeepAlive()
   }
 
-  // Switch between fast (1s) and slow (3s) polling based on multi-device activity
-  function _syncAdjustInterval() {
-    var shouldFast = _syncDevices.length > 1 || _syncPhantomMode
-    if (shouldFast === _syncFastMode) return  // no change
-    _syncFastMode = shouldFast
-    // Restart the interval with the new rate
-    if (_syncInterval) {
-      clearInterval(_syncInterval)
-      var ms = _syncFastMode ? 1000 : 3000
-      _syncInterval = setInterval(_syncPoll, ms)
+  function _syncKick() {
+    if (!_syncRunning) return
+    if (_syncTimer) clearTimeout(_syncTimer)
+    _syncTick()
+  }
+
+  function _syncTick() {
+    _syncTimer = null
+    if (!_syncRunning) return
+    var delay = _syncNextDelay()
+    if (delay === null) return  // hidden and idle: visibilitychange kicks it again
+    _syncPoll()
+    _syncTimer = setTimeout(_syncTick, delay)
+  }
+
+  // Fast only while there is something to follow: this device is the active
+  // one (heartbeat under the server's 10 s staleness + remote commands), it
+  // mirrors a remote one, or another device is online. Idle: slow while
+  // visible, stopped while hidden. Failures back off exponentially.
+  function _syncNextDelay() {
+    var others = _syncDevices.some(function(d) { return !d.is_self })
+    var pushing = _syncIsActive && _context === 'music-library' && (isPlaying || (isVisible && currentIndex >= 0))
+    var delay
+    if (pushing) delay = others ? 1000 : 3000
+    else if (_syncPhantomMode) delay = document.hidden ? 5000 : 1000
+    else if (document.hidden) return null
+    else delay = others ? 3000 : 15000
+    if (_syncErrorCount) delay = Math.max(delay, Math.min(30000, 1000 * Math.pow(2, _syncErrorCount)))
+    return delay
+  }
+
+  // fetch + JSON with a timeout, so an in-flight flag can never stick.
+  function _syncFetch(url, options) {
+    var controller = typeof AbortController === 'function' ? new AbortController() : null
+    var timer = controller ? setTimeout(function() { controller.abort() }, 10000) : null
+    if (controller) options.signal = controller.signal
+    return fetch(url, options).then(function(r) {
+      if (!r.ok) {
+        var err = new Error('sync request failed: ' + r.status)
+        err.status = r.status
+        throw err
+      }
+      return r.json()
+    }).finally(function() {
+      if (timer) clearTimeout(timer)
+    })
+  }
+
+  function _syncOnError(err) {
+    if (err && (err.status === 401 || err.status === 403)) {
+      _syncStop()  // signed out or music disabled: polling cannot succeed
+      return
     }
+    _syncErrorCount++
+  }
+
+  // Polls never create device rows server-side; register this tab once the
+  // server reports it unknown (first poll, or after a device removal).
+  function _syncRegisterDevice() {
+    if (_syncRegisterInFlight) return
+    _syncRegisterInFlight = true
+    _syncFetch('/music/api/sync', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: _jsonHeaders(),
+      body: JSON.stringify({ device_id: _syncDeviceId, device_name: _syncDeviceName, register_only: true }),
+    }).catch(function() {}).then(function() {
+      _syncRegisterInFlight = false
+    })
+  }
+
+  function _syncNum(v) {
+    return Number.isFinite(v) ? v : 0
+  }
+
+  // Remote sync state is untrusted: rebuild each track from validated fields.
+  // The stream URL is derived from the song id, never taken from the state.
+  function _syncTracksFromState(state) {
+    if (!state || !Array.isArray(state.playlist) || !state.playlist.length) return null
+    var tracks = []
+    for (var i = 0; i < state.playlist.length; i++) {
+      var t = state.playlist[i]
+      if (!t || typeof t.id !== 'string' || !/^[\w.-]{1,36}$/.test(t.id)) return null
+      var artists = (Array.isArray(t.artists) ? t.artists : []).filter(function(a) {
+        return a && typeof a.name === 'string' && (typeof a.id === 'string' || typeof a.id === 'number')
+      }).map(function(a) { return { id: a.id, name: a.name } })
+      tracks.push({
+        id: t.id,
+        name: typeof t.name === 'string' ? t.name : 'UNKNOWN',
+        extension: 'opus',
+        isE2E: false,
+        sourceUrl: '/music/stream/' + encodeURIComponent(t.id),
+        blobUrl: null,
+        coverPath: _coverUrl(t.coverPath) ? t.coverPath : null,
+        artistName: artists.map(function(a) { return a.name }).join(', '),
+        artistIds: artists.map(function(a) { return a.id }),
+        artists: artists,
+        albumId: (typeof t.albumId === 'string' || typeof t.albumId === 'number') ? t.albumId : null,
+        suggested: t.suggested === true,
+      })
+    }
+    return tracks
   }
 
   // Silent audio keepalive — plays a tiny silent buffer every 25s to prevent
   // the browser from revoking autoplay permission when the active device is
-  // paused.  Without this, remote play/play_tracks commands fail because
+  // paused.  Without this, remote play commands fail because
   // audio.play() is blocked by autoplay policy when there is no recent user
   // gesture and no recent audio output.
   function _syncStartKeepAlive() {
@@ -3378,10 +3562,20 @@
       return
     }
 
-    // Otherwise, poll for remote state
-    fetch('/music/api/sync?device_id=' + encodeURIComponent(_syncDeviceId) + '&device_name=' + encodeURIComponent(_syncDeviceName), {
+    // Otherwise, poll for remote state: one GET at a time, and a response that
+    // predates a local play / transfer / phantom exit is dropped (it would
+    // otherwise undo that action, e.g. throw "play here" back into phantom).
+    if (_syncPollInFlight) return
+    _syncPollInFlight = true
+    var epoch = _syncEpoch
+    _syncFetch('/music/api/sync?device_id=' + encodeURIComponent(_syncDeviceId), {
       credentials: 'same-origin',
-    }).then(function(r) { return r.json() }).then(function(data) {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    }).then(function(data) {
+      _syncPollInFlight = false
+      _syncErrorCount = 0
+      if (data.registered === false) _syncRegisterDevice()
+      if (epoch !== _syncEpoch) return
       _syncLastPollData = data
       _syncDevices = data.devices || []
 
@@ -3416,11 +3610,10 @@
         _syncAcknowledgeCommandResult()
       }
 
-      // Update devices button indicator and adjust polling speed
       _syncUpdateDevicesButton()
-      _syncAdjustInterval()
-    }).catch(function() {
-      // Network error — ignore silently
+    }).catch(function(err) {
+      _syncPollInFlight = false
+      _syncOnError(err)
     })
   }
 
@@ -3428,25 +3621,31 @@
     if (_syncPushPending) return
     _syncPushPending = true
 
+    // Only a window around the current track is pushed (a queue can be
+    // hundreds of tracks), and only when it changed: otherwise the server
+    // reuses the window it stored under _syncQueueKey.
+    var start = Math.max(0, currentIndex - _SYNC_QUEUE_RADIUS)
+    var end = Math.min(playlist.length, currentIndex + _SYNC_QUEUE_RADIUS + 1)
+    var queue = playlist.slice(start, end).map(function(t) {
+      return {
+        id: t.id, name: t.name, coverPath: t.coverPath || null,
+        artists: (t.artists || []).map(function(a) { return { id: a.id, name: a.name } }),
+        albumId: t.albumId || null, suggested: !!t.suggested,
+      }
+    })
+    var queueJson = JSON.stringify(queue)
+    var windowOrder = shuffleOrder.filter(function(i) { return i >= start && i < end })
+      .map(function(i) { return i - start })
     var statePayload = {
-      playlist: playlist.map(function(t) {
-        return {
-          id: t.id, name: t.name, extension: t.extension || 'opus',
-          sourceUrl: t.sourceUrl, coverPath: t.coverPath || null,
-          artistName: t.artistName || '', artistIds: t.artistIds || [],
-          artists: t.artists || [], albumId: t.albumId || null,
-          suggested: t.suggested || false,
-        }
-      }),
-      currentIndex: currentIndex,
+      currentIndex: currentIndex - start,
       currentTime: audio.currentTime || 0,
       duration: (!isNaN(audio.duration) && isFinite(audio.duration)) ? audio.duration : 0,
       isPlaying: isPlaying,
       shuffleMode: shuffleMode,
       repeatMode: repeatMode,
-      shuffleOrder: shuffleOrder,
-      shufflePos: shufflePos,
-      suggestedStartIndex: _suggestedStartIndex,
+      shuffleOrder: windowOrder,
+      shufflePos: windowOrder.indexOf(currentIndex - start),
+      suggestedStartIndex: _suggestedStartIndex < 0 ? -1 : Math.min(queue.length, Math.max(0, _suggestedStartIndex - start)),
     }
 
     var pushBody = {
@@ -3458,32 +3657,54 @@
       pushBody.force_active = true
       _syncForceActive = false
     }
+    var sendsQueue = !!pushBody.force_active || !_syncQueueKey || queueJson !== _syncPushedQueueJson
+    if (sendsQueue) statePayload.playlist = queue
+    else statePayload.queueKey = _syncQueueKey
     var sentCommandResult = _syncCommandResult
     if (sentCommandResult) pushBody.command_result = sentCommandResult
+    var epoch = _syncEpoch
 
-    fetch('/music/api/sync', {
+    _syncFetch('/music/api/sync', {
       method: 'POST',
       credentials: 'same-origin',
       headers: _jsonHeaders(),
       body: JSON.stringify(pushBody),
-    }).then(function(r) { return r.json() }).then(function(data) {
+    }).then(function(data) {
       _syncPushPending = false
+      _syncErrorCount = 0
 
       if (sentCommandResult && data.command_result_acknowledged === sentCommandResult.command_id && _syncCommandResult === sentCommandResult) {
         _syncCommandResult = null
+      }
+      if (sendsQueue && data.queue_key) {
+        _syncPushedQueueJson = queueJson
+        _syncQueueKey = data.queue_key
       }
 
       // Update devices list from POST response
       if (data.devices) {
         _syncDevices = data.devices
         _syncUpdateDevicesButton()
-        _syncAdjustInterval()
+      }
+
+      // Sent before a local play / transfer: only run a command the server
+      // already claimed for us (an unanswered claim blocks the mailbox).
+      if (epoch !== _syncEpoch) {
+        if (data.pending_command) _syncExecuteCommand(data.pending_command)
+        return
+      }
+
+      // The server no longer holds our queue window: send it right away.
+      if (data.need_playlist) {
+        _syncQueueKey = null
+        setTimeout(_syncPushState, 0)
       }
 
       // Server rejected us as active — another device holds the active slot
       if (data.is_active === false && data.active_device_id && data.active_device_id !== _syncDeviceId) {
         _syncIsActive = false
         _syncStopKeepAlive()
+        _wasPlayingBeforeBackground = false
         audio.pause()
         if (data.state) {
           _syncEnterPhantom(data)
@@ -3501,8 +3722,10 @@
       if (data.pending_command) {
         _syncExecuteCommand(data.pending_command)
       }
-    }).catch(function() {
+    }).catch(function(err) {
       _syncPushPending = false
+      if (pushBody.force_active) _syncForceActive = true  // the claim never reached the server
+      _syncOnError(err)
     })
   }
 
@@ -3524,6 +3747,7 @@
           })
           break
         case 'pause':
+          _wasPlayingBeforeBackground = false
           audio.pause()
           _syncSetCommandResult(cmd, { ok: true })
           break
@@ -3536,49 +3760,14 @@
           _syncSetCommandResult(cmd, { ok: true })
           break
         case 'seek':
-          if (cmd.seekTime != null && !isNaN(audio.duration)) {
+          if (Number.isFinite(cmd.seekTime) && cmd.seekTime >= 0 && !isNaN(audio.duration)) {
             audio.currentTime = Math.min(cmd.seekTime, audio.duration)
           }
           _syncSetCommandResult(cmd, { ok: true })
           break
-        case 'set_volume':
-          if (cmd.volume != null) {
-            var v = Math.max(0, Math.min(1, cmd.volume))
-            _volSlider = v
-            _setVolume(_volCurve(v))
-            audio.muted = v === 0
-            if (volumeSlider) volumeSlider.value = Math.round(v * 100)
-            localStorage.setItem('mp_volume', _volSlider)
-            _updateVolumeIcon()
-          }
-          _syncSetCommandResult(cmd, { ok: true })
-          break
-        case 'play_tracks':
-          if (!cmd.tracks || !cmd.tracks.length) {
-            _syncSetCommandResult(cmd, { error: 'NO TRACKS PROVIDED', error_code: 'invalid_command' })
-            break
-          }
-          _resumeAudioContext()
-          playMusicLibrary(cmd.tracks, cmd.startIndex || 0)
-          // Ensure playback starts even if the player was paused.
-          setTimeout(function() {
-            if (!audio.paused) {
-              _syncSetCommandResult(cmd, { ok: true })
-              return
-            }
-            _resumeAudioContext()
-            audio.play().then(function() {
-              console.log('[MUSIC PLAYER] Remote play_tracks: retry succeeded')
-              _syncSetCommandResult(cmd, { ok: true })
-            }).catch(function(err) {
-              console.warn('[MUSIC PLAYER] Remote play_tracks: play blocked:', err.name)
-              _syncSetCommandResult(cmd, {
-                error: 'PLAYBACK BLOCKED ON REMOTE DEVICE - TAP PLAY ON THAT DEVICE FIRST',
-                error_code: 'autoplay_blocked'
-              })
-            })
-          }, 500)
-          break
+        default:
+          // Answer anyway: an unanswered claimed command blocks the mailbox.
+          _syncSetCommandResult(cmd, { error: 'UNSUPPORTED REMOTE COMMAND', error_code: 'invalid_command' })
       }
     } catch (err) {
       _syncSetCommandResult(cmd, {
@@ -3596,7 +3785,11 @@
 
   function _syncEnterPhantom(data) {
     var state = data.state
-    if (!state || !state.playlist || !state.playlist.length) return
+    var remoteTracks = _syncTracksFromState(state)
+    if (!remoteTracks || !Number.isInteger(state.currentIndex) ||
+        state.currentIndex < 0 || state.currentIndex >= remoteTracks.length) return
+    var remoteTrack = remoteTracks[state.currentIndex]
+    var remotePlaying = state.isPlaying === true
 
     _syncPhantomMode = true
     _syncIsActive = false
@@ -3613,31 +3806,24 @@
       audio.muted = false
       audio.src = _silentBlobUrl
       // Ensure volume is nonzero — Chrome may suppress notifications for
-      // muted/zero-volume audio.  If a GainNode controls volume, audio.volume
+      // muted/zero-volume audio.  If the GainNode controls volume, audio.volume
       // is already 1; otherwise set a barely-audible floor.
-      if (!_gainNode && audio.volume === 0) audio.volume = 0.01
+      if (!_fxConnected && audio.volume === 0) audio.volume = 0.01
 
       // iOS (WebKit) needs metadata + action handlers set BEFORE audio.play()
       // for the Now Playing widget to show full controls (next/prev/seek).
       // Set metadata eagerly here; it will be refreshed in .then() and on polls.
       if ('mediaSession' in navigator) {
-        var firstTrack = state.playlist[state.currentIndex]
-        if (firstTrack) {
-          _updateMediaSession({
-            name: firstTrack.name, coverPath: firstTrack.coverPath || null,
-            artists: firstTrack.artists || [],
-            artistName: firstTrack.artistName || '',
-          })
-        }
+        _updateMediaSession(remoteTrack)
         // Provide a valid position state immediately — iOS won't show
         // next/prev/scrubber without one.  Use actual duration if available,
         // otherwise a fallback of 180s (typical song length).
-        var dur = state.duration || 180
-        var pos = Math.min(state.currentTime || 0, dur)
+        var dur = _syncNum(state.duration) || 180
+        var pos = Math.min(_syncNum(state.currentTime), dur)
         try {
           navigator.mediaSession.setPositionState({ duration: dur, playbackRate: 1, position: pos })
         } catch(e) {}
-        navigator.mediaSession.playbackState = state.isPlaying ? 'playing' : 'paused'
+        navigator.mediaSession.playbackState = remotePlaying ? 'playing' : 'paused'
       }
 
       _resumeAudioContext()
@@ -3645,9 +3831,8 @@
         // Audio is now actually playing — re-set Media Session state so
         // browsers that ignore pre-play metadata pick it up now.
         if ('mediaSession' in navigator) {
-          var t = state.playlist[state.currentIndex]
-          if (t) _updateMediaSession(t)
-          navigator.mediaSession.playbackState = state.isPlaying ? 'playing' : 'paused'
+          _updateMediaSession(remoteTrack)
+          navigator.mediaSession.playbackState = remotePlaying ? 'playing' : 'paused'
         }
         _updateMediaSessionPositionState()
       }).catch(function(e) {
@@ -3664,20 +3849,11 @@
     // Update UI with remote state
     playerEl.classList.add('mp-phantom')
     if (phantomLabel) {
-      phantomLabel.textContent = 'PLAYING ON ' + (data.active_device_name || 'ANOTHER DEVICE').toUpperCase()
+      phantomLabel.textContent = 'PLAYING ON ' + String(data.active_device_name || 'ANOTHER DEVICE').toUpperCase()
     }
 
     // Store the remote playlist/index FIRST so _setTitle() can read artist info
-    playlist = state.playlist.map(function(t) {
-      return {
-        id: t.id, name: t.name, extension: t.extension || 'opus',
-        isE2E: false, sourceUrl: t.sourceUrl || '/music/stream/' + t.id,
-        blobUrl: null, coverPath: t.coverPath || null,
-        artistName: t.artistName || '', artistIds: t.artistIds || [],
-        artists: t.artists || [], albumId: t.albumId || null,
-        suggested: t.suggested || false,
-      }
-    })
+    playlist = remoteTracks
     currentIndex = state.currentIndex
 
     // Update track display from remote state (detect track change)
@@ -3690,29 +3866,33 @@
         _setTitle(track.name)
         if (_context === 'music-library' || track.suggested) _updatePlayerArt(track)
         _updateMediaSession(track)
+        // music.js sets the like hearts for the new track
+        try {
+          document.dispatchEvent(new CustomEvent('musicplayer:trackchange', { detail: { id: track.id, name: track.name } }))
+        } catch(e) {}
       }
     }
-    shuffleMode = !!state.shuffleMode
-    repeatMode = state.repeatMode || 'none'
-    shuffleOrder = state.shuffleOrder || []
-    shufflePos = (typeof state.shufflePos === 'number' ? state.shufflePos : -1)
-    _suggestedStartIndex = (typeof state.suggestedStartIndex === 'number' ? state.suggestedStartIndex : -1)
+    shuffleMode = state.shuffleMode === true
+    repeatMode = (state.repeatMode === 'all' || state.repeatMode === 'one') ? state.repeatMode : 'none'
+    shuffleOrder = Array.isArray(state.shuffleOrder) ? state.shuffleOrder : []
+    shufflePos = Number.isInteger(state.shufflePos) ? state.shufflePos : -1
+    _suggestedStartIndex = Number.isInteger(state.suggestedStartIndex) ? state.suggestedStartIndex : -1
 
     // Track state freshness — reset stale flag on fresh data
     _syncPhantomStateTs = data.state_updated_at || null
     _syncPhantomStale = false
 
     // Update interpolation state from poll
-    _syncPhantomTime = state.currentTime || 0
-    _syncPhantomDuration = state.duration || 0
-    _syncPhantomPlaying = !!state.isPlaying
+    _syncPhantomTime = _syncNum(state.currentTime)
+    _syncPhantomDuration = _syncNum(state.duration)
+    _syncPhantomPlaying = remotePlaying
     _syncPhantomPollTs = Date.now()
 
     // Update progress display immediately
     _syncPhantomUpdateUI()
 
     // Show playing state visually
-    isPlaying = state.isPlaying
+    isPlaying = remotePlaying
     _updatePlayButton()
 
     // Start interpolation animation if playing
@@ -3723,7 +3903,7 @@
 
     // Explicitly set Media Session state for lock-screen/notification controls
     if ('mediaSession' in navigator) {
-      navigator.mediaSession.playbackState = state.isPlaying ? 'playing' : 'paused'
+      navigator.mediaSession.playbackState = remotePlaying ? 'playing' : 'paused'
     }
     _updateMediaSessionPositionState()
 
@@ -3828,14 +4008,22 @@
     // Stop silent keepalive audio — restore audio element for normal use
     audio.loop = false
     audio.pause()
-    audio.src = ''
+    _clearAudioSrc()
+    _syncEpoch++
 
-    // If we have no local playlist, hide the player
-    if (currentIndex < 0 || playlist.length === 0) {
-      if (isVisible) closePlayer()
-    } else {
-      // Restore local state display
-      _updatePlayButton()
+    // The playlist and index were the remote device's (copied in by
+    // _syncEnterPhantom): drop them so nothing here can resume or auto-advance
+    // through them, and hide the now-empty player.
+    playlist = []
+    currentIndex = -1
+    shuffleOrder = []
+    shufflePos = -1
+    _suggestedStartIndex = -1
+    isPlaying = false
+    if (isVisible) {
+      closePlayer()
+      // closePlayer() stops sync; keep listening for the next remote session
+      if (_context === 'music-library') _syncStart()
     }
     _syncUpdateDevicesButton()
   }
@@ -3870,7 +4058,9 @@
 
   function _syncAcceptTransfer(data) {
     var state = data.state
-    if (!state || !state.playlist || !state.playlist.length) return
+    var remoteTracks = _syncTracksFromState(state)
+    if (!remoteTracks) return
+    _syncEpoch++
 
     // Clear transfer flag on server
     fetch('/music/api/sync/transfer', {
@@ -3896,21 +4086,14 @@
 
     // Load the remote playlist and start playing
     _context = 'music-library'
-    playlist = state.playlist.map(function(t) {
-      return {
-        id: t.id, name: t.name, extension: t.extension || 'opus',
-        isE2E: false, sourceUrl: t.sourceUrl || '/music/stream/' + t.id,
-        blobUrl: null, coverPath: t.coverPath || null,
-        artistName: t.artistName || '', artistIds: t.artistIds || [],
-        artists: t.artists || [], albumId: t.albumId || null,
-        suggested: t.suggested || false,
-      }
-    })
-    _suggestedStartIndex = (typeof state.suggestedStartIndex === 'number' ? state.suggestedStartIndex : -1)
-    shuffleMode = !!state.shuffleMode
-    repeatMode = state.repeatMode || 'none'
-    shuffleOrder = state.shuffleOrder || []
-    shufflePos = (typeof state.shufflePos === 'number' ? state.shufflePos : -1)
+    playlist = remoteTracks
+    _suggestedStartIndex = Number.isInteger(state.suggestedStartIndex) ? state.suggestedStartIndex : -1
+    shuffleMode = state.shuffleMode === true
+    repeatMode = (state.repeatMode === 'all' || state.repeatMode === 'one') ? state.repeatMode : 'none'
+    shuffleOrder = Array.isArray(state.shuffleOrder) ? state.shuffleOrder.filter(function(i) {
+      return Number.isInteger(i) && i >= 0 && i < remoteTracks.length
+    }) : []
+    shufflePos = Number.isInteger(state.shufflePos) ? state.shufflePos : -1
 
     // Update shuffle/repeat UI
     if (shuffleBtn) shuffleBtn.classList.toggle('mp-btn-active', shuffleMode)
@@ -3920,16 +4103,19 @@
     _renderPlaylist()
 
     var idx = state.currentIndex
-    if (idx < 0 || idx >= playlist.length) idx = 0
-    var seekTo = state.currentTime || 0
+    if (!Number.isInteger(idx) || idx < 0 || idx >= playlist.length) idx = 0
+    var seekTo = _syncNum(state.currentTime)
 
     _syncIsActive = true  // This device is now the active one
     _syncForceActive = true  // Force claim — explicit transfer
     _loadTrack(idx)
+    var transferSeq = _loadSeq
 
-    // Seek to the remote position after the track loads
+    // Seek to the remote position after the track loads (unless another
+    // track was started first)
     var onCanPlay = function() {
       audio.removeEventListener('canplay', onCanPlay)
+      if (transferSeq !== _loadSeq) return
       if (seekTo > 0 && !isNaN(audio.duration) && seekTo < audio.duration) {
         audio.currentTime = seekTo
       }
@@ -3948,6 +4134,7 @@
     _syncIsActive = false
     _syncForceActive = false
     _syncStopKeepAlive()
+    _wasPlayingBeforeBackground = false
     audio.pause()
     console.log('[MUSIC PLAYER] Yielding playback to device:', targetDeviceId)
     // Immediately poll to enter phantom mode instead of waiting for next 3s cycle
@@ -4008,6 +4195,7 @@
 
   function _syncRequestTransfer() {
     // Request that playback be transferred TO this device (called from phantom)
+    _syncEpoch++
     fetch('/music/api/sync/transfer', {
       method: 'POST',
       credentials: 'same-origin',
@@ -4020,6 +4208,7 @@
 
   function _syncTransferToDevice(targetDeviceId) {
     // Push playback to a remote device (called from active device)
+    _syncEpoch++
     fetch('/music/api/sync/transfer', {
       method: 'POST',
       credentials: 'same-origin',
@@ -4054,6 +4243,7 @@
       if (fsPl) fsPl.classList.remove('mp-btn-active')
       _renderDevicesPanel()
       devicesPanel.classList.add('mp-devices-visible')
+      _syncKick()  // idle polling is slow: refresh the device list now
     }
   }
 
@@ -4120,7 +4310,7 @@
     if (syncToggle) {
       syncToggle.addEventListener('click', function() {
         _syncEnabled = !_syncEnabled
-        localStorage.setItem('mp_sync_enabled', _syncEnabled ? '1' : '0')
+        _lsSet('mp_sync_enabled', _syncEnabled ? '1' : '0')
         if (_syncEnabled) {
           _syncStart()
         } else {
@@ -4202,7 +4392,7 @@
       }).then(function(r) { return r.json() }).then(function(data) {
         if (data.ok && devId === _syncDeviceId) {
           _syncDeviceName = newName
-          localStorage.setItem('mp_device_name', newName)
+          _lsSet('mp_device_name', newName)
         }
       }).catch(function() {})
     }
@@ -4308,7 +4498,13 @@
   audio.addEventListener('play', function() {
     if (_syncPhantomMode) return  // silent keepalive — do not claim active
     if (_context === 'music-library' && _syncLoggedIn && _syncEnabled && !_syncPhantomMode) {
-      _syncIsActive = true
+      if (!_syncIsActive) {
+        // Local playback claims the session: drop in-flight responses and
+        // start pushing now rather than after the idle poll delay.
+        _syncIsActive = true
+        _syncEpoch++
+        _syncKick()
+      }
       // Show devices button if not already shown
       if (devicesBtn) devicesBtn.style.display = ''
     }

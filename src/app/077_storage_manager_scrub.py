@@ -18,7 +18,13 @@ class _StorageManagerScrub:
         backends_snapshot = {}
         with self._state_lock:
             try:
-                batch = PendingRemoteDelete.query.filter(
+                _state_local_node_id = self._backend_state_snapshot()[2]
+                _all_nodes = StorageNode.query.all()
+                existing_remote_node_ids = {n.id for n in _all_nodes if n.id != _state_local_node_id}
+                enabled_remote_node_ids = {
+                    n.id for n in _all_nodes if n.is_enabled and n.id != _state_local_node_id
+                }
+                batch_query = PendingRemoteDelete.query.filter(
                     # AUDIT FIX M6: skip parked tombstones (exhausted retries) so
                     # a permanently-failing target cannot churn the LIMIT-100
                     # batch every cycle and starve real deletes. Parked rows stay
@@ -28,7 +34,12 @@ class _StorageManagerScrub:
                         PendingRemoteDelete.last_attempt.is_(None),
                         PendingRemoteDelete.last_attempt < _now - self.DEFERRED_DELETE_RETRY_COOLDOWN,
                     )
-                ).order_by(PendingRemoteDelete.id).limit(100).all()
+                )
+                _actionable = self._pending_delete_actionable_clause(
+                    existing_remote_node_ids, enabled_remote_node_ids)
+                if _actionable is not None:
+                    batch_query = batch_query.filter(_actionable)
+                batch = batch_query.order_by(PendingRemoteDelete.id).limit(100).all()
                 if not batch:
                     return
                 self._check_backends_freshness()
@@ -53,6 +64,8 @@ class _StorageManagerScrub:
                 drop_ids = []
                 normalized_targets = 0
                 skipped_claims = 0  # BUG FIX M6: rows claimed by another scheduler owner
+                waiting_claimed = 0
+                waiting_by_node = {}
                 for item in batch:
                     # AUDIT FIX C2/M1: refuse to dispatch any queued delete whose
                     # category/file_id fails strict validation; drop it so it can
@@ -97,6 +110,13 @@ class _StorageManagerScrub:
                             waiting_disabled.add(nid)
                             continue
                         attempt_nodes.append(nid)
+                    for nid in waiting_disabled:
+                        waiting_by_node[nid] = waiting_by_node.get(nid, 0) + 1
+                    # Waiting ONLY on disabled nodes: nothing to do this cycle.
+                    # The SQL filter above already skips rows it can prove are
+                    # waiting-only; anything it could not prove is claimed below
+                    # (cooldown) but kept out of the Phase-B work list.
+                    waiting_only = bool(waiting_disabled) and not attempt_nodes and not vanished
                     # BUG FIX M6 (scheduler split-brain): claim the tombstone row
                     # atomically BEFORE any Phase-B work, re-using the exact
                     # eligibility predicate the batch SELECT above used. InnoDB
@@ -128,6 +148,9 @@ class _StorageManagerScrub:
                     if _claim.rowcount != 1:
                         skipped_claims += 1
                         continue
+                    if waiting_only:
+                        waiting_claimed += 1
+                        continue
                     work.append({
                         'id': item.id,
                         'category': item.category,
@@ -143,13 +166,17 @@ class _StorageManagerScrub:
                 if skipped_claims:
                     print(f'[STORAGE] Deferred delete: skipped {skipped_claims} tombstone(s) '
                           f'already claimed by another scheduler owner this cycle')
+                for nid in sorted(waiting_by_node):
+                    print(f'[STORAGE] Deferred delete waiting for disabled node {nid}: '
+                          f'{waiting_by_node[nid]} tombstone(s) in this batch stay queued until it is '
+                          f're-enabled or removed')
                 processed = 0
                 for _id in drop_ids:
                     _row = db.session.get(PendingRemoteDelete, _id)
                     if _row is not None:
                         db.session.delete(_row)
                         processed += 1
-                if processed or normalized_targets or work:
+                if processed or normalized_targets or work or waiting_claimed:
                     db.session.commit()
             except Exception as e:
                 print(f'[STORAGE] Failed to stage pending remote deletes: {e}')
@@ -178,9 +205,6 @@ class _StorageManagerScrub:
             for nid in entry['vanished']:
                 print(f'[STORAGE] Deferred delete target node {nid} no longer exists; '
                       f"marking impossible for {entry['category']}/{entry['file_id']}")
-            for nid in sorted(entry.get('waiting_disabled', set())):
-                print(f'[STORAGE] Deferred delete waiting for disabled node {nid} '
-                      f"for {entry['category']}/{entry['file_id']}")
             # AUDIT FIX H4: a tombstone outlives the row it deleted. If a live
             # row now exists under the same key but with a DIFFERENT generation
             # marker (re-created object, DB restore, regenerated thumbnail), the
@@ -288,7 +312,9 @@ class _StorageManagerScrub:
                         print(f'[STORAGE] Deferred delete for {item.category}/{item.file_id} deferred '
                               f'without penalty: generation lookup unavailable this cycle')
                         continue
-                    waiting_only = bool(entry.get('waiting_disabled')) and entry.get('attempt_error_count', 0) == 0 and not entry['attempt_nodes']
+                    # Nothing failed and what is left waits on disabled nodes:
+                    # not a failed attempt, so no retry budget is burned.
+                    waiting_only = bool(entry.get('waiting_disabled')) and entry.get('attempt_error_count', 0) == 0
                     if waiting_only:
                         continue
                     # AUDIT FIX (parked tombstones): an outage is not a failed
@@ -338,6 +364,38 @@ class _StorageManagerScrub:
                     db.session.rollback()
                 except Exception:
                     pass
+
+    def _pending_delete_actionable_clause(self, existing_remote_node_ids, enabled_remote_node_ids):
+        """SQL filter that drops tombstones PROVABLY waiting only on disabled
+        nodes, so they cannot fill the LIMIT-100 batch and starve deletes on
+        enabled nodes. Target/deleted sets are JSON int arrays; they are
+        normalised to ',a,b,' so set membership is a portable LIKE. A row is
+        excluded only when every target is a known remote node, no enabled
+        target is still outstanding and some disabled target is; anything
+        unrecognised (legacy NULL/empty targets, vanished ids, odd formatting)
+        stays selected and is re-checked in Python. None = no disabled nodes."""
+        disabled = set(existing_remote_node_ids) - set(enabled_remote_node_ids)
+        if not disabled:
+            return None
+
+        def _ids(col):
+            return db.func.replace(db.func.replace(db.func.replace(
+                db.func.coalesce(col, ''), ' ', ''), '[', ','), ']', ',')
+
+        targets = _ids(PendingRemoteDelete.target_node_ids)
+        deleted = _ids(PendingRemoteDelete.deleted_node_ids)
+        unknown_left = targets
+        for nid in sorted(existing_remote_node_ids):
+            unknown_left = db.func.replace(unknown_left, f',{int(nid)},', ',')
+
+        def _outstanding(nid):
+            return db.and_(targets.like(f'%,{int(nid)},%'), db.not_(deleted.like(f'%,{int(nid)},%')))
+
+        return db.or_(
+            unknown_left != ',',
+            *[_outstanding(nid) for nid in sorted(enabled_remote_node_ids)],
+            db.not_(db.or_(*[_outstanding(nid) for nid in sorted(disabled)])),
+        )
 
     def reset_failed_replication_state(self, exhausted_only=False, include_deferred_deletes=True):
         """Reset failed replica state so replication can resume after an operator fix."""
@@ -401,23 +459,32 @@ class _StorageManagerScrub:
             max_deep_verify_items=max_deep_verify_items, max_seconds=max_seconds,
             min_reverify_age_seconds=min_reverify_age_seconds)
 
-    def _scrub_persist(self, model, replica, values):
+    def _scrub_persist(self, model, replica, values, snapshot=None):
         """Apply a scrub verdict to a replica with a concurrency-safe conditional
         UPDATE: the write only lands while the row is still 'synced'. During the
         unlocked probe phase a concurrent HTTP-path re-upload may have reset the
         remote replica to 'pending' (or a delete may have removed it); in that
         case we must NOT clobber the fresher state with a stale verdict. Returns
         True if the row was updated. `values` maps model attribute NAMES to new
-        values."""
+        values. `snapshot` maps attribute names to the values read in Phase A
+        (checksum, verified_at); they must still match too, so a row that was
+        re-synced during the probe window (pending -> synced again, ABA) is not
+        given a verdict about bytes that have since been replaced."""
         rid = getattr(replica, 'id', None)
         if rid is None:
             return False
         try:
             update_cols = {getattr(model, k): v for k, v in values.items()}
-            rows = db.session.query(model).filter(
-                model.id == rid,
-                model.status == 'synced',
-            ).update(update_cols, synchronize_session=False)
+            conditions = [model.id == rid, model.status == 'synced']
+            for key, expected in (snapshot or {}).items():
+                col = getattr(model, key)
+                if expected is None:
+                    conditions.append(col.is_(None))
+                    continue
+                if isinstance(expected, datetime) and expected.tzinfo is not None:
+                    expected = expected.astimezone(timezone.utc).replace(tzinfo=None)
+                conditions.append(col == expected)
+            rows = db.session.query(model).filter(*conditions).update(update_cols, synchronize_session=False)
             db.session.commit()
             return bool(rows)
         except Exception as e:
@@ -493,7 +560,7 @@ class _StorageManagerScrub:
 
             _file_size_cache = {}
             _file_checksum_cache = {}
-            _thumb_size_cache = {}
+            _thumb_auth_cache = {}
 
             def _expected_file_size(file_id, exclude_node_id):
                 key = (file_id, exclude_node_id)
@@ -509,11 +576,28 @@ class _StorageManagerScrub:
                         file_id, exclude_node_id=exclude_node_id)
                 return _file_checksum_cache[key]
 
-            def _expected_thumb_size(file_id, thumb_type):
-                key = (file_id, thumb_type)
-                if key not in _thumb_size_cache:
-                    _thumb_size_cache[key] = self._thumbnail_size_bytes(file_id, thumb_type)
-                return _thumb_size_cache[key]
+            def _thumb_authority_checksum(file_id, thumb_type, exclude_node_id):
+                # File.thumbnail[_e2e]_checksum, else a verified sibling's
+                # recorded checksum -- never a hash of the local disk copy,
+                # which may itself be the corrupt one.
+                key = (file_id, thumb_type, exclude_node_id)
+                if key not in _thumb_auth_cache:
+                    _tf = db.session.get(File, file_id)
+                    _sum = None
+                    if _tf is not None:
+                        _sum = _tf.thumbnail_e2e_checksum if thumb_type == 'e2e' else _tf.thumbnail_checksum
+                    if not _sum:
+                        _sib = ThumbnailReplica.query.filter(
+                            ThumbnailReplica.file_id == file_id,
+                            ThumbnailReplica.thumb_type == thumb_type,
+                            ThumbnailReplica.status == 'synced',
+                            ThumbnailReplica.checksum.isnot(None),
+                            ThumbnailReplica.checksum_verified.isnot(False),
+                            ThumbnailReplica.node_id != exclude_node_id,
+                        ).order_by(ThumbnailReplica.verified_at.desc(), ThumbnailReplica.id.desc()).first()
+                        _sum = _sib.checksum if _sib else None
+                    _thumb_auth_cache[key] = _sum
+                return _thumb_auth_cache[key]
 
             # AUDIT FIX P1-6: split the checksum budget per category so one
             # category cannot starve the others (mutable lists so closures can
@@ -553,7 +637,7 @@ class _StorageManagerScrub:
                     'kind': 'remote_file', 'replica': r, 'node_id': r.node_id,
                     'backend': backend, 'cat': 'files',
                     'disk_id': f'{r.file_id}.enc', 'resource_id': r.file_id,
-                    'cur_size': r.size_bytes, 'cur_checksum': r.checksum,
+                    'cur_size': r.size_bytes, 'cur_checksum': r.checksum, 'cur_verified_at': r.verified_at,
                     'exp_size': _expected_file_size(r.file_id, r.node_id),
                     'exp_checksum': exp_sum, 'want_csum': want_csum,
                     'deep_verify_eligible': bool(want_csum and hasattr(backend, 'get')),
@@ -589,7 +673,7 @@ class _StorageManagerScrub:
                     'backend': backend, 'cat': 'notes',
                     'disk_id': r.note_id, 'resource_id': r.note_id,
                     'note_version': note_version, 'note_size': note_obj.size,
-                    'cur_checksum': r.checksum, 'exp_checksum': exp_sum,
+                    'cur_checksum': r.checksum, 'cur_verified_at': r.verified_at, 'exp_checksum': exp_sum,
                     'precheck_bad': precheck_bad, 'want_csum': want_csum,
                     'deep_verify_eligible': bool(want_csum and hasattr(backend, 'get')),
                 })
@@ -604,8 +688,13 @@ class _StorageManagerScrub:
                 if not backend:
                     continue
                 ttype = 'e2e' if r.thumb_type == 'e2e' else 'jpg'
-                exp_sum = (self._tracked_thumbnail_checksum_hex(r.file_id, r.thumb_type, exclude_node_id=r.node_id)
-                           if checksum_enabled else None)
+                # A remote thumbnail is judged against the AUTHORITATIVE checksum,
+                # not against the local copy's size: a truncated local thumbnail
+                # used to mark every healthy remote copy 'error'. The local size
+                # is only used (Phase B) when no remote checksum is available AND
+                # the local copy itself hashes to the authoritative value.
+                auth_sum = _thumb_authority_checksum(r.file_id, r.thumb_type, r.node_id)
+                exp_sum = auth_sum if checksum_enabled else None
                 want_csum = bool(checksum_enabled and exp_sum and thumb_csum_budget > 0
                                  and hasattr(backend, 'checksum'))
                 if want_csum:
@@ -615,8 +704,8 @@ class _StorageManagerScrub:
                     'backend': backend, 'cat': 'thumbnails',
                     'disk_id': f'{r.file_id}.{ttype}', 'resource_id': r.file_id,
                     'thumb_type': r.thumb_type,
-                    'cur_size': r.size_bytes, 'cur_checksum': r.checksum,
-                    'exp_size': _expected_thumb_size(r.file_id, r.thumb_type),
+                    'cur_size': r.size_bytes, 'cur_checksum': r.checksum, 'cur_verified_at': r.verified_at,
+                    'exp_size': None, 'auth_checksum': auth_sum,
                     'exp_checksum': exp_sum, 'want_csum': want_csum,
                     'deep_verify_eligible': bool(want_csum and hasattr(backend, 'get')),
                 })
@@ -650,7 +739,7 @@ class _StorageManagerScrub:
                         'kind': 'local_file', 'replica': r, 'node_id': local_node_id,
                         'cat': 'files',
                         'disk_id': f'{r.file_id}.enc', 'resource_id': r.file_id,
-                        'cur_size': r.size_bytes, 'cur_checksum': r.checksum,
+                        'cur_size': r.size_bytes, 'cur_checksum': r.checksum, 'cur_verified_at': r.verified_at,
                         'sibling_size': int(sib.size_bytes) if sib and sib.size_bytes is not None else None,
                         'db_size': _db_size,
                         'exp_checksum': exp_sum, 'want_csum': want_csum,
@@ -674,7 +763,7 @@ class _StorageManagerScrub:
                         'cat': 'notes',
                         'disk_id': r.note_id, 'resource_id': r.note_id,
                         'note_version': note_version, 'note_size': note_obj.size if note_obj else None,
-                        'cur_checksum': r.checksum, 'exp_checksum': exp_sum,
+                        'cur_checksum': r.checksum, 'cur_verified_at': r.verified_at, 'exp_checksum': exp_sum,
                         'precheck_bad': precheck_bad, 'want_csum': want_csum,
                     })
 
@@ -699,7 +788,7 @@ class _StorageManagerScrub:
                         'cat': 'thumbnails',
                         'disk_id': f'{r.file_id}.{ttype}', 'resource_id': r.file_id,
                         'thumb_type': r.thumb_type,
-                        'cur_size': r.size_bytes, 'cur_checksum': r.checksum,
+                        'cur_size': r.size_bytes, 'cur_checksum': r.checksum, 'cur_verified_at': r.verified_at,
                         'sibling_size': int(sib.size_bytes) if sib and sib.size_bytes is not None else None,
                         'exp_checksum': exp_sum, 'want_csum': want_csum,
                     })
@@ -731,6 +820,27 @@ class _StorageManagerScrub:
         _scrub_deadline = (time.monotonic() + max_seconds) if max_seconds and max_seconds > 0 else None
         _scrub_budget_hit = False
         local_backend = self._local_backend
+        _verified_local_thumb_sizes = {}
+
+        def _verified_local_thumb_size(disk_id, auth_checksum):
+            # Size of the local thumbnail ONLY if it hashes to the authoritative
+            # checksum; an unverified local copy must never condemn a remote.
+            if disk_id not in _verified_local_thumb_sizes:
+                size = None
+                try:
+                    path = local_backend.get_path('thumbnails', disk_id)
+                    if path and os.path.isfile(path):
+                        if self._sha256_file(path) == auth_checksum:
+                            size = os.path.getsize(path)
+                        else:
+                            self._forget_local_integrity(path)
+                            print(f'[SCRUB] Local thumbnail {disk_id} does not match its authoritative '
+                                  f'checksum; not using it to judge remote copies')
+                except OSError as e:
+                    print(f'[SCRUB] Could not verify local thumbnail {disk_id}: {e}')
+                _verified_local_thumb_sizes[disk_id] = size
+            return _verified_local_thumb_sizes[disk_id]
+
         for item in work:
             if _scrub_deadline is not None and time.monotonic() > _scrub_deadline:
                 if not _scrub_budget_hit:
@@ -776,6 +886,9 @@ class _StorageManagerScrub:
                             item['p_size'] = backend.size(cat, item['disk_id'])
                             if _want_csum:
                                 item['p_checksum'] = backend.checksum(cat, item['disk_id'])
+                        if (kind == 'remote_thumb' and item['p_checksum'] is None
+                                and item.get('auth_checksum') and local_backend):
+                            item['exp_size'] = _verified_local_thumb_size(item['disk_id'], item['auth_checksum'])
                         # AUDIT FIX F-1 (5th audit): throttled deep verify. When we
                         # WANTED a checksum but the backend could not produce one
                         # (SSH node without sha256sum/shasum, or an S3 multipart
@@ -822,6 +935,7 @@ class _StorageManagerScrub:
                 else:
                     cat = item['cat']
                     path = local_backend.get_path(cat, item['disk_id']) if local_backend else None
+                    item['local_path'] = path
                     if not path or not os.path.isfile(path):
                         item['p_exists'] = False
                     else:
@@ -833,40 +947,38 @@ class _StorageManagerScrub:
                 item['probe_error'] = e
 
         # ─────────────────────────── Phase C (locked) ───────────────────────────
+        _now = datetime.now(timezone.utc)
+        # Drifted notes are self-healed AFTER the lock is released (Phase D):
+        # reconcile_note_to_local may download a remote copy. Other items of
+        # a queued note are left untouched this pass.
+        _heal_queue = []
+        _heal_pending_ids = set()
+
+        def _snapshot(item):
+            return {'checksum': item.get('cur_checksum'), 'verified_at': item.get('cur_verified_at')}
+
+        def _mark_error(item, model, label, reason):
+            nonlocal corrupted
+            if item['kind'].startswith('local_') and item.get('local_path'):
+                self._forget_local_integrity(item['local_path'])
+            # AUDIT FIX F3: do NOT increment error_count here -- corruption
+            # detection is not a failed delivery attempt. The conditional
+            # UPDATE also guarantees we never clobber a row a concurrent
+            # re-upload already moved to 'pending' during the probe window.
+            if self._scrub_persist(model, item['replica'], {'status': 'error', 'last_error': reason[:500]},
+                                   snapshot=_snapshot(item)):
+                print(f'[SCRUB] {label}: {reason}')
+                corrupted += 1
+
+        def _heal_note(item, model, label, reason):
+            """Queue a drifted note for self-heal from the local authoritative
+            copy (Phase D) before erroring it. Returns True (always handled)."""
+            _heal_pending_ids.add(item['resource_id'])
+            _heal_queue.append((item, model, label, reason))
+            return True
+
         self._state_lock.acquire()
         try:
-            _now = datetime.now(timezone.utc)
-            _healed_note_ids = set()
-
-            def _mark_error(item, model, label, reason):
-                nonlocal corrupted
-                # AUDIT FIX F3: do NOT increment error_count here -- corruption
-                # detection is not a failed delivery attempt. The conditional
-                # UPDATE also guarantees we never clobber a row a concurrent
-                # re-upload already moved to 'pending' during the probe window.
-                if self._scrub_persist(model, item['replica'], {'status': 'error', 'last_error': reason[:500]}):
-                    print(f'[SCRUB] {label}: {reason}')
-                    corrupted += 1
-
-            def _heal_note(item, model, label, reason):
-                """Self-heal a drifted note from the local authoritative copy
-                before erroring it. Returns True (always handled)."""
-                nonlocal metadata_fixed, note_self_healed
-                nid = item['resource_id']
-                repaired = self.reconcile_note_to_local(nid, verified_at=_now)
-                if repaired:
-                    # Reconciliation only stages ORM mutations. Commit before
-                    # claiming a heal so the final work item cannot roll back.
-                    db.session.commit()
-                    if repaired.get('size_changed'):
-                        metadata_fixed += 1
-                    if nid not in _healed_note_ids:
-                        _healed_note_ids.add(nid)
-                        note_self_healed += 1
-                    return True
-                _mark_error(item, model, label, reason)
-                return True
-
             for item in work:
                 kind = item['kind']
                 model = (_replica_models['files'] if 'file' in kind else
@@ -935,7 +1047,7 @@ class _StorageManagerScrub:
                         # for destructive redundancy decisions.
                         if item.get('want_csum') and item.get('p_checksum') and item.get('exp_checksum'):
                             vals['checksum_verified'] = True
-                        if self._scrub_persist(model, item['replica'], vals):
+                        if self._scrub_persist(model, item['replica'], vals, snapshot=_snapshot(item)):
                             audited += 1
                             if kind == 'local_file':
                                 local_audited += 1
@@ -947,7 +1059,12 @@ class _StorageManagerScrub:
                             label = 'MISSING LOCAL THUMBNAIL' if kind == 'local_thumb' else 'MISSING THUMBNAIL REPLICA'
                             _mark_error(item, model, label, f'{item["disk_id"]} on node {item["node_id"]}')
                             continue
-                        exp_size = item.get('sibling_size') if kind == 'local_thumb' else item.get('exp_size')
+                        if kind == 'local_thumb':
+                            exp_size = item.get('sibling_size')
+                        elif item.get('p_checksum') and item.get('exp_checksum'):
+                            exp_size = None  # the authoritative checksum below decides
+                        else:
+                            exp_size = item.get('exp_size')  # verified-local size or None
                         p_size = item.get('p_size')
                         if exp_size is not None and p_size is None:
                             print(f'[SCRUB] Thumbnail size probe indeterminate for {item["disk_id"]} on node {item["node_id"]}')
@@ -979,7 +1096,7 @@ class _StorageManagerScrub:
                         # for destructive redundancy decisions.
                         if item.get('want_csum') and item.get('p_checksum') and item.get('exp_checksum'):
                             vals['checksum_verified'] = True
-                        if self._scrub_persist(model, item['replica'], vals):
+                        if self._scrub_persist(model, item['replica'], vals, snapshot=_snapshot(item)):
                             audited += 1
                             if kind == 'local_thumb':
                                 local_audited += 1
@@ -988,7 +1105,7 @@ class _StorageManagerScrub:
                     # ===== NOTE (remote or local) =====
                     if kind in ('remote_note', 'local_note'):
                         nid = item['resource_id']
-                        if nid in _healed_note_ids:
+                        if nid in _heal_pending_ids:
                             continue
                         if item.get('precheck_bad'):
                             label = ('LOCAL NOTE VERSION MISMATCH' if kind == 'local_note'
@@ -1028,7 +1145,7 @@ class _StorageManagerScrub:
                         # promote a hash-confirmed note replica to verified.
                         if item.get('want_csum') and item.get('p_checksum') and item.get('exp_checksum'):
                             vals['checksum_verified'] = True
-                        if self._scrub_persist(model, item['replica'], vals):
+                        if self._scrub_persist(model, item['replica'], vals, snapshot=_snapshot(item)):
                             audited += 1
                             if kind == 'local_note':
                                 local_audited += 1
@@ -1039,17 +1156,6 @@ class _StorageManagerScrub:
                         db.session.rollback()
                     except Exception:
                         pass
-
-            if audited or corrupted or metadata_fixed or checksum_verified or note_self_healed or deep_verified:
-                local_note = f', {local_audited} local' if local_audited > 0 else ''
-                deep_note = f', deep-verified {deep_verified}' if deep_verified > 0 else ''
-                print(
-                    f'[SCRUB] Audited {audited} replicas ({audited - local_audited} remote{local_note}), '
-                    f'fixed {metadata_fixed} metadata rows, '
-                    f'checksum-verified {checksum_verified}{deep_note}, found {corrupted} mismatches'
-                )
-            if note_self_healed > 0:
-                print(f'[SCRUB] Self-healed {note_self_healed} note(s) from local authoritative data')
         except Exception as e:
             print(f'[SCRUB] Integrity scrub failed: {e}')
             try:
@@ -1061,4 +1167,41 @@ class _StorageManagerScrub:
                 self._state_lock.release()
             except RuntimeError:
                 pass
+
+        # ────────────────── Phase D (UNLOCKED): note self-heal ──────────────────
+        _healed_note_ids = set()
+        for item, model, label, reason in _heal_queue:
+            nid = item['resource_id']
+            if nid in _healed_note_ids:
+                continue
+            try:
+                repaired = self.reconcile_note_to_local(nid, verified_at=_now)
+                if repaired:
+                    # Reconciliation only stages ORM mutations. Commit before
+                    # claiming a heal so a later failure cannot roll it back.
+                    db.session.commit()
+                    if repaired.get('size_changed'):
+                        metadata_fixed += 1
+                    _healed_note_ids.add(nid)
+                    note_self_healed += 1
+                    continue
+                with self._state_lock:
+                    _mark_error(item, model, label, reason)
+            except Exception as e:
+                print(f'[SCRUB] Note self-heal failed for {nid}: {e}')
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+
+        if audited or corrupted or metadata_fixed or checksum_verified or note_self_healed or deep_verified:
+            local_note = f', {local_audited} local' if local_audited > 0 else ''
+            deep_note = f', deep-verified {deep_verified}' if deep_verified > 0 else ''
+            print(
+                f'[SCRUB] Audited {audited} replicas ({audited - local_audited} remote{local_note}), '
+                f'fixed {metadata_fixed} metadata rows, '
+                f'checksum-verified {checksum_verified}{deep_note}, found {corrupted} mismatches'
+            )
+        if note_self_healed > 0:
+            print(f'[SCRUB] Self-healed {note_self_healed} note(s) from local authoritative data')
         return corrupted

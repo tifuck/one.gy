@@ -170,7 +170,7 @@ def _s3_endpoint_scheme_error(endpoint_url):
     if not (value.startswith('https://') or value.startswith('http://')):
         return 'S3 ENDPOINT_URL MUST INCLUDE A SCHEME'
     if value.startswith('http://') and not STORAGE_S3_ALLOW_HTTP:
-        return ('PLAINTEXT HTTP S3 ENDPOINT REJECTED — set STORAGE_S3_ALLOW_HTTP=true '
+        return ('PLAINTEXT HTTP S3 ENDPOINT REJECTED: set STORAGE_S3_ALLOW_HTTP=true '
                 'to explicitly allow unencrypted S3 endpoints (e.g. a local MinIO instance)')
     return None
 
@@ -244,7 +244,7 @@ def _validate_storage_node_host(host_or_url):
         if ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local:
             return False, 'LOOPBACK/MULTICAST/LINK-LOCAL ADDRESS NOT ALLOWED'
         if (ip.is_private or ip.is_reserved) and not STORAGE_NODE_ALLOW_PRIVATE_HOSTS:
-            return False, ('PRIVATE/RESERVED ADDRESS NOT ALLOWED — set '
+            return False, ('PRIVATE/RESERVED ADDRESS NOT ALLOWED: set '
                            'STORAGE_NODE_ALLOW_PRIVATE_HOSTS=true to opt in for LAN deployments')
         return True, None
     # Hostname: resolve to detect metadata/loopback targets that are merely
@@ -274,7 +274,7 @@ def _validate_storage_node_host(host_or_url):
         if ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local:
             return False, f'HOSTNAME RESOLVES TO LOOPBACK/MULTICAST/LINK-LOCAL ({ip})'
         if (ip.is_private or ip.is_reserved) and not STORAGE_NODE_ALLOW_PRIVATE_HOSTS:
-            return False, (f'HOSTNAME RESOLVES TO PRIVATE/RESERVED ADDRESS ({ip}) — '
+            return False, (f'HOSTNAME RESOLVES TO PRIVATE/RESERVED ADDRESS ({ip}): '
                            'set STORAGE_NODE_ALLOW_PRIVATE_HOSTS=true to opt in')
     return True, None
 

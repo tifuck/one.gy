@@ -1,10 +1,10 @@
 {% extends 'base.html' %}
 {% block title %}SHARE{% endblock %}
 {% set nav_active = 'share' %}
-{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('uploader.css') }}"><link rel="stylesheet" href="{{ versioned_static('manage.css') }}"><link rel="stylesheet" href="{{ versioned_static('share.css') }}">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('uploader.css') }}"><link rel="stylesheet" href="{{ versioned_static('manage.css') }}"><link rel="stylesheet" href="{{ versioned_static('share.css') }}"><link rel="stylesheet" href="{{ versioned_static('preview.css') }}">{% endblock %}
 
 {% block content %}
-<section class="rd-section share-hero-sec">
+<section class="rd-section rd-blueprint share-hero-sec">
   <div class="rd-container">
     <span class="share-badge"><span class="share-badge-dot"></span>Zero-knowledge</span>
     <h1 class="share-title">Quick share</h1>
@@ -58,7 +58,7 @@
       {% else %}
         {% set file_icon = '📄' %}
       {% endif %}
-      <div class="temp-browser-row file-row" data-file-id="{{ file.id }}" data-management-token="{{ file.management_token }}" data-file-name="{{ file.orig_name }}" data-e2e="{{ 'true' if file.is_e2e_encrypted else 'false' }}" data-extension="{{ extension }}" data-previewable="{{ 'true' if extension in previewable_exts else 'false' }}"{% if file.short_code %} data-short-code="{{ file.short_code }}"{% endif %}{% if file.is_e2e_encrypted and file.has_thumbnail and file.encrypted_thumbnail_nonce %} data-enc-thumb-nonce="{{ file.encrypted_thumbnail_nonce }}"{% endif %}{% if file.is_e2e_encrypted and file.encrypted_name %} data-encrypted-name="{{ file.encrypted_name }}" data-name-nonce="{{ file.name_nonce }}" data-encrypted-file-key="{{ file.encrypted_file_key }}" data-file-key-nonce="{{ file.file_key_nonce }}"{% if file.file_key_salt %} data-file-key-salt="{{ file.file_key_salt }}"{% endif %}{% endif %}>
+      <div class="temp-browser-row file-row" data-file-id="{{ file.id }}" data-management-token="{{ file.management_token }}" data-file-name="{{ file.orig_name }}" data-size="{{ file.size or 0 }}" data-e2e="{{ 'true' if file.is_e2e_encrypted else 'false' }}" data-extension="{{ extension }}" data-previewable="{{ 'true' if extension in previewable_exts else 'false' }}"{% if file.short_code %} data-short-code="{{ file.short_code }}"{% endif %}{% if file.is_e2e_encrypted and file.has_thumbnail and file.encrypted_thumbnail_nonce %} data-enc-thumb-nonce="{{ file.encrypted_thumbnail_nonce }}"{% endif %}{% if file.is_e2e_encrypted and file.encrypted_name %} data-encrypted-name="{{ file.encrypted_name }}" data-name-nonce="{{ file.name_nonce }}" data-encrypted-file-key="{{ file.encrypted_file_key }}" data-file-key-nonce="{{ file.file_key_nonce }}"{% if file.file_key_salt %} data-file-key-salt="{{ file.file_key_salt }}"{% endif %}{% endif %}>
         <div class="browser-col col-name">
           {% if not file.is_e2e_encrypted and (file.has_thumbnail or is_thumbnailable_name(file.orig_name)) %}
             <span class="file-icon-small{% if extension in previewable_exts %} file-icon-preview{% endif %}" data-thumb-fill="{{ file.id }}">{{ file_icon|safe }}</span>
@@ -103,7 +103,6 @@
     </div>
   </div>
   {% endif %}
-</div>
 
 <div class="context-menu" id="contextMenu">
   <div class="context-menu-item" data-action="download">
@@ -126,6 +125,33 @@
 </div>
 
 {% include '_manage_modal.html' %}
+{# temp-preview.js (loaded by _uploader.html) drives these two. #}
+{% include 'partials/_preview_modal.html' %}
+<div id="downloadProgress" class="upload-progress-toast" role="status" aria-live="polite" style="display: none;">
+  <div class="upload-toast-header">
+    <span class="upload-toast-title" id="downloadProgressTitle">DOWNLOADING FILE</span>
+    <button type="button" class="upload-toast-close" id="downloadProgressClose" title="CLOSE" style="display: none;">&times;</button>
+  </div>
+  <div class="upload-toast-body">
+    <div class="upload-progress-bar">
+      <div class="upload-progress-fill" id="downloadProgressFill" style="width: 0%;"></div>
+    </div>
+    <div class="upload-stats">
+      <div class="upload-stat">
+        <span class="upload-stat-label">STATUS</span>
+        <span class="upload-stat-value" id="downloadProgressStatus">PREPARING...</span>
+      </div>
+      <div class="upload-stat">
+        <span class="upload-stat-label">PROGRESS</span>
+        <span class="upload-stat-value" id="downloadProgressPercent">0%</span>
+      </div>
+      <div class="upload-stat">
+        <span class="upload-stat-label">SPEED</span>
+        <span class="upload-stat-value" id="downloadProgressSpeed">-</span>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}

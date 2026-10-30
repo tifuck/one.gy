@@ -200,26 +200,40 @@ _THUMB_TEXT_EXTS = frozenset({
     'txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'py', 'js', 'html',
     'css', 'sh', 'bat', 'ini', 'cfg', 'conf', 'c', 'cpp', 'h', 'hpp', 'lua',
     'rb', 'rs', 'go', 'java', 'ts', 'tsx', 'jsx', 'toml', 'ps1', 'sql', 'r',
-    'swift', 'kt', 'php', 'pl', 'diff', 'makefile', 'env',
+    'swift', 'kt', 'php', 'pl', 'diff', 'makefile',
 })
 _THUMB_VIDEO_EXTS = frozenset({
     'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v', '3gp',
 })
 
 
-def _is_dotenv_filename(filename):
-    """True for .env, .env.local, production.env, etc."""
+# Text thumbnails are plaintext JPEGs of the file's first lines, stored and
+# replicated off-box, so never render one for a likely secret.
+_THUMB_SECRET_EXTS = frozenset({
+    'env', 'pem', 'key', 'p12', 'pfx', 'jks', 'keystore', 'ppk', 'kdbx', 'asc', 'gpg',
+})
+_THUMB_SECRET_NAME_MARKERS = (
+    'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'secret', 'credential', 'passw',
+    'token', 'apikey', 'api_key', 'private_key', 'privkey',
+)
+
+
+def _is_secret_like_filename(filename):
+    """True for dotfiles (.env*, .npmrc, .pgpass, ...) and key/credential-like names."""
     base = os.path.basename(filename or '').lower()
-    return base == '.env' or base.startswith('.env.') or _get_compound_ext(base) == 'env'
+    return (
+        base.startswith('.')
+        or _get_compound_ext(base) in _THUMB_SECRET_EXTS
+        or any(marker in base for marker in _THUMB_SECRET_NAME_MARKERS)
+    )
 
 
 def _is_thumbnailable_name(filename):
     ext = _get_compound_ext(filename or '')
     return (
         ext in _THUMB_IMAGE_EXTS
-        or ext in _THUMB_TEXT_EXTS
+        or (ext in _THUMB_TEXT_EXTS and not _is_secret_like_filename(filename))
         or ext in _THUMB_VIDEO_EXTS
-        or _is_dotenv_filename(filename)
     )
 
 
@@ -414,13 +428,7 @@ def _generate_thumbnail_locked(file_record):
     text_extensions = _THUMB_TEXT_EXTS
     video_extensions = _THUMB_VIDEO_EXTS
 
-    is_dotenv = _is_dotenv_filename(safe_name)
-    if (
-        extension not in image_extensions
-        and extension not in text_extensions
-        and extension not in video_extensions
-        and not is_dotenv
-    ):
+    if not _is_thumbnailable_name(safe_name):
         return False
     
     if file_record.is_e2e_encrypted:
@@ -555,7 +563,7 @@ def _generate_thumbnail_locked(file_record):
                         img = img.convert('RGB')
                     img.save(thumb_buffer, 'JPEG', quality=80)
                 
-                elif extension in text_extensions or is_dotenv:
+                elif extension in text_extensions:
                     # Generate syntax-highlighted text preview thumbnail using Pygments
                     from PIL import Image, ImageDraw, ImageFont
                     from pygments.lexers import get_lexer_by_name, TextLexer
@@ -588,12 +596,10 @@ def _generate_thumbnail_locked(file_record):
                         'kt': 'kotlin', 'swift': 'swift', 'php': 'php', 'pl': 'perl', 'r': 'r',
                         'sql': 'sql', 'md': 'markdown', 'diff': 'diff', 'makefile': 'makefile',
                         'toml': 'toml', 'ini': 'ini', 'cfg': 'ini', 'conf': 'ini',
-                        'ps1': 'powershell', 'env': 'ini',
+                        'ps1': 'powershell',
                     }
                     
                     lexer_name = _ext_to_lexer.get(extension)
-                    if is_dotenv:
-                        lexer_name = 'ini'
                     try:
                         lexer = get_lexer_by_name(lexer_name) if lexer_name else TextLexer()
                     except Exception:

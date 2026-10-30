@@ -22,8 +22,8 @@
 
 <div class="bw-shell" id="bwShell"
      data-token="{{ share_token }}"
-     data-is-owner="{{ 'true' if is_owner else 'false' }}"
-     data-root-id="{{ folder.id }}">
+     data-is-owner="{{ 'true' if is_owner else 'false' }}"{% if is_owner %}
+     data-root-id="{{ folder.id }}"{% endif %}>
 
   <!-- Library rail (shares --rd-side-* tokens with Files / Notes / Music) -->
   <aside class="bw-side rd-side" id="bwSide" aria-label="Shared folders">
@@ -35,8 +35,8 @@
         <div class="rd-skel" aria-hidden="true"></div>
       </nav>
       <div class="bw-side-foot">
-        <div class="bw-side-stat"><span>Files in share</span><b id="bwStatFiles">—</b></div>
-        <div class="bw-side-stat"><span>In this folder</span><b id="bwStatHere">—</b></div>
+        <div class="bw-side-stat"><span>Files in share</span><b id="bwStatFiles">…</b></div>
+        <div class="bw-side-stat"><span>In this folder</span><b id="bwStatHere">…</b></div>
         <button type="button" class="bw-btn bw-btn-primary" id="bwDownloadAll" style="width:100%;justify-content:center">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
           Download all

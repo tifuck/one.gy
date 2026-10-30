@@ -170,10 +170,13 @@ app.config['MAX_RETENTION'] = timedelta(days=7)
 # Upload processing progress tracking
 # Tracks server-side processing progress (encryption, zipping) per upload
 # so the frontend can poll for status updates during the processing phase.
-# Uses file-based storage in /tmp so progress is shared across Gunicorn workers.
+# Uses file-based storage in the temp dir so progress is shared across Gunicorn
+# workers. Temp paths carry a tag derived from basedir: PROD and DEV share one
+# host and must never share (or clean up) each other's progress/work files.
 import threading
 
-_PROGRESS_DIR = os.path.join('/tmp', 'fileshare_progress')
+_APP_TMP_TAG = hashlib.sha256(basedir.encode('utf-8')).hexdigest()[:12]
+_PROGRESS_DIR = os.path.join(tempfile.gettempdir(), f'fileshare_progress_{_APP_TMP_TAG}')
 os.makedirs(_PROGRESS_DIR, exist_ok=True)
 
 # ─── Namespaced working directories ───────────────────────────────────────────
@@ -188,7 +191,7 @@ os.makedirs(_PROGRESS_DIR, exist_ok=True)
 # Working dirs now live under one namespaced root and carry a liveness marker
 # that active operations refresh, and the age check uses the newest mtime found
 # anywhere inside the directory (which DOES advance during a long write).
-ONEGY_TEMP_ROOT = os.path.join(tempfile.gettempdir(), 'onegy_work')
+ONEGY_TEMP_ROOT = os.path.join(tempfile.gettempdir(), f'onegy_work_{_APP_TMP_TAG}')
 _WORK_DIR_ALIVE_MARKER = '.onegy_alive'
 
 def _ensure_onegy_temp_root():
@@ -1044,7 +1047,7 @@ def get_real_ip():
     """Get the real client IP, checking reverse proxy headers.
     CDN/proxy headers are only trusted when both TRUSTED_PROXY_HOPS is enabled
     AND the operator has explicitly opted into trusting CDN-specific headers."""
-    if TRUSTED_PROXY_HOPS > 0 and TRUST_CDN_HEADERS:
+    if TRUSTED_PROXY_HOPS > 0 and TRUST_CDN_HEADERS and 'werkzeug.proxy_fix.orig' in request.environ:
         for header in ('CF-Connecting-IP', 'True-Client-IP', 'X-Real-IP'):
             ip = request.headers.get(header)
             if ip:
@@ -1119,6 +1122,8 @@ def request_entity_too_large(e):
     print(f'[UPLOAD] {ip} Request entity too large: {request.content_length} bytes')
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.content_type and 'multipart/form-data' in request.content_type:
         return jsonify({'error': f'File too large. Maximum upload size is {max_gb}GB.'}), 413
+    if request.is_json:
+        return jsonify({'error': 'REQUEST BODY TOO LARGE'}), 413
     flash(f'FILE TOO LARGE. MAXIMUM UPLOAD SIZE IS {max_gb}GB.', 'error')
     return _safe_referrer_redirect()
 
@@ -1127,8 +1132,8 @@ def request_entity_too_large(e):
 def ratelimit_handler(e):
     """JSON for XHR; branded 429 page for browser navigations (never bounce to /)."""
     ip = get_real_ip()
-    print(f'[RATELIMIT] {ip} {request.method} {request.path} - Rate limit exceeded: {e.description}')
-    if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.content_type == 'application/json':
+    print(f'[RATELIMIT] {ip} {request.method} {_log_safe_path(request.path)} - Rate limit exceeded: {e.description}')
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.is_json:
         return jsonify({'error': 'TOO MANY REQUESTS. PLEASE SLOW DOWN.', 'retry_after': e.description}), 429
     return render_template('notfound.html',
         error_code='4',
@@ -1136,6 +1141,13 @@ def ratelimit_handler(e):
         error_code_end='9',
         title='TOO MANY REQUESTS',
         subtitle='PLEASE SLOW DOWN AND TRY AGAIN IN A MOMENT'), 429
+
+@app.errorhandler(CSRFError)
+def csrf_error_handler(e):
+    """JSON for XHR/JSON callers so the frontend can show the error; HTML otherwise."""
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.is_json:
+        return jsonify({'error': 'SECURITY TOKEN MISSING OR EXPIRED. PLEASE REFRESH THE PAGE AND TRY AGAIN.'}), 400
+    return e
 
 # 404 Not Found error handler
 @app.errorhandler(404)
@@ -1163,15 +1175,41 @@ def _assign_csp_nonce():
     g.csp_nonce = secrets.token_hex(16)
 
 
+# Endpoints that legitimately take large bodies and bound them themselves
+# (_set_request_upload_cap, or the notes JSON limits in _load_notes_json_request).
+_LARGE_BODY_ENDPOINTS = frozenset({
+    'upload', 'apiv1_upload',
+    'make_file_public', 'make_file_private',
+    'file_create_blank', 'file_save_content',
+    'notes_create_note', 'notes_update_note', 'notes_send_to_user',
+})
+_DEFAULT_REQUEST_BODY_CAP = 2 * 1024 * 1024  # _set_request_upload_cap adds 10 MiB framing headroom
+
+
+def _cap_small_request_body():
+    """Every other endpoint only parses small JSON/form bodies: bound them so
+    get_json()/get_data()/form parsing cannot buffer up to MAX_CONTENT_LENGTH."""
+    if request.endpoint not in _LARGE_BODY_ENDPOINTS:
+        _set_request_upload_cap(_DEFAULT_REQUEST_BODY_CAP)
+
+
+# Must run first: CSRFProtect's hook (registered in 010) already parses request.form.
+app.before_request_funcs.setdefault(None, []).insert(0, _cap_small_request_body)
+
+
 @app.context_processor
 def _inject_csp_nonce():
     return {'csp_nonce': getattr(g, 'csp_nonce', '')}
 
 
 # Log requests with real client IP
-# C0/C1 control characters plus the Unicode line/paragraph separators and NEL
+# C0/C1 control characters plus the Unicode line/paragraph separators
 # -- every one of them can split a line in a downstream log pipeline.
-_LOG_UNSAFE_CHARS = frozenset({'\x7f', '\x85', '\u2028', '\u2029'})
+_LOG_UNSAFE_RE = re.compile('[\x00-\x1f\x7f-\x9f\u2028\u2029]')
+# Path segments whose NEXT segment is a bearer token (same rule as
+# gunicorn.conf.py's access-log redaction).
+_LOG_TOKEN_PATH_PREFIXES = frozenset((
+    'f', 's', 'manage', 'delete', 'manage-data-by-token', 'prepared', 'progress'))
 
 
 def _log_safe(value):
@@ -1186,8 +1224,16 @@ def _log_safe(value):
     of the message is preserved and NOTHING that is not control noise is
     touched, so an operator can still recognise the offending value."""
     text = value if isinstance(value, str) else str(value)
-    return ''.join(
-        ' ' if (ch < ' ' or ch in _LOG_UNSAFE_CHARS) else ch for ch in text)
+    return _LOG_UNSAFE_RE.sub(' ', text)
+
+
+def _log_safe_path(path):
+    """Request path for log lines: bearer tokens redacted, controls neutralised."""
+    segments = str(path or '').split('/')
+    for i in range(len(segments) - 1):
+        if segments[i] in _LOG_TOKEN_PATH_PREFIXES and segments[i + 1]:
+            segments[i + 1] = '[REDACTED]'
+    return _log_safe('/'.join(segments))
 
 
 @app.after_request
@@ -1196,7 +1242,7 @@ def log_request_info(response):
     # Only log non-static, non-trivial requests
     if not request.path.startswith('/static/'):
         ip = get_real_ip()
-        print(f'[REQUEST] {ip} {request.method} {request.path} -> {response.status_code}')
+        print(f'[REQUEST] {ip} {request.method} {_log_safe_path(request.path)} -> {response.status_code}')
     # Static file caching: 1 year TTL (cache-busted by ?v=hash query param)
     if request.path.startswith('/static/'):
         # Only real assets are immutable; a 404 must not be pinned for a year.
@@ -1229,7 +1275,7 @@ def log_request_info(response):
     # before and makes the two headers agree.
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     _csp_nonce = getattr(g, 'csp_nonce', '') or ''
-    response.headers['Content-Security-Policy'] = (
+    _csp = (
         "default-src 'self'; "
         f"script-src 'self' 'nonce-{_csp_nonce}'; "
         "style-src 'self' 'unsafe-inline'; "
@@ -1243,6 +1289,11 @@ def log_request_info(response):
         "object-src 'none'; "
         "base-uri 'self'"
     )
+    # User content opened from /file/<id>/preview runs in an opaque origin.
+    # Chrome refuses to render a sandboxed PDF, so PDFs keep the plain policy.
+    if request.endpoint == 'file_preview' and response.mimetype != 'application/pdf':
+        _csp += '; sandbox'
+    response.headers['Content-Security-Policy'] = _csp
     # HSTS: instruct browsers to only connect over HTTPS for the next year.
     # includeSubDomains and preload are omitted intentionally — those require
     # operator opt-in and careful consideration of all subdomains.

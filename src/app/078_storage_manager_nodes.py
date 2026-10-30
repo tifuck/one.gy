@@ -1,5 +1,9 @@
 class _StorageManagerNodes:
 
+    # Per-row floor for reviving exhausted replicas outside a health-check
+    # offline->online transition (see _recover_exhausted_replicas_for_node).
+    EXHAUSTED_REPLICA_REVIVE_INTERVAL = timedelta(hours=6)
+
     def _pin_ssh_host_key_if_needed(self, node, backend):
         if not node or node.node_type != 'ssh' or not isinstance(backend, _SSHBackend):
             return False
@@ -450,19 +454,30 @@ class _StorageManagerNodes:
             return getattr(backend, '_checksum_supported', None)
         return None
 
-    def _recover_exhausted_replicas_for_node(self, node_id):
+    def _recover_exhausted_replicas_for_node(self, node_id, min_idle=None):
         """When a node returns to 'online', give its exhausted replicas
         (status='error' with error_count >= MAX_ERROR_RETRIES — which the
         replication triage loop skips forever) a fresh start so data
         re-replicates without manual admin intervention. Returns the number of
-        replica rows reset. Caller is responsible for the surrounding commit."""
+        replica rows reset. Caller is responsible for the surrounding commit.
+
+        min_idle (timedelta) limits the revive to rows whose last retry
+        (verified_at, stamped by triage on every reschedule) is older than
+        that, so a caller that runs every cycle cannot make the retry cap and
+        cooldown meaningless."""
         total = 0
+        idle_clause = db.true()
+        if min_idle is not None:
+            _cutoff = datetime.now(timezone.utc) - min_idle
         for model in (FileReplica, NoteReplica, ThumbnailReplica):
+            if min_idle is not None:
+                idle_clause = db.or_(model.verified_at.is_(None), model.verified_at < _cutoff)
             try:
                 reset = db.session.query(model).filter(
                     model.node_id == node_id,
                     model.status == 'error',
                     model.error_count >= self.MAX_ERROR_RETRIES,
+                    idle_clause,
                 ).update({
                     model.status: 'pending',
                     model.error_count: 0,
@@ -589,6 +604,19 @@ class _StorageManagerNodes:
                 print(f'[STORAGE] Node added but backend init failed: {e}')
             return created_node
 
+    def _removal_survivor_node_ids(self, node_id):
+        """Nodes whose copies count as surviving copies when node_id is
+        removed: enabled and not 'draining'. A disabled node is not replicated
+        from, and a draining node is mid-removal itself — counting either let
+        two concurrent removals each treat the other as the survivor."""
+        return sorted(
+            n.id for n in StorageNode.query.filter(
+                StorageNode.id != node_id,
+                StorageNode.is_enabled == True,
+                db.or_(StorageNode.status.is_(None), StorageNode.status != 'draining'),
+            ).all()
+        )
+
     def check_node_exclusive_data(self, node_id, verify_stale_evidence=False,
                                   verify_limit=500, max_verify_seconds=120,
                                   stale_after_seconds=None):
@@ -614,6 +642,7 @@ class _StorageManagerNodes:
         stale synced row on another node doesn't mask a true exclusive.
         """
         _backends, local_backend, local_node_id, _version = self._backend_state_snapshot()
+        survivor_node_ids = self._removal_survivor_node_ids(node_id)
         # ── Files exclusive to this node ──────────────────────────────
         # Find file_ids where (a) this node has a synced row AND (b) no
         # OTHER node has a *verified* synced row for the same file_id.
@@ -635,6 +664,7 @@ class _StorageManagerNodes:
                 # checksum_verified=False rows must not mask this node as
                 # removable. NULL (legacy/unknown) keeps its prior meaning.
                 db.func.sum(case((db.and_(FileReplica.node_id != node_id,
+                                          FileReplica.node_id.in_(survivor_node_ids),
                                           FileReplica.checksum.isnot(None),
                                           FileReplica.checksum_verified.isnot(False)), 1), else_=0)) == 0,
             )
@@ -667,7 +697,7 @@ class _StorageManagerNodes:
                     current_synced_nodes.setdefault(nid, set()).add(nodeid)
             exclusive_note_ids = {
                 nid for nid, nodes in current_synced_nodes.items()
-                if nodes == {node_id}
+                if node_id in nodes and not nodes.intersection(survivor_node_ids)
             }
         else:
             exclusive_note_ids = set()
@@ -687,7 +717,9 @@ class _StorageManagerNodes:
         ).having(
             db.and_(
                 db.func.sum(case((ThumbnailReplica.node_id == node_id, 1), else_=0)) > 0,
-                db.func.sum(case((db.and_(ThumbnailReplica.node_id != node_id, ThumbnailReplica.size_bytes.isnot(None)), 1), else_=0)) == 0,
+                db.func.sum(case((db.and_(ThumbnailReplica.node_id != node_id,
+                                          ThumbnailReplica.node_id.in_(survivor_node_ids),
+                                          ThumbnailReplica.size_bytes.isnot(None)), 1), else_=0)) == 0,
             )
         )
         exclusive_thumb_keys = list(exclusive_thumbs_query.all())  # list of (file_id, thumb_type)
@@ -770,6 +802,7 @@ class _StorageManagerNodes:
         except Exception as e:
             print(f'[STORAGE] Could not refresh backends before node-removal verification: {e}')
         backends, local_backend, local_node_id, _version = self._backend_state_snapshot()
+        survivor_node_ids = self._removal_survivor_node_ids(node_id)
         if stale_after_seconds is None:
             try:
                 stale_after_seconds = max(0, get_numeric_setting('integrity_scrub_min_reverify_interval'))
@@ -823,6 +856,8 @@ class _StorageManagerNodes:
                             os.path.getsize(local_path) == int(expected_size)
                             and self._sha256_file(local_path) == expected_checksum
                         )
+                        if not survivor_verified:
+                            self._forget_local_integrity(local_path)
                         if survivor_verified:
                             local_replica = FileReplica.query.filter_by(
                                 file_id=file_id, node_id=local_node_id).first()
@@ -841,6 +876,7 @@ class _StorageManagerNodes:
                     FileReplica.file_id == file_id,
                     FileReplica.node_id != node_id,
                     FileReplica.node_id != local_node_id,
+                    FileReplica.node_id.in_(survivor_node_ids),
                     FileReplica.status == 'synced',
                 ).order_by(*_order_by_nulls_first_asc(FileReplica.verified_at)).all()
                 for replica in candidates:
@@ -893,6 +929,7 @@ class _StorageManagerNodes:
                 NoteReplica.note_id.in_(losing_note_ids),
                 NoteReplica.node_id != node_id,
                 NoteReplica.node_id != local_node_id,
+                NoteReplica.node_id.in_(survivor_node_ids),
                 NoteReplica.status == 'synced',
                 NoteReplica.checksum.isnot(None),
                 NoteReplica.checksum_verified.isnot(False),
@@ -901,6 +938,7 @@ class _StorageManagerNodes:
             rows = NoteReplica.query.join(Note, _current_note).filter(
                 NoteReplica.note_id.in_(losing_note_ids),
                 NoteReplica.node_id != node_id,
+                NoteReplica.node_id.in_(survivor_node_ids),
                 NoteReplica.status == 'synced',
                 NoteReplica.checksum.isnot(None),
                 NoteReplica.checksum_verified.isnot(False),
@@ -965,6 +1003,7 @@ class _StorageManagerNodes:
                     ThumbnailReplica.file_id.in_({fid for fid, _ in losing_thumb_keys}),
                     ThumbnailReplica.node_id != node_id,
                     ThumbnailReplica.node_id != local_node_id,
+                    ThumbnailReplica.node_id.in_(survivor_node_ids),
                     ThumbnailReplica.status == 'synced',
                     ThumbnailReplica.checksum.isnot(None),
                     ThumbnailReplica.checksum_verified.isnot(False),
@@ -974,6 +1013,7 @@ class _StorageManagerNodes:
             rows = ThumbnailReplica.query.filter(
                 ThumbnailReplica.file_id.in_({fid for fid, _ in losing_thumb_keys}),
                 ThumbnailReplica.node_id != node_id,
+                ThumbnailReplica.node_id.in_(survivor_node_ids),
                 ThumbnailReplica.status == 'synced',
                 ThumbnailReplica.checksum.isnot(None),
                 ThumbnailReplica.checksum_verified.isnot(False),

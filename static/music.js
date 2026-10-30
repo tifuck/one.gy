@@ -33,13 +33,18 @@
   function toPlayable (t, albumName) {
     return { id: t.id, title: t.title || t.name, artists: (t.artists || []), album_name: t.album_name || albumName || '', cover_path: t.cover_path || null, duration_ms: t.duration_ms || 0 }
   }
+  // index < 0: play from the first playable track ("Play" button).
   function playList (tracks, index, albumName) {
     if (typeof MusicPlayer === 'undefined' || !MusicPlayer.playMusicLibrary) { toast('PLAYER NOT READY', 'error'); return }
-    var playable = tracks.filter(function (t) { return t.available !== false }).map(function (t) { return toPlayable(t, albumName) })
+    // Re-map index to the filtered array by position (ids may repeat)
+    var playable = [], start = index < 0 ? 0 : -1
+    tracks.forEach(function (t, i) {
+      if (t.available === false) return
+      if (i === index) start = playable.length
+      playable.push(toPlayable(t, albumName))
+    })
     if (!playable.length) { toast('NO PLAYABLE TRACKS', 'error'); return }
-    // Re-map index to the filtered array
-    var startId = tracks[index] && tracks[index].id
-    var start = Math.max(0, playable.findIndex(function (t) { return t.id === startId }))
+    if (start < 0) { toast('TRACK UNAVAILABLE', 'error'); return }
     MusicPlayer.playMusicLibrary(playable, start)
     syncHearts()
   }
@@ -52,17 +57,28 @@
       S.likes = new Set(ids.map(function (x) { return typeof x === 'object' ? x.id : x }))
     } catch (e) {}
   }
+  // The player's bar + fullscreen hearts follow S.likes for the current track
+  // (only when `id`, if given, is still that track).
+  function syncPlayerHeart (id) {
+    if (typeof MusicPlayer === 'undefined' || !MusicPlayer.getCurrentTrackId) return
+    var currentId = MusicPlayer.getCurrentTrackId()
+    if (!currentId || (id && id !== currentId)) return
+    var liked = S.likes.has(currentId)
+    if (MusicPlayer.setBarHeartState) MusicPlayer.setBarHeartState(liked)
+    if (MusicPlayer.setFsHeartState) MusicPlayer.setFsHeartState(liked)
+  }
   function toggleLike (id) {
     var previous = likeMutations[id] || likesReady
     var mutation = previous.then(async function () {
       try {
-        var r = await fetch('/music/api/likes/' + encodeURIComponent(id), { method: 'POST', headers: { 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' } })
+        // Send the wanted state (not a server toggle) so a stale heart cannot flip it the wrong way
+        var r = await fetch('/music/api/likes/' + encodeURIComponent(id), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ liked: !S.likes.has(id) }) })
         if (!r.ok) throw new Error('like')
         var res = await r.json()
-        var liked = res.liked
-        if (liked) S.likes.add(id); else S.likes.delete(id)
+        if (typeof res.liked !== 'boolean') throw new Error('like')
+        if (res.liked) S.likes.add(id); else S.likes.delete(id)
         syncHearts()
-        if (MusicPlayer.getCurrentTrackId && MusicPlayer.getCurrentTrackId() === id) { if (MusicPlayer.setBarHeartState) MusicPlayer.setBarHeartState(liked); if (MusicPlayer.setFsHeartState) MusicPlayer.setFsHeartState(liked) }
+        syncPlayerHeart(id)
         updateLikedCount()
       } catch (e) { toast('COULD NOT UPDATE LIKE', 'error') }
     })
@@ -108,7 +124,7 @@
     var liked = S.likes.has(t.id)
     var unavailable = t.available === false
     return '<div class="mu-track' + (unavailable ? ' is-unavail' : '') + '" data-track-index="' + i + '" data-song-id="' + esc(t.id) + '">' +
-      '<span class="mu-track-num">' + (t.track_number || (i + 1)) + '<svg class="mu-track-play" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20"/></svg></span>' +
+      '<span class="mu-track-num">' + esc(t.track_number || (i + 1)) + '<svg class="mu-track-play" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20"/></svg></span>' +
       (showArt ? '<span class="mu-track-art">' + cover(t.cover_path) + '</span>' : '') +
       '<span class="mu-track-main"><span class="mu-track-title">' + esc(t.title || t.name) + '</span><span class="mu-track-artist">' + esc(artistNames(t.artists, t.featured_artists)) + '</span></span>' +
       '<button class="mu-track-like' + (liked ? ' is-liked' : '') + '" data-like="' + esc(t.id) + '" aria-label="Like"><svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>' +
@@ -249,6 +265,19 @@
   function go (v) {
     if (v === 'home') viewHome(); else if (v === 'albums') viewAlbums(); else if (v === 'artists') viewArtists(); else if (v === 'liked') viewLiked()
   }
+  // Player title/artist links (window.MusicBrowse.navigate) and /music#album:<id> deep links
+  function navigate (type, id) {
+    if (type === 'album') viewAlbum(id); else if (type === 'artist') viewArtist(id); else return false
+    return true
+  }
+  function navigateFromHash () {
+    var m = /^#(album|artist):(.+)$/.exec(location.hash)
+    if (!m) return false
+    var id
+    try { id = decodeURIComponent(m[2]) } catch (e) { return false }
+    try { history.replaceState(null, '', location.pathname + location.search) } catch (e) {}
+    return navigate(m[1], id)
+  }
 
   // ---- Wiring --------------------------------------------------------------
   function wire () {
@@ -260,7 +289,7 @@
       var like = e.target.closest('[data-like]'); if (like) { e.stopPropagation(); toggleLike(like.getAttribute('data-like')); return }
       var alb = e.target.closest('[data-album]'); if (alb) { viewAlbum(alb.getAttribute('data-album')); return }
       var art = e.target.closest('[data-artist]'); if (art) { viewArtist(art.getAttribute('data-artist')); return }
-      if (e.target.closest('[data-play-all]')) { playList(current.tracks, 0, current.albumName); return }
+      if (e.target.closest('[data-play-all]')) { playList(current.tracks, -1, current.albumName); return }
       var tr = e.target.closest('[data-track-index]'); if (tr) { playList(current.tracks, +tr.getAttribute('data-track-index'), current.albumName); return }
     })
 
@@ -272,6 +301,7 @@
       syncHearts(); updateLikedCount()
     })
     document.addEventListener('musicplayer:fslike', function (e) { if (e.detail && e.detail.id) toggleLike(e.detail.id) })
+    document.addEventListener('musicplayer:trackchange', function (e) { if (e.detail && e.detail.id) syncPlayerHeart(e.detail.id) })
     document.addEventListener('musicplayer:fsadd', function (e) { if (e.detail && e.detail.id) addToPlaylistMenu(e.detail.id, e.detail.button) })
 
     var si = $('muSearch'), to = null
@@ -309,9 +339,13 @@
     wire()
     if (typeof MusicPlayer !== 'undefined' && MusicPlayer.init) { try { MusicPlayer.init('music-library') } catch (e) {} }
     likesReady = loadLikes()
-    likesReady.then(updateLikedCount)
+    likesReady.then(function () {
+      updateLikedCount()
+      syncPlayerHeart()
+    })
     loadPlaylists()
-    viewHome()
+    window.MusicBrowse = { navigate: navigate }
+    if (!navigateFromHash()) viewHome()
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot()
 })()
