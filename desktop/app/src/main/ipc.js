@@ -1,6 +1,7 @@
-// ipcMain handlers. The native UI may call a fixed list of engine methods plus
-// a few app-owned actions; the website may only ask for the unlock key. Every
-// handler checks who is asking and validates what it gets.
+// ipcMain handlers. The native panel may call a fixed list of engine methods
+// plus a few app-owned actions; the website gets the site bridge
+// (desktop/docs/site-bridge.md): unlock key, open the sync panel, sync status,
+// and its theme. Every handler checks who is asking and validates what it gets.
 'use strict';
 
 const fs = require('fs/promises');
@@ -15,7 +16,10 @@ const { removeSync } = require('./remove-sync');
 const { UI_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS } = require('./ui-methods');
 
 const MAX_PARAMS_BYTES = 1024 * 1024;
-const SCREENS = new Set(['files', 'notes', 'music', 'web', 'sync', 'transfers', 'issues', 'settings', 'wizard']);
+const PANEL_SCREENS = new Set(['syncs', 'transfers', 'issues', 'settings']);
+const THEMES = new Set(['frost', 'frost-dark']);
+// Server usernames: 1-80 characters (User.username).
+const isUsername = (v) => typeof v === 'string' && v.length > 0 && v.length <= 80 && !/[\u0000-\u001f]/.test(v);
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
   && Object.getPrototypeOf(v) === Object.prototype;
@@ -39,9 +43,10 @@ async function probeServer(raw) {
   }
 }
 
-// deps: { window (MainWindow), engine (EngineSupervisor), settings (SettingsStore), version() }
-function registerIpc({ window, engine, settings }) {
-  const fromChrome = (event) => window.isChromeSender(event.sender)
+// deps: { window (MainWindow), engine (EngineSupervisor), settings (SettingsStore),
+//         sync (SyncStatus) }
+function registerIpc({ window, engine, settings, sync }) {
+  const fromChrome = (event) => window.isPanelSender(event.sender)
     && isMainFrameOf(event.senderFrame, event.sender)
     && isUiUrl(event.senderFrame.url);
 
@@ -119,20 +124,8 @@ function registerIpc({ window, engine, settings }) {
     window.openSitePath(pathname);
     return true;
   });
-  handle('app:view', (screen, reset) => {
-    if (!SCREENS.has(screen)) throw Object.assign(new Error('Unknown screen'), { code: 'validation_failed' });
-    window.view(screen, reset === true);
-    return true;
-  });
-  handle('app:siteBounds', (rect) => {
-    const ok = isPlainObject(rect) && ['x', 'y', 'width', 'height'].every((k) => Number.isFinite(rect[k]) && rect[k] >= 0 && rect[k] < 100000);
-    if (!ok) throw Object.assign(new Error('Invalid bounds'), { code: 'validation_failed' });
-    window.setSiteBounds({ x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) });
-    return true;
-  });
-  handle('app:siteNav', (action) => {
-    if (!['back', 'forward', 'reload'].includes(action)) throw Object.assign(new Error('Unknown action'), { code: 'validation_failed' });
-    window.siteNav(action);
+  handle('app:closePanel', () => {
+    window.closePanel();
     return true;
   });
   handle('app:exportDiagnostics', async () => {
@@ -155,6 +148,21 @@ function registerIpc({ window, engine, settings }) {
   });
 
   // Website bridge: only the site view's main frame on the configured origin.
+  ipcMain.on('site:openSync', (event, opts) => {
+    if (!window.isSiteFrame(event.senderFrame)) return;
+    const o = isPlainObject(opts) ? opts : {};
+    if (!isUsername(o.username)) return;
+    window.siteUser = o.username;
+    window.openPanel({ username: o.username, screen: PANEL_SCREENS.has(o.screen) ? o.screen : 'syncs' });
+  });
+  ipcMain.handle('site:status', (event, username) => {
+    if (!window.isSiteFrame(event.senderFrame)) return null;
+    if (isUsername(username)) window.siteUser = username;
+    return sync.forUser(window.siteUser);
+  });
+  ipcMain.on('site:theme', (event, theme) => {
+    if (window.isSiteFrame(event.senderFrame) && THEMES.has(theme) && settings.get().theme !== theme) settings.set({ theme });
+  });
   ipcMain.handle('site:unlock', async (event) => {
     if (!window.isSiteFrame(event.senderFrame)) return null;
     try {

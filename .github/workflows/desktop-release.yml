@@ -1,4 +1,5 @@
-# Builds ONE.GY Desktop (Windows NSIS, Linux AppImage + deb) and publishes a
+# Builds ONE.GY Desktop (Windows NSIS, Linux deb + rpm installers and the
+# portable AppImage) and publishes a
 # GitHub release desktop-v<version> when desktop/VERSION names a version that
 # has no release tag yet. Builds are unsigned for now.
 name: Desktop release
@@ -57,7 +58,7 @@ jobs:
             engine: onegy-engine.exe
             ldflags_extra: -H=windowsgui
           - os: ubuntu-latest
-            builder_args: --linux AppImage deb
+            builder_args: --linux AppImage deb rpm
             engine: onegy-engine
             ldflags_extra: ""
     runs-on: ${{ matrix.os }}
@@ -113,6 +114,10 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/app/package-lock.json
 
+      - name: Install rpmbuild
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
       - name: Install app dependencies
         working-directory: desktop/app
         run: npm ci
@@ -121,9 +126,11 @@ jobs:
         working-directory: desktop/app
         run: npm test
 
+      # scripts/dist.js takes the version from desktop/VERSION (checked above)
+      # and builds each Linux target in its own run (see electron-builder.yml).
       - name: Package
         working-directory: desktop/app
-        run: npx electron-builder ${{ matrix.builder_args }} --publish never "-c.extraMetadata.version=${VERSION}"
+        run: node scripts/dist.js ${{ matrix.builder_args }} --publish never
 
       - uses: actions/upload-artifact@v4
         with:
@@ -134,6 +141,7 @@ jobs:
             desktop/app/dist/ONE.GY-Desktop-Setup.exe.blockmap
             desktop/app/dist/ONE.GY-Desktop-x86_64.AppImage
             desktop/app/dist/onegy-desktop_amd64.deb
+            desktop/app/dist/onegy-desktop.x86_64.rpm
             desktop/app/dist/latest*.yml
             desktop/app/dist/beta*.yml
 
@@ -153,8 +161,12 @@ jobs:
       - name: Check the files
         run: |
           ls -la artifacts
-          for f in ONE.GY-Desktop-Setup.exe ONE.GY-Desktop-x86_64.AppImage onegy-desktop_amd64.deb latest.yml latest-linux.yml; do
+          for f in ONE.GY-Desktop-Setup.exe ONE.GY-Desktop-x86_64.AppImage onegy-desktop_amd64.deb onegy-desktop.x86_64.rpm latest.yml latest-linux.yml; do
             test -s "artifacts/$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          # electron-updater picks its file by extension: each Linux format must be listed.
+          for f in ONE.GY-Desktop-x86_64.AppImage onegy-desktop_amd64.deb onegy-desktop.x86_64.rpm; do
+            grep -q "url: $f" artifacts/latest-linux.yml || { echo "::error::$f missing from latest-linux.yml"; exit 1; }
           done
 
       - name: Write release notes
@@ -164,8 +176,12 @@ jobs:
 
           Downloads:
           - Windows (64-bit installer): ONE.GY-Desktop-Setup.exe
-          - Linux AppImage (x86_64, updates itself): ONE.GY-Desktop-x86_64.AppImage
-          - Debian / Ubuntu package (amd64): onegy-desktop_amd64.deb
+          - Ubuntu, Debian, Mint (amd64 installer): onegy-desktop_amd64.deb
+          - Fedora, openSUSE, RHEL (x86_64 installer): onegy-desktop.x86_64.rpm
+          - Portable Linux AppImage (x86_64, no install): ONE.GY-Desktop-x86_64.AppImage
+
+          All of them update themselves. The .deb and .rpm installs ask for
+          your system password to install an update.
 
           These builds are not code-signed yet. Windows SmartScreen may warn
           before the installer runs: choose "More info", then "Run anyway".
@@ -183,5 +199,6 @@ jobs:
             artifacts/ONE.GY-Desktop-Setup.exe.blockmap
             artifacts/ONE.GY-Desktop-x86_64.AppImage
             artifacts/onegy-desktop_amd64.deb
+            artifacts/onegy-desktop.x86_64.rpm
             artifacts/latest*.yml
             artifacts/beta*.yml

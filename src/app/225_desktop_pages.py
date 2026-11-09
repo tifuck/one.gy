@@ -7,8 +7,9 @@ DESKTOP_REPO_URL = 'https://github.com/tifuck/one.gy'
 DESKTOP_RELEASES_URL = DESKTOP_REPO_URL + '/releases/latest'
 DESKTOP_DOWNLOADS = {
     'windows': DESKTOP_RELEASES_URL + '/download/ONE.GY-Desktop-Setup.exe',
-    'appimage': DESKTOP_RELEASES_URL + '/download/ONE.GY-Desktop-x86_64.AppImage',
     'deb': DESKTOP_RELEASES_URL + '/download/onegy-desktop_amd64.deb',
+    'rpm': DESKTOP_RELEASES_URL + '/download/onegy-desktop.x86_64.rpm',
+    'appimage': DESKTOP_RELEASES_URL + '/download/ONE.GY-Desktop-x86_64.AppImage',
 }
 DEVICE_NAME_MAX = 80
 

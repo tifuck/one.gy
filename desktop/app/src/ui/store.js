@@ -1,5 +1,6 @@
-// State store for the native UI, fed by engine events, plus thin wrappers over
-// the preload bridge (window.onegy) that turn error envelopes into Errors.
+// State store for the native sync panel, fed by engine events, plus thin
+// wrappers over the preload bridge (window.onegy) that turn error envelopes
+// into Errors.
 
 export const api = window.onegy;
 
@@ -35,12 +36,16 @@ export const store = {
   settings: null,
   app: null,
   version: null,
-  site: {},
+  panelUser: null, // the website user the panel was opened for
 };
+
+// Usernames are unique regardless of case on the server (main/sync-status.js).
+export const sameUser = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 
 const subs = new Map();
 
-// topic: engine | status | account | syncs | transfers | issues | verify | settings | app | site | activity
+// topic: engine | status | account | syncs | transfers | issues | verify | settings | app | activity
+//        | app:panel | app:action | app:navigate
 export function on(topic, fn) {
   if (!subs.has(topic)) subs.set(topic, new Set());
   subs.get(topic).add(fn);
@@ -134,10 +139,6 @@ export function handleEvent(ev) {
     case 'app:settings':
       store.app = d;
       emit('app', d);
-      break;
-    case 'app:site':
-      store.site = d;
-      emit('site', d);
       break;
     default:
       emit(ev.type, d);

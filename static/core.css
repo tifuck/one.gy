@@ -171,6 +171,28 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
 .rd-badge{display:inline-grid;place-items:center;min-width:1.15rem;height:1.15rem;padding:0 .3rem;margin-left:.4rem;
   font-family:var(--font-mono);font-size:.62rem;font-weight:700;background:var(--accent);color:var(--accent-contrast);vertical-align:middle}
 
+/* ONE.GY Desktop site bridge (desktop-bridge.js sets html.is-desktop-app):
+   the Sync nav entry exists only inside the app, download links only outside.
+   Its dot/note follow data-sync-state from the app's onStatus. */
+:root:not(.is-desktop-app) [data-desktop-sync], .is-desktop-app [data-hide-in-desktop]{display:none!important}
+.rd-sync{display:inline-flex;align-items:center;gap:.45rem}
+.rd-sync-dot{flex:none;width:7px;height:7px;border-radius:50%;box-sizing:border-box;display:none}
+.rd-sync:is([data-sync-state="up_to_date"],[data-sync-state="syncing"],[data-sync-state="not_set_up"],[data-sync-state="paused"],
+  [data-sync-state="offline"],[data-sync-state="locked"],[data-sync-state="other_account"]) .rd-sync-dot{display:block}
+[data-sync-state="up_to_date"] .rd-sync-dot{background:var(--good)}
+[data-sync-state="syncing"] .rd-sync-dot{background:var(--accent);animation:rd-sync-pulse 1.4s ease-in-out infinite}
+[data-sync-state="not_set_up"] .rd-sync-dot{border:1.5px solid var(--accent)}
+[data-sync-state="paused"] .rd-sync-dot{width:6px;height:8px;border-radius:0;border:solid var(--text-dim);border-width:0 2px}
+[data-sync-state="offline"] .rd-sync-dot{border:1.5px solid var(--text-dim)}
+[data-sync-state="locked"] .rd-sync-dot{background:var(--warn)}
+[data-sync-state="other_account"] .rd-sync-dot{background:var(--text-dim);opacity:.6}
+.rd-sync-note:not([hidden]){font-size:.72rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text-dim)}
+[data-sync-state="not_set_up"] .rd-sync-note{color:var(--accent)}
+[data-sync-state="issues"] .rd-sync-note{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 5px;border-radius:999px;
+  background:var(--warn);color:var(--bg)}
+@keyframes rd-sync-pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){[data-sync-state="syncing"] .rd-sync-dot{animation:none;opacity:.6}}
+
 /* Theme + account menus (sitewide — used by the shared _nav.html) */
 .rd-icon-btn{width:44px;height:44px;flex:none;display:grid;place-items:center;border:2px solid var(--border);
   background:transparent;color:var(--text);cursor:pointer;transition:border-color .15s,color .15s,background .15s}

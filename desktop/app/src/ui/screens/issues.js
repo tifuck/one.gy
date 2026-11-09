@@ -93,7 +93,6 @@ export function mount(container) {
   const groups = h('div', { class: 'dk-issue-groups' });
   append(container, h('div', { class: 'rd-page' },
     h('header', { class: 'rd-page-head' },
-      h('h1', { class: 'rd-page-title' }, 'Issues'),
       h('p', { class: 'rd-page-sub' }, 'Things the sync engine will not decide on its own. Nothing is deleted while an issue is open.')),
     banner, groups));
 

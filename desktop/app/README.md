@@ -1,7 +1,10 @@
 # ONE.GY Desktop app (Electron)
 
-The window, tray and native sync screens. Syncing itself happens in the Go
-engine (`../engine`); the app talks to it over the socket/pipe described in
+The website in its own window, plus the tray and the native sync panel.
+There is no native sidebar, toolbar or address bar: the site is the app's
+only chrome, and its own "Sync" nav entry opens the sync panel over it
+(contract: `../docs/site-bridge.md`). Syncing itself happens in the Go engine
+(`../engine`); the app talks to it over the socket/pipe described in
 `../docs/engine-ipc.md`. No native Node modules.
 
 ## Run
@@ -10,57 +13,82 @@ engine (`../engine`); the app talks to it over the socket/pipe described in
 npm ci
 npm run dev:mock     # against dev/mock-engine.js (seeded syncs, transfers, issues)
 npm run build:engine && npm start   # against the real engine (needs Go)
-npm test             # unit tests: settings store, notifications, JSON-RPC + supervisor vs the mock
+npm test             # unit tests: settings, notifications, shortcuts, tray menu,
+                     # sync/bridge status, JSON-RPC + supervisor vs the mock
 ```
 
 Dev-only flags (ignored in packaged builds): `--mock-engine`, `--server=https://…`
 (sets the server URL; only https is accepted). F12 opens DevTools in dev.
-To work on the native screens in a plain browser, serve `src/ui/` and load
-`dev/mock-core.js` + `dev/ui-stub.js` before the page (they stand in for the
-preload).
+Packaged builds start on `https://one.gy`; Settings > General > Server in the
+sync panel changes it.
+
+Keys (no visible browser controls): Alt+←/→ and the mouse back/forward
+buttons, Ctrl+R / F5, Ctrl+Shift+R, Ctrl+= / Ctrl+- / Ctrl+0 (zoom, kept),
+Ctrl+Shift+S (sync panel, once this computer is authorized), Esc closes the
+panel.
+
+To work on the panel in a plain browser, serve this folder and load
+`dev/mock-core.js` + `dev/ui-stub.js` before `src/ui/index.html` (they stand
+in for the preload and the site's `openSync`; hash flags in `ui-stub.js`).
 
 End to end without a display: `dev/browser-bridge.js` serves `src/ui` on
 127.0.0.1 and proxies `window.onegy` (`dev/bridge-client.js`) to a real
-engine it supervises; `test/e2e_bridge.py` drives the real UI through it with
-Playwright against a DEV server (setup, sync both ways, engine restart,
-conflict, backup, pause, remove; screenshots). See the header of that script;
-it only runs with `ONEGY_E2E=1`. `dev/` and `test/` are never packaged.
+engine it supervises; `POST /panel` stands in for the site's `openSync` and
+`GET /site-status` for `onStatus`. `test/e2e_bridge.py` drives the real panel
+through it with Playwright against a DEV server (signed out = no sync UI,
+setup for the website user, wizard, sync both ways, engine restart, conflict,
+backup, pause, remove, other-account guard; screenshots). See the header of
+that script; it only runs with `ONEGY_E2E=1`. `dev/` and `test/` are never
+packaged.
 
 ## Package
 
 ```bash
 npm run dist                          # engine + installers for this OS into dist/
-node scripts/dist.js --linux AppImage deb
+node scripts/dist.js --linux deb rpm  # some Linux targets (rpm needs rpmbuild)
 ```
 
 The version comes from `../VERSION` (`package.json` keeps `0.0.0-dev`).
-Release builds run in `.github/workflows/desktop-release.yml`: Windows NSIS
-(`ONE.GY-Desktop-Setup.exe`), Linux AppImage (`ONE.GY-Desktop-x86_64.AppImage`)
-and deb (`onegy-desktop_amd64.deb`), plus `latest*.yml` / `beta*.yml` for
-auto-update. Builds are unsigned for now. Icons: `npm run icons` regenerates
-`build/` and `src/assets/` from `scripts/make-icons.js`.
+`scripts/dist.js` builds each Linux target in its own electron-builder run and
+merges their `*-linux.yml` (see `electron-builder.yml` for why). Release builds
+run in `.github/workflows/desktop-release.yml`:
+
+- Windows: `ONE.GY-Desktop-Setup.exe` (NSIS)
+- Ubuntu / Debian / Mint: `onegy-desktop_amd64.deb`
+- Fedora / openSUSE / RHEL: `onegy-desktop.x86_64.rpm`
+- portable Linux: `ONE.GY-Desktop-x86_64.AppImage`
+
+plus `latest*.yml` / `beta*.yml` for auto-update. The deb and rpm install to
+`/opt/ONE.GY Desktop` with a desktop entry and icons. Builds are unsigned for
+now. Icons: `npm run icons` regenerates `build/` and `src/assets/` from
+`scripts/make-icons.js`.
 
 ## Structure
 
 ```
 src/main/       main process
-  main.js         lifecycle, single instance, autostart, close-to-tray, power-save, quit
-  window.js       BaseWindow + chrome view (app://ui) + site view (persist:onegy)
+  main.js         lifecycle, single instance, autostart, close-to-tray, power-save,
+                  site bridge status push, quit
+  window.js       BaseWindow: site view (persist:onegy, fills the window) + sync
+                  panel view (app://ui, over the site); shortcuts, zoom, offline page
+  shortcuts.js    key -> action, zoom steps
+  sync-status.js  account + engine status + issues -> tray and onStatus states
   protocol.js     app:// scheme serving src/ui with a strict CSP
   security.js     web preferences, navigation locks, permissions, TLS, downloads
   engine.js       engine supervisor (connect, spawn, restart with backoff)
   rpc.js          JSON-RPC 2.0 client, newline framing
-  ipc.js          ipcMain handlers: engine method whitelist + app actions + site unlock
-  ui-methods.js   the engine methods the native UI may call
+  ipc.js          ipcMain handlers: engine method whitelist + app actions + site bridge
+  ui-methods.js   the engine methods the native panel may call
   environment.js  battery (powerMonitor) and metered network -> engine.environment
   remove-sync.js  remove a sync; optionally move its folder to the system trash
   tray.js, notify.js, updater.js, settings-store.js
-src/preload/    app-preload (native UI bridge), site-preload (window.onegyDesktop)
-src/ui/         native screens, plain ES modules, no build step
-  app.js          shell: rail, router, site toolbar, status bar
+src/preload/    app-preload (panel bridge), site-preload (window.onegyDesktop, bridge 2)
+src/ui/         native panel, plain ES modules, no build step
+  app.js          panel shell: header + tabs, gating (setup / other account / tabs), router
   store.js        state fed by engine events + bridge wrappers
-  screens/        wizard, syncs, transfers, issues, settings
+  screens/        wizard (incl. setup), syncs, transfers, issues, settings
   components/     dialog, menu, toast, tree picker, sync options, formatting
+  offline.html    "Can't reach <server>" page for the site view
   styles/         UI v2 tokens and primitives copied from the website, app.css
 dev/            mock engine, browser stub, browser bridge to the real engine
 scripts/        build-engine, dist, make-icons
@@ -70,11 +98,14 @@ test/           node --test, plus the env-gated e2e_bridge.py
 ## Notes
 
 - Auto-update (electron-updater, generic provider on this repo's latest GitHub
-  release) runs only in packaged NSIS and AppImage builds; deb installs update
-  through the package manager. The beta channel reads `beta*.yml`, which every
-  release also carries.
-- The website gets one bridge, `window.onegyDesktop.unlock()`, on top-level
-  frames of the configured server only; the main process re-checks the frame
-  and the engine's `web_unlock` setting decides.
+  release) runs in packaged NSIS, AppImage, deb and rpm builds. electron-updater
+  tells deb and rpm installs apart by `resources/package-type` and installs
+  them with the system package manager through pkexec, so those ask for the
+  system password and only install when the user picks "Restart now". The beta
+  channel reads `beta*.yml`, which every release also carries.
+- The website bridge (`window.onegyDesktop`: `unlock`, `openSync`, `onStatus`)
+  exists only on top-level frames of the configured server; the main process
+  re-checks the frame for every call and the engine's `web_unlock` setting
+  decides about the key.
 - After a POST/PUT/PATCH/DELETE to the server from the site view, the app asks
   the engine to poll (`engine.nudge`).

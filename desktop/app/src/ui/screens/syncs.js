@@ -1,4 +1,4 @@
-// Sync screen (plan 10.3): one row per sync with state, progress and a row
+// Syncs tab (plan 10.3): one row per sync with state, progress and a row
 // menu. Dropping a folder onto the screen starts the wizard with it.
 import { h, icon, clear, append, field } from '../components/dom.js';
 import { openMenu } from '../components/menu.js';
@@ -219,7 +219,6 @@ export function mount(container) {
   const list = h('ul', { class: 'dk-sync-list' });
   const page = h('div', { class: 'rd-page dk-drop' },
     h('header', { class: 'rd-page-head' },
-      h('h1', { class: 'rd-page-title' }, 'Sync'),
       h('p', { class: 'rd-page-sub' }, 'Folders on this computer that stay in step with one.gy.'),
       h('div', { class: 'rd-page-actions' },
         h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('wizard', { type: 'backup' }) }, icon('backup'), 'Add backup'),
@@ -229,15 +228,6 @@ export function mount(container) {
 
   function render() {
     clear(list);
-    const a = store.account;
-    if (a && a.signed_in === false) {
-      append(list, h('li', { class: 'rd-empty' },
-        h('span', { class: 'rd-empty-icon' }, icon('lock')),
-        h('h2', { class: 'rd-empty-title' }, 'Set up sync on this computer'),
-        h('p', { class: 'rd-empty-text' }, 'Authorize this computer once, then pick folders to keep in sync with one.gy.'),
-        h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard', {}) }, 'Set up')));
-      return;
-    }
     const syncs = [...store.syncs.values()].sort((x, y) => String(x.name).localeCompare(String(y.name)));
     if (!syncs.length) {
       append(list, h('li', { class: 'rd-empty' },

@@ -1,5 +1,6 @@
-// The privileged app:// scheme: serves src/ui (native screens) with a strict
-// CSP. Only app://ui/<file> under src/ui resolves; everything else is 404.
+// The privileged app:// scheme: serves src/ui (native panel, offline page)
+// with a strict CSP. Only app://ui/<file> under src/ui resolves; everything
+// else is 404.
 'use strict';
 
 const path = require('path');
@@ -10,6 +11,7 @@ const SCHEME = 'app';
 const HOST = 'ui';
 const UI_ROOT = path.join(__dirname, '..', 'ui');
 const UI_URL = `${SCHEME}://${HOST}/index.html`;
+const OFFLINE_URL = `${SCHEME}://${HOST}/offline.html`;
 
 const CSP = [
   "default-src 'none'",
@@ -83,4 +85,4 @@ function handleScheme(session) {
   });
 }
 
-module.exports = { registerScheme, handleScheme, resolveUiPath, isUiUrl, UI_URL };
+module.exports = { registerScheme, handleScheme, resolveUiPath, isUiUrl, UI_URL, OFFLINE_URL };

@@ -1,6 +1,7 @@
-// Settings (plan 10.6). App-owned settings (window, autostart, theme,
-// updates, notifications) go through appSettings; everything else is the
-// engine's settings.get / settings.set. Changes save as soon as they are made.
+// Settings tab of the sync panel (plan 10.6). App-owned settings (window,
+// autostart, server, updates, notifications) go through appSettings;
+// everything else is the engine's settings.get / settings.set. Changes save
+// as soon as they are made. The theme follows the website's own switch.
 import {
   h, icon, clear, append, fill, field, row, select, switchInput,
 } from '../components/dom.js';
@@ -64,14 +65,39 @@ function general() {
       row('Open at login', 'Start ONE.GY Desktop in the tray when you sign in to this computer.', switchInput(a.launch_at_login, (v) => saveApp({ launch_at_login: v }))),
       row('Start minimized', 'Open in the tray instead of showing the window.', switchInput(a.start_minimized, (v) => saveApp({ start_minimized: v }))),
       row('Keep running when the window is closed', 'Syncing continues in the tray. Quit from the tray menu.', switchInput(a.close_to_tray, (v) => saveApp({ close_to_tray: v }))),
-      row('Prevent sleep while syncing', null, switchInput(a.prevent_sleep, (v) => saveApp({ prevent_sleep: v }))),
-      row('Theme', null, select([['frost-dark', 'Dark'], ['frost', 'Light']], a.theme, (v) => saveApp({ theme: v })))),
+      row('Prevent sleep while syncing', null, switchInput(a.prevent_sleep, (v) => saveApp({ prevent_sleep: v })))),
     panel('Updates', store.version ? `Version ${store.version.app}` : null,
-      row('Install updates automatically', 'Downloads in the background and asks before restarting. Linux .deb installs update through your package manager.', switchInput(a.auto_update, (v) => saveApp({ auto_update: v }))),
+      row('Install updates automatically', 'Downloads in the background and asks before restarting. The .deb and .rpm installs ask for your system password to install.', switchInput(a.auto_update, (v) => saveApp({ auto_update: v }))),
       row('Update channel', 'Beta gets new versions first.', select([['stable', 'Stable'], ['beta', 'Beta']], a.update_channel, (v) => saveApp({ update_channel: v })))),
     panel('Notifications', null,
       ...NOTIFY.map(([k, label]) => row(label, null, switchInput(a.notify[k], (v) => saveApp({ notify: { [k]: v } }))))),
+    server(),
   ];
+}
+
+function server() {
+  const current = store.app.server_url;
+  const input = h('input', { class: 'form-input', type: 'url', value: current, spellcheck: 'false' });
+  const result = h('p', { class: 'rd-field-hint', 'aria-live': 'polite' });
+  const check = h('button', {
+    type: 'button', class: 'rd-btn rd-btn-ghost',
+    onclick: async () => {
+      result.textContent = 'Checking…';
+      const res = await bridge('probeServer', input.value).catch((e) => ({ ok: false, message: e.message }));
+      result.textContent = res.message;
+      if (!res.ok || res.origin === current) return;
+      store.app = await appSettings.set({ server_url: res.origin });
+      input.value = res.origin;
+      result.textContent = `${res.message} The website now loads from ${res.origin}.`;
+    },
+  }, 'Check and use');
+  return panel('Server', `The website in this app is ${current}.`,
+    h('details', { class: 'dk-details' },
+      h('summary', null, 'Change server'),
+      h('div', { class: 'dk-details-body' },
+        h('p', { class: 'rd-field-hint' }, 'For self-hosted one.gy servers. The address must use https. Sync stays with the server this computer was set up for until you sign out of sync.'),
+        h('div', { class: 'dk-inline' }, field('Server address', input), check),
+        result)));
 }
 
 function account() {
@@ -80,7 +106,7 @@ function account() {
   if (!a.signed_in) {
     return [panel('Account', null,
       h('p', null, 'This computer is not set up for sync yet.'),
-      h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard', {}) }, 'Set up this computer'))];
+      h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard') }, 'Set up this computer'))];
   }
   const used = percent(a.storage_used, a.storage_limit);
   const fill = h('div', { class: 'rd-meter-fill' });
@@ -95,12 +121,12 @@ function account() {
       a.storage_limit > 0 ? h('div', { class: 'rd-meter', role: 'progressbar', 'aria-valuenow': Math.round(used), 'aria-valuemin': 0, 'aria-valuemax': 100 }, fill) : null,
       h('div', { class: 'dk-btn-row' },
         h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => bridge('openSite', '/account').catch(toastError) }, icon('external'), 'Open account page'))),
-    panel('Sign out of this device', 'Syncing stops and the keys are removed from this computer. Your files stay where they are.',
+    panel('Sign out of sync on this computer', 'Syncing stops and the keys are removed from this computer. Your files stay where they are. The website stays signed in.',
       h('button', {
         type: 'button', class: 'rd-btn rd-btn-danger',
         onclick: async () => {
           const ok = await confirmDialog({
-            title: 'Sign out of this device?',
+            title: 'Sign out of sync on this computer?',
             message: 'All syncs pause, this computer is removed from your devices, and its keys are deleted. Local files are kept.',
             confirmLabel: 'Sign out', danger: true,
           });
@@ -108,12 +134,12 @@ function account() {
           try {
             await rpc('account.signOut', { revoke: true });
             await loadAccount();
-            toast('Signed out of this device', 'success');
+            toast('Signed out of sync on this computer', 'success');
           } catch (err) {
             toastError(err);
           }
         },
-      }, 'Sign out of this device')),
+      }, 'Sign out of sync')),
   ];
 }
 
@@ -127,7 +153,7 @@ function syncs() {
       list.length
         ? h('ul', { class: 'dk-mini-list' }, list.map((x) => h('li', null, h('span', null, x.name), h('span', { class: 'dk-path' }, x.local_path))))
         : h('p', { class: 'rd-field-hint' }, 'None yet.'),
-      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('sync') }, 'Manage syncs')),
+      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('syncs') }, 'Manage syncs')),
     panel('Defaults for new syncs', null,
       row('Type', null, select(Object.entries(SYNC_TYPES).filter(([k]) => k !== 'full').map(([k, v]) => [k, v.label]), d.type, setDefault('type'))),
       row('When a file changed on both sides', null, select([['keep_both', 'Keep both copies'], ['prefer_remote', 'Prefer one.gy'], ['prefer_local', 'Prefer this computer'], ['ask', 'Ask me']], d.conflict_policy, setDefault('conflict_policy'))),
@@ -310,9 +336,7 @@ export function mount(container, params = {}) {
     fill(body, ...RENDER[tab](render));
   }
 
-  append(container, h('div', { class: 'rd-page rd-page-narrow' },
-    h('header', { class: 'rd-page-head' }, h('h1', { class: 'rd-page-title' }, 'Settings')),
-    tabs, body));
+  append(container, h('div', { class: 'rd-page rd-page-narrow' }, tabs, body));
   render();
   return on('engine', (state) => { if (state === 'connected' && NEEDS_ENGINE.has(tab)) render(); });
 }

@@ -1,4 +1,4 @@
-// Bridge for the native UI (app://ui). Explicit functions only: no raw
+// Bridge for the native sync panel (app://ui). Explicit functions only: no raw
 // ipcRenderer, no arbitrary channels. Every call resolves to an envelope
 // {ok, result} or {ok: false, error: {code, message, data}}.
 'use strict';
@@ -33,9 +33,7 @@ contextBridge.exposeInMainWorld('onegy', {
   openPath: (p) => invoke('app:openPath', p),
   openExternal: (url) => invoke('app:openExternal', url),
   openSite: (pathname) => invoke('app:openSite', pathname),
-  view: (screen, reset) => invoke('app:view', screen, reset),
-  siteBounds: (rect) => invoke('app:siteBounds', rect),
-  siteNav: (action) => invoke('app:siteNav', action),
+  closePanel: () => invoke('app:closePanel'),
   exportDiagnostics: () => invoke('app:exportDiagnostics'),
   openDataFolder: () => invoke('app:openDataFolder'),
   // opts: { deleteLocal, releaseBackup }; deleteLocal moves the folder to the system trash.

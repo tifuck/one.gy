@@ -1,10 +1,12 @@
-// App-owned settings (window, autostart, theme, server, updates, notifications)
-// in a small JSON file in userData. Engine settings live in the engine.
-// Every value from the renderer is validated here; unknown keys are dropped.
+// App-owned settings (window, autostart, theme, server, zoom, updates,
+// notifications) in a small JSON file in userData. Engine settings live in the
+// engine. Every value from a renderer is validated here; unknown keys are
+// dropped. `theme` follows the website's own theme switch (site-preload).
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
+const { ZOOM_LEVELS } = require('./shortcuts');
 
 const DEFAULT_SERVER = 'https://one.gy';
 const NOTIFY_KINDS = ['conflict', 'issue', 'mass_delete', 'transfer', 'revoked', 'info'];
@@ -15,6 +17,7 @@ const DEFAULTS = Object.freeze({
   start_minimized: false,
   close_to_tray: true,
   theme: 'frost-dark',
+  site_zoom: 1,
   update_channel: 'stable',
   auto_update: true,
   prevent_sleep: true,
@@ -41,6 +44,7 @@ const VALIDATORS = {
   start_minimized: bool,
   close_to_tray: bool,
   theme: oneOf('frost', 'frost-dark'),
+  site_zoom: oneOf(...ZOOM_LEVELS),
   update_channel: oneOf('stable', 'beta'),
   auto_update: bool,
   prevent_sleep: bool,

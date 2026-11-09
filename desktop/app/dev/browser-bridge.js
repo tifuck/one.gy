@@ -12,7 +12,9 @@
 //   GET  /bridge.js      dev/bridge-client.js: maps window.onegy onto this server
 //   POST /rpc            {method, params} -> engine (same whitelist as the app)
 //   POST /app/<name>     {args} -> app-owned actions (preload names)
-//   GET  /events         server-sent events: engine events + app:engine/app:settings
+//   GET  /events         server-sent events: engine events + app:engine/app:settings/app:panel
+//   POST /panel          {username, screen}: what the site's openSync() does (opens the panel)
+//   GET  /site-status?username=  what the site's onStatus() gets (main/sync-status.js)
 //   GET|POST /stub       read the action log / set {pickFolder, pickFiles} answers
 'use strict';
 
@@ -24,6 +26,7 @@ const { EngineSupervisor } = require('../src/main/engine');
 const { SettingsStore } = require('../src/main/settings-store');
 const { removeSync } = require('../src/main/remove-sync');
 const { UI_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS } = require('../src/main/ui-methods');
+const { SyncStatus } = require('../src/main/sync-status');
 
 const UI_DIR = path.join(__dirname, '..', 'src', 'ui');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -57,6 +60,7 @@ const engine = new EngineSupervisor({
   args: ['--state-dir', opt.stateDir, ...opt.engineArgs],
   socketPath: opt.socket,
 });
+const sync = new SyncStatus(engine);
 engine.on('state', (state) => broadcast({ type: 'app:engine', data: { state } }));
 engine.on('event', broadcast);
 settings.onChange((next) => broadcast({ type: 'app:settings', data: next }));
@@ -77,9 +81,7 @@ const APP = {
   openPath: (p) => { log.push(['openPath', p]); return true; },
   openExternal: (u) => { log.push(['openExternal', u]); return true; },
   openSite: (p) => { log.push(['openSite', p]); return true; },
-  view: () => true,
-  siteBounds: () => true,
-  siteNav: () => true,
+  closePanel: () => { log.push(['closePanel']); return true; },
   exportDiagnostics: () => engine.call('diagnostics.export', { path: path.join(path.dirname(opt.stateDir), 'diagnostics.zip') }, { timeoutMs: SLOW_TIMEOUT_MS }),
   openDataFolder: () => true,
   removeSync: (id, o) => removeSync({
@@ -144,6 +146,14 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/javascript' });
       res.end(fs.readFileSync(path.join(__dirname, 'bridge-client.js')));
       return;
+    }
+    if (req.method === 'POST' && url.pathname === '/panel') {
+      const { username, screen } = await readBody(req);
+      broadcast({ type: 'app:panel', data: { username: username || null, screen: screen || 'syncs' } });
+      return json(res, 200, { ok: true });
+    }
+    if (req.method === 'GET' && url.pathname === '/site-status') {
+      return json(res, 200, sync.forUser(url.searchParams.get('username')));
     }
     if (url.pathname === '/stub') {
       if (req.method === 'POST') Object.assign(stubs, await readBody(req));

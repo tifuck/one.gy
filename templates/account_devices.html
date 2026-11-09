@@ -15,7 +15,7 @@
     <p class="rd-page-sub">Computers signed in with ONE.GY Desktop. Removing one signs it out and stops its syncs. Files already on it stay there.</p>
     <div class="rd-page-actions">
       <a class="rd-btn rd-btn-ghost" href="{{ url_for('account') }}#security">Back to account</a>
-      {% if devices %}<a class="rd-btn rd-btn-primary" href="{{ url_for('desktop_page') }}">Get the desktop app</a>{% endif %}
+      {% if devices %}<a class="rd-btn rd-btn-primary" href="{{ url_for('desktop_page') }}" data-hide-in-desktop>Get the desktop app</a>{% endif %}
     </div>
   </header>
 
@@ -49,7 +49,7 @@
     <span class="rd-empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8 20h8M12 16.5V20"/></svg></span>
     <h2 class="rd-empty-title">No desktop devices yet</h2>
     <p class="rd-empty-text">Install ONE.GY Desktop on Windows or Linux and sign in. The computer shows up here.</p>
-    <a class="rd-btn rd-btn-primary" href="{{ url_for('desktop_page') }}">Get the desktop app</a>
+    <a class="rd-btn rd-btn-primary" href="{{ url_for('desktop_page') }}" data-hide-in-desktop>Get the desktop app</a>
   </div>
   {% endif %}
 

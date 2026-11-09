@@ -1,5 +1,6 @@
-// Tray icon and menu (plan 10.7): status icon per overall state, status line,
-// recent changes, pause/resume, manual upload/download, settings, quit.
+// Tray icon and menu. Before this computer is authorized for sync: only
+// "Open ONE.GY" and "Quit". After: status line, Open ONE.GY, Sync… (the sync
+// panel), pause/resume, Upload…, Quit (desktop/docs/site-bridge.md).
 'use strict';
 
 const path = require('path');
@@ -29,7 +30,7 @@ function statusLine(status, engineState) {
     case 'issues': return 'Needs your attention';
     case 'locked': return 'Locked: enter your password';
     case 'signed_out': return 'Not set up yet';
-    default: return 'ONE.GY Desktop';
+    default: return 'ONE.GY';
   }
 }
 
@@ -39,61 +40,55 @@ function loadIcon(name) {
   return nativeImage.createFromPath(path.join(ICON_DIR, file));
 }
 
+// The menu template (labels and actions), without Electron.
+function menuTemplate({ authorized, status, engineState, pausedUntil }, a) {
+  const open = { label: 'Open ONE.GY', click: () => a.open() };
+  const quit = { label: 'Quit ONE.GY', click: () => a.quit() };
+  if (!authorized) return [open, { type: 'separator' }, quit];
+  const connected = engineState === 'connected';
+  const paused = Boolean(status && status.state === 'paused');
+  const pauseItems = paused
+    ? [{ label: pausedUntil ? `Resume (paused until ${new Date(pausedUntil).toLocaleTimeString()})` : 'Resume syncing', click: () => a.resumeAll(), enabled: connected }]
+    : [
+      { label: 'Pause for 1 hour', click: () => a.pauseAll(60 * 60 * 1000), enabled: connected },
+      { label: 'Pause until resumed', click: () => a.pauseAll(null), enabled: connected },
+    ];
+  return [
+    { label: statusLine(status, engineState), enabled: false },
+    { type: 'separator' },
+    open,
+    { label: 'Sync…', click: () => a.openSync() },
+    { type: 'separator' },
+    ...pauseItems,
+    { label: 'Upload…', click: () => a.upload(), enabled: connected },
+    { type: 'separator' },
+    quit,
+  ];
+}
+
 class AppTray {
-  // actions: { open, navigate(screen), pauseAll(ms|null), resumeAll, upload, download, reveal(item), quit }
+  // actions: { open, openSync, pauseAll(ms|null), resumeAll, upload, quit }
   constructor(actions) {
     this.actions = actions;
-    this.status = null;
-    this.engineState = 'connecting';
-    this.recent = [];
-    this.pausedUntil = null;
+    this.state = { authorized: false, status: null, engineState: 'connecting', pausedUntil: null };
     this.tray = new Tray(loadIcon('offline'));
-    this.tray.setToolTip('ONE.GY Desktop');
     this.tray.on('click', () => actions.open());
     this.render();
   }
 
-  update({ status, engineState, recent, pausedUntil }) {
-    if (status !== undefined) this.status = status;
-    if (engineState !== undefined) this.engineState = engineState;
-    if (recent !== undefined) this.recent = recent.slice(0, 5);
-    if (pausedUntil !== undefined) this.pausedUntil = pausedUntil;
+  // patch: any of { authorized, status, engineState, pausedUntil }
+  update(patch) {
+    Object.assign(this.state, patch);
     this.render();
   }
 
   render() {
-    const a = this.actions;
-    const connected = this.engineState === 'connected';
-    const state = connected && this.status ? this.status.state : 'offline';
-    const line = statusLine(this.status, this.engineState);
-    this.tray.setImage(loadIcon(ICON_FOR[state] || 'offline'));
-    this.tray.setToolTip(`ONE.GY Desktop: ${line}`);
-
-    const paused = state === 'paused';
-    const recentItems = this.recent.length
-      ? this.recent.map((item) => ({ label: `${item.action} ${item.path}`.slice(0, 80), click: () => a.reveal(item) }))
-      : [{ label: 'Nothing yet', enabled: false }];
-    const pauseItems = paused
-      ? [{ label: this.pausedUntil ? `Resume (paused until ${new Date(this.pausedUntil).toLocaleTimeString()})` : 'Resume syncing', click: () => a.resumeAll(), enabled: connected }]
-      : [
-        { label: 'Pause for 1 hour', click: () => a.pauseAll(60 * 60 * 1000), enabled: connected },
-        { label: 'Pause until resumed', click: () => a.pauseAll(null), enabled: connected },
-      ];
-
-    this.tray.setContextMenu(Menu.buildFromTemplate([
-      { label: line, enabled: false },
-      { type: 'separator' },
-      { label: 'Open ONE.GY', click: () => a.open() },
-      { label: 'Recent changes', submenu: recentItems },
-      { type: 'separator' },
-      ...pauseItems,
-      { type: 'separator' },
-      { label: 'Upload…', click: () => a.upload(), enabled: connected },
-      { label: 'Download…', click: () => a.download(), enabled: connected },
-      { label: 'Settings', click: () => a.navigate('settings') },
-      { type: 'separator' },
-      { label: 'Quit ONE.GY Desktop', click: () => a.quit() },
-    ]));
+    const { authorized, status, engineState } = this.state;
+    const connected = engineState === 'connected';
+    const icon = authorized && connected && status ? ICON_FOR[status.state] : null;
+    this.tray.setImage(loadIcon(icon || 'offline'));
+    this.tray.setToolTip(authorized ? `ONE.GY: ${statusLine(status, engineState)}` : 'ONE.GY');
+    this.tray.setContextMenu(Menu.buildFromTemplate(menuTemplate(this.state, this.actions)));
   }
 
   destroy() {
@@ -101,4 +96,4 @@ class AppTray {
   }
 }
 
-module.exports = { AppTray, statusLine, ICON_FOR };
+module.exports = { AppTray, statusLine, menuTemplate, ICON_FOR };

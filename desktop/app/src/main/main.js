@@ -1,10 +1,11 @@
 // App lifecycle: single instance, engine supervision, window, tray, autostart,
-// close-to-tray, power-save blocker while syncing, updates and quit.
+// close-to-tray, power-save blocker while syncing, the website bridge status
+// push, updates and quit.
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
-const { app, dialog, Menu, Notification, powerMonitor, powerSaveBlocker, session, shell } = require('electron');
+const { app, dialog, Menu, Notification, powerMonitor, powerSaveBlocker, session } = require('electron');
 const { registerScheme, handleScheme } = require('./protocol');
 const { hardenApp } = require('./security');
 const { SettingsStore } = require('./settings-store');
@@ -15,6 +16,9 @@ const { AppTray } = require('./tray');
 const { createNotifier } = require('./notify');
 const { startUpdater } = require('./updater');
 const { watchEnvironment } = require('./environment');
+const { SyncStatus, throttle } = require('./sync-status');
+
+const SITE_STATUS_EVERY_MS = 500; // site-bridge.md: at most 2 updates per second
 
 const APP_ID = 'gy.one.desktop';
 const ENGINE_EXE = process.platform === 'win32' ? 'onegy-engine.exe' : 'onegy-engine';
@@ -84,12 +88,10 @@ function start() {
   if (devServer) settings.set({ server_url: devServer });
 
   const engine = new EngineSupervisor(engineCommand());
+  const sync = new SyncStatus(engine);
   const state = {
     quitting: false,
     engineStopped: false,
-    status: null,
-    syncs: new Map(),
-    recent: [],
     pauseTimer: null,
     pausedUntil: null,
     blocker: null,
@@ -97,17 +99,25 @@ function start() {
   let window = null;
   let tray = null;
 
+  // The sync panel for the account of the site page (else this computer's).
+  // From the tray, the keyboard and notifications only once this computer is
+  // authorized; the website's Sync entry also reaches the setup (ipc.js).
+  const openPanel = (screen) => {
+    if (!sync.authorized()) return window.show();
+    return window.openPanel({ username: window.siteUser || sync.account.username, screen });
+  };
+
   const showNotification = ({ title, body, kind }) => {
     if (!Notification.isSupported()) return;
     const n = new Notification({ title, body, silent: kind === 'transfer' });
     const screen = { conflict: 'issues', issue: 'issues', mass_delete: 'issues', transfer: 'transfers', revoked: 'settings' }[kind];
-    n.on('click', () => (screen ? window.navigate(screen) : window.show()));
+    n.on('click', () => (screen ? openPanel(screen) : window.show()));
     n.show();
   };
   const notify = createNotifier({ show: showNotification, isEnabled: (kind) => settings.get().notify[kind] !== false });
 
   const updatePowerSave = () => {
-    const busy = Boolean(state.status && state.status.state === 'syncing') && settings.get().prevent_sleep;
+    const busy = Boolean(sync.status && sync.status.state === 'syncing') && settings.get().prevent_sleep;
     if (busy && state.blocker === null) state.blocker = powerSaveBlocker.start('prevent-app-suspension');
     if (!busy && state.blocker !== null) {
       powerSaveBlocker.stop(state.blocker);
@@ -115,42 +125,25 @@ function start() {
     }
   };
 
-  const refreshCaches = async () => {
-    try {
-      const syncs = await engine.call('syncs.list');
-      state.syncs = new Map((syncs || []).map((s) => [s.id, s]));
-      state.recent = (await engine.call('activity.recent', { limit: 5 })) || [];
-      tray.update({ recent: state.recent });
-    } catch (err) {
-      console.error(`[APP] could not load syncs: ${err.message}`);
-    }
-  };
+  // Website onStatus subscribers: throttled, and only when something changed.
+  let lastSiteStatus = '';
+  const pushSiteStatus = throttle(() => {
+    const st = sync.forUser(window.siteUser);
+    const key = JSON.stringify([window.siteUser, st]);
+    if (key === lastSiteStatus) return;
+    lastSiteStatus = key;
+    window.sendSiteStatus(st);
+  }, SITE_STATUS_EVERY_MS);
 
-  engine.on('state', (s) => {
-    window.send({ type: 'app:engine', data: { state: s } });
-    tray.update({ engineState: s });
-    if (s === 'connected') refreshCaches();
+  sync.on('change', () => {
+    tray.update({ authorized: sync.authorized(), status: sync.status, engineState: sync.engineState });
+    updatePowerSave();
+    pushSiteStatus();
   });
+  engine.on('state', (s) => window.send({ type: 'app:engine', data: { state: s } }));
   engine.on('event', (ev) => {
     window.send(ev);
-    switch (ev.type) {
-      case 'status':
-        state.status = ev.data;
-        tray.update({ status: ev.data });
-        updatePowerSave();
-        break;
-      case 'sync':
-        if (ev.data && ev.data.id) state.syncs.set(ev.data.id, ev.data);
-        break;
-      case 'activity':
-        state.recent = [ev.data, ...state.recent].slice(0, 5);
-        tray.update({ recent: state.recent });
-        break;
-      case 'notify':
-        notify(ev.data);
-        break;
-      default:
-    }
+    if (ev.type === 'notify') notify(ev.data);
   });
 
   const pauseAll = async (ms) => {
@@ -165,16 +158,6 @@ function start() {
     state.pausedUntil = null;
     await engine.call('syncs.resume', {}).catch((err) => console.error(`[APP] resume failed: ${err.message}`));
     tray.update({ pausedUntil: null });
-  };
-
-  // Reveal a recent change: only paths that stay inside the sync root.
-  const reveal = (item) => {
-    const sync = item && state.syncs.get(item.sync_id);
-    if (!sync || typeof item.path !== 'string') return window.navigate('sync');
-    const root = path.resolve(sync.local_path);
-    const target = path.resolve(root, ...item.path.split('/'));
-    if (target !== root && !target.startsWith(root + path.sep)) return window.navigate('sync');
-    shell.showItemInFolder(target);
   };
 
   const quit = () => app.quit();
@@ -199,6 +182,7 @@ function start() {
       settings,
       serverOrigin: () => settings.get().server_url,
       onSiteMutation: () => engine.call('engine.nudge').catch(() => {}),
+      onSyncShortcut: () => { if (sync.authorized()) openPanel('syncs'); },
     });
     const startHidden = process.argv.includes('--hidden') || settings.get().start_minimized;
     const win = window.create({ show: !startHidden });
@@ -212,31 +196,27 @@ function start() {
       }
     });
 
-    registerIpc({ window, engine, settings });
+    registerIpc({ window, engine, settings, sync });
     watchEnvironment({ powerMonitor, engine });
 
     tray = new AppTray({
       open: () => window.show(),
-      navigate: (screen) => window.navigate(screen),
+      openSync: () => openPanel('syncs'),
       pauseAll,
       resumeAll,
       upload: async () => {
+        if (!sync.authorized()) return;
         const res = await dialog.showOpenDialog({ title: 'Upload to one.gy', properties: ['openFile', 'multiSelections', 'dontAddToRecent'] });
         if (res.canceled || !res.filePaths.length) return;
-        window.navigate('transfers');
+        openPanel('transfers');
         window.send({ type: 'app:action', data: { action: 'upload', paths: res.filePaths } });
       },
-      download: () => {
-        window.navigate('transfers');
-        window.send({ type: 'app:action', data: { action: 'download' } });
-      },
-      reveal,
       quit,
     });
 
     settings.onChange((next, before) => {
       if (next.server_url !== before.server_url) window.recreateSite();
-      if (next.theme !== before.theme) window.setTheme(next.theme);
+      if (next.theme !== before.theme) window.setTheme();
       if (next.launch_at_login !== before.launch_at_login) applyAutostart(next.launch_at_login);
       if (next.prevent_sleep !== before.prevent_sleep) updatePowerSave();
       window.send({ type: 'app:settings', data: next });

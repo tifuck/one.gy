@@ -7,12 +7,16 @@ Chromium through dev/browser-bridge.js, which proxies to a real onegy-engine.
 A second device token (simulating the website and another computer) checks
 and changes one.gy directly with the sync API and its own E2EE crypto.
 
-Covered: wizard (authorize, local folder, new one.gy folder, two-way, E2EE,
+Covered: no sync UI until the site calls openSync -> setup for the website's
+user (username locked) -> wizard (local folder, new one.gy folder, two-way, E2EE,
 preview, start) -> local files show up on one.gy (decrypted names + content)
 -> one.gy upload/rename/new folder/trash show up locally -> engine restart ->
 conflict ("Ask me") resolved in Issues -> backup sync (default target,
 read-only for the other device) -> pause/resume -> Settings > Folders ->
-remove the backup (release it) and the sync (move the folder to the trash).
+remove the backup (release it) and the sync (move the folder to the trash)
+-> other-account guard (sign out of sync, setup for the other user). The site
+bridge status (onStatus) is checked at each stage through the same module the
+app uses. The site's openSync() is simulated with the bridge's /panel.
 Screenshots of each step, dark and light, 1280x800.
 
 Run from the repo root, after `go build -tags devtls -o desktop/engine/bin/onegy-engine ./cmd/onegy-engine`
@@ -36,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -274,8 +279,16 @@ def shot(page, bridge, name):
     bridge.app('appSettings.set', {'theme': 'frost-dark'})
 
 
-def rail(page, label):
-    page.locator('.dk-rail-item', has_text=label).click()
+def tab(page, label):
+    page.locator('#tabs').get_by_role('tab', name=label, exact=True).click()
+
+
+def site_state(bridge, username):
+    return bridge.call(f'/site-status?username={urllib.parse.quote(username)}')['state']
+
+
+def status_pill(text):
+    return f'#status .rd-pill:text-matches("{text}")'
 
 
 def write(path, data):
@@ -319,6 +332,13 @@ def main():
             api_ctx = new_test_context(browser)
             other = Device(api_ctx.request, username, password, master_key)
 
+            # Signed out on the website: no Sync entry, no bridge script.
+            anon = new_test_context(browser).new_page()
+            anon.goto(f'{SERVER}/login')
+            assert anon.locator('[data-desktop-sync]').count() == 0
+            assert anon.locator('script[src*="desktop-bridge"]').count() == 0
+            anon.context.close()
+
             ctx = browser.new_context(viewport={'width': 1280, 'height': 800})
             ctx.add_init_script(path=os.path.join(APP_DIR, 'dev', 'bridge-client.js'))
             page = ctx.new_page()
@@ -341,17 +361,21 @@ def main():
 
 def run(page, bridge, other, local, backup_src, username, password):
     """The steps through the UI; raises on the first failed expectation."""
-    # 1. Wizard: sign in step, authorize this computer.
-    page.wait_for_selector('text=Sign in to one.gy')
-    shot(page, bridge, 'wizard-signin')
-    page.get_by_role('button', name='Continue').click()
-    page.wait_for_selector('text=Authorize this computer')
-    page.get_by_label('Username').fill(username)
+    # 1. Nothing until the site opens the panel; then the setup for its user.
+    wait('engine', lambda: site_state(bridge, username) != 'offline', timeout=30)
+    assert site_state(bridge, username) == 'not_set_up'
+    assert page.locator('#panel').is_hidden()
+    bridge.call('/panel', {'username': username})
+    page.wait_for_selector('h1:text("Set up sync on this computer")')
+    assert page.locator('#tabs').is_hidden()
+    assert page.get_by_label('Username').input_value() == username
+    assert page.get_by_label('Username').get_attribute('readonly') is not None
     page.get_by_label('Password').fill(password)
     page.get_by_label('Device name').fill(DEVICE)
-    shot(page, bridge, 'wizard-authorize')
+    shot(page, bridge, 'setup-authorize')
     page.get_by_role('button', name='Authorize').click()
     page.wait_for_selector('text=What do you want to do?', timeout=60000)
+    assert page.locator('#tabs').is_visible()
     shot(page, bridge, 'wizard-action')
     page.get_by_role('button', name='Continue').click()
 
@@ -390,9 +414,11 @@ def run(page, bridge, other, local, backup_src, username, password):
     for rel, data in files.items():
         assert other.content(tree[rel]) == data, rel
     log('local -> one.gy: names and content verified with the second device')
-    page.wait_for_selector('.dk-status-text:text("Up to date")', timeout=60000)
+    page.wait_for_selector(status_pill('Up to date'), timeout=60000)
+    assert site_state(bridge, username) == 'up_to_date'
+    assert site_state(bridge, username.upper()) == 'up_to_date'
     shot(page, bridge, 'sync-up-to-date')
-    rail(page, 'Transfers')
+    tab(page, 'Transfers')
     page.get_by_role('tab', name='Completed').click()
     page.wait_for_selector('td:has-text("c.bin")')
     shot(page, bridge, 'transfers-completed')
@@ -411,17 +437,19 @@ def run(page, bridge, other, local, backup_src, username, password):
     shot(page, bridge, 'transfers-after-web-changes')
 
     # Engine restart: the supervisor brings it back and the UI recovers.
-    os.kill(bridge.engine_pid(), 9)
-    rail(page, 'Sync')
-    page.wait_for_selector('text=Starting sync engine', timeout=15000)
-    page.wait_for_selector('.dk-status-text:text-matches("Up to date|Locked")', timeout=90000)
-    if page.locator('.dk-status-text:text("Locked")').count():
+    old_pid = bridge.engine_pid()
+    os.kill(old_pid, 9)
+    tab(page, 'Syncs')
+    wait('engine restarted', lambda: bridge.engine_pid() != old_pid, timeout=60)
+    page.wait_for_selector(status_pill('Up to date|Locked'), timeout=90000)
+    if page.locator(status_pill('Locked')).count():
         # No OS key store (headless Linux): the key was memory-only, so unlock.
+        assert site_state(bridge, username) == 'locked'
         shot(page, bridge, 'locked-after-restart')
-        page.locator('.dk-status-action:text("Unlock")').click()
+        page.locator('#notice').get_by_role('button', name='Unlock').click()
         page.locator('dialog').get_by_label('Password').fill(password)
         page.locator('dialog').get_by_role('button', name='Unlock').click()
-    page.wait_for_selector('.dk-status-text:text("Up to date")', timeout=90000)
+    page.wait_for_selector(status_pill('Up to date'), timeout=90000)
     log('engine killed and restarted; UI reconnected')
 
     # 4. Conflict with "Ask me", resolved in Issues.
@@ -438,7 +466,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     assert other.replace(node, b'remote edit').status == 200
     page.get_by_role('button', name='Resume Projects').click()
     bridge.rpc('engine.nudge')
-    rail(page, 'Issues')
+    tab(page, 'Issues')
     page.wait_for_selector('.dk-issue-path:text("a-renamed.txt")', timeout=90000)
     versioning = bridge.rpc('account.status')['versioning']
     if versioning:
@@ -457,7 +485,7 @@ def run(page, bridge, other, local, backup_src, username, password):
         log('conflict resolved (versioning is off on this server)')
 
     # 5. Backup: default target, read-only for other devices.
-    rail(page, 'Sync')
+    tab(page, 'Syncs')
     page.get_by_role('button', name='Add backup').click()
     bridge.stub(pickFolder=backup_src)
     page.get_by_role('button', name='Choose folder…').click()
@@ -482,7 +510,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     assert other.upload(bid, 'intruder.txt', b'x').status == 403
     assert other.rename(other.tree(bid)['IMG_0001.jpg'], 'renamed.jpg').status == 403
     log('backup: marked for this device, read-only for the other device')
-    page.wait_for_selector('.dk-status-text:text("Up to date")', timeout=60000)
+    page.wait_for_selector(status_pill('Up to date'), timeout=60000)
     shot(page, bridge, 'sync-with-backup')
 
     # 6. Pause/resume holds back an upload.
@@ -496,13 +524,13 @@ def run(page, bridge, other, local, backup_src, username, password):
     log('pause held the upload back; resume sent it')
 
     # Settings > Folders.
-    rail(page, 'Settings')
+    tab(page, 'Settings')
     page.get_by_role('tab', name='Folders').click()
     page.wait_for_selector('text=Clear debris now')
     shot(page, bridge, 'settings-folders')
 
     # 7. Remove the backup (make it a normal folder), then the sync with its local folder.
-    rail(page, 'Sync')
+    tab(page, 'Syncs')
     page.get_by_role('button', name='Actions for Pictures').click()
     page.get_by_role('menuitem', name='Remove sync').click()
     page.get_by_text('Make it a normal folder').click()
@@ -522,6 +550,23 @@ def run(page, bridge, other, local, backup_src, username, password):
     assert read(os.path.join(backup_src, 'IMG_0001.jpg')) is not None
     log('removed: backup released, sync folder moved to the trash')
     shot(page, bridge, 'sync-empty')
+
+    # 8. The website signed in as someone else: guard, then switch.
+    other_user = f'{username}_other'
+    assert site_state(bridge, other_user) == 'other_account'
+    bridge.call('/panel', {'username': other_user})
+    page.wait_for_selector(f"text=This computer syncs {username}'s files")
+    assert page.locator('#tabs').is_hidden()
+    shot(page, bridge, 'other-account')
+    page.get_by_role('button', name='Cancel').click()
+    page.wait_for_selector('#panel', state='hidden')
+    bridge.call('/panel', {'username': other_user})
+    page.get_by_role('button', name='Sign out of sync on this computer').click()
+    page.locator('dialog').get_by_role('button', name='Sign out of sync').click()
+    page.wait_for_selector('h1:text("Set up sync on this computer")', timeout=30000)
+    assert page.get_by_label('Username').input_value() == other_user
+    wait('signed out', lambda: site_state(bridge, other_user) == 'not_set_up', timeout=30)
+    log('other account: guarded, signed out of sync, setup offered for the website user')
 
 
 if __name__ == '__main__':

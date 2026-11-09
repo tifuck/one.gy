@@ -1,12 +1,14 @@
-// Native UI shell: rail, router, site toolbar, status bar, global actions.
-// Screens are modules exporting mount(container, params) -> unmount().
+// Native sync panel shell. The panel opens over the website
+// (desktop/docs/site-bridge.md) for the account the site page is signed in
+// as, and shows only what fits this computer's state: the setup when it is
+// not authorized, a switch-account guard when it syncs someone else, else the
+// tabs. Screens are modules exporting mount(container, params) -> unmount().
 import { h, icon, clear, fill, field } from './components/dom.js';
-import { openDialog } from './components/dialog.js';
-import { toastError } from './components/toast.js';
-import { manualUpload, manualDownload } from './components/manual.js';
-import { bytes, speed } from './components/format.js';
+import { openDialog, confirmDialog } from './components/dialog.js';
+import { toast, toastError } from './components/toast.js';
+import { manualUpload } from './components/manual.js';
 import {
-  api, rpc, bridge, appSettings, store, on, handleEvent, refreshAll, loadAccount, issueCount, activeTransferCount,
+  api, rpc, bridge, appSettings, store, on, handleEvent, refreshAll, loadAccount, issueCount, activeTransferCount, sameUser,
 } from './store.js';
 import * as syncsScreen from './screens/syncs.js';
 import * as transfersScreen from './screens/transfers.js';
@@ -14,122 +16,151 @@ import * as issuesScreen from './screens/issues.js';
 import * as settingsScreen from './screens/settings.js';
 import * as wizardScreen from './screens/wizard.js';
 
-const SITE_SCREENS = new Set(['files', 'notes', 'music', 'web']);
-const NATIVE = {
-  sync: syncsScreen, transfers: transfersScreen, issues: issuesScreen, settings: settingsScreen, wizard: wizardScreen,
+const SCREENS = {
+  syncs: syncsScreen, transfers: transfersScreen, issues: issuesScreen, settings: settingsScreen, wizard: wizardScreen,
 };
-const RAIL = [
-  [{ id: 'files', label: 'Files', icon: 'files' }, { id: 'notes', label: 'Notes', icon: 'notes' }, { id: 'music', label: 'Music', icon: 'music' }],
-  [{ id: 'sync', label: 'Sync', icon: 'sync' }, { id: 'transfers', label: 'Transfers', icon: 'transfers', badge: activeTransferCount },
-    { id: 'issues', label: 'Issues', icon: 'issues', badge: issueCount, tone: 'bad' }],
-  [{ id: 'settings', label: 'Settings', icon: 'settings' }],
+const TABS = [
+  { id: 'syncs', label: 'Syncs' },
+  { id: 'transfers', label: 'Transfers', count: activeTransferCount },
+  { id: 'issues', label: 'Issues', count: issueCount },
+  { id: 'settings', label: 'Settings' },
 ];
 
 const els = {
-  rail: document.getElementById('rail'),
-  sitebar: document.getElementById('sitebar'),
-  slot: document.getElementById('siteSlot'),
+  panel: document.getElementById('panel'),
+  tabs: document.getElementById('tabs'),
+  status: document.getElementById('status'),
+  close: document.getElementById('close'),
+  notice: document.getElementById('notice'),
   screen: document.getElementById('screen'),
-  status: document.getElementById('statusbar'),
 };
-let current = null;
+let current = null; // mounted screen
+let mountedGate = null;
 let unmount = null;
+let wanted = 'syncs'; // the tab to show once the panel may show tabs
+
+// ready (tabs) | setup (authorize this computer) | other (another account) | starting | missing
+function gate() {
+  if (store.engine === 'missing') return 'missing';
+  const a = store.account;
+  if (store.engine !== 'connected' || !a) return 'starting';
+  if (!a.signed_in) return 'setup';
+  if (store.panelUser && !sameUser(a.username, store.panelUser)) return 'other';
+  return 'ready';
+}
 
 // ---- Router ----------------------------------------------------------------
 function go(screen, params = {}) {
-  const site = SITE_SCREENS.has(screen);
-  if (!site && !NATIVE[screen]) return;
-  const reset = site && current === screen && params.reset !== false;
+  const g = gate();
+  let target = screen;
+  if (g === 'setup') target = 'wizard';
+  else if (g !== 'ready') target = g;
+  else if (!SCREENS[target]) target = 'syncs';
+  if (TABS.some((t) => t.id === target)) wanted = target;
   if (unmount) { unmount(); unmount = null; }
-  current = screen;
-  els.sitebar.hidden = !site;
-  els.slot.hidden = !site;
-  els.screen.hidden = site;
+  current = target;
+  mountedGate = g;
   clear(els.screen);
-  if (!site) {
-    unmount = NATIVE[screen].mount(els.screen, params) || null;
-    els.screen.focus({ preventScroll: true });
+  const mount = SCREENS[target] ? SCREENS[target].mount : MESSAGES[target];
+  unmount = mount(els.screen, { ...params, username: store.panelUser }) || null;
+  els.screen.scrollTop = 0;
+  els.screen.focus({ preventScroll: true });
+  renderHead();
+}
+
+// Account or engine changed: leave screens that no longer apply.
+function regate() {
+  const g = gate();
+  // Authorizing in the setup wizard: it goes on to the first sync.
+  if (g === mountedGate || (mountedGate === 'setup' && g === 'ready' && current === 'wizard')) {
+    mountedGate = g;
+    renderHead();
+    return;
   }
-  api.view(screen, reset);
-  if (site) reportSlot();
-  renderRail();
+  go(wanted);
 }
 
-// ---- Site view slot ------------------------------------------------------------
-function reportSlot() {
-  if (els.slot.hidden) return;
-  const r = els.slot.getBoundingClientRect();
-  api.siteBounds({ x: r.left, y: r.top, width: r.width, height: r.height });
-}
-new ResizeObserver(reportSlot).observe(els.slot);
-window.addEventListener('resize', reportSlot);
-
-function renderSitebar() {
-  const s = store.site || {};
-  let where = '';
-  try { const u = new URL(s.url); where = `${u.host}${u.pathname === '/' ? '' : u.pathname}`; } catch { /* blank */ }
-  fill(els.sitebar, 
-    h('button', { type: 'button', class: 'rd-icon-btn', 'aria-label': 'Back', disabled: !s.canGoBack, onclick: () => api.siteNav('back') }, icon('back')),
-    h('button', { type: 'button', class: 'rd-icon-btn', 'aria-label': 'Forward', disabled: !s.canGoForward, onclick: () => api.siteNav('forward') }, icon('forward')),
-    h('button', { type: 'button', class: 'rd-icon-btn', 'aria-label': 'Reload', onclick: () => api.siteNav('reload') }, icon('reload')),
-    h('span', { class: 'dk-sitebar-where', title: s.url || '' }, s.error || where),
-    s.loading ? h('span', { class: 'dk-sitebar-loading', 'aria-label': 'Loading' }) : null,
-  );
-  els.sitebar.classList.toggle('is-error', Boolean(s.error));
+function close() {
+  els.panel.hidden = true;
+  api.closePanel();
 }
 
-// ---- Rail ----------------------------------------------------------------------
-function renderRail() {
-  const groups = RAIL.map((group) => h('div', { class: 'dk-rail-group' }, group.map((item) => {
-    const n = item.badge ? item.badge() : 0;
-    const active = current === item.id || (current === 'wizard' && item.id === 'sync');
-    return h('button', {
-      type: 'button',
-      class: `dk-rail-item${active ? ' is-active' : ''}`,
-      'aria-current': active ? 'page' : null,
-      onclick: () => go(item.id),
-    }, icon(item.icon), h('span', { class: 'dk-rail-label' }, item.label),
-    n ? h('span', { class: `dk-rail-badge${item.tone ? ` is-${item.tone}` : ''}`, 'aria-label': `${n} pending` }, n > 99 ? '99+' : String(n)) : null);
-  })));
-  fill(els.rail, 
-    h('div', { class: 'dk-rail-brand', title: 'ONE.GY Desktop' }, icon('lock')),
-    groups[0], groups[1], h('div', { class: 'dk-rail-spacer' }), groups[2]);
-}
+// ---- Screens that are only a message -------------------------------------------
+const message = (iconName, title, text, ...actions) => h('div', { class: 'rd-page' },
+  h('div', { class: 'rd-empty' },
+    h('span', { class: 'rd-empty-icon' }, icon(iconName)),
+    h('h2', { class: 'rd-empty-title' }, title),
+    h('p', { class: 'rd-empty-text' }, text),
+    actions.length ? h('div', { class: 'dk-btn-row dk-empty-actions' }, actions) : null));
 
-// ---- Status bar ------------------------------------------------------------------
-function statusText() {
-  if (store.engine === 'missing') return { text: 'Sync engine not found. Reinstall the app to fix this.', tone: 'bad' };
-  if (store.engine !== 'connected') return { text: 'Starting sync engine…', tone: '' };
+const MESSAGES = {
+  starting: (el) => el.append(message('sync', 'Starting the sync engine…', 'This takes a moment after the app starts.')),
+  missing: (el) => el.append(message('alert', 'Sync engine not found', 'Reinstall ONE.GY Desktop to fix this.')),
+  other: (el) => {
+    const mine = store.account.username;
+    el.append(message('lock', `This computer syncs ${mine}'s files`,
+      `You are signed in on the website as ${store.panelUser}. A computer syncs one account at a time. To sync ${store.panelUser}'s files here, sign out of sync on this computer first. Files on this computer stay where they are.`,
+      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: close }, 'Cancel'),
+      h('button', {
+        type: 'button', class: 'rd-btn rd-btn-danger',
+        onclick: async () => {
+          const ok = await confirmDialog({
+            title: `Sign out of ${mine}'s sync?`,
+            message: `All syncs stop, this computer is removed from ${mine}'s devices and its keys are deleted. Local files are kept.`,
+            confirmLabel: 'Sign out of sync', danger: true,
+          });
+          if (!ok) return;
+          try {
+            await rpc('account.signOut', { revoke: true });
+            await loadAccount();
+            toast('Signed out of sync on this computer', 'success');
+          } catch (err) {
+            toastError(err);
+          }
+        },
+      }, 'Sign out of sync on this computer')));
+  },
+};
+
+// ---- Header ------------------------------------------------------------------
+function statusPill() {
   const s = store.status;
-  const a = store.account;
-  if (a && !a.signed_in) return { text: 'Sync is not set up on this computer', tone: '', action: ['Set up', () => go('wizard')] };
-  if ((s && s.state === 'locked') || (a && a.locked)) return { text: 'Locked. Enter your password to sync.', tone: 'warn', action: ['Unlock', unlockDialog] };
-  if (!s) return { text: 'Connecting…', tone: '' };
-  switch (s.state) {
-    case 'up_to_date': return { text: 'Up to date', tone: 'good' };
-    case 'syncing': return { text: s.pending ? `Syncing ${s.pending.toLocaleString('en-US')} item${s.pending === 1 ? '' : 's'}` : 'Syncing', tone: 'accent' };
-    case 'paused': return { text: 'Paused', tone: '', action: ['Resume', () => rpc('syncs.resume', {}).catch(toastError)] };
-    case 'offline': return { text: 'Offline. Changes sync when the connection is back.', tone: 'warn' };
-    case 'issues': return { text: issueCount() === 1 ? '1 issue needs you' : `${issueCount() || 'Some'} issues need you`, tone: 'bad', action: ['Review', () => go('issues')] };
-    case 'signed_out': return { text: 'Signed out', tone: '', action: ['Set up', () => go('wizard')] };
-    default: return { text: s.state, tone: '' };
+  if (!s) return null;
+  const n = issueCount();
+  const [text, tone] = {
+    up_to_date: ['Up to date', 'good'],
+    syncing: [s.pending ? `Syncing ${s.pending.toLocaleString('en-US')} item${s.pending === 1 ? '' : 's'}` : 'Syncing', 'accent'],
+    paused: ['Paused', ''],
+    offline: ['Offline', 'warn'],
+    issues: [n === 1 ? '1 issue' : `${n || 'Some'} issues`, 'bad'],
+    locked: ['Locked', 'warn'],
+  }[s.state] || [];
+  return text ? h('span', { class: `rd-pill is-dot${tone ? ` is-${tone}` : ''}` }, text) : null;
+}
+
+// Built once and updated in place: status events arrive up to once a second.
+const tabs = TABS.map((t) => {
+  const count = h('span', { class: 'rd-count', hidden: true });
+  const button = h('button', { type: 'button', role: 'tab', class: 'rd-tab', onclick: () => go(t.id) }, t.label, count);
+  els.tabs.append(button);
+  return { t, button, count };
+});
+els.notice.append(h('div', { class: 'rd-callout is-warn dk-banner' }, icon('lock'),
+  h('div', null, 'Sync is locked. Enter your password to start syncing.'),
+  h('button', { type: 'button', class: 'rd-btn rd-btn-primary rd-btn-sm', onclick: () => unlockDialog() }, 'Unlock')));
+
+function renderHead() {
+  const ready = mountedGate === 'ready';
+  els.tabs.hidden = !ready;
+  const active = current === 'wizard' ? 'syncs' : current;
+  for (const { t, button, count } of tabs) {
+    const n = t.count ? t.count() : 0;
+    button.setAttribute('aria-selected', String(active === t.id));
+    count.hidden = !n;
+    count.textContent = n > 99 ? '99+' : String(n);
   }
-}
-
-function renderStatus() {
-  const st = statusText();
-  const s = store.status;
-  const rates = s && (s.bps_up > 0 || s.bps_down > 0)
-    ? h('span', { class: 'dk-status-rates' }, s.bps_up > 0 ? `↑ ${speed(s.bps_up)}` : '', s.bps_down > 0 ? ` ↓ ${speed(s.bps_down)}` : '')
-    : null;
-  const a = store.account;
-  const quota = a && a.signed_in && a.storage_limit > 0 ? h('span', { class: 'dk-status-quota' }, `${bytes(a.storage_used)} of ${bytes(a.storage_limit)}`) : null;
-  fill(els.status, 
-    h('span', { class: `dk-status-dot${st.tone ? ` is-${st.tone}` : ''}` }),
-    h('span', { class: 'dk-status-text' }, st.text),
-    st.action ? h('button', { type: 'button', class: 'dk-status-action', onclick: st.action[1] }, st.action[0]) : null,
-    h('span', { class: 'dk-status-spacer' }),
-    rates, quota);
+  fill(els.status, ready ? statusPill() : null);
+  els.notice.hidden = !(ready && ((store.account && store.account.locked) || (store.status && store.status.state === 'locked')));
 }
 
 // ---- Global actions ----------------------------------------------------------------
@@ -145,9 +176,12 @@ function unlockDialog() {
         kind: 'primary',
         run: async () => {
           if (!input.value) throw new Error('Enter your password.');
-          store.account = await rpc('account.unlock', { password: input.value });
-          input.value = '';
-          renderStatus();
+          try {
+            store.account = await rpc('account.unlock', { password: input.value });
+          } finally {
+            input.value = '';
+          }
+          renderHead();
         },
       },
     ],
@@ -161,32 +195,32 @@ function applyTheme() {
 }
 
 // ---- Boot ----------------------------------------------------------------------------
-on('status', () => { renderStatus(); renderRail(); });
-on('account', renderStatus);
-on('engine', renderStatus);
-on('issues', () => { renderRail(); renderStatus(); });
-on('transfers', renderRail);
-on('app', applyTheme);
-on('site', () => {
-  renderSitebar();
-  const section = store.site.section;
-  if (SITE_SCREENS.has(current) && section && section !== current) { current = section; renderRail(); }
+els.close.append(icon('x'));
+els.close.addEventListener('click', close);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.defaultPrevented || els.panel.hidden || document.querySelector('dialog[open], .rd-cmenu')) return;
+  close();
 });
-on('app:navigate', (d) => go(d.screen, { reset: false, ...d }));
+
+on('status', renderHead);
+on('issues', renderHead);
+on('transfers', renderHead);
+on('account', regate);
+on('engine', regate);
+on('app', applyTheme);
+on('app:navigate', (d) => (d.screen === 'close' ? close() : go(d.screen, d)));
+on('app:panel', (d) => {
+  store.panelUser = typeof d.username === 'string' ? d.username : null;
+  els.panel.hidden = false;
+  go(d.screen || 'syncs');
+});
 on('app:action', (d) => {
-  if (d.action === 'upload') manualUpload(d.paths, { useDefault: true });
-  if (d.action === 'download') manualDownload();
+  if (d.action === 'upload' && gate() === 'ready') manualUpload(d.paths, { useDefault: true });
 });
 
 // Dropping files anywhere must never navigate the UI.
 window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => e.preventDefault());
-
-const waitForEngine = (ms) => new Promise((resolve) => {
-  if (store.engine === 'connected') { resolve(); return; }
-  const off = on('engine', (s) => { if (s === 'connected') { off(); resolve(); } });
-  setTimeout(() => { off(); resolve(); }, ms);
-});
 
 async function boot() {
   api.onEvent(handleEvent);
@@ -196,13 +230,8 @@ async function boot() {
     toastError(err);
   }
   applyTheme();
-  renderRail();
-  renderStatus();
-  renderSitebar();
   if (store.engine === 'connected') await refreshAll();
-  await waitForEngine(4000);
-  if (store.engine === 'connected' && !store.account) await loadAccount().catch(() => {});
-  go(store.account && store.account.signed_in === false ? 'wizard' : 'files');
+  go(wanted);
 }
 
 boot();

@@ -1,8 +1,10 @@
-# electron-builder config for ONE.GY Desktop. The version comes from
-# desktop/VERSION (-c.extraMetadata.version, see scripts/dist.js and the
-# release workflow). Always build with --publish never: CI uploads the
-# installers. The generic publish entry is only there so the builder writes
-# latest.yml / latest-linux.yml (+ beta) for electron-updater (updater.js).
+# electron-builder config for ONE.GY Desktop. Build through scripts/dist.js:
+# it sets the version from desktop/VERSION (-c.extraMetadata.version), always
+# passes --publish never (CI uploads the installers), and builds each Linux
+# target in its own run (concurrent deb/rpm targets race on the shared
+# resources/package-type file that electron-updater reads) and merges their
+# latest-linux.yml / beta-linux.yml. The generic publish entry is only there
+# so the builder writes those update files and app-update.yml (updater.js).
 appId: gy.one.desktop
 productName: ONE.GY Desktop
 copyright: Copyright © ONE.GY
@@ -54,6 +56,8 @@ linux:
       arch: [x64]
     - target: deb
       arch: [x64]
+    - target: rpm
+      arch: [x64]
   icon: build/icons
   category: Network
   syncDesktopName: true
@@ -63,6 +67,11 @@ linux:
   vendor: ONE.GY
 appImage:
   artifactName: ONE.GY-Desktop-x86_64.${ext}
+# deb and rpm install to /opt/ONE.GY Desktop with a desktop entry and icons;
+# the builder's default dependencies apply.
 deb:
   artifactName: onegy-desktop_amd64.${ext}
+  packageName: onegy-desktop
+rpm:
+  artifactName: onegy-desktop.x86_64.${ext}
   packageName: onegy-desktop

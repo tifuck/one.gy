@@ -82,7 +82,7 @@ export function mount(container, params = {}) {
         : h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.pause', {}) }, icon('pause'), 'Pause all'),
       h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.pause', { direction: 'up' }) }, 'Pause uploads'),
       h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.pause', { direction: 'down' }) }, 'Pause downloads'),
-      h('span', { class: 'dk-status-spacer' }),
+      h('span', { class: 'dk-spacer' }),
       tab === 'done' ? h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.clearCompleted').then(loadTransfers) }, 'Clear completed') : null);
   }
 
@@ -109,7 +109,6 @@ export function mount(container, params = {}) {
 
   append(container, h('div', { class: 'rd-page rd-page-wide' },
     h('header', { class: 'rd-page-head' },
-      h('h1', { class: 'rd-page-title' }, 'Transfers'),
       h('p', { class: 'rd-page-sub' }, 'Sync transfers can be paused. Uploads and downloads you start yourself can also be cancelled.'),
       h('div', { class: 'rd-page-actions' },
         h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => manualDownload() }, icon('download'), 'Download…'),

@@ -13,21 +13,21 @@
   <section class="dk-hero">
     <div class="dk-hero-copy">
       <h1 class="dk-title">ONE.GY on your desktop</h1>
-      <p class="dk-lead">Your account in its own window, plus folders on your computer that stay in sync with your drive. Files are encrypted on your machine before they leave it.</p>
+      <p class="dk-lead">ONE.GY in its own window, plus folders on your computer that stay in sync with your drive. Files are encrypted on your machine before they leave it.</p>
       <div class="dk-actions">
         {% if platform == 'linux' %}
-          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ downloads.appimage }}">{{ dl_icon() }}Download for Linux</a>
-          <a class="rd-btn rd-btn-ghost rd-btn-lg" href="#downloads">Other downloads</a>
+          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ downloads.deb }}">{{ dl_icon() }}Ubuntu, Debian, Mint (.deb)</a>
+          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ downloads.rpm }}">{{ dl_icon() }}Fedora, openSUSE (.rpm)</a>
         {% elif platform == 'windows' %}
           <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ downloads.windows }}">{{ dl_icon() }}Download for Windows</a>
           <a class="rd-btn rd-btn-ghost rd-btn-lg" href="#downloads">Other downloads</a>
         {% else %}
           <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ downloads.windows }}">{{ dl_icon() }}Windows</a>
-          <a class="rd-btn rd-btn-ghost rd-btn-lg" href="{{ downloads.appimage }}">{{ dl_icon() }}Linux</a>
+          <a class="rd-btn rd-btn-ghost rd-btn-lg" href="#downloads">Linux</a>
         {% endif %}
       </div>
       <p class="dk-meta">
-        {% if platform == 'linux' %}AppImage for x64. Also for Windows 10 and 11.
+        {% if platform == 'linux' %}Packages for x64, or a <a href="{{ downloads.appimage }}">portable AppImage (no install)</a>. Also for <a href="#downloads">Windows 10 and 11</a>.
         {% elif platform == 'windows' %}Installer for Windows 10 and 11, x64. Also for Linux.
         {% else %}For Windows 10 and 11 and for Linux, x64 only.{% endif %}
         <a href="{{ repo_url }}" rel="noopener">Source on GitHub</a>
@@ -62,7 +62,7 @@
   <section class="dk-section" aria-labelledby="dkWhat">
     <h2 class="dk-h2" id="dkWhat">What it does</h2>
     <ul class="dk-feats">
-      <li><h3>Your account in a native window</h3><p>Files, Notes{% if allow_music %} and Music{% endif %} open in their own window, unlocked with this computer's key so you don't retype your password.</p></li>
+      <li><h3>The website in its own window</h3><p>The app is ONE.GY in its own window, with Files, Notes{% if allow_music %} and Music{% endif %} as you know them. Once you sign in, the Sync button in the navigation sets up folder sync on this computer.</p></li>
       <li><h3>Live folder sync</h3><p>Pick a folder on your computer and one in your drive. Changes on either side reach the other as they happen.</p></li>
       <li><h3>End-to-end encrypted</h3><p>Files and their names are encrypted on your computer with the same keys as the website. The server only stores ciphertext.</p></li>
       <li><h3>As many syncs as you need</h3><p>Run several folder pairs at once, each with its own settings.</p></li>
@@ -86,17 +86,24 @@
         </div>
         <div class="rd-field-row">
           <div class="rd-field-text">
-            <span class="rd-field-label">Linux AppImage</span>
-            <p class="rd-field-hint">Most 64-bit (x64) distributions. Make the file executable, then run it.</p>
+            <span class="rd-field-label">Ubuntu, Debian, Mint</span>
+            <p class="rd-field-hint">A .deb package for x64. Open it with your software installer, or run <code>sudo apt install ./onegy-desktop_amd64.deb</code>.</p>
           </div>
-          <a class="rd-btn {{ 'rd-btn-primary' if platform == 'linux' else 'rd-btn-ghost' }}" href="{{ downloads.appimage }}">{{ dl_icon() }}AppImage</a>
+          <a class="rd-btn {{ 'rd-btn-primary' if platform == 'linux' else 'rd-btn-ghost' }}" href="{{ downloads.deb }}">{{ dl_icon() }}.deb</a>
         </div>
         <div class="rd-field-row">
           <div class="rd-field-text">
-            <span class="rd-field-label">Debian and Ubuntu</span>
-            <p class="rd-field-hint">A .deb package for x64. Install it with <code>sudo apt install ./onegy-desktop_amd64.deb</code>.</p>
+            <span class="rd-field-label">Fedora, openSUSE</span>
+            <p class="rd-field-hint">An .rpm package for x64. Open it with your software installer, or run <code>sudo dnf install ./onegy-desktop.x86_64.rpm</code> (openSUSE: <code>sudo zypper install ./onegy-desktop.x86_64.rpm</code>).</p>
           </div>
-          <a class="rd-btn rd-btn-ghost" href="{{ downloads.deb }}">{{ dl_icon() }}.deb</a>
+          <a class="rd-btn {{ 'rd-btn-primary' if platform == 'linux' else 'rd-btn-ghost' }}" href="{{ downloads.rpm }}">{{ dl_icon() }}.rpm</a>
+        </div>
+        <div class="rd-field-row">
+          <div class="rd-field-text">
+            <span class="rd-field-label">Portable AppImage (no install)</span>
+            <p class="rd-field-hint">Any 64-bit (x64) distribution. Make the file executable, then run it.</p>
+          </div>
+          <a class="rd-btn rd-btn-ghost" href="{{ downloads.appimage }}">{{ dl_icon() }}AppImage</a>
         </div>
       </div>
       <footer class="rd-panel-foot dk-links">

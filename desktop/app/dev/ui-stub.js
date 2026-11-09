@@ -1,24 +1,31 @@
 // Browser stand-in for the app preload (window.onegy), backed by
 // dev/mock-core.js. Lets src/ui run in a plain browser for UI work and
 // screenshots: load mock-core.js, then this file, before src/ui/index.html.
-// URL hash flags: #signed-out (start in the wizard), #static (no live ticks),
-// #light (light theme).
+// URL hash flags (comma separated): signed-out (setup flow), static (no live
+// ticks), light (light theme), user=<name> (website user the panel opens for,
+// default alice), screen=<syncs|transfers|issues|settings>.
 (function () {
   'use strict';
   const flags = new Set(location.hash.slice(1).split(',').filter(Boolean));
+  const opt = (name, dflt) => {
+    const hit = [...flags].find((f) => f.startsWith(`${name}=`));
+    return hit ? decodeURIComponent(hit.slice(name.length + 1)) : dflt;
+  };
   const engine = window.OnegyMock.createMockEngine({ signedIn: !flags.has('signed-out'), platform: 'linux' });
   const listeners = new Set();
+  const emit = (ev) => listeners.forEach((fn) => fn(ev));
   const ok = (result) => Promise.resolve({ ok: true, result: result === undefined ? null : JSON.parse(JSON.stringify(result)) });
   const fail = (err) => Promise.resolve({ ok: false, error: { code: err.code || 'internal', message: err.message, data: err.data || null } });
   let settings = {
     server_url: 'https://one.gy', launch_at_login: true, start_minimized: false, close_to_tray: true,
-    theme: flags.has('light') ? 'frost' : 'frost-dark', update_channel: 'stable', auto_update: true, prevent_sleep: true,
+    theme: flags.has('light') ? 'frost' : 'frost-dark', site_zoom: 1, update_channel: 'stable', auto_update: true, prevent_sleep: true,
     notify: { conflict: true, issue: true, mass_delete: true, transfer: true, revoked: true, info: true },
   };
-  engine.onEvent((ev) => listeners.forEach((fn) => fn(ev)));
+  engine.onEvent(emit);
   if (!flags.has('static')) setInterval(() => engine.tick(), 1000);
-  // Like engine.subscribe: one status event right away.
-  setTimeout(() => listeners.forEach((fn) => fn({ type: 'status', data: engine.overall() })), 50);
+  // Like engine.subscribe: one status event right away; then the site's openSync().
+  setTimeout(() => emit({ type: 'status', data: engine.overall() }), 50);
+  setTimeout(() => emit({ type: 'app:panel', data: { username: opt('user', 'alice'), screen: opt('screen', 'syncs') } }), 100);
 
   window.onegy = {
     engine: (method, params) => {
@@ -26,12 +33,12 @@
     },
     engineState: () => ok('connected'),
     onEvent: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
-    version: () => ok({ app: '0.1.0', electron: '45.2.3', platform: 'linux', hostname: 'alice-laptop' }),
+    version: () => ok({ app: '0.2.0', electron: '45.2.3', platform: 'linux', hostname: 'alice-laptop' }),
     appSettings: {
       get: () => ok(settings),
       set: (patch) => {
         settings = { ...settings, ...patch, notify: { ...settings.notify, ...(patch.notify || {}) } };
-        listeners.forEach((fn) => fn({ type: 'app:settings', data: settings }));
+        emit({ type: 'app:settings', data: settings });
         return ok(settings);
       },
     },
@@ -41,9 +48,7 @@
     openPath: () => ok(true),
     openExternal: () => ok(true),
     openSite: () => ok(true),
-    view: () => ok(true),
-    siteBounds: () => ok(true),
-    siteNav: () => ok(true),
+    closePanel: () => ok(true),
     exportDiagnostics: () => ok(null),
     openDataFolder: () => ok(true),
     removeSync: (id) => {

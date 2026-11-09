@@ -3,21 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ONE.GY Desktop</title>
+  <title>Sync · ONE.GY</title>
   <link rel="stylesheet" href="styles/tokens.css">
   <link rel="stylesheet" href="styles/primitives.css">
   <link rel="stylesheet" href="styles/app.css">
   <script type="module" src="app.js"></script>
 </head>
 <body class="ui-v2">
-  <div class="dk-shell">
-    <nav class="dk-rail" id="rail" aria-label="Main"></nav>
-    <main class="dk-main">
-      <div class="dk-sitebar" id="sitebar" hidden></div>
-      <div class="dk-siteslot" id="siteSlot" hidden></div>
-      <div class="dk-screen" id="screen" tabindex="-1"></div>
-    </main>
-    <footer class="dk-status" id="statusbar" aria-live="polite"></footer>
+  <div class="dk-panel" id="panel" hidden>
+    <header class="dk-panel-head">
+      <h1 class="dk-panel-title">Sync</h1>
+      <nav class="rd-tabs" id="tabs" role="tablist" aria-label="Sync sections"></nav>
+      <span class="dk-panel-status" id="status" aria-live="polite"></span>
+      <button type="button" class="rd-icon-btn dk-panel-close" id="close" aria-label="Close" title="Close (Esc)"></button>
+    </header>
+    <div class="dk-notice" id="notice" hidden></div>
+    <main class="dk-screen" id="screen" tabindex="-1"></main>
   </div>
 </body>
 </html>

@@ -1,27 +1,42 @@
 // Auto-update via electron-updater, generic provider on this repository's
-// latest GitHub release (latest.yml / latest-linux.yml, or beta.yml on the
-// beta channel). Only for packaged NSIS and AppImage builds: deb updates come
-// from the package manager.
+// latest GitHub release (latest.yml / latest-linux.yml, or beta*.yml on the
+// beta channel). Packaged builds only: Windows NSIS, Linux AppImage, and the
+// Linux .deb / .rpm installs, which electron-updater recognises by the
+// resources/package-type file electron-builder writes and installs with the
+// system package manager through pkexec (it asks for the system password).
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { app, dialog } = require('electron');
 
 const FEED_URL = 'https://github.com/tifuck/one.gy/releases/latest/download';
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 
-function updatesSupported() {
-  if (!app.isPackaged) return false;
-  if (process.platform === 'win32') return true;
-  return process.platform === 'linux' && Boolean(process.env.APPIMAGE);
+// 'nsis' | 'appimage' | 'deb' | 'rpm', or null when this build cannot update itself.
+function installKind() {
+  if (!app.isPackaged) return null;
+  if (process.platform === 'win32') return 'nsis';
+  if (process.platform !== 'linux') return null;
+  if (process.env.APPIMAGE) return 'appimage';
+  try {
+    const kind = fs.readFileSync(path.join(process.resourcesPath, 'package-type'), 'utf8').trim();
+    return kind === 'deb' || kind === 'rpm' ? kind : null;
+  } catch {
+    return null;
+  }
 }
 
 // opts: { settings, beforeInstall(): Promise, notify({title, body}), parentWindow() }
 function startUpdater({ settings, beforeInstall, notify, parentWindow }) {
-  if (!updatesSupported()) return { checkNow: async () => ({ supported: false }) };
+  const kind = installKind();
+  if (!kind) return { checkNow: async () => ({ supported: false }) };
+  const packaged = kind === 'deb' || kind === 'rpm';
   const { autoUpdater } = require('electron-updater');
   autoUpdater.setFeedURL({ provider: 'generic', url: FEED_URL });
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // A package install needs the system password: only when the user says so.
+  autoUpdater.autoInstallOnAppQuit = !packaged;
   autoUpdater.allowDowngrade = false;
   autoUpdater.logger = {
     info: (m) => console.log(`[UPDATE] ${m}`),
@@ -43,10 +58,17 @@ function startUpdater({ settings, beforeInstall, notify, parentWindow }) {
       cancelId: 1,
       title: 'Update ready',
       message: `ONE.GY Desktop ${info.version} is ready to install.`,
-      detail: 'Syncing pauses for a moment while the app restarts.',
+      detail: packaged
+        ? 'Your system asks for your password to install the package. Syncing pauses for a moment while the app restarts.'
+        : 'Syncing pauses for a moment while the app restarts.',
     });
-    if (response !== 0) return;
-    await beforeInstall();
+    if (response !== 0) {
+      prompted = false;
+      return;
+    }
+    // The package manager installs before the app quits (and may be
+    // cancelled), so the engine keeps running until the normal quit.
+    if (!packaged) await beforeInstall();
     autoUpdater.quitAndInstall();
   });
 
@@ -67,4 +89,4 @@ function startUpdater({ settings, beforeInstall, notify, parentWindow }) {
   return { checkNow: check };
 }
 
-module.exports = { startUpdater, updatesSupported, FEED_URL };
+module.exports = { startUpdater, installKind, FEED_URL };

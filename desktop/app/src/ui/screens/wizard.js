@@ -1,6 +1,8 @@
-// Setup wizard (plan 10.2): sign in, authorize this computer, choose what to
-// do, local folder, one.gy folder, options, preview, start. Steps 3-8 also
-// run from "Add sync" / "Add backup" / dropping a folder on the Sync screen.
+// Setup wizard (plan 10.2): set up sync on this computer (authorize it for the
+// account the website is signed in as: params.username, locked), then what to
+// do, local folder, one.gy folder, options, preview, start. The steps after
+// the setup also run from "Add sync" / "Add backup" / dropping a folder on
+// the Syncs screen.
 import {
   h, icon, clear, append, fill, field, row, switchInput, callout,
 } from '../components/dom.js';
@@ -11,7 +13,7 @@ import {
   bytes, count, basename, SYNC_TYPES,
 } from '../components/format.js';
 import {
-  rpc, bridge, appSettings, store, navigate, loadAccount, loadSyncs,
+  rpc, bridge, store, navigate, loadAccount, loadSyncs, sameUser,
 } from '../store.js';
 
 const DEFAULT_SERVER = 'https://one.gy';
@@ -21,13 +23,13 @@ const ACTIONS = [
   { type: 'backup', title: 'Back up a folder', text: 'Copies this computer to one.gy. The copy on one.gy is read-only.' },
   { type: 'mirror', title: 'Mirror a one.gy folder here', text: 'Downloads a one.gy folder and keeps it updated. Local edits are undone.' },
   { type: 'full', title: 'Sync my whole drive', text: 'Two-way sync of everything on one.gy. Cannot be combined with other syncs.' },
-  { type: null, title: 'Skip for now', text: 'Use the Files, Notes and Music pages. You can add syncs later.' },
+  { type: null, title: 'Skip for now', text: 'Close this and keep using the website. Add syncs later from Sync.' },
 ];
 
 const AUTH_ERRORS = {
   invalid_credentials: 'Wrong username or password.',
   invalid_totp: 'That code did not work. Check the time on this computer and try again.',
-  captcha_required: 'Too many attempts. Sign in once on the website first, then try again here.',
+  captcha_required: 'Too many attempts. Wait a few minutes, then try again.',
   device_revoked: 'This computer was removed from your account. Authorize it again.',
   offline: 'Could not reach the server. Check your connection.',
 };
@@ -62,7 +64,6 @@ export function mount(container, params = {}) {
 
   const signedIn = () => Boolean(store.account && store.account.signed_in && !store.account.locked);
   const STEPS = [
-    { id: 'signin', label: 'Sign in', setup: true, render: stepSignin },
     { id: 'authorize', label: 'Authorize this computer', setup: true, render: stepAuthorize },
     { id: 'action', label: 'What to do', render: stepAction },
     { id: 'local', label: 'Folder on this computer', render: stepLocal },
@@ -83,15 +84,15 @@ export function mount(container, params = {}) {
   const nextBtn = h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => next() }, 'Continue');
   const cancelBtn = h('button', {
     type: 'button', class: 'rd-btn rd-btn-ghost dk-step-cancel',
-    onclick: () => navigate(signedIn() ? 'sync' : 'files'),
+    onclick: () => navigate(signedIn() ? 'syncs' : 'close'),
   }, 'Cancel');
   let onNext = async () => true;
 
   append(container, h('div', { class: 'dk-wizard' },
-    h('aside', { class: 'dk-wizard-side' }, h('p', { class: 'dk-wizard-kicker' }, fromSyncScreen ? 'New sync' : 'Set up ONE.GY Desktop'), stepper),
+    h('aside', { class: 'dk-wizard-side' }, h('p', { class: 'dk-wizard-kicker' }, fromSyncScreen ? 'New sync' : 'Set up sync on this computer'), stepper),
     h('section', { class: 'dk-wizard-main' },
       title, content, error,
-      h('footer', { class: 'dk-step-foot' }, cancelBtn, h('span', { class: 'dk-status-spacer' }), backBtn, nextBtn))));
+      h('footer', { class: 'dk-step-foot' }, cancelBtn, h('span', { class: 'dk-spacer' }), backBtn, nextBtn))));
 
   const setReady = (ready, label) => {
     nextBtn.disabled = !ready;
@@ -132,39 +133,7 @@ export function mount(container, params = {}) {
     }
   }
 
-  // ---- 1. Sign in (website) and server ------------------------------------
-  function stepSignin() {
-    title.textContent = 'Sign in to one.gy';
-    const server = (store.app && store.app.server_url) || DEFAULT_SERVER;
-    const input = h('input', { class: 'form-input', type: 'url', value: server, spellcheck: 'false' });
-    const result = h('p', { class: 'rd-field-hint', 'aria-live': 'polite' });
-    const check = h('button', {
-      type: 'button', class: 'rd-btn rd-btn-ghost',
-      onclick: async () => {
-        result.textContent = 'Checking…';
-        const res = await bridge('probeServer', input.value).catch((e) => ({ ok: false, message: e.message }));
-        result.textContent = res.message;
-        if (res.ok) {
-          store.app = await appSettings.set({ server_url: res.origin });
-          input.value = res.origin;
-          result.textContent = `${res.message} Saved.`;
-        }
-      },
-    }, 'Check and use');
-    append(content, 
-      h('p', { class: 'dk-lead' }, 'Files, Notes and Music in this app are the one.gy website. Sign in there once and the app remembers you.'),
-      h('div', { class: 'dk-btn-row' },
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => bridge('openSite', '/login') }, icon('external'), 'Open the sign-in page'),
-        h('span', { class: 'rd-field-hint' }, `Server: ${server}`)),
-      h('details', { class: 'dk-details' },
-        h('summary', null, 'Use a different server'),
-        h('div', { class: 'dk-details-body' },
-          h('p', { class: 'rd-field-hint' }, 'For self-hosted one.gy servers. The address must use https.'),
-          h('div', { class: 'dk-inline' }, field('Server address', input), check),
-          result)));
-  }
-
-  // ---- 2. Authorize this computer -------------------------------------------
+  // ---- 1. Set up sync on this computer: authorize it ------------------------
   function stepAuthorize() {
     const a = store.account || {};
     if (a.signed_in && a.locked) return stepUnlock();
@@ -173,26 +142,28 @@ export function mount(container, params = {}) {
       append(content, callout('good', 'check', `Signed in as ${a.username} on ${a.server}.`));
       return;
     }
-    title.textContent = 'Authorize this computer';
-    const username = h('input', { class: 'form-input', autocomplete: 'username', spellcheck: 'false' });
+    title.textContent = 'Set up sync on this computer';
+    // The website's account; another one is never authorized from here.
+    const lockedUser = params.username || null;
+    const username = h('input', {
+      class: 'form-input', autocomplete: 'username', spellcheck: 'false', value: lockedUser || '', readonly: Boolean(lockedUser),
+    });
     const password = h('input', { class: 'form-input', type: 'password', autocomplete: 'current-password' });
     const totp = h('input', { class: 'form-input', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 8 });
     const device = h('input', { class: 'form-input', value: (store.version && store.version.hostname) || '', maxlength: 80 });
     const totpField = field('Two-factor code', totp, 'From your authenticator app.');
     totpField.hidden = !w.showTotp;
-    const captcha = h('div', { hidden: true }, h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => bridge('openSite', '/login') }, 'Open the sign-in page'));
-    append(content, 
-      h('p', { class: 'dk-lead' }, 'Syncing runs in the background, so this computer needs its own access to your account and your encryption key.'),
+    append(content,
+      h('p', { class: 'dk-lead' }, 'Syncing runs in the background, so this computer needs its own access to your account and your encryption key. Confirm with your password once.'),
       callout('warn', 'lock', h('strong', null, 'This computer will be able to decrypt your files until you remove it in Devices. '),
         'The key stays on this computer, in the system key store when there is one. Your password is used once and not saved.'),
       h('div', { class: 'dk-form' }, field('Username', username), field('Password', password), totpField,
-        field('Device name', device, 'Shown in Devices on the website.')),
-      captcha);
-    username.focus();
+        field('Device name', device, 'Shown in Devices on the website.')));
+    (lockedUser ? password : username).focus();
     for (const el of [username, password, totp, device]) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') nextBtn.click(); });
     setReady(true, 'Authorize');
     onNext = async () => {
-      captcha.hidden = true;
+      if (lockedUser && !sameUser(username.value.trim(), lockedUser)) throw new Error(`This sets up sync for ${lockedUser}, the account signed in on the website.`);
       if (!username.value.trim() || !password.value) throw new Error('Enter your username and password.');
       if (!device.value.trim()) throw new Error('Give this computer a name.');
       const req = {
@@ -211,7 +182,6 @@ export function mount(container, params = {}) {
           totp.focus();
           throw new Error('Enter the code from your authenticator app.');
         }
-        if (err.code === 'captcha_required') captcha.hidden = false;
         throw new Error(AUTH_ERRORS[err.code] || err.message);
       } finally {
         password.value = '';
@@ -251,7 +221,7 @@ export function mount(container, params = {}) {
         append(cards, h('button', {
           type: 'button', role: 'radio', 'aria-checked': String(selected), class: `dk-card${selected ? ' is-selected' : ''}`,
           onclick: () => {
-            if (!a.type) { navigate('files'); return; }
+            if (!a.type) { navigate('close'); return; }
             w.cfg.type = a.type;
             render();
           },
@@ -501,7 +471,7 @@ export function mount(container, params = {}) {
       store.syncs.set(sync.id, sync);
       await loadSyncs().catch(() => {});
       toast(`${sync.name} is syncing`, 'success');
-      navigate('sync');
+      navigate('syncs');
       return false;
     };
   }
