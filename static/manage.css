@@ -56,10 +56,11 @@
 .manage-modal-detail:first-child{border-top:none}
 .manage-modal-detail-label{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)}
 .manage-modal-detail-value{font-family:var(--font-mono);font-size:.82rem;font-weight:600;text-align:right;word-break:break-all}
-.manage-modal-detail-hint{color:var(--text-dim);font-weight:400;font-size:.62rem;margin-right:.5rem}
+.manage-modal-detail-hint{color:var(--text-dim);font-weight:400;font-size:.62rem;margin-right:.5rem;text-transform:uppercase}
+.manage-modal-detail-label,.manage-modal-encryption-value,.manage-modal-loading{text-transform:uppercase}
 .manage-modal-encryption-e2e{color:#1f9d57}
 .manage-modal-encryption-server{color:var(--accent)}
-.manage-modal-encryption-mixed{color:#e5940a}
+.manage-modal-encryption-mixed{color:var(--warn)}
 
 /* Settings */
 .manage-modal-settings{display:flex;flex-direction:column;gap:1.3rem}
@@ -67,13 +68,13 @@
 .manage-modal-label{font-family:var(--font-mono);font-size:.68rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
 .manage-modal-toggle-row{flex-direction:row;align-items:center;gap:.8rem}
 .manage-modal-toggle-text{display:flex;flex-direction:column;gap:.15rem}
-.manage-modal-hint{font-family:var(--font-mono);font-size:.66rem;color:var(--text-dim)}
+.manage-modal-hint{font-family:var(--font-mono);font-size:.66rem;color:var(--text-dim);text-transform:uppercase}
 
 /* Expiry dropdown */
 .manage-expiry-dropdown{position:relative}
 .manage-expiry-button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:.5rem;
   padding:.6rem .8rem;border:2px solid var(--border);background:var(--surface);font-family:var(--font-mono);
-  font-size:.8rem;color:var(--text);cursor:pointer}
+  font-size:.8rem;color:var(--text);cursor:pointer;text-transform:uppercase}
 .manage-expiry-button:hover{border-color:var(--accent)}
 /* NOTE: manage-modal.js toggles `.show` on #manageExpiryMenu ITSELF -- it never
    puts `.open` on the wrapper. The redesign originally only styled
@@ -88,7 +89,7 @@
   border:2px solid var(--border);box-shadow:var(--shadow-2);display:none}
 .manage-expiry-dropdown.open .manage-expiry-menu,
 .manage-expiry-menu.show{display:block}
-.manage-expiry-item{padding:.55rem .8rem;font-family:var(--font-mono);font-size:.78rem;cursor:pointer;border-top:1px solid var(--border)}
+.manage-expiry-item{padding:.55rem .8rem;font-family:var(--font-mono);font-size:.78rem;cursor:pointer;border-top:1px solid var(--border);text-transform:uppercase}
 .manage-expiry-item:first-child{border-top:none}
 .manage-expiry-item:hover{background:var(--accent-soft);color:var(--accent)}
 
@@ -100,7 +101,7 @@
   color:var(--code-fg);font-family:var(--font-mono);font-size:.76rem;overflow-x:auto;white-space:nowrap}
 .manage-modal-cmd{display:block}
 .manage-modal-share-copy{flex:none;padding:.6rem .9rem;border:2px solid var(--border);background:var(--text);color:var(--bg);
-  font-family:var(--font-mono);font-size:.7rem;font-weight:600;letter-spacing:.06em;cursor:pointer}
+  font-family:var(--font-mono);font-size:.7rem;font-weight:600;letter-spacing:.06em;cursor:pointer;text-transform:uppercase}
 .manage-modal-share-copy:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast)}
 .manage-modal-share-spinner{position:absolute;right:.5rem;top:50%;transform:translateY(-50%)}
 .manage-modal-share-spinner-icon,.toggle-spinner,.thumb-spinner{width:14px;height:14px;border:2px solid var(--border);
@@ -134,3 +135,6 @@
 .upload-stat{display:flex;flex-direction:column;gap:.15rem}
 .upload-stat-label{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)}
 .upload-stat-value{font-family:var(--font-mono);font-size:.8rem;font-weight:600}
+
+/* Text thumbnails are drawn dark (crypto.js); light themes flip them like the Files grid. */
+:root:not([data-theme="frost-dark"]) .ui-v2 .manage-modal-icon[data-text] img{ filter:invert(1) hue-rotate(180deg) brightness(1.04); }

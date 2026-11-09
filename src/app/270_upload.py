@@ -9,26 +9,6 @@ def upload_progress(file_id):
     return jsonify(progress), 200
 
 
-def _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_written, thumbnail_written):
-    """Remove payload/thumbnail artifacts left behind by a failed upload.
-
-    AUDIT FIX D15: the three upload failure handlers used to run these deletes
-    inside bare `try/except Exception: pass` blocks guarded by `'name' in dir()`
-    string probes. Any error -- including a NameError from an unbound local --
-    was swallowed, so the written payload silently stayed on disk (and on every
-    replica) with nothing in the log to say so. Failures are now logged with
-    [ERROR] and each artifact is gated on an explicit sentinel."""
-    if payload_written and encrypted_filename:
-        try:
-            storage.delete_file(encrypted_filename)
-        except Exception as e:
-            print(f'[ERROR] Upload cleanup failed to remove payload {encrypted_filename}: {e}')
-    if thumbnail_written and file_id:
-        try:
-            delete_thumbnail_from_disk(file_id)
-        except Exception as e:
-            print(f'[ERROR] Upload cleanup failed to remove thumbnail for {file_id}: {e}')
-
 @app.route('/upload', methods=['POST'])
 @csrf.exempt
 @limiter.limit(upload_rate_limit)
@@ -37,7 +17,6 @@ def upload():
     upload_start_time = time.time()
     temp_dir = None
     quota_lock = None
-    lifecycle_lock = None
     guest_temp_cap_lock = None
     guest_temp_reserved = None  # AUDIT FIX H4: cross-process in-flight reservation token
     upload_idempotency_lock = None
@@ -51,14 +30,7 @@ def upload():
     management_token = str(uuid.uuid4())
     
     encrypted_filename = f'{file_id}.enc'
-    # AUDIT FIX D15: explicit sentinels for the failure handlers below. They used
-    # to probe local names by STRING (`'is_e2e' in dir()`), which is fragile and
-    # silently skipped cleanup; worse, the handlers swallowed every exception
-    # with a bare `except: pass`, so a NameError (e.g. encrypted_filename unbound)
-    # meant the written payload was never cleaned up and nothing was logged.
     is_e2e = False
-    payload_written = False
-    thumbnail_written = False
     
     try:
         # AUDIT FIX (upload/download integrity): install the body-byte counter as
@@ -191,6 +163,15 @@ def upload():
             return jsonify({'error': 'No files selected'}), 400
 
         is_e2e = request.form.get('e2e') == 'true'
+        # Logged-in uploads must be E2EE unless the user explicitly opted out
+        # (the uploader's "upload anyway" confirm sends allow_unencrypted=true).
+        # Guests and the API key route are unaffected.
+        if 'logged_in_user_id' in session and not is_e2e and request.form.get('allow_unencrypted') != 'true':
+            print('[UPLOAD] Refused unencrypted upload from a logged-in user without explicit opt-in')
+            return jsonify({
+                'error': 'UNENCRYPTED UPLOAD NOT CONFIRMED. ENABLE E2E ENCRYPTION OR CONFIRM UPLOADING WITHOUT IT.',
+                'encryption_required': True,
+            }), 400
         e2e_salt = request.form.get('e2e_salt') if is_e2e else None
         e2e_iv = request.form.get('e2e_iv') if is_e2e else None
         # Normalize salt/IV to comma-separated decimal format for consistent storage
@@ -292,6 +273,8 @@ def upload():
         )
         if upload_error is not None:
             return upload_error
+        if _backup_read_only(folder_id):
+            return _backup_read_only_error()
         
         g._progress_owner_token = _progress_owner_token()
         if 'user_id' not in session:
@@ -331,19 +314,9 @@ def upload():
         # across the slow body read; the locks cover only the save/encrypt/
         # finalize section, and every wait on them is bounded (fail closed with
         # 503) so a stalled holder cannot pin worker threads indefinitely.
-        upload_idempotency_lock = _acquire_upload_idempotency_lock(
-            upload_scope, timeout=_UPLOAD_IDEMPOTENCY_WAIT_SECONDS)
-        if upload_scope and upload_idempotency_lock is None:
-            print(f'[UPLOAD] Timed out after {_UPLOAD_IDEMPOTENCY_WAIT_SECONDS}s waiting for '
-                  'the upload idempotency lock; failing closed with 503')
-            _resp = jsonify({'error': 'UPLOAD BUSY. PLEASE RETRY SHORTLY.'})
-            _resp.headers['Retry-After'] = '30'
-            return _resp, 503
-        try:
-            upload_idempotency_database_lock = _acquire_upload_idempotency_database_lock(upload_scope)
-        except RuntimeError as _db_lock_err:
-            print(f'[UPLOAD] Upload idempotency database lock not acquired ({_db_lock_err}); '
-                  'failing closed with 503')
+        upload_idempotency_lock, upload_idempotency_database_lock, _locks_busy = \
+            _acquire_upload_key_locks(upload_scope)
+        if _locks_busy:
             _resp = jsonify({'error': 'UPLOAD BUSY. PLEASE RETRY SHORTLY.'})
             _resp.headers['Retry-After'] = '30'
             return _resp, 503
@@ -586,17 +559,11 @@ def upload():
         # db.session.commit() that follows it remain serialized. Released in the
         # finally block.
         if registered_user:
-            quota_lock = _acquire_user_quota_lock(
-                registered_user.id, timeout=_UPLOAD_QUOTA_FLOCK_WAIT_SECONDS)
+            quota_lock = _acquire_finalize_quota_lock(registered_user.id)
             if quota_lock is None:
-                # Fail closed: proceeding without the lock would race the
-                # authoritative quota check-and-commit.
-                print('[UPLOAD] Timed out waiting for the per-user quota lock; '
-                      'failing closed with 503')
                 _resp = jsonify({'error': 'UPLOAD BUSY. PLEASE RETRY SHORTLY.'})
                 _resp.headers['Retry-After'] = '30'
                 return _resp, 503
-            _refresh_quota_snapshot()
 
         if not registered_user:
             try:
@@ -705,175 +672,23 @@ def upload():
             payload_checksum=upload_payload_checksum,
             disk_size=upload_disk_size
         )
-        # Take the owner's lifecycle lock BEFORE the File INSERT / touch_folder()
-        # can autoflush: those row locks on the parent folder, held while this
-        # request then blocked on the flock, stalled a folder delete (which holds
-        # the flock and UPDATEs that folder) for the full InnoDB lock-wait timeout.
-        if registered_user:
-            lifecycle_lock = _acquire_user_lifecycle_lock(registered_user.id)
-        # AUDIT FIX P0-2/P1-13: add the File row to the session BEFORE
-        # store_file so _mark_replica_synced (called inside store_file) can
-        # see the pending File instance via SQLAlchemy's identity map and
-        # back-fill size_bytes/checksum on the local FileReplica row. The
-        # row is not persisted until db.session.commit() below, but the
-        # identity map makes it visible to same-session queries.
-        db.session.add(file_record)
-        # AUDIT FIX H4: drop any stale tombstone for this key before the row can
-        # replicate (belt and braces; Phase B also checks).
-        _clear_pending_remote_deletes_for('files', [file_record.filename, file_record.id])
-        touch_folder(folder_id)
-        # Now store the file — the pending File row is visible to _mark_replica_synced.
-        payload_written = True  # from here on a payload may exist under encrypted_filename
-        storage.store_file(encrypted_filename, temp_encrypted_path)
-        print(f'[UPLOAD] Saved file: {encrypted_filename}, content size: {total_zip_size} bytes')
-        # Save E2E encrypted thumbnail if provided (stored on disk, decrypted client-side)
-        enc_thumb_file = request.files.get('encrypted_thumbnail')
-        enc_thumb_nonce = request.form.get('thumbnail_nonce')
-        if is_e2e and enc_thumb_file and enc_thumb_nonce:
-            try:
-                # AUDIT FIX (upload/download integrity): bounded read -- the old
-                # `enc_thumb_file.read()` pulled the ENTIRE part into the worker
-                # heap and only then compared its length.
-                thumb_data, thumb_oversized = read_bounded_upload_part(
-                    enc_thumb_file, _MAX_ENCRYPTED_THUMBNAIL_BYTES)
-                if thumb_oversized:
-                    print(f'[UPLOAD] E2E thumbnail exceeds {_MAX_ENCRYPTED_THUMBNAIL_BYTES} bytes, skipping')
-                elif len(enc_thumb_nonce) > 255:
-                    # encrypted_thumbnail_nonce is String(255): an oversized value
-                    # would fail the File commit, not just the thumbnail.
-                    print('[UPLOAD] E2E thumbnail nonce exceeds 255 characters, skipping thumbnail')
-                elif thumb_data and save_thumbnail_to_disk(file_id, thumb_data, is_e2e=True):
-                    thumbnail_written = True  # AUDIT FIX D15
-                    file_record.encrypted_thumbnail_nonce = enc_thumb_nonce
-                    file_record.has_thumbnail = True
-            except ReplicaSessionRollbackError as _thumb_db_err:
-                # AUDIT FIX H3: replica bookkeeping rolled back the shared DB
-                # session, which expunged the pending File row. Continuing to
-                # the commit below would persist NOTHING yet answer HTTP 200
-                # with management_token and download_url for a row that does
-                # not exist -- the payload would sit orphaned on disk until
-                # reaped and the upload would silently vanish after reporting
-                # success. Abort loudly and clean up the payload + the
-                # thumbnail that was already written to local disk.
-                print(f'[UPLOAD] E2E thumbnail bookkeeping rolled back the DB session; aborting upload {file_id}: {_thumb_db_err}')
-                try:
-                    db.session.rollback()
-                except Exception:
-                    pass
-                try:
-                    storage.delete_file(encrypted_filename)
-                except Exception as _cleanup_err:
-                    print(f'[ERROR] Upload cleanup failed to remove payload {encrypted_filename}: {_cleanup_err}')
-                payload_written = False
-                try:
-                    delete_thumbnail_from_disk(file_id)
-                except Exception as _cleanup_err:
-                    print(f'[ERROR] Upload cleanup failed to remove thumbnail for {file_id}: {_cleanup_err}')
-                thumbnail_written = False
-                return jsonify({'error': 'Upload failed due to a database error. Please try again.'}), 500
-            except Exception as e:
-                print(f'[UPLOAD] E2E thumbnail save failed (non-critical): {e}')
-
-        if registered_user:
-            if not _lock_live_folder_for_placement(folder_id, registered_user.id):
-                db.session.rollback()
-                _release_lifecycle_lock(lifecycle_lock)
-                lifecycle_lock = None
-                _cleanup_failed_upload_artifacts(encrypted_filename, file_id,
-                                                 payload_written, thumbnail_written)
-                payload_written = False
-                thumbnail_written = False
-                return jsonify({'error': 'FOLDER NOT FOUND'}), 404
-
-        try:
-            # AUDIT FIX H3: a helper above (store_file / save_thumbnail replica
-            # bookkeeping) may have executed a session-wide rollback, which
-            # expunges the pending File row. Committing would then persist
-            # nothing while the response still reports success (management_token
-            # / download_url) and the payload sits orphaned on disk until
-            # reaped. Refuse to commit unless the File row is still tracked by
-            # the session (pending before the first flush, persistent after an
-            # autoflush); the handler below reuses the commit-failure cleanup.
-            _file_row_state = inspect(file_record)
-            if not (_file_row_state.pending or _file_row_state.persistent):
-                raise RuntimeError(
-                    f'UPLOAD ABORT: File row {file_id} was expunged from the DB '
-                    'session by an internal rollback before commit; refusing to '
-                    'report success for a row that was never committed'
-                )
-            # AUDIT FIX A20: retry on a short_code uniqueness collision instead of
-            # failing an upload whose payload is already written and encrypted.
-            _commit_with_short_code_retry(file_record)
-        except _IdempotencyIntegrityError as _key_err:
-            # AUDIT FIX M9: the per-owner UNIQUE indexes on upload_idempotency_key
-            # are the DB-level backstop behind the flock + GET_LOCK idempotency
-            # locks. Losing that race is an idempotent retry, not a failure:
-            # serve the row the winner committed (or release trashed duplicates
-            # and retry once) instead of failing after the payload was written.
-            if not upload_idempotency_key or 'upload_idempotency_key' not in str(getattr(_key_err, 'orig', _key_err)).lower():
-                raise
-            db.session.rollback()
-            existing_upload, conflict_action = _resolve_upload_key_unique_conflict(
-                upload_idempotency_key,
-                registered_user_id=registered_user_id,
-                user_id=user_id,
-                manager_cookie=manager_cookie if is_temp else None,
-            )
-            if conflict_action == 'retry':
-                # Trashed duplicates released; the staged payload is still the
-                # one true upload, so re-commit the pending row as-is.
-                print(f'[UPLOAD] Released trashed duplicate idempotency rows for key {upload_idempotency_key}; retrying insert')
-                db.session.add(file_record)
-                _clear_pending_remote_deletes_for('files', [file_record.filename, file_record.id])
-                touch_folder(folder_id)
-                _commit_with_short_code_retry(file_record)
-            else:
-                # This attempt's payload is an orphan now -- the winner's row
-                # (or nothing, on an unresolvable conflict) owns the key.
-                try:
-                    storage.delete_file(encrypted_filename)
-                except Exception as _cleanup_err:
-                    print(f'[ERROR] Upload cleanup failed to remove payload {encrypted_filename} after idempotency conflict: {_cleanup_err}')
-                payload_written = False
-                if is_e2e and getattr(file_record, 'has_thumbnail', False):
-                    try:
-                        delete_thumbnail_from_disk(file_id)
-                    except Exception as _cleanup_err:
-                        print(f'[ERROR] Upload cleanup failed to remove thumbnail for {file_id} after idempotency conflict: {_cleanup_err}')
-                    thumbnail_written = False
-                if conflict_action == 'reused':
-                    print(f'[UPLOAD] Reused existing upload for idempotency key (DB unique backstop): {upload_idempotency_key}')
-                    if (existing_upload.folder_id != folder_id
-                            or bool(existing_upload.is_temp_upload) != bool(is_temp)
-                            or bool(existing_upload.is_e2e_encrypted) != bool(is_e2e)):
-                        return jsonify({'error': 'UPLOAD RETRY CONFLICT. START A NEW UPLOAD.'}), 409
-                    return _upload_idempotent_reuse_response(existing_upload, manager_cookie if is_temp else None)
-                raise RuntimeError(
-                    f'UPLOAD CONFLICT: idempotency key {upload_idempotency_key} is held by a live file row '
-                    f'outside this request\'s dedup scope; refusing to create a duplicate'
-                )
-        except Exception:
-            db.session.rollback()
-            # AUDIT FIX D15: log cleanup failures instead of swallowing them, and
-            # clear the sentinels so the outer handler does not try to delete the
-            # same artifacts (and queue duplicate remote tombstones) a second time.
-            try:
-                storage.delete_file(encrypted_filename)
-            except Exception as _cleanup_err:
-                print(f'[ERROR] Upload cleanup failed to remove payload {encrypted_filename} after failed commit: {_cleanup_err}')
-            payload_written = False
-            # Clean up E2E thumbnail written before the failed commit
-            if is_e2e and getattr(file_record, 'has_thumbnail', False):
-                try:
-                    delete_thumbnail_from_disk(file_id)
-                except Exception as _cleanup_err:
-                    print(f'[ERROR] Upload cleanup failed to remove thumbnail for {file_id} after failed commit: {_cleanup_err}')
-            thumbnail_written = False
-            raise
-        # The committed row now owns the payload and thumbnail: a later failure
-        # (response building, progress, quota refresh) must not delete them.
-        payload_written = False
-        thumbnail_written = False
+        commit_outcome, committed_row = _commit_new_upload(
+            file_record, temp_encrypted_path,
+            registered_user.id if registered_user else None,
+            {'registered_user_id': registered_user_id, 'user_id': user_id,
+             'manager_cookie': manager_cookie if is_temp else None},
+            thumbnail_part=request.files.get('encrypted_thumbnail'),
+            thumbnail_nonce=request.form.get('thumbnail_nonce'))
+        if commit_outcome == 'db_error':
+            return jsonify({'error': 'Upload failed due to a database error. Please try again.'}), 500
+        if commit_outcome == 'folder_missing':
+            return jsonify({'error': 'FOLDER NOT FOUND'}), 404
+        if commit_outcome == 'reused':
+            if (committed_row.folder_id != folder_id
+                    or bool(committed_row.is_temp_upload) != bool(is_temp)
+                    or bool(committed_row.is_e2e_encrypted) != bool(is_e2e)):
+                return jsonify({'error': 'UPLOAD RETRY CONFLICT. START A NEW UPLOAD.'}), 409
+            return _upload_idempotent_reuse_response(committed_row, manager_cookie if is_temp else None)
         print(f'[UPLOAD] DB saved: {file_id} -> {orig_name}, Size: {total_zip_size} bytes, E2E: {is_e2e}, Legacy: {is_legacy}')
 
         # Generate thumbnail for previewable single files (non-E2E only)
@@ -913,8 +728,6 @@ def upload():
             db.session.rollback()
         except Exception:
             pass
-        _cleanup_failed_upload_artifacts(encrypted_filename, file_id,
-                                         payload_written, thumbnail_written)
         if registered_user:
             return jsonify({
                 'error': f'Storage limit exceeded. You have {registered_user.get_storage_remaining_gb():.2f}GB remaining.'
@@ -928,13 +741,12 @@ def upload():
         print(f'[UPLOAD] Memory error: {str(e)}')
         # AUDIT FIX P3-3: explicitly rollback the pending file_record add so
         # cleanup is self-contained and does not rely on teardown rollback.
+        # A payload written by _commit_new_upload() is already gone: it cleans
+        # up after itself before re-raising.
         try:
             db.session.rollback()
         except Exception:
             pass
-        # AUDIT FIX D15/P3-2: sentinel-driven cleanup with logged failures.
-        _cleanup_failed_upload_artifacts(encrypted_filename, file_id,
-                                         payload_written, thumbnail_written)
         return jsonify({'error': 'Server ran out of memory. The file may be too large to process. Try using end-to-end encryption or a smaller file.'}), 413
     
     except (IOError, OSError) as e:
@@ -949,9 +761,6 @@ def upload():
             db.session.rollback()
         except Exception:
             pass
-        # AUDIT FIX D15: sentinel-driven cleanup with logged failures.
-        _cleanup_failed_upload_artifacts(encrypted_filename, file_id,
-                                         payload_written, thumbnail_written)
         if getattr(e, 'errno', None) in (_errno.ENOSPC, getattr(_errno, 'EDQUOT', None)):
             return jsonify({'error': 'Storage error. The disk may be full.'}), 507
         return jsonify({'error': 'Upload could not be stored due to a storage I/O error.'}), 500
@@ -964,9 +773,6 @@ def upload():
             db.session.rollback()
         except Exception:
             pass
-        # AUDIT FIX D15: sentinel-driven cleanup with logged failures.
-        _cleanup_failed_upload_artifacts(encrypted_filename, file_id,
-                                         payload_written, thumbnail_written)
         return jsonify({'error': 'Upload failed. Please try again.'}), 500
     
     finally:
@@ -983,7 +789,6 @@ def upload():
                 print(f'[UPLOAD] Cleaned up temp directory: {temp_dir}')
             except Exception as e:
                 print(f'[UPLOAD] Warning: Failed to cleanup temp directory: {e}')
-        _release_lifecycle_lock(lifecycle_lock)
         _release_upload_idempotency_database_lock(upload_idempotency_database_lock)
         _release_upload_idempotency_lock(upload_idempotency_lock)
         _release_upload_idempotency_lock(guest_temp_cap_lock)

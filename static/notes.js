@@ -12,7 +12,7 @@
     notebooks: [], notes: [], view: 'all', noteId: null,
     noteKey: null, meta: null, ver: null, titles: {}, dirty: false, saveTimer: null,
     currentType: null, canvas: null, isSaving: false, saveAgain: false,
-    editRevision: 0, openSeq: 0, pendingOpenId: null, saveFailures: 0,
+    editRevision: 0, openSeq: 0, pendingOpenId: null, saveFailures: 0, query: '',
     trashCount: 0, storage: null, editorReady: false, saveBlocked: false
   }
   var $ = function (id) { return document.getElementById(id) }
@@ -209,12 +209,13 @@
       await Promise.all(S.notebooks.map(async function (nb) { nb._name = await decNotebookName(nb, mk) }))
       S.trashCount = loaded[1] ? (loaded[1].notes || []).length : (nbData.trash_count || 0)
       if (nbData.storage_used_bytes != null) S.storage = { used: nbData.storage_used_bytes, limit: nbData.storage_limit_gb }
-      renderRail(true)
+      renderRail(!railShown); railShown = true
       await loadNotes()
     } catch (e) { listEl.innerHTML = errState('Could not load notebooks.') }
   }
 
   var loadNotesSeq = 0
+  var railShown = false, loadedView = null  // entrance animations: first load / view switch only
   async function loadNotes () {
     var seq = ++loadNotesSeq  // a later view switch supersedes this response
     var mk = await masterKey(); if (!mk || seq !== loadNotesSeq) return
@@ -222,7 +223,8 @@
     if (S.view === 'trash') url += '?trash=true'
     else if (S.view === 'unfiled') url += '?notebook_id=unfiled'
     else if (S.view !== 'all') url += '?notebook_id=' + S.view
-    listEl.innerHTML = '<div class="nt-skel-list" aria-hidden="true">' + new Array(7).join('<div class="rd-skel nt-skel-item"></div>') + '</div>'
+    var fresh = loadedView !== S.view
+    if (fresh) listItemsEl().innerHTML = '<div class="nt-skel-list" aria-hidden="true">' + new Array(7).join('<div class="rd-skel nt-skel-item"></div>') + '</div>'
     try {
       var d = await apiGet(url)
       if (seq !== loadNotesSeq) return
@@ -230,7 +232,9 @@
       await Promise.all(notes.map(async function (n) { if (n.encrypted_title) { var t = await decTitle(n, mk); S.titles[n.id] = t || 'Untitled'; n._title = S.titles[n.id] } else n._title = n.title || 'Untitled' }))
       if (seq !== loadNotesSeq) return
       S.notes = notes
-      renderList(null, true)
+      loadedView = S.view
+      renderList(null, fresh)
+      if (!S.noteId && (!editorEl.firstElementChild || editorEl.querySelector('.nt-empty-editor'))) editorEl.innerHTML = emptyEditor()
     } catch (e) { if (seq === loadNotesSeq) listEl.innerHTML = errState('Could not load notes.') }
   }
 
@@ -239,16 +243,17 @@
     // the active state and must not replay it
     var rail = $('ntRail'); if (!rail) return
     rail.classList.toggle('is-anim', !!animate)
-    var sys = '<button type="button" class="nt-rail-item rd-side-row' + (S.view === 'all' ? ' is-active' : '') + '" data-view="all"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span class="nt-nb-name">All notes</span></button>' +
-      '<button type="button" class="nt-rail-item rd-side-row' + (S.view === 'unfiled' ? ' is-active' : '') + '" data-view="unfiled"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M6 21a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2z"/></svg><span class="nt-nb-name">Unfiled</span></button>'
+    var sys = '<button type="button" class="nt-rail-item rd-side-row' + (S.view === 'all' ? ' is-active' : '') + '" data-view="all"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="3.5" width="15" height="17" rx="2.5"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4"/></svg><span class="nt-nb-name">All notes</span></button>' +
+      '<button type="button" class="nt-rail-item rd-side-row' + (S.view === 'unfiled' ? ' is-active' : '') + '" data-view="unfiled"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.5V6.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span class="nt-nb-name">Unfiled</span></button>'
     var nbs = S.notebooks.filter(function (n) { return !n.is_trashed }).map(function (nb) {
-      return '<button type="button" class="nt-rail-item rd-side-row nt-nb' + (String(S.view) === String(nb.id) ? ' is-active' : '') + '" data-view="' + nb.id + '"><span class="nt-nb-dot" style="background:' + esc(nb.color || 'var(--accent)') + '"></span><span class="nt-nb-name">' + esc(nb._name) + '</span><span class="nt-nb-count">' + (nb.note_count || 0) + '</span></button>'
+      var col = normColor(nb.color)
+      return '<button type="button" class="nt-rail-item rd-side-row nt-nb' + (col ? ' has-color' : '') + (String(S.view) === String(nb.id) ? ' is-active' : '') + '" data-view="' + nb.id + '"' + (col ? ' style="--nt-color:' + col + '"' : '') + '><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + NI.notebook + '</svg><span class="nt-nb-name">' + esc(nb._name) + '</span><span class="nt-nb-count">' + (nb.note_count || 0) + '</span></button>'
     }).join('')
-    var trash = '<button type="button" class="rd-side-trash' + (S.view === 'trash' ? ' is-active' : '') + '" data-view="trash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>Trash<span class="rd-side-trash-count" id="ntTrashCount"' + (S.trashCount > 0 ? '' : ' hidden') + '>' + (S.trashCount || 0) + '</span></button>'
+    var trash = '<button type="button" class="rd-side-trash' + (S.view === 'trash' ? ' is-active' : '') + '" data-view="trash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + TRASH_PATH + '"/></svg>Trash<span class="rd-side-trash-count" id="ntTrashCount"' + (S.trashCount > 0 ? '' : ' hidden') + '>' + (S.trashCount || 0) + '</span></button>'
     rail.innerHTML = '<div class="rd-side-inner">' +
       '<div class="rd-side-head">Library</div>' +
       '<nav class="nt-rail-scroll rd-side-scroll" aria-label="Notebooks">' + sys +
-        '<div class="rd-side-subhead"><span>Notebooks</span><button type="button" id="ntNewNb" title="New notebook" aria-label="New notebook"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button></div>' +
+        '<div class="rd-side-subhead"><span>Notebooks</span><button type="button" id="ntNewNb" title="New notebook" aria-label="New notebook"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 6v12M6 12h12"/></svg></button></div>' +
         (nbs || '<div class="rd-side-hint">No notebooks</div>') +
       '</nav>' +
       '<div class="rd-side-foot">' + trash +
@@ -261,12 +266,13 @@
     }
     renderStorage()
   }
+  var TRASH_PATH = 'M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2'
 
   function fmtBytes (b) { if (!b) return '0 B'; var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = Math.min(u.length - 1, Math.floor(Math.log(b) / Math.log(1024))); return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i] }
   function renderStorage () {
     if (!S.storage || S.storage.used == null) return
     var used = S.storage.used, lim = S.storage.limit
-    var txt = $('ntStorageTxt'); if (txt) txt.textContent = fmtBytes(used) + ' / ' + lim + ' GB'
+    var txt = $('ntStorageTxt'); if (txt) txt.textContent = fmtBytes(used) + ' of ' + lim + ' GB'
     var pct = lim > 0 ? Math.min(100, (used / (lim * 1073741824)) * 100) : 0
     var f = $('ntMeter'); if (!f) return
     f.style.width = pct + '%'
@@ -274,34 +280,60 @@
     f.classList.toggle('is-bad', pct >= 90)
   }
 
+  // The head and search box are patched in place and only .nt-items is
+  // replaced: rebuilding the whole pane reset the list's scroll on every
+  // open/autosave and destroyed the search input mid-typing (IME, the query).
+  var shownHead = null
+  function listItemsEl () {
+    var head = listHead(), items = listEl.querySelector('.nt-items')
+    if (!items || !$('ntSearch')) {
+      listEl.innerHTML = head + '<div class="nt-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg><input type="search" id="ntSearch" placeholder="Search notes" aria-label="Search notes" autocomplete="off" spellcheck="false"></div><div class="nt-items"></div>'
+      $('ntSearch').value = S.query
+      items = listEl.querySelector('.nt-items')
+    } else if (head !== shownHead) {
+      listEl.querySelector('.nt-list-head').outerHTML = head
+    }
+    shownHead = head
+    return items
+  }
+  function listHead () {
+    return '<div class="nt-list-head"><button type="button" class="nt-rail-toggle" id="ntRailToggle" aria-label="Notebooks" title="Notebooks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg></button><h2 class="nt-list-title" title="' + esc(viewTitle()) + '">' + esc(viewTitle()) + '</h2>' +
+      (S.view !== 'trash' ? '<span class="nt-newgroup"><button type="button" class="nt-newnote" id="ntNewCanvas" title="New canvas" aria-label="New canvas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">' + NI.canvas + '</svg></button><button type="button" class="nt-newnote" id="ntNewNote" title="New note" aria-label="New note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg><span>New note</span></button></span>'
+        : S.notes.length ? '<button type="button" class="nt-newnote nt-empty-trash" id="ntEmptyTrash">Empty trash</button>' : '') + '</div>'
+  }
   function renderList (query, animate) {
     // Entrance only on fresh data loads — note clicks / search re-renders
     // rebuild the list for highlight state and must not replay it
     listEl.classList.toggle('is-anim', !!animate)
-    // Only a search box the user is typing in gets focus back; autosave/pin/colour
-    // re-renders must not pull the caret into the filter.
-    var oldSearch = $('ntSearch'), searchCaret = oldSearch && document.activeElement === oldSearch ? [oldSearch.selectionStart, oldSearch.selectionEnd] : null
-    var head = '<div class="nt-list-head"><button class="nt-rail-toggle" id="ntRailToggle" aria-label="Notebooks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button><h2 class="nt-list-title">' + esc(viewTitle()) + '</h2>' +
-      (S.view !== 'trash' ? '<span class="nt-newgroup"><button class="nt-newnote" id="ntNewCanvas" title="New canvas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button><button class="nt-newnote" id="ntNewNote" title="New note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button></span>' : '') + '</div>' +
-      '<div class="nt-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input type="search" id="ntSearch" placeholder="Search notes…" autocomplete="off"></div>'
+    if (query != null) S.query = query
     var notes = S.notes.slice()
-    var searchValue = query == null ? (($('ntSearch') && $('ntSearch').value) || '') : query
-    var q = searchValue.toLowerCase()
+    var q = S.query.toLowerCase()
     if (q) notes = notes.filter(function (n) { return (n._title || '').toLowerCase().indexOf(q) >= 0 })
     notes.sort(function (a, b) { return (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0) || ((b.updated_at || '') < (a.updated_at || '') ? -1 : 1) })
-    var items = notes.map(function (n) {
-      var col = normColor(n.color)
-      return '<button class="nt-item' + (col ? ' has-color' : '') + (n.id === S.noteId ? ' is-active' : '') + '" data-note="' + esc(n.id) + '"' +
+    var pinned = S.view === 'trash' ? 0 : notes.filter(function (n) { return n.is_pinned }).length
+    var items = notes.map(function (n, i) {
+      var col = normColor(n.color), canvas = n.note_type === 'canvas'
+      var label = pinned && (i === 0 || i === pinned) ? sectionLabel(i ? 'Notes' : 'Pinned', i ? notes.length - pinned : pinned) : ''
+      return label + '<button type="button" class="nt-item' + (col ? ' has-color' : '') + (n.id === S.noteId ? ' is-active' : '') + '" data-note="' + esc(n.id) + '"' +
         (col ? ' style="--nt-color:' + col + '"' : '') + '>' +
-        (col ? '<span class="nt-item-bar"></span>' : '') +
-        '<span class="nt-item-row"><span class="nt-item-title">' + (n.is_pinned ? '<svg class="nt-pin" viewBox="0 0 24 24" fill="currentColor"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg>' : '') + '<span class="nt-item-name">' + esc(n._title || 'Untitled') + '</span></span>' +
-        (n.note_type === 'canvas' ? '<span class="nt-badge">Canvas</span>' : '') + '</span>' +
-        '<span class="nt-item-meta">' + esc(fmtDate(n.updated_at)) + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span></button>'
+        '<span class="nt-item-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (canvas ? NI.canvas : NI.doc) + '</svg></span>' +
+        '<span class="nt-item-main"><span class="nt-item-row"><span class="nt-item-title">' + (n.is_pinned && !pinned ? '<svg class="nt-pin" viewBox="0 0 24 24" fill="currentColor"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg>' : '') + '<span class="nt-item-name">' + esc(n._title || 'Untitled') + '</span></span></span>' +
+        '<span class="nt-item-meta"><span>' + esc(fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' +
+        (canvas ? '<span class="nt-badge">Canvas</span>' : '') + '</span></span></button>'
     }).join('')
-    listEl.innerHTML = head + '<div class="nt-items">' + (items || '<div class="nt-empty-sm">No notes here yet.</div>') + '</div>'
+    listItemsEl().innerHTML = items || listEmpty(S.query.trim())
     if (animate) { var its = listEl.querySelectorAll('.nt-item'); for (var ii = 0; ii < its.length; ii++) its[ii].style.setProperty('--i', ii) }
-    var search = $('ntSearch')
-    if (search) { search.value = searchValue; if (searchCaret) { search.focus(); search.setSelectionRange(searchCaret[0], searchCaret[1]) } }
+  }
+  function sectionLabel (label, count) { return '<div class="nt-section">' + label + '<span>' + count + '</span></div>' }
+  function listEmpty (q) {
+    var copy = q ? ['No matches', 'No note titles contain “' + esc(q) + '”.']
+      : S.view === 'trash' ? ['Trash is empty', 'Notes you move to the trash show up here.']
+      : S.view === 'all' ? ['No notes yet', 'Notes and canvases you create show up here.']
+      : S.view === 'unfiled' ? ['No unfiled notes', 'Notes that are not in a notebook show up here.']
+      : ['This notebook is empty', 'Create a note here, or move one in from its menu.']
+    var icon = q ? '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/>' : S.view === 'trash' ? '<path d="' + TRASH_PATH + '"/>' : NI.doc
+    return '<div class="rd-empty"><span class="rd-empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + icon + '</svg></span>' +
+      '<h3 class="rd-empty-title">' + copy[0] + '</h3><p class="rd-empty-text">' + copy[1] + '</p></div>'
   }
   function viewTitle () {
     if (S.view === 'all') return 'All notes'; if (S.view === 'unfiled') return 'Unfiled'; if (S.view === 'trash') return 'Trash'
@@ -342,8 +374,14 @@
       if (!(await confirmAbandonUnsaved())) return
       if (seq !== S.openSeq) return
     }
-    if (S.pendingOpenId !== id) { openNote(S.pendingOpenId); return }
+    if (S.pendingOpenId !== id) { if (S.pendingOpenId !== S.noteId) openNote(S.pendingOpenId); return }
+    // Keep an inert copy of the outgoing note on screen (dimmed below) instead
+    // of a blank pane; clones carry no listeners, the real DOM goes with the reset.
+    var outgoing = Array.prototype.map.call(editorEl.childNodes, function (n) { return n.cloneNode(true) })
     resetOpenState()
+    outgoing.forEach(function (n) { editorEl.appendChild(n) })
+    editorEl.querySelectorAll('[contenteditable]').forEach(function (n) { n.setAttribute('contenteditable', 'false') })
+    editorEl.querySelectorAll('input, textarea, select, button').forEach(function (n) { n.disabled = true })
     S.noteId = id
     renderList()
     // Seamless switch: dim the outgoing note and hold the spinner back so
@@ -392,30 +430,20 @@
   function renderEditor (title, html, readonly) {
     S.currentType = 'document'
     var tools = readonly ? '' :
-      '<div class="nt-toolbar" role="toolbar" aria-label="NOTE FORMATTING">' +
-      tbtn('undo', '↶', 'UNDO') + tbtn('redo', '↷', 'REDO') + '<span class="nt-tb-sep"></span>' +
-      tbtn('bold', 'B', 'BOLD', 'font-weight:800') + tbtn('italic', 'I', 'ITALIC', 'font-style:italic') + tbtn('underline', 'U', 'UNDERLINE', 'text-decoration:underline') + tbtn('strikeThrough', 'S', 'STRIKETHROUGH', 'text-decoration:line-through') +
+      '<div class="nt-toolbar" role="toolbar" aria-label="Note formatting">' +
+      tbtn('undo', ico(TB.undo), 'Undo') + tbtn('redo', ico(TB.redo), 'Redo') + '<span class="nt-tb-sep"></span>' +
+      tbtn('bold', 'B', 'Bold', 'font-weight:700') + tbtn('italic', 'I', 'Italic', 'font-style:italic') + tbtn('underline', 'U', 'Underline', 'text-decoration:underline;text-underline-offset:2px') + tbtn('strikeThrough', 'S', 'Strikethrough', 'text-decoration:line-through') +
       '<span class="nt-tb-sep"></span>' +
-      tbtn2('formatBlock', 'H1', 'HEADING 1', '<h1>') + tbtn2('formatBlock', 'H2', 'HEADING 2', '<h2>') + tbtn2('formatBlock', 'H3', 'HEADING 3', '<h3>') + tbtn2('formatBlock', '❝', 'QUOTE', '<blockquote>') + tbtn2('formatBlock', '&lt;/&gt;', 'CODE BLOCK', '<pre>') +
+      tbtn2('formatBlock', 'H1', 'Heading 1', '<h1>') + tbtn2('formatBlock', 'H2', 'Heading 2', '<h2>') + tbtn2('formatBlock', 'H3', 'Heading 3', '<h3>') + tbtn2('formatBlock', ico(TB.quote), 'Quote', '<blockquote>') + tbtn2('formatBlock', ico(TB.code), 'Code block', '<pre>') +
       '<span class="nt-tb-sep"></span>' +
-      tbtn('insertUnorderedList', '•', 'BULLET LIST') + tbtn('insertOrderedList', '1.', 'NUMBERED LIST') +
+      tbtn('insertUnorderedList', ico(TB.ul), 'Bulleted list') + tbtn('insertOrderedList', ico(TB.ol), 'Numbered list') +
       '<span class="nt-tb-sep"></span>' +
-      '<button class="nt-tb-btn" data-link title="INSERT LINK">LINK</button><button class="nt-tb-btn" data-image title="INSERT IMAGE">IMAGE</button>' +
-      '<label class="nt-tb-color" title="TEXT COLOR"><span>A</span><input type="color" data-color="foreColor" value="#0f1720"></label><label class="nt-tb-color" title="HIGHLIGHT"><span>▰</span><input type="color" data-color="hiliteColor" value="#faef5a"></label>' +
-      '<button class="nt-tb-btn" data-cmd="removeFormat" title="CLEAR FORMATTING">⌫</button>' +
+      '<button type="button" class="nt-tb-btn" data-link title="Insert link" aria-label="Insert link">' + ico(TB.link) + '</button><button type="button" class="nt-tb-btn" data-image title="Insert image" aria-label="Insert image">' + ico(TB.image) + '</button>' +
+      '<label class="nt-tb-color" title="Text colour">' + ico(TB.color) + '<input type="color" data-color="foreColor" value="#0f1720" aria-label="Text colour"></label><label class="nt-tb-color" title="Highlight">' + ico(TB.mark) + '<input type="color" data-color="hiliteColor" value="#faef5a" aria-label="Highlight colour"></label>' +
+      tbtn('removeFormat', ico(TB.clear), 'Clear formatting') +
       '<input type="file" id="ntImageInput" accept="image/*" hidden>' +
       '</div>'
-    editorEl.innerHTML =
-      '<div class="nt-ed-head">' +
-        '<button class="nt-back" id="ntBackBtn" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>' +
-        '<input class="nt-ed-title" id="ntTitle" value="' + esc(title) + '" placeholder="Untitled"' + (readonly ? ' readonly' : '') + '>' +
-        '<div class="nt-ed-actions">' +
-          '<span class="nt-savestate" id="ntSaveState"></span>' +
-          (readonly ? '<button class="rd-btn rd-btn-ghost" data-restore>Restore</button><button class="rd-btn acc-btn-danger" data-delete-perm style="color:var(--bad)">Delete forever</button>' :
-            '<button class="rd-icon-btn" data-pin title="Pin"><svg viewBox="0 0 24 24" width="17" height="17" fill="' + (S.meta && S.meta.is_pinned ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="2"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg></button>' +
-            '<button class="rd-icon-btn" data-delete title="Move to trash"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button>') +
-        '</div>' +
-      '</div>' + tools +
+    editorEl.innerHTML = editorHead(title, 'Untitled', readonly) + tools +
       '<div class="nt-ed-body" id="ntBody" ' + (readonly ? '' : 'contenteditable="true"') + ' spellcheck="true"></div>'
     var body = $('ntBody')
     if (body) { body.appendChild(sanitizeToFragment(html)); inkHighlights(body) }
@@ -423,16 +451,7 @@
   }
   function renderCanvasNote (title, data, readonly) {
     S.currentType = 'canvas'
-    editorEl.innerHTML =
-      '<div class="nt-ed-head">' +
-        '<button class="nt-back" id="ntBackBtn" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></button>' +
-        '<input class="nt-ed-title" id="ntTitle" value="' + esc(title) + '" placeholder="Untitled canvas"' + (readonly ? ' readonly' : '') + '>' +
-        '<div class="nt-ed-actions"><span class="nt-savestate" id="ntSaveState"></span>' +
-        (readonly ? '<button class="rd-btn rd-btn-ghost" data-restore>Restore</button><button class="rd-btn acc-btn-danger" data-delete-perm style="color:var(--bad)">Delete forever</button>' :
-          '<button class="rd-icon-btn" data-pin title="Pin"><svg viewBox="0 0 24 24" width="17" height="17" fill="' + (S.meta && S.meta.is_pinned ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="2"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg></button>' +
-          '<button class="rd-icon-btn" data-delete title="Move to trash"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button>') +
-        '</div>' +
-      '</div>' +
+    editorEl.innerHTML = editorHead(title, 'Untitled canvas', readonly) +
       '<div class="nt-canvas-mount" id="ntCanvas"></div>'
     S.editorReady = false
     if (typeof FxCanvas !== 'undefined') {
@@ -452,8 +471,36 @@
     }
     if (!readonly && $('ntTitle')) { $('ntTitle').addEventListener('input', markDirty); S.editorReady = true }
   }
-  function tbtn (cmd, label, title, style) { return '<button class="nt-tb-btn" data-cmd="' + cmd + '" title="' + title + '"' + (style ? ' style="' + style + '"' : '') + '>' + label + '</button>' }
-  function tbtn2 (cmd, label, title, arg) { return '<button class="nt-tb-btn" data-cmd="' + cmd + '" data-arg="' + esc(arg) + '" title="' + title + '">' + label + '</button>' }
+  // Shared by both note types: back (phones) · title · save state · actions.
+  function editorHead (title, placeholder, readonly) {
+    var pinned = !!(S.meta && S.meta.is_pinned)
+    return '<div class="nt-ed-head">' +
+        '<button type="button" class="nt-back" id="ntBackBtn" aria-label="Back to notes" title="Back to notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>' +
+        '<input class="nt-ed-title" id="ntTitle" value="' + esc(title) + '" placeholder="' + placeholder + '" aria-label="Note title" autocomplete="off"' + (readonly ? ' readonly' : '') + '>' +
+        '<div class="nt-ed-actions"><span class="nt-savestate" id="ntSaveState" aria-live="polite"></span>' +
+        (readonly ? '<button type="button" class="rd-btn rd-btn-ghost rd-btn-sm" data-restore>Restore</button><button type="button" class="rd-btn rd-btn-danger rd-btn-sm" data-delete-perm title="Delete forever">' + ico('<path d="' + TRASH_PATH + '"/>') + '<span class="nt-btn-label">Delete forever</span></button>' :
+          '<button type="button" class="rd-icon-btn" data-pin title="' + (pinned ? 'Unpin' : 'Pin to top') + '" aria-label="Pin to top" aria-pressed="' + pinned + '"><svg viewBox="0 0 24 24" width="17" height="17" fill="' + (pinned ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/><path d="M12 15v5" stroke-linecap="round"/></svg></button>' +
+          '<button type="button" class="rd-icon-btn" data-delete title="Move to trash" aria-label="Move to trash"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + TRASH_PATH + '"/></svg></button>') +
+        '</div>' +
+      '</div>' +
+      (readonly ? '<div class="nt-ro">' + ico('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>') + 'This note is in the trash. Restore it to edit.</div>' : '')
+  }
+  var TB = {
+    undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/>',
+    redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h1"/>',
+    quote: '<path d="M10 7H6.5A1.5 1.5 0 0 0 5 8.5V12h5zm0 5c0 3-1.5 4.5-4 5M19 7h-3.5A1.5 1.5 0 0 0 14 8.5V12h5zm0 5c0 3-1.5 4.5-4 5"/>',
+    code: '<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4"/>',
+    ul: '<path d="M9.5 6.5h10M9.5 12h10M9.5 17.5h10"/><circle cx="5" cy="6.5" r="1" fill="currentColor" stroke="none"/><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="5" cy="17.5" r="1" fill="currentColor" stroke="none"/>',
+    ol: '<path d="M10 6.5h9.5M10 12h9.5M10 17.5h9.5"/><path d="M4.5 5 6 4v5M4 14c.3-.7 1-1 1.6-1 .8 0 1.4.5 1.4 1.2 0 1.2-3 2-3 3.8h3"/>',
+    link: '<path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3A4 4 0 0 0 11 18.66l1-1"/>',
+    image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="9.5" r="1.6"/><path d="m20.5 16-4.8-4.8L7 19.5"/>',
+    color: '<path d="m6.5 16 5.5-12 5.5 12M8.6 11.5h6.8"/>',
+    mark: '<path d="m14 5 5 5-7 7H7v-5z"/><path d="m11 8 5 5"/>',
+    clear: '<path d="M6 6.5V5h11v1.5M11.5 5 9 19M7 19h4M15 14l5 5M20 14l-5 5"/>'
+  }
+  function ico (paths) { return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>' }
+  function tbtn (cmd, label, title, style) { return '<button type="button" class="nt-tb-btn" data-cmd="' + cmd + '" title="' + title + '" aria-label="' + title + '"' + (style ? ' style="' + style + '"' : '') + '>' + label + '</button>' }
+  function tbtn2 (cmd, label, title, arg) { return '<button type="button" class="nt-tb-btn" data-cmd="' + cmd + '" data-arg="' + esc(arg) + '" title="' + title + '" aria-label="' + title + '">' + label + '</button>' }
 
   function wireEditor (readonly) {
     if (readonly) {
@@ -464,7 +511,7 @@
     editorEl.querySelectorAll('.nt-tb-btn').forEach(function (b) {
       b.onmousedown = function (e) { e.preventDefault() }
       if (b.hasAttribute('data-image')) b.onclick = function () { $('ntImageInput').click() }
-      else if (b.hasAttribute('data-link')) b.onclick = function () { var url = window.prompt('ENTER LINK URL'); url = safeUrl(url, false); if (url) { document.execCommand('createLink', false, url); markDirty() } }
+      else if (b.hasAttribute('data-link')) b.onclick = function () { var url = window.prompt('Link URL'); url = safeUrl(url, false); if (url) { document.execCommand('createLink', false, url); markDirty() } }
       else b.onclick = function () { var cmd = b.getAttribute('data-cmd'), arg = b.getAttribute('data-arg'); document.execCommand(cmd, false, arg || null); markDirty() }
     })
     editorEl.querySelectorAll('[data-color]').forEach(function (input) { input.oninput = function () { document.execCommand(input.dataset.color, false, input.value); inkHighlights($('ntBody')); markDirty() } })
@@ -489,6 +536,9 @@
     // Never arm a save against an editor that is not fully mounted — the body
     // would serialise as '' and overwrite the note.
     if (!S.editorReady) return
+    // Editing this note again cancels an open that is waiting on its save: the
+    // save's finally would otherwise switch notes under the user's typing.
+    S.pendingOpenId = S.noteId
     S.editRevision++; S.dirty = true; setSaveState('Unsaved')
     if (S.isSaving) { S.saveAgain = true; return }
     clearTimeout(S.saveTimer); S.saveTimer = setTimeout(saveNote, 1100)
@@ -509,7 +559,7 @@
       if (S.noteId !== sourceId || S.openSeq !== sourceSeq || !sourceBody || !sourceBody.isConnected || sourceBody !== $('ntBody')) return
       var dataUrl = String(reader.result || '')
       if (!dataUrl || documentInlineSize() + dataUrl.length > NOTES_INLINE_BUDGET_BYTES) { budgetToast(); return }
-      var img = document.createElement('img'); img.src = dataUrl; img.alt = file.name || 'NOTE IMAGE'; img.style.maxWidth = '100%'; img.style.height = 'auto'; var selection = window.getSelection(); if (selection && selection.rangeCount && sourceBody.contains(selection.anchorNode)) { var range = selection.getRangeAt(0); range.deleteContents(); range.insertNode(img); range.setStartAfter(img); range.collapse(true); selection.removeAllRanges(); selection.addRange(range) } else sourceBody.appendChild(img); markDirty()
+      var img = document.createElement('img'); img.src = dataUrl; img.alt = file.name || 'Image'; img.style.maxWidth = '100%'; img.style.height = 'auto'; var selection = window.getSelection(); if (selection && selection.rangeCount && sourceBody.contains(selection.anchorNode)) { var range = selection.getRangeAt(0); range.deleteContents(); range.insertNode(img); range.setStartAfter(img); range.collapse(true); selection.removeAllRanges(); selection.addRange(range) } else sourceBody.appendChild(img); markDirty()
     }
     reader.onerror = function () { if (S.noteId === sourceId) toast('COULD NOT READ IMAGE', 'error') }
     reader.readAsDataURL(file)
@@ -778,7 +828,7 @@
         payload.content_nonce = contentNonceOf(canvasEnc)
       }
       var resp = await apiSend('POST', '/notes/api/notes', payload)
-      await loadAll(); await loadNotes(); openNote(resp.id)
+      await loadAll(); openNote(resp.id)
     } catch (e) { toast('COULD NOT CREATE NOTE', 'error') }
   }
 
@@ -803,18 +853,18 @@
   }
   async function deleteNote (perm) {
     if (!S.noteId) return
-    if (perm && !window.confirm('DELETE THIS NOTE FOREVER? THIS CANNOT BE UNDONE.')) return
+    if (perm && !(await confirmForever())) return
     if (!perm && S.dirty) { if (S.canvas && S.canvas.flush) S.canvas.flush(); await saveNote(); if (S.dirty) { toast('SAVE THE NOTE BEFORE MOVING IT TO TRASH', 'error'); return } }
     try {
       await apiSend('DELETE', '/notes/api/notes/' + encodeURIComponent(S.noteId) + (perm ? '?permanent=true' : ''), null)
       toast(perm ? 'NOTE DELETED' : 'MOVED TO TRASH', 'success')
       resetOpenState(emptyEditor()); S.noteId = null
-      await loadAll(); loadNotes()
+      await loadAll()
     } catch (e) { toast('COULD NOT DELETE NOTE', 'error') }
   }
   async function restoreNote () {
     if (!S.noteId) return
-    try { await apiSend('POST', '/notes/api/notes/' + encodeURIComponent(S.noteId) + '/restore', {}); toast('NOTE RESTORED', 'success'); resetOpenState(emptyEditor()); S.noteId = null; await loadAll(); loadNotes() } catch (e) { toast('COULD NOT RESTORE', 'error') }
+    try { await apiSend('POST', '/notes/api/notes/' + encodeURIComponent(S.noteId) + '/restore', {}); toast('NOTE RESTORED', 'success'); resetOpenState(emptyEditor()); S.noteId = null; await loadAll() } catch (e) { toast('COULD NOT RESTORE', 'error') }
   }
 
   // ---- Per-note actions (context menu) -------------------------------------
@@ -880,7 +930,8 @@
       n.is_pinned = np
       if (S.meta && S.meta.id === id) S.meta.is_pinned = np
       renderList()
-      if (S.noteId === id) { var pb = editorEl.querySelector('[data-pin] svg'); if (pb) pb.setAttribute('fill', np ? 'currentColor' : 'none') }
+      var pb = S.noteId === id && editorEl.querySelector('[data-pin]')
+      if (pb) { pb.querySelector('svg').setAttribute('fill', np ? 'currentColor' : 'none'); pb.setAttribute('aria-pressed', String(np)); pb.title = np ? 'Unpin' : 'Pin to top' }
     } catch (e) { toast('COULD NOT UPDATE PIN', 'error') }
   }
 
@@ -949,7 +1000,7 @@
       }
       await apiSend('POST', '/notes/api/notes', payload)
       toast('NOTE DUPLICATED', 'success')
-      await loadAll(); await loadNotes()
+      await loadAll()
     } catch (e) { toast('COULD NOT CONFIRM NOTE DUPLICATION. REFRESH TO CHECK', 'error') }
   }
 
@@ -960,7 +1011,7 @@
       n.notebook_id = notebookId
       if (S.meta && S.meta.id === id) S.meta.notebook_id = notebookId
       toast('NOTE MOVED', 'success')
-      await loadAll(); await loadNotes()
+      await loadAll()
     } catch (e) { toast('COULD NOT MOVE NOTE', 'error') }
   }
 
@@ -971,17 +1022,23 @@
       await apiSend('DELETE', '/notes/api/notes/' + encodeURIComponent(id), null)
       toast('MOVED TO TRASH', 'success')
       clearEditorIfOpen(id)
-      await loadAll(); loadNotes()
+      await loadAll()
     } catch (e) { toast('COULD NOT DELETE NOTE', 'error') }
   }
 
+  function confirmDanger (title, message, action) {
+    if (window.showConfirm) return window.showConfirm(title, message, action)
+    return Promise.resolve(window.confirm(title + '\n\n' + message))
+  }
+  function confirmForever () { return confirmDanger('Delete this note forever?', 'It will be removed permanently. This cannot be undone.', 'Delete forever') }
+
   async function deleteForeverById (id) {
-    if (!window.confirm('DELETE THIS NOTE FOREVER? THIS CANNOT BE UNDONE.')) return
+    if (!(await confirmForever())) return
     try {
       await apiSend('DELETE', '/notes/api/notes/' + encodeURIComponent(id) + '?permanent=true', null)
       toast('NOTE DELETED', 'success')
       clearEditorIfOpen(id)
-      await loadAll(); loadNotes()
+      await loadAll()
     } catch (e) { toast('COULD NOT DELETE NOTE', 'error') }
   }
 
@@ -990,12 +1047,12 @@
       await apiSend('POST', '/notes/api/notes/' + encodeURIComponent(id) + '/restore', {})
       toast('NOTE RESTORED', 'success')
       clearEditorIfOpen(id)
-      await loadAll(); loadNotes()
+      await loadAll()
     } catch (e) { toast('COULD NOT RESTORE', 'error') }
   }
 
   async function emptyTrash () {
-    if (!window.confirm('PERMANENTLY DELETE EVERYTHING IN THE TRASH? THIS CANNOT BE UNDONE.')) return
+    if (!(await confirmDanger('Empty the trash?', 'Everything in the trash will be deleted permanently. This cannot be undone.', 'Empty trash'))) return
     // Only close the editor if it shows one of the deleted notes: a live note
     // left open while browsing the trash may hold unsaved edits.
     var trashed = S.view === 'trash' ? S.notes.map(function (n) { return n.id }) : []
@@ -1003,7 +1060,7 @@
       await apiSend('DELETE', '/notes/api/trash', null)
       toast('TRASH EMPTIED', 'success')
       trashed.forEach(clearEditorIfOpen)
-      await loadAll(); loadNotes()
+      await loadAll()
     } catch (e) { toast('COULD NOT EMPTY TRASH', 'error') }
   }
 
@@ -1017,8 +1074,9 @@
     trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
     restore: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
     note: '<path d="M12 5v14M5 12h14"/>',
-    canvas: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
-    notebook: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+    doc: '<path d="M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"/><path d="M14 3.5V8h4.5M9 12.5h6M9 16h4"/>',
+    canvas: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/>',
+    notebook: '<path d="M5.5 18.5v-13a2 2 0 0 1 2-2h11v13h-11a2 2 0 0 0-2 2zm0 0a2 2 0 0 0 2 2h11"/><path d="M9.5 7.5h5"/>',
     back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>'
   }
   function hasMenu () { return typeof window.RdMenu !== 'undefined' }
@@ -1109,8 +1167,17 @@
 
   // ---- Misc UI -------------------------------------------------------------
   function fmtDate (iso) { if (!iso) return ''; var d = new Date(iso); if (isNaN(d)) return ''; var now = new Date(); var sameDay = d.toDateString() === now.toDateString(); return sameDay ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) }
-  function errState (m) { return '<div class="nt-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg><p>' + esc(m) + '</p></div>' }
-  function emptyEditor () { return '<div class="nt-empty nt-empty-editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M6 21a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2z"/></svg><h3>Select a note</h3><p>Choose a note from the list, or create a new one. Everything is end-to-end encrypted.</p></div>' }
+  function errState (m) { return '<div class="rd-empty is-error"><span class="rd-empty-icon">' + ico('<circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.5M12 16h.01"/>') + '</span><p class="rd-empty-text">' + esc(m) + '</p></div>' }
+  function emptyEditor () {
+    var copy = S.view === 'trash' ? ['Nothing selected', 'Open a note in the trash to restore it or delete it forever.']
+      : S.notes.length ? ['Select a note', 'Pick a note from the list or start a new one.']
+      : S.view === 'all' ? ['Write your first note', 'Notes and canvases are end-to-end encrypted, so only you can read them.']
+      : ['Start a note here', S.view === 'unfiled' ? 'Notes you create here stay outside any notebook.' : 'Notes you create here go into this notebook.']
+    return '<div class="rd-empty nt-empty-editor"><span class="rd-empty-icon">' + ico(NI.doc) + '</span><h3 class="rd-empty-title">' + copy[0] + '</h3>' +
+      '<p class="rd-empty-text">' + copy[1] + '</p>' + (S.view === 'trash' ? '</div>' :
+      '<div class="nt-empty-actions"><button type="button" class="rd-btn rd-btn-primary" data-new="document">' + ico('<path d="M12 5.5v13M5.5 12h13"/>') + 'New note</button>' +
+      '<button type="button" class="rd-btn rd-btn-ghost" data-new="canvas">' + ico(NI.canvas) + 'New canvas</button></div></div>')
+  }
 
   function showLock (on) {
     var lb = $('ntLock'); if (!lb) return
@@ -1139,6 +1206,7 @@
       if (lpFired) { lpFired = false; e.preventDefault(); e.stopPropagation(); return }
       if (e.target.closest('#ntNewCanvas')) { createNote('canvas'); return }
       if (e.target.closest('#ntNewNote')) { createNote('document'); return }
+      if (e.target.closest('#ntEmptyTrash')) { emptyTrash(); return }
       var it = e.target.closest('[data-note]'); if (it) { openNote(it.getAttribute('data-note')); showEditorMobile(); return }
     })
     // Right-click: note card menu, or the create menu on empty list space.
@@ -1174,7 +1242,9 @@
     $('ntRailScrim') && ($('ntRailScrim').onclick = closeRail)
     document.addEventListener('click', function (e) { if (e.target.closest('#ntRailToggle')) openRail(); if (e.target.closest('#ntBackBtn')) hideEditorMobile() })
     // Notebook modal
+    editorEl.addEventListener('click', function (e) { var nb = e.target.closest('[data-new]'); if (nb) createNote(nb.getAttribute('data-new')) })
     $('ntNbSave') && ($('ntNbSave').onclick = function () { var n = $('ntNbName').value.trim(); if (!n) return; closeNbModal(); createNotebook(n) })
+    $('ntNbName') && $('ntNbName').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('ntNbSave').click() } })
     document.querySelectorAll('#ntNbModal [data-rd-modal-close]').forEach(function (b) { b.onclick = closeNbModal })
     // Prompt modal (rename)
     $('ntPromptSave') && ($('ntPromptSave').onclick = function () { closePrompt($('ntPromptInput').value) })
@@ -1216,7 +1286,8 @@
   function boot () {
     listEl = $('ntList'); editorEl = $('ntEditor')
     if (!listEl) return
-    wire(); editorEl.innerHTML = emptyEditor()
+    // The empty state waits for the first list load: its copy depends on whether there are notes.
+    wire()
     if (!window.__NT_NO_AUTOLOAD__) loadAll()
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot()

@@ -7,7 +7,7 @@
    ========================================================================== */
 ;(function () {
   'use strict'
-  var KEY = 'onegy_theme', DEFAULT = 'frost'
+  var KEY = 'onegy_theme', DEFAULT = 'frost-dark'
   var THEMES = [
     { id: 'frost',      label: 'Frost',      dark: false },
     { id: 'frost-dark', label: 'Frost Dark', dark: true }

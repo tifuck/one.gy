@@ -71,6 +71,12 @@ def cleanup_job():
                 ('stale_lock_files',       cleanup_stale_lock_files),
                 # AUDIT FIX A9: drop dismissal rows that can never matter again.
                 ('notification_dismissals', cleanup_stale_notification_dismissals),
+                # Desktop sync: expire old tombstones (older cursors then get 410).
+                ('sync_tombstones',        _prune_sync_tombstones),
+                # Desktop sync: idle upload sessions and their staged parts.
+                ('sync_upload_sessions',   _cleanup_expired_sync_upload_sessions),
+                # File versions past retention or whose live file is gone.
+                ('file_versions',          _cleanup_file_versions),
                 # AUDIT FIX A16: pick up songs added to / removed from disk without a restart.
                 ('music_library_rescan',   maybe_rescan_available_songs),
             ):

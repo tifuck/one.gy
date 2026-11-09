@@ -3,14 +3,14 @@
   'use strict'
 
   var TOOLS = [
-    ['select', 'SELECT / MOVE (V)', '<path d="M4 3l7 17 2.5-6.5L20 11z"/>'],
-    ['text', 'TEXT (T)', '<path d="M4 6V4h16v2M12 4v16M8 20h8"/>'],
-    ['image', 'IMAGE (I)', '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>'],
-    ['todo', 'TO-DO (O)', '<rect x="4" y="4" width="6" height="6"/><path d="M14 7h6M4 17l2 2 4-5M14 17h6"/>'],
-    ['table', 'TABLE (B)', '<rect x="3" y="3" width="18" height="18"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>'],
-    ['code', 'CODE (C)', '<path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14"/>'],
-    ['pen', 'DRAW (P)', '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'],
-    ['line', 'LINE / ARROW (L)', '<path d="M5 19L19 5M19 5h-6M19 5v6"/>']
+    ['select', 'Select / move (V)', '<path d="M5 3.5l6.2 16 2.3-6.2 6.2-2.3z"/>'],
+    ['text', 'Text (T)', '<path d="M5 6.5V5h14v1.5M12 5v14M9 19h6"/>'],
+    ['image', 'Image (I)', '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="9.5" r="1.6"/><path d="m20.5 16-4.8-4.8L7 19.5"/>'],
+    ['todo', 'To-do (O)', '<rect x="4" y="4.5" width="6" height="6" rx="1.5"/><path d="M14 7.5h6M4.5 17l2 2 3.5-4.5M14 17h6"/>'],
+    ['table', 'Table (B)', '<rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.2 4.5v15M14.8 4.5v15"/>'],
+    ['code', 'Code (C)', '<path d="m8 9-4 3 4 3M16 9l4 3-4 3M13.5 5.5l-3 13"/>'],
+    ['pen', 'Draw (P)', '<path d="M12 20h8M16 4.5a2.1 2.1 0 0 1 3 3L7.5 19 4 20l1-3.5z"/>'],
+    ['line', 'Line / arrow (L)', '<path d="M5 19 19 5M19 5h-6M19 5v6"/>']
   ]
   var COLORS = ['#0f1720', '#0e8fd6', '#1f9d57', '#e5940a', '#d8231b', '#8a63d2', '#ffffff']
   var CANVAS_MAX_Y = 100000
@@ -136,9 +136,9 @@
     var root = el('div', 'fxc-root'), bar = el('div', 'fxc-bar'), vp = el('div', 'fxc-vp')
     var page = el('div', 'fxc-page'), world = el('div', 'fxc-world'), overlay = el('div', 'fxc-overlay')
     var imageInput = document.createElement('input'); imageInput.type = 'file'; imageInput.accept = 'image/*'; imageInput.hidden = true
-    vp.tabIndex = 0; vp.setAttribute('role', 'application'); vp.setAttribute('aria-label', 'NOTE PAGE'); page.appendChild(world); page.appendChild(overlay); vp.appendChild(page)
+    vp.tabIndex = 0; vp.setAttribute('role', 'application'); vp.setAttribute('aria-label', 'Note page'); page.appendChild(world); page.appendChild(overlay); vp.appendChild(page)
     if (!readonly) { bar.appendChild(toolGroup()); bar.appendChild(colorGroup()); bar.appendChild(actionGroup()) }
-    var hint = el('div', 'fxc-hint', 'CLICK ANYWHERE AND START TYPING')
+    var hint = el('div', 'fxc-hint', 'Click anywhere to start typing')
     imageInput.onchange = addSelectedImage
     vp.appendChild(hint); if (!readonly) root.appendChild(bar); root.appendChild(vp); root.appendChild(imageInput); container.appendChild(root)
 
@@ -169,14 +169,14 @@
     }
     function actionGroup () {
       var group = el('div', 'fxc-actions')
-      group.appendChild(iconButton('UNDO', '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/>', doUndo))
-      group.appendChild(iconButton('REDO', '<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h1"/>', doRedo))
-      group.appendChild(iconButton('DELETE', '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>', removeSelected, 'fxc-danger'))
+      group.appendChild(iconButton('Undo (Ctrl+Z)', '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/>', doUndo))
+      group.appendChild(iconButton('Redo (Ctrl+Y)', '<path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h1"/>', doRedo))
+      group.appendChild(iconButton('Delete selection (Del)', '<path d="M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2"/>', removeSelected, 'fxc-danger'))
       group.appendChild(el('span', 'fxc-sep'))
-      group.appendChild(iconButton('ZOOM OUT', '<circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-4.3-4.3"/>', function () { zoomBy(1 / 1.2) }, 'fxc-zoomctl'))
-      var level = el('button', 'fxc-zoom', '100%'); level.type = 'button'; level.id = 'fxcZoom'; level.title = 'RESET ZOOM'; level.setAttribute('aria-label', 'RESET ZOOM')
+      group.appendChild(iconButton('Zoom out', '<circle cx="11" cy="11" r="6.5"/><path d="M8.5 11h5M20 20l-4-4"/>', function () { zoomBy(1 / 1.2) }, 'fxc-zoomctl'))
+      var level = el('button', 'fxc-zoom', '100%'); level.type = 'button'; level.id = 'fxcZoom'; level.title = 'Reset zoom'; level.setAttribute('aria-label', 'Reset zoom')
       level.onclick = function () { zoom = 1; render(); vp.scrollLeft = 0; vp.scrollTop = 0 }; group.appendChild(level)
-      group.appendChild(iconButton('ZOOM IN', '<circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M21 21l-4.3-4.3"/>', function () { zoomBy(1.2) }, 'fxc-zoomctl'))
+      group.appendChild(iconButton('Zoom in', '<circle cx="11" cy="11" r="6.5"/><path d="M11 8.5v5M8.5 11h5M20 20l-4-4"/>', function () { zoomBy(1.2) }, 'fxc-zoomctl'))
       return group
     }
     function iconButton (title, svg, fn, cls) {
@@ -283,14 +283,14 @@
       else node = renderText(block)
       node.dataset.id = block.id; node.style.left = block.x + 'px'; node.style.top = block.y + 'px'; node.style.width = block.w + 'px'
       if (block.style && block.style.bgColor && block.style.bgColor !== 'transparent' && block.type !== 'image' && block.type !== 'code') { node.style.background = block.style.bgColor; var ink = inkOn(block.style.bgColor); if (ink) { node.style.color = ink; node.style.setProperty('--text', ink) } }
-      if (!readonly) { node.tabIndex = 0; node.setAttribute('aria-label', (block.type || 'block').toUpperCase() + ' BLOCK'); node.setAttribute('aria-selected', isSelected(block.id) ? 'true' : 'false') }
+      if (!readonly) { node.tabIndex = 0; node.setAttribute('aria-label', (block.type || 'block') + ' block'); node.setAttribute('aria-selected', isSelected(block.id) ? 'true' : 'false') }
       if (!isAutoHeight(block)) node.style.height = block.h + 'px'
       node.style.zIndex = block.zIndex == null ? 1 : block.zIndex
       var transform = 'rotate(' + (block.rotation || 0) + 'deg)'
       if (block.type === 'image' && block.effects) { if (block.effects.flipH) transform += ' scaleX(-1)'; if (block.effects.flipV) transform += ' scaleY(-1)' }
       node.style.transform = transform
       if (!readonly && block.type !== 'draw' && block.type !== 'line' && block.type !== 'image') {
-        var grip = el('button', 'fxc-grip', '<span></span><span></span><span></span>'); grip.type = 'button'; grip.title = 'MOVE BLOCK'
+        var grip = el('button', 'fxc-grip', '<span></span><span></span><span></span>'); grip.type = 'button'; grip.title = 'Drag to move'
         grip.addEventListener('pointerdown', function (event) { beginMove(event, block) }); node.appendChild(grip)
       }
       if (!readonly) node.addEventListener('pointerdown', function (event) { blockPointerDown(event, block) })
@@ -328,7 +328,7 @@
       block.items = Array.isArray(block.items) && block.items.length ? block.items : [{ id: id(), text: '', checked: false }]
       block.items.forEach(function (item, index) {
         var row = el('div', 'fxc-todo-row'), check = document.createElement('input'), input = el('div', 'fxc-todo-input')
-        check.type = 'checkbox'; check.checked = !!item.checked; check.disabled = readonly; input.contentEditable = readonly ? 'false' : 'true'; input.spellcheck = true; input.dataset.placeholder = 'TO-DO'; input.textContent = item.text || ''
+        check.type = 'checkbox'; check.checked = !!item.checked; check.disabled = readonly; input.contentEditable = readonly ? 'false' : 'true'; input.spellcheck = true; input.dataset.placeholder = 'To-do'; input.textContent = item.text || ''
         check.onchange = function () { snapshot(); item.checked = check.checked; scheduleCommit() }
         input.addEventListener('beforeinput', snapshotTyping)
         input.addEventListener('paste', pasteEditable)
@@ -349,8 +349,12 @@
       })
       return node
     }
+    // Focus the re-rendered target at once when it exists: a deferred focus left
+    // a tick where the old element was gone, so the next keystroke hit <body>
+    // and fired canvas shortcuts (tool letters, Delete) instead of typing.
+    function focusNow (find) { if (!find()) setTimeout(find, 0) }
     function focusTodoItem (blockId, index, atEnd) {
-      setTimeout(function () { var node = blockNode(blockId), input = node && node.querySelectorAll('.fxc-todo-input')[index]; if (!input) return; input.focus(); if (atEnd) { var range = document.createRange(), selection = window.getSelection(); range.selectNodeContents(input); range.collapse(false); selection.removeAllRanges(); selection.addRange(range) } }, 0)
+      focusNow(function () { var node = blockNode(blockId), input = node && node.querySelectorAll('.fxc-todo-input')[index]; if (!input) return false; input.focus(); if (atEnd) { var range = document.createRange(), selection = window.getSelection(); range.selectNodeContents(input); range.collapse(false); selection.removeAllRanges(); selection.addRange(range) } return true })
     }
     function exitTodo (block, index) {
       block.items.splice(index, 1)
@@ -360,9 +364,9 @@
     }
     function renderCode (block) {
       var node = el('div', 'fxc-block fxc-card fxc-code' + (isSelected(block.id) ? ' is-sel' : ''))
-      var header = el('div', 'fxc-code-head'), language = document.createElement('select'), copy = el('button', 'fxc-code-copy', 'COPY')
-      ;[['PLAIN', ''], ['BASH', 'bash'], ['PYTHON', 'python'], ['JAVASCRIPT', 'javascript'], ['TYPESCRIPT', 'typescript'], ['GO', 'go'], ['RUST', 'rust'], ['C', 'c'], ['C++', 'cpp'], ['JAVA', 'java'], ['HTML', 'html'], ['CSS', 'css'], ['SQL', 'sql'], ['JSON', 'json'], ['YAML', 'yaml']].forEach(function (choice) { var option = document.createElement('option'); option.textContent = choice[0]; option.value = choice[1]; option.selected = block.lang === choice[1]; language.appendChild(option) })
-      language.disabled = readonly; language.onchange = function () { snapshot(); block.lang = language.value; commit() }; copy.type = 'button'; copy.onclick = function () { navigator.clipboard.writeText(block.code || '').then(function () { copy.textContent = 'COPIED'; setTimeout(function () { copy.textContent = 'COPY' }, 1200) }) }
+      var header = el('div', 'fxc-code-head'), language = document.createElement('select'), copy = el('button', 'fxc-code-copy', 'Copy')
+      ;[['Plain text', ''], ['Bash', 'bash'], ['Python', 'python'], ['JavaScript', 'javascript'], ['TypeScript', 'typescript'], ['Go', 'go'], ['Rust', 'rust'], ['C', 'c'], ['C++', 'cpp'], ['Java', 'java'], ['HTML', 'html'], ['CSS', 'css'], ['SQL', 'sql'], ['JSON', 'json'], ['YAML', 'yaml']].forEach(function (choice) { var option = document.createElement('option'); option.textContent = choice[0]; option.value = choice[1]; option.selected = block.lang === choice[1]; language.appendChild(option) })
+      language.disabled = readonly; language.onchange = function () { snapshot(); block.lang = language.value; commit() }; copy.type = 'button'; copy.onclick = function () { navigator.clipboard.writeText(block.code || '').then(function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy' }, 1200) }) }
       header.appendChild(language); header.appendChild(copy); node.appendChild(header)
       var area = document.createElement('textarea'); area.value = block.code || block.content || ''; area.readOnly = readonly; area.spellcheck = false
       area.addEventListener('beforeinput', snapshotTyping); area.oninput = function () { block.code = area.value; syncBlockHeight(block, node); renderOverlay(); scheduleCommit() }; area.onkeydown = function (event) { if (event.key === 'Tab' && !readonly) { event.preventDefault(); snapshotTyping(); var start = area.selectionStart; area.setRangeText('  ', start, area.selectionEnd, 'end'); area.oninput() } }; node.appendChild(area); return node
@@ -423,14 +427,14 @@
         var acc = 0
         widths.forEach(function (width, index) {
           acc += width
-          var grip = el('div', 'fxc-colgrip'); grip.style.left = 'calc(' + acc + '% - 4px)'; grip.dataset.col = index; grip.title = 'RESIZE COLUMN'
+          var grip = el('div', 'fxc-colgrip'); grip.style.left = 'calc(' + acc + '% - 4px)'; grip.dataset.col = index; grip.title = 'Drag to resize column'
           grip.addEventListener('pointerdown', function (event) { startColResize(event, block, index) })
           node.appendChild(grip)
         })
       }
       return node
     }
-    function focusTableCell (blockId, row, col) { setTimeout(function () { var node = blockNode(blockId), cell = node && node.querySelector('td[data-row="' + row + '"][data-col="' + col + '"]'); if (cell) cell.focus() }, 0) }
+    function focusTableCell (blockId, row, col) { focusNow(function () { var node = blockNode(blockId), cell = node && node.querySelector('td[data-row="' + row + '"][data-col="' + col + '"]'); if (cell) cell.focus(); return !!cell }) }
     function insertSanitizedAtCaret (html, text) {
       var frag = sanitizeToFragment(html || '')
       if (!frag.childNodes.length) {
@@ -518,7 +522,7 @@
         box.style.transform = 'rotate(' + (block.rotation || 0) + 'deg)'; box.style.transformOrigin = ((block.x + block.w / 2 - v.x) * zoom) + 'px ' + ((block.y + block.h / 2 - v.y) * zoom) + 'px'
         if (selectedIds.length === 1 && block.type !== 'draw' && block.type !== 'line') {
           var handles = isAutoHeight(block) || block.type === 'attachment' ? ['e'] : ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
-          handles.forEach(function (name) { var handle = el('div', 'fxc-handle fxc-h-' + name); handle.dataset.handle = name; handle.setAttribute('role', 'button'); handle.setAttribute('aria-label', 'RESIZE ' + name.toUpperCase()); handle.addEventListener('pointerdown', function (event) { event.stopPropagation(); event.preventDefault(); startResize(event, block, name) }); box.appendChild(handle) })
+          handles.forEach(function (name) { var handle = el('div', 'fxc-handle fxc-h-' + name); handle.dataset.handle = name; handle.setAttribute('role', 'button'); handle.setAttribute('aria-label', 'Resize ' + name); handle.addEventListener('pointerdown', function (event) { event.stopPropagation(); event.preventDefault(); startResize(event, block, name) }); box.appendChild(handle) })
         }
         overlay.appendChild(box)
       })
@@ -656,36 +660,36 @@
       if (block.type === 'image') items.push({ node: imageControls(block) }, null)
       else if (block.type === 'draw' || block.type === 'line') items.push({ node: strokeControls(block) }, null)
       else if (block.type === 'todo') {
-        items.push(menuItem('ADD TO-DO ITEM', function () { applyBlockChange(block, function () { block.items = block.items || []; block.items.push({ id: id(), text: '', checked: false }) }); focusTodoItem(block.id, block.items.length - 1) }))
-        items.push(menuItem('CLEAR COMPLETED', function () { applyBlockChange(block, function () { block.items = (block.items || []).filter(function (item) { return !item.checked }); if (!block.items.length) block.items.push({ id: id(), text: '', checked: false }) }) }))
+        items.push(menuItem('Add to-do item', function () { applyBlockChange(block, function () { block.items = block.items || []; block.items.push({ id: id(), text: '', checked: false }) }); focusTodoItem(block.id, block.items.length - 1) }))
+        items.push(menuItem('Clear completed', function () { applyBlockChange(block, function () { block.items = (block.items || []).filter(function (item) { return !item.checked }); if (!block.items.length) block.items.push({ id: id(), text: '', checked: false }) }) }))
         items.push(null)
       } else if (block.type === 'attachment' && block.fileId) {
-        items.push(menuItem('OPEN FILE', function () { openAttachment(block) })); items.push(null)
+        items.push(menuItem('Open file', function () { openAttachment(block) })); items.push(null)
       }
       items.push({ node: layerControls(block) })
       if (block.type === 'image') {
         items.push(null)
-        items.push(menuItem('CROP PICTURE', function () { var node = blockNode(block.id), rect = node.getBoundingClientRect(); showImageCropMenu(block, rect.right + 8, rect.top) }))
-        items.push(menuItem(block.isBackground ? 'UNLOCK BACKGROUND' : 'SET PICTURE AS BACKGROUND', function () { applyBlockChange(block, function () { block.isBackground = !block.isBackground; if (block.isBackground) block.zIndex = -1 }) }))
-        items.push(menuItem('REPLACE PICTURE', function () { imageReplaceId = block.id; imageInput.value = ''; imageInput.click() }))
-        items.push(menuItem('EDIT ALT TEXT', function () { var value = window.prompt('ENTER ALT TEXT', block.alt || ''); if (value != null) applyBlockChange(block, function () { block.alt = String(value).slice(0, 500) }) }))
+        items.push(menuItem('Crop picture', function () { var node = blockNode(block.id), rect = node.getBoundingClientRect(); showImageCropMenu(block, rect.right + 8, rect.top) }))
+        items.push(menuItem(block.isBackground ? 'Unlock background' : 'Set picture as background', function () { applyBlockChange(block, function () { block.isBackground = !block.isBackground; if (block.isBackground) block.zIndex = -1 }) }))
+        items.push(menuItem('Replace picture', function () { imageReplaceId = block.id; imageInput.value = ''; imageInput.click() }))
+        items.push(menuItem('Edit alt text', function () { var value = window.prompt('Alt text', block.alt || ''); if (value != null) applyBlockChange(block, function () { block.alt = String(value).slice(0, 500) }) }))
       }
       items.push(null)
-      items.push(menuItem('CUT', function () { cutBlock(block) }, 'CTRL+X'))
-      items.push(menuItem('COPY', function () { copyBlock(block) }, 'CTRL+C'))
-      if (blockClipboard) items.push(menuItem('PASTE', function () { pasteBlock({ x: block.x + 20, y: block.y + 20 }) }, 'CTRL+V'))
-      items.push(menuItem('DUPLICATE', function () { duplicateBlocks([block]) }, 'CTRL+D'))
+      items.push(menuItem('Cut', function () { cutBlock(block) }, 'Ctrl+X'))
+      items.push(menuItem('Copy', function () { copyBlock(block) }, 'Ctrl+C'))
+      if (blockClipboard) items.push(menuItem('Paste', function () { pasteBlock({ x: block.x + 20, y: block.y + 20 }) }, 'Ctrl+V'))
+      items.push(menuItem('Duplicate', function () { duplicateBlocks([block]) }, 'Ctrl+D'))
       // Only free-floating visuals rotate — text/todo/table/code containers stay upright like OneNote.
       if (block.type === 'draw' || block.type === 'line') {
-        items.push(menuItem('ROTATE 90 DEG CW', function () { applyBlockChange(block, function () { block.rotation = ((block.rotation || 0) + 90) % 360 }) }))
-        items.push(menuItem('ROTATE 90 DEG CCW', function () { applyBlockChange(block, function () { block.rotation = ((block.rotation || 0) - 90) % 360 }) }))
+        items.push(menuItem('Rotate 90° clockwise', function () { applyBlockChange(block, function () { block.rotation = ((block.rotation || 0) + 90) % 360 }) }))
+        items.push(menuItem('Rotate 90° counter-clockwise', function () { applyBlockChange(block, function () { block.rotation = ((block.rotation || 0) - 90) % 360 }) }))
       }
-      items.push(null); items.push(menuItem('DELETE', function () { removeBlock(block.id) }, 'DEL', true))
-      openMenu(x, y, (block.type || 'BLOCK').toUpperCase(), items)
+      items.push(null); items.push(menuItem('Delete', function () { removeBlock(block.id) }, 'Del', true))
+      openMenu(x, y, (block.type === 'todo' ? 'to-do' : block.type || 'block').toUpperCase(), items)
     }
     function layerControls (block) {
       var panel = el('div', 'fxc-pop-controls fxc-layer-panel')
-      panel.appendChild(el('div', 'fxc-pop-label', 'LAYER'))
+      panel.appendChild(el('div', 'fxc-pop-label', 'Layer'))
       var row = el('div', 'fxc-pop-buttons')
       ;[['TO FRONT', 'front'], ['UP', 'forward'], ['DOWN', 'backward'], ['TO BACK', 'back']].forEach(function (spec) {
         row.appendChild(controlButton(spec[0], function () { changeBlockLayer(block, spec[1]) }))
@@ -694,10 +698,10 @@
       return panel
     }
     function showMultiMenu (x, y) {
-      openMenu(x, y, selectedIds.length + ' ITEMS SELECTED', [
-        menuItem('CUT', function () { cutBlocks(selectedBlocks()) }, 'CTRL+X'), menuItem('COPY', function () { copyBlocks(selectedBlocks()) }, 'CTRL+C'), menuItem('DUPLICATE', function () { duplicateBlocks(selectedBlocks()) }, 'CTRL+D'), null,
-        menuItem('BRING TO FRONT', function () { changeSelectedZ(true) }), menuItem('SEND TO BACK', function () { changeSelectedZ(false) }), null,
-        menuItem('DELETE', removeSelected, 'DEL', true)
+      openMenu(x, y, selectedIds.length + ' items selected', [
+        menuItem('Cut', function () { cutBlocks(selectedBlocks()) }, 'Ctrl+X'), menuItem('Copy', function () { copyBlocks(selectedBlocks()) }, 'Ctrl+C'), menuItem('Duplicate', function () { duplicateBlocks(selectedBlocks()) }, 'Ctrl+D'), null,
+        menuItem('Bring to front', function () { changeSelectedZ(true) }), menuItem('Send to back', function () { changeSelectedZ(false) }), null,
+        menuItem('Delete', removeSelected, 'Del', true)
       ])
     }
     function imageControls (block) {
@@ -707,7 +711,7 @@
       var opacitySnap = false, radiusSnap = false
       opacity.onpointerdown = opacity.onfocus = function () { if (!opacitySnap) { snapshot(); opacitySnap = true } }; radius.onpointerdown = radius.onfocus = function () { if (!radiusSnap) { snapshot(); radiusSnap = true } }
       opacity.oninput = function () { effects.opacity = +opacity.value; render(); scheduleCommit() }; radius.oninput = function () { effects.radius = +radius.value; render(); scheduleCommit() }
-      panel.appendChild(fieldRow('OPACITY', opacity)); panel.appendChild(fieldRow('CORNERS', radius))
+      panel.appendChild(fieldRow('Opacity', opacity)); panel.appendChild(fieldRow('Corners', radius))
       var toggles = el('div', 'fxc-pop-buttons')
       toggles.appendChild(controlButton('FLIP H', function () { snapshot(); effects.flipH = !effects.flipH; render(); commit() }))
       toggles.appendChild(controlButton('FLIP V', function () { snapshot(); effects.flipV = !effects.flipV; render(); commit() }))
@@ -717,21 +721,22 @@
     }
     function imageCropControls (block) {
       var panel = el('div', 'fxc-pop-controls'), effects = block.effects || (block.effects = {})
-      ;[['TOP', 'cropTop'], ['RIGHT', 'cropRight'], ['BOTTOM', 'cropBottom'], ['LEFT', 'cropLeft']].forEach(function (spec) { var input = document.createElement('input'), snapped = false; input.type = 'range'; input.min = 0; input.max = 45; input.value = +effects[spec[1]] || 0; input.onpointerdown = input.onfocus = function () { if (!snapped) { snapshot(); snapped = true } }; input.oninput = function () { effects[spec[1]] = +input.value; render(); scheduleCommit() }; panel.appendChild(fieldRow(spec[0], input)) })
+      ;[['Top', 'cropTop'], ['Right', 'cropRight'], ['Bottom', 'cropBottom'], ['Left', 'cropLeft']].forEach(function (spec) { var input = document.createElement('input'), snapped = false; input.type = 'range'; input.min = 0; input.max = 45; input.value = +effects[spec[1]] || 0; input.onpointerdown = input.onfocus = function () { if (!snapped) { snapshot(); snapped = true } }; input.oninput = function () { effects[spec[1]] = +input.value; render(); scheduleCommit() }; panel.appendChild(fieldRow(spec[0], input)) })
       var reset = controlButton('RESET CROP', function () { snapshot(); effects.cropTop = effects.cropRight = effects.cropBottom = effects.cropLeft = 0; render(); commit() }); panel.appendChild(reset); return panel
     }
-    function showImageCropMenu (block, x, y) { openMenu(x, y, 'CROP PICTURE', [{ node: imageCropControls(block) }]) }
+    function showImageCropMenu (block, x, y) { openMenu(x, y, 'Crop picture', [{ node: imageCropControls(block) }]) }
     function strokeControls (block) {
       var panel = el('div', 'fxc-pop-controls'), width = document.createElement('input'), picker = document.createElement('input')
       width.type = 'range'; width.min = 1; width.max = 20; width.value = +block.strokeWidth || 3; picker.type = 'color'; picker.value = block.strokeColor || '#0e8fd6'
       var widthSnap = false, colorSnap = false
       width.onpointerdown = width.onfocus = function () { if (!widthSnap) { snapshot(); widthSnap = true } }; picker.onpointerdown = picker.onfocus = function () { if (!colorSnap) { snapshot(); colorSnap = true } }
       width.oninput = function () { block.strokeWidth = +width.value; if (Array.isArray(block.paths)) block.paths.forEach(function (part) { if (part) part.strokeWidth = +width.value }); render(); scheduleCommit() }; picker.oninput = function () { block.strokeColor = picker.value; if (Array.isArray(block.paths)) block.paths.forEach(function (part) { if (part) part.strokeColor = picker.value }); render(); scheduleCommit() }
-      panel.appendChild(fieldRow('STROKE', width)); panel.appendChild(fieldRow('COLOR', picker))
-      if (block.type === 'line') { panel.appendChild(el('div', 'fxc-pop-label', 'ARROWHEADS')); var arrows = el('div', 'fxc-pop-buttons'); [['NONE', 'none'], ['END', 'end'], ['BOTH', 'both']].forEach(function (choice) { arrows.appendChild(controlButton(choice[0], function () { snapshot(); block.arrowMode = choice[1]; render(); commit() }, block.arrowMode === choice[1])) }); panel.appendChild(arrows) }
+      panel.appendChild(fieldRow('Stroke', width)); panel.appendChild(fieldRow('Colour', picker))
+      if (block.type === 'line') { panel.appendChild(el('div', 'fxc-pop-label', 'Arrowheads')); var arrows = el('div', 'fxc-pop-buttons'); [['NONE', 'none'], ['END', 'end'], ['BOTH', 'both']].forEach(function (choice) { arrows.appendChild(controlButton(choice[0], function () { snapshot(); block.arrowMode = choice[1]; render(); commit() }, block.arrowMode === choice[1])) }); panel.appendChild(arrows) }
       return panel
     }
-    function controlButton (label, action, active) { var button = el('button', 'fxc-mini' + (active ? ' is-active' : ''), esc(label)); button.type = 'button'; button.onclick = action; return button }
+    // The flip axis letter keeps its capital when the chip label is shown in sentence case (notes-canvas.css).
+    function controlButton (label, action, active) { var button = el('button', 'fxc-mini' + (active ? ' is-active' : ''), esc(label).replace(/ ([HV])$/, ' <span class="fxc-axis">$1</span>')); button.type = 'button'; button.onclick = action; return button }
     function copyBlocks (targets) { if (targets && targets.length) { blockClipboard = clone(targets); SHARED_BLOCK_CLIPBOARD = clone(targets) } }
     function copyBlock (block) { if (block) copyBlocks([block]) }
     function cutBlocks (targets) { if (!targets || !targets.length) return; copyBlocks(targets); removeSelected() }
@@ -760,34 +765,34 @@
     }
     function showInsertMenu (x, y) {
       var point = toWorld(x, y)
-      openMenu(x, y, 'INSERT AT CURSOR', [
-        menuItem('TEXT', function () { createAt('text', { x: point.x - 100, y: point.y - 30 }) }, 'T'),
-        menuItem('IMAGE', function () { imageInsertPoint = { x: point.x, y: point.y }; imageInput.value = ''; imageInput.click() }, 'I'),
-        menuItem('TO-DO LIST', function () { createAt('todo', { x: point.x - 120, y: point.y - 50 }) }, 'O'),
-        menuItem('TABLE', function () { createAt('table', { x: point.x - 180, y: point.y - 75 }) }, 'B'),
-        menuItem('CODE BLOCK', function () { createAt('code', { x: point.x - 160, y: point.y - 80 }) }, 'C'), null,
-        menuItem('FREE DRAW', function () { setTool('pen') }, 'P'), menuItem('LINE / ARROW', function () { setTool('line') }, 'L')
+      openMenu(x, y, 'Insert at cursor', [
+        menuItem('Text', function () { createAt('text', { x: point.x - 100, y: point.y - 30 }) }, 'T'),
+        menuItem('Image', function () { imageInsertPoint = { x: point.x, y: point.y }; imageInput.value = ''; imageInput.click() }, 'I'),
+        menuItem('To-do list', function () { createAt('todo', { x: point.x - 120, y: point.y - 50 }) }, 'O'),
+        menuItem('Table', function () { createAt('table', { x: point.x - 180, y: point.y - 75 }) }, 'B'),
+        menuItem('Code block', function () { createAt('code', { x: point.x - 160, y: point.y - 80 }) }, 'C'), null,
+        menuItem('Free draw', function () { setTool('pen') }, 'P'), menuItem('Line / arrow', function () { setTool('line') }, 'L')
       ])
     }
     function tableStyleSwatch (name, active, action) {
-      var button = el('button', 'fxc-style-swatch' + (active ? ' is-active' : '')); button.type = 'button'; button.title = name.toUpperCase()
+      var button = el('button', 'fxc-style-swatch' + (active ? ' is-active' : '')); button.type = 'button'; button.title = name.charAt(0).toUpperCase() + name.slice(1)
       var preset = TABLE_STYLES[name], preview = el('span', 'fxc-style-mini')
       for (var r = 0; r < 3; r++) { var prow = el('span', 'fxc-style-mini-row'); for (var c = 0; c < 3; c++) { var pcell = el('span', 'fxc-style-mini-cell'); styleTableCell(pcell, preset, r, 3); prow.appendChild(pcell) } preview.appendChild(prow) }
       if (+preset.borderRadius) preview.style.borderRadius = '4px'
-      button.appendChild(preview); button.appendChild(el('span', 'fxc-style-name', esc(name.toUpperCase())))
+      button.appendChild(preview); button.appendChild(el('span', 'fxc-style-name', esc(button.title)))
       button.onclick = action; return button
     }
     function showTableMenu (block, cell, x, y) {
       selectBlock(block.id); var row = +cell.dataset.row || 0, col = +cell.dataset.col || 0
-      var styles = el('div', 'fxc-table-styles'); styles.appendChild(el('div', 'fxc-pop-label', 'TABLE STYLE'))
+      var styles = el('div', 'fxc-table-styles'); styles.appendChild(el('div', 'fxc-pop-label', 'Table style'))
       var styleButtons = el('div', 'fxc-style-grid')
       Object.keys(TABLE_STYLES).forEach(function (name) { styleButtons.appendChild(tableStyleSwatch(name, block.tableStyle === name, function () { closePopover(); applyBlockChange(block, function () { var preset = TABLE_STYLES[name]; block.tableStyle = name; Object.keys(preset).forEach(function (key) { block[key] = preset[key] }) }) })) }); styles.appendChild(styleButtons)
-      openMenu(x, y, 'TABLE CELL', [
-        menuItem('INSERT ROW ABOVE', function () { tableRow(block, row, false) }), menuItem('INSERT ROW BELOW', function () { tableRow(block, row + 1, false) }), null,
-        menuItem('INSERT COLUMN LEFT', function () { tableColumn(block, col, false) }), menuItem('INSERT COLUMN RIGHT', function () { tableColumn(block, col + 1, false) }), null,
-        menuItem('DELETE ROW', function () { tableRow(block, row, true) }, '', true), menuItem('DELETE COLUMN', function () { tableColumn(block, col, true) }, '', true), null,
-        menuItem('DISTRIBUTE COLUMNS EVENLY', function () { applyBlockChange(block, function () { var equal = []; for (var i = 0; i < block.cols; i++) equal.push(100 / block.cols); block.colWidths = equal }) }),
-        { node: styles }, null, menuItem('DELETE TABLE', function () { removeBlock(block.id) }, '', true)
+      openMenu(x, y, 'Table cell', [
+        menuItem('Insert row above', function () { tableRow(block, row, false) }), menuItem('Insert row below', function () { tableRow(block, row + 1, false) }), null,
+        menuItem('Insert column left', function () { tableColumn(block, col, false) }), menuItem('Insert column right', function () { tableColumn(block, col + 1, false) }), null,
+        menuItem('Delete row', function () { tableRow(block, row, true) }, '', true), menuItem('Delete column', function () { tableColumn(block, col, true) }, '', true), null,
+        menuItem('Distribute columns evenly', function () { applyBlockChange(block, function () { var equal = []; for (var i = 0; i < block.cols; i++) equal.push(100 / block.cols); block.colWidths = equal }) }),
+        { node: styles }, null, menuItem('Delete table', function () { removeBlock(block.id) }, '', true)
       ])
     }
     // Insert caps mirror notes.js validateCanvasData (rows <= 100, cols <= 30);
@@ -836,17 +841,17 @@
         input.oninput = function () { command(cmd, input.value) }
         wrap.appendChild(input); popover.appendChild(wrap)
       }
-      toolButton('B', 'BOLD', 'bold', null, 'font-weight:900'); toolButton('I', 'ITALIC', 'italic', null, 'font-style:italic'); toolButton('U', 'UNDERLINE', 'underline', null, 'text-decoration:underline'); toolButton('S', 'STRIKETHROUGH', 'strikeThrough', null, 'text-decoration:line-through')
+      toolButton('B', 'Bold', 'bold', null, 'font-weight:700'); toolButton('I', 'Italic', 'italic', null, 'font-style:italic'); toolButton('U', 'Underline', 'underline', null, 'text-decoration:underline'); toolButton('S', 'Strikethrough', 'strikeThrough', null, 'text-decoration:line-through')
       toolSep()
-      toolButton('H1', 'HEADING 1', 'formatBlock', 'h1'); toolButton('H2', 'HEADING 2', 'formatBlock', 'h2'); toolButton('H3', 'HEADING 3', 'formatBlock', 'h3')
+      toolButton('H1', 'Heading 1', 'formatBlock', 'h1'); toolButton('H2', 'Heading 2', 'formatBlock', 'h2'); toolButton('H3', 'Heading 3', 'formatBlock', 'h3')
       toolSep()
-      toolButton('• LIST', 'BULLET LIST', 'insertUnorderedList'); toolButton('1. LIST', 'NUMBERED LIST', 'insertOrderedList'); toolButton('❝', 'QUOTE', 'formatBlock', 'blockquote')
+      toolButton('• List', 'Bulleted list', 'insertUnorderedList'); toolButton('1. List', 'Numbered list', 'insertOrderedList'); toolButton('❝', 'Quote', 'formatBlock', 'blockquote')
       toolSep()
-      var link = controlButton('LINK', function () { var url = safeUrl(window.prompt('ENTER LINK URL'), false); if (url) command('createLink', url) }); link.title = 'INSERT LINK'; link.addEventListener('pointerdown', function (event) { event.preventDefault() }); popover.appendChild(link)
-      colorControl('A', 'TEXT COLOR', '#0f1720', 'foreColor')
-      colorControl('▰', 'HIGHLIGHT COLOR', '#faef5a', 'hiliteColor')
+      var link = controlButton('Link', function () { var url = safeUrl(window.prompt('Link URL'), false); if (url) command('createLink', url) }); link.title = 'Insert link'; link.addEventListener('pointerdown', function (event) { event.preventDefault() }); popover.appendChild(link)
+      colorControl('A', 'Text colour', '#0f1720', 'foreColor')
+      colorControl('▰', 'Highlight', '#faef5a', 'hiliteColor')
       toolSep()
-      var clear = controlButton('CLEAR', function () { command('removeFormat') }); clear.title = 'CLEAR FORMATTING'; clear.addEventListener('pointerdown', function (event) { event.preventDefault() }); popover.appendChild(clear)
+      var clear = controlButton('Clear', function () { command('removeFormat') }); clear.title = 'Clear formatting'; clear.addEventListener('pointerdown', function (event) { event.preventDefault() }); popover.appendChild(clear)
       document.body.appendChild(popover)
       // Prefer above the selection; flip below it when it would cover the toolbar / leave the window.
       var top = y - popover.offsetHeight
@@ -863,21 +868,23 @@
       if ((block.type === 'image' && !block.isBackground) || block.type === 'draw' || block.type === 'line') beginMove(event, block)
     }
     function beginMove (event, block) {
-      event.preventDefault(); event.stopPropagation(); if (!isSelected(block.id)) selectBlock(block.id); snapshot(); vp.setPointerCapture(event.pointerId)
+      event.preventDefault(); event.stopPropagation(); if (!isSelected(block.id)) selectBlock(block.id); vp.setPointerCapture(event.pointerId)
       var point = toWorld(event.clientX, event.clientY)
-      gesture = { type: 'move', pointerId: event.pointerId, id: block.id, sx: point.x, sy: point.y, before: true, originals: selectedBlocks().map(function (target) { return { id: target.id, x: target.x, y: target.y } }) }
+      // before: undo snapshot taken. Deferred to the first real drag so a plain
+      // click (select an image/drawing) neither saves nor wipes redo.
+      gesture = { type: 'move', pointerId: event.pointerId, id: block.id, sx: point.x, sy: point.y, before: false, originals: selectedBlocks().map(function (target) { return { id: target.id, x: target.x, y: target.y } }) }
     }
     function startResize (event, block, handle) {
-      snapshot(); vp.setPointerCapture(event.pointerId); var point = toWorld(event.clientX, event.clientY), v = visibleRect(block)
-      gesture = { type: 'resize', pointerId: event.pointerId, id: block.id, handle: handle, sx: point.x, sy: point.y, before: true, x: v.x, y: v.y, w: v.w, h: v.h }
+      vp.setPointerCapture(event.pointerId); var point = toWorld(event.clientX, event.clientY), v = visibleRect(block)
+      gesture = { type: 'resize', pointerId: event.pointerId, id: block.id, handle: handle, sx: point.x, sy: point.y, before: false, x: v.x, y: v.y, w: v.w, h: v.h }
     }
     function startScrollDrag (event) { vp.setPointerCapture(event.pointerId); gesture = { type: 'scrollpan', pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, scrollLeft: vp.scrollLeft, scrollTop: vp.scrollTop } }
     function startMarquee (event, point) { vp.setPointerCapture(event.pointerId); gesture = { type: 'marquee', pointerId: event.pointerId, sx: point.x, sy: point.y, x: point.x, y: point.y, moved: false, additive: !!(event.ctrlKey || event.metaKey || event.shiftKey), originalSelection: selectedIds.slice() } }
     function startColResize (event, block, col) {
       event.preventDefault(); event.stopPropagation(); if (!isSelected(block.id)) selectBlock(block.id)
-      snapshot(); vp.setPointerCapture(event.pointerId)
+      vp.setPointerCapture(event.pointerId)
       var widths = colWidthsPct(block).map(function (percent) { return percent * block.w / 100 })
-      gesture = { type: 'colresize', pointerId: event.pointerId, id: block.id, col: col, sx: toWorld(event.clientX, event.clientY).x, sy: 0, widths: widths, before: true }
+      gesture = { type: 'colresize', pointerId: event.pointerId, id: block.id, col: col, sx: toWorld(event.clientX, event.clientY).x, sy: 0, widths: widths, before: false }
     }
     function marqueeArea (state) { return { x: Math.min(state.sx, state.x), y: Math.min(state.sy, state.y), w: Math.abs(state.x - state.sx), h: Math.abs(state.y - state.sy) } }
     function startDraw (event, point) {
@@ -936,6 +943,7 @@
       if (gesture.type === 'marquee') { var marqueePoint = toWorld(event.clientX, event.clientY); gesture.x = marqueePoint.x; gesture.y = marqueePoint.y; gesture.moved = gesture.moved || Math.hypot(gesture.x - gesture.sx, gesture.y - gesture.sy) >= 4; if (gesture.moved) { var area = marqueeArea(gesture), hits = blocks.filter(function (item) { return item.x < area.x + area.w && item.x + item.w > area.x && item.y < area.y + area.h && item.y + item.h > area.y }).map(function (item) { return item.id }); selectedIds = gesture.additive ? gesture.originalSelection.concat(hits.filter(function (item) { return gesture.originalSelection.indexOf(item) < 0 })) : hits; selected = selectedIds[selectedIds.length - 1] || null; scheduleGesturePaint() }; return }
       var point = toWorld(event.clientX, event.clientY), block = byId(gesture.id); if (!block) return
       var dx = point.x - gesture.sx, dy = point.y - gesture.sy
+      if (!gesture.before) { if (Math.hypot(dx, dy) * zoom < 3) return; snapshot(); gesture.before = true }
       if (gesture.type === 'colresize') {
         var widths = gesture.widths.slice()
         if (gesture.col < widths.length - 1) {
@@ -964,7 +972,7 @@
         if (!finished.moved && finished.clickCreate && !readonly) { createAt('text', toWorld(event.clientX, event.clientY), true); return }
         render(); return
       }
-      if (finished.type === 'scrollpan') return
+      if (finished.type === 'scrollpan' || !finished.before) return // !before: a click, nothing moved
       render(); commit() // re-render with gesture cleared so the page grows to fit moved/resized content
     }
     vp.addEventListener('pointerup', endPointer)
@@ -1046,16 +1054,23 @@
       var total = undo.reduce(function (sum, entry) { return sum + entry.length }, 0)
       while (undo.length > 1 && (undo.length > 80 || total > HISTORY_MAX_CHARS)) total -= undo.shift().length
     }
-    function rebuildProvisionals () { provisionalText = {}; blocks.forEach(function (block) { if (block.type === 'text' && !String(block.content || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim()) provisionalText[block.id] = true }) }
+    // Only containers created empty in this session can turn provisional again:
+    // an empty block that came with the note (e.g. a coloured box) is content,
+    // and marking it provisional dropped it from the next save.
+    function rebuildProvisionals () { Object.keys(provisionalText).forEach(function (blockId) { var block = byId(blockId); provisionalText[blockId] = !!block && block.type === 'text' && isEmptyTextContent(block.content) }) }
     function doUndo () { if (!undo.length) return; redo.push(packBlocks()); blocks = unpackBlocks(undo.pop()); rebuildProvisionals(); selectedIds = []; selected = null; render(); commit() }
     function doRedo () { if (!redo.length) return; undo.push(packBlocks()); blocks = unpackBlocks(redo.pop()); rebuildProvisionals(); selectedIds = []; selected = null; render(); commit() }
     function scheduleCommit () { if (!dirtyPending) { dirtyPending = true; onDirty() }; clearTimeout(changeTimer); changeTimer = setTimeout(commit, 350) }
-    function commit () { clearTimeout(changeTimer); changeTimer = null; if (destroyed) { dirtyPending = false; return }; if (!dirtyPending) onDirty(); dirtyPending = false; onChange(getData()) }
-    function flush (notify) { if (!changeTimer && !dirtyPending) return; clearTimeout(changeTimer); changeTimer = null; dirtyPending = false; if (notify !== false && !destroyed) onChange(getData()) }
+    function commit () { clearTimeout(changeTimer); changeTimer = null; if (destroyed) { dirtyPending = false; return }; if (!dirtyPending) onDirty(); dirtyPending = false; if (opts.onChange) onChange(getData()) }
+    function flush (notify) { if (!changeTimer && !dirtyPending) return; clearTimeout(changeTimer); changeTimer = null; dirtyPending = false; if (notify !== false && !destroyed && opts.onChange) onChange(getData()) }
     function getData () { var result = clone(source); result.blocks = clone(blocks.filter(function (block) { return !provisionalText[block.id] })); result.nextId = nextId; result.maxZ = maxZ; result.zoom = zoom; result.panX = 0; result.panY = 0; return result }
 
     function onKeyDown (event) {
       if (readonly) return
+      // Shortcuts belong to the canvas: with focus in the notes list, rail or
+      // header, Delete/arrows/letters must not edit blocks or swallow Space.
+      var focused = document.activeElement
+      if (focused && focused !== document.body && !root.contains(focused) && !(popover && popover.contains(focused))) return
       var editing = document.activeElement && document.activeElement.closest && document.activeElement.closest('input,textarea,[contenteditable="true"]')
       if (event.key === 'Escape' && popover) { event.preventDefault(); closePopover(); vp.focus(); return }
       if ((event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
@@ -1077,13 +1092,13 @@
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'x' && selectedIds.length) { event.preventDefault(); cutBlocks(selectedBlocks()) }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && blockClipboard) { event.preventDefault(); pasteBlock() }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && selectedIds.length) { event.preventDefault(); duplicateBlocks(selectedBlocks()) }
-      if (selectedIds.length && /^Arrow(Left|Right|Up|Down)$/.test(event.key)) { event.preventDefault(); snapshot(); var amount = event.shiftKey ? 10 : 1, dx = event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0, dy = event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0; selectedBlocks().forEach(function (block) { block.x += dx; block.y += dy; clampBlockY(block) }); render(); commit(); return }
+      if (selectedIds.length && /^Arrow(Left|Right|Up|Down)$/.test(event.key)) { event.preventDefault(); if (!event.repeat) snapshot(); var amount = event.shiftKey ? 10 : 1, dx = event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0, dy = event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0; selectedBlocks().forEach(function (block) { block.x += dx; block.y += dy; clampBlockY(block) }); render(); commit(); return }
       var keys = { v: 'select', t: 'text', i: 'image', o: 'todo', b: 'table', c: 'code', p: 'pen', l: 'line' }; if (keys[event.key] && !event.ctrlKey && !event.metaKey) setTool(keys[event.key])
     }
     function onKeyUp (event) { if (event.code === 'Space') { spaceHeld = false; vp.classList.remove('is-pan-ready') } }
     document.addEventListener('keydown', onKeyDown, { signal: signal }); document.addEventListener('keyup', onKeyUp, { signal: signal })
     document.addEventListener('pointerdown', function (event) { if (popover && !popover.contains(event.target) && !vp.contains(event.target)) closePopover() }, { signal: signal })
-    window.addEventListener('blur', closePopover, { signal: signal }); window.addEventListener('resize', function () { closePopover(); render() }, { signal: signal })
+    window.addEventListener('blur', closePopover, { signal: signal }); window.addEventListener('resize', function () { closePopover(); updatePageSize() }, { signal: signal })
 
     setTool('select'); render()
     return { getData: getData, flush: flush, destroy: function () { flush(false); destroyed = true; closePopover(); if (longPress) clearTimeout(longPress.timer); ac.abort(); clearTimeout(changeTimer); clearTimeout(editSnapshotTimer); container.innerHTML = '' } }

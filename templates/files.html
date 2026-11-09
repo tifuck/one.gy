@@ -1,6 +1,7 @@
 {% extends '_app_base.html' %}
-{% block title %}FILES{% endblock %}
+{% block title %}Files{% endblock %}
 {% set nav_active = 'files' %}
+{% set ui_v2 = true %}
 {% block head_extra %}
 <link rel="stylesheet" href="{{ versioned_static('manage.css') }}">
 <link rel="stylesheet" href="{{ versioned_static('preview.css') }}">
@@ -23,7 +24,7 @@
       </nav>
       <div class="rd-side-foot">
         <button type="button" class="rd-side-trash" id="fxTrashBtn">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2"/></svg>
           Trash<span class="rd-side-trash-count" id="fxTrashCount" hidden>0</span>
         </button>
         <div class="rd-side-storage"><span>Storage</span><b id="fxStorageTxt">…</b></div>
@@ -40,26 +41,27 @@
   <div class="fx-main">
     <div class="fx-toolbar">
       <button type="button" class="fx-side-toggle" id="fxSideToggle" aria-label="Toggle folders" aria-expanded="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>
       </button>
       <div class="fx-bcrumb" id="fxBcrumb" aria-label="Breadcrumb"></div>
       <div class="fx-spacer"></div>
       <div class="fx-tbar-actions">
         <div class="fx-search" id="fxSearchBox">
-          <button type="button" class="fx-search-btn" id="fxSearchToggle" aria-label="Search files" aria-expanded="false" title="SEARCH">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <button type="button" class="fx-search-btn" id="fxSearchToggle" aria-label="Search files" aria-expanded="false" title="Search (/)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
           </button>
-          <input type="search" id="fxSearch" placeholder="Search files…" autocomplete="off" spellcheck="false" tabindex="-1">
-          <button type="button" class="fx-search-clear" id="fxSearchClear" aria-label="Clear search" title="CLEAR" hidden>
+          <input type="search" id="fxSearch" placeholder="Search" autocomplete="off" spellcheck="false" tabindex="-1">
+          <button type="button" class="fx-search-clear" id="fxSearchClear" aria-label="Clear search" title="Clear" hidden>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
         </div>
         <div class="fx-seg" role="group" aria-label="View mode" id="fxViewSeg">
-          <button type="button" class="fx-seg-btn is-active" data-view="grid" title="Grid" aria-label="Grid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
-          <button type="button" class="fx-seg-btn" data-view="list" title="List" aria-label="List"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
-          <button type="button" class="fx-seg-btn" data-view="gallery" title="Gallery" aria-label="Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
-          <button type="button" class="fx-seg-btn" data-view="columns" title="Columns" aria-label="Columns"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="5" height="18"/><rect x="10" y="3" width="5" height="18"/><rect x="17" y="3" width="4" height="18"/></svg></button>
+          <button type="button" class="fx-seg-btn is-active" data-view="grid" title="Icons" aria-label="Icons"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/></svg></button>
+          <button type="button" class="fx-seg-btn" data-view="list" title="List" aria-label="List"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.8" cy="6.5" r=".9" fill="currentColor"/><circle cx="4.8" cy="12" r=".9" fill="currentColor"/><circle cx="4.8" cy="17.5" r=".9" fill="currentColor"/></svg></button>
+          <button type="button" class="fx-seg-btn" data-view="gallery" title="Gallery" aria-label="Gallery"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="9.5" r="1.6"/><path d="m20.5 16-4.8-4.8L7 19.5"/></svg></button>
+          <button type="button" class="fx-seg-btn" data-view="columns" title="Columns" aria-label="Columns"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="M9.2 4.5v15M14.8 4.5v15"/></svg></button>
         </div>
+        <span class="fx-sort-wrap">
         <select class="fx-sort" id="fxSort" aria-label="Sort">
           <option value="name">Name A–Z</option>
           <option value="name-desc">Name Z–A</option>
@@ -68,13 +70,16 @@
           <option value="size">Largest</option>
           <option value="size-asc">Smallest</option>
         </select>
-        <button type="button" class="rd-btn rd-btn-ghost" id="fxNewFolder">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/><path d="M12 11v4M10 13h4"/></svg>
+        <svg class="fx-sort-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg>
+        </span>
+        <span class="fx-tbar-sep" aria-hidden="true"></span>
+        <button type="button" class="rd-btn rd-btn-ghost" id="fxNewFolder" title="New folder">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 18V6.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M12 10.5v6M9 13.5h6"/></svg>
           <span class="fx-hide-sm">New folder</span>
         </button>
         <button type="button" class="rd-btn rd-btn-ghost" id="restoreAllBtn" hidden>Restore all</button>
         <button type="button" class="rd-btn rd-btn-primary" id="fxUploadBtn">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5V4.5M7 9.5l5-5 5 5M5 19.5h14"/></svg>
           <span class="fx-hide-sm">Upload</span>
         </button>
       </div>
@@ -125,9 +130,9 @@
 <!-- Dropzone overlay -->
 <div class="fx-drop" id="fxDrop">
   <div class="fx-drop-inner">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6"/><path d="M4 20h16"/></svg>
-    <h3>Drop to upload</h3>
-    <p id="fxDropDest">to this folder, end-to-end encrypted</p>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5V4.5M7 9.5l5-5 5 5M5 19.5h14"/></svg>
+    <h3 id="fxDropTitle">Drop to upload</h3>
+    <p id="fxDropDest">End-to-end encrypted</p>
   </div>
 </div>
 
@@ -152,7 +157,10 @@
     </div>
     <div class="rd-modal-body">
       <input type="text" id="fxNameInput" class="form-input" placeholder="Folder name" maxlength="120" autocomplete="off">
-      <button type="button" class="rd-btn rd-btn-primary" id="fxNameSave" style="width:100%;margin-top:.9rem">Create</button>
+      <div class="rd-modal-foot">
+        <button type="button" class="rd-btn rd-btn-ghost" data-rd-modal-close>Cancel</button>
+        <button type="button" class="rd-btn rd-btn-primary" id="fxNameSave">Create</button>
+      </div>
     </div>
   </div>
 </div>
@@ -166,7 +174,10 @@
     </div>
     <div class="rd-modal-body">
       <div class="fx-move-tree" id="moveFolderTree" role="listbox" aria-label="Destination folder"></div>
-      <button type="button" class="rd-btn rd-btn-primary" id="confirmMoveBtn" disabled>Move</button>
+      <div class="rd-modal-foot">
+        <button type="button" class="rd-btn rd-btn-ghost" data-move-close>Cancel</button>
+        <button type="button" class="rd-btn rd-btn-primary" id="confirmMoveBtn" disabled>Move</button>
+      </div>
     </div>
   </div>
 </div>
@@ -176,6 +187,7 @@
 <script src="{{ versioned_static('crypto.js') }}" defer></script>
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
 <script src="{{ versioned_static('manage-modal.js') }}" defer></script>
+<script src="{{ versioned_static('file-versions.js') }}" defer></script>
 <script src="{{ versioned_static('preview.js') }}" defer></script>
 <script src="{{ versioned_static('music-player.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">window.__FX_ROOT_NAME__ = {{ (root_folder_name or 'FILES')|tojson }};

@@ -1,70 +1,161 @@
 /* ============================================================================
-   FROST SHARE — quick-share page: hero, temp-uploads table, context menu.
-   Uploader styling lives in uploader.css; manage modal in manage.css.
+   share.css — quick-share page (/share, UI v2): page column, the "Your quick
+   shares" list, the in-page E2EE download toast and passphrase prompt
+   (temp-preview.js). The uploader widget lives in uploader.css; the manage
+   modal in manage.css + ui-v2.css. Token-only.
    ========================================================================== */
-.share-hero-sec{text-align:center;padding-top:calc(var(--nav-h) + clamp(2rem,5vw,3.5rem));padding-bottom:clamp(3rem,7vw,5rem)}
-.share-hero-sec .rd-container{max-width:660px}
-.share-badge{display:inline-flex;align-items:center;gap:.6rem;padding:.42rem .75rem;margin-bottom:1.3rem;
-  border:1px solid rgba(var(--ink-rgb),.16);background:var(--surface);
-  font-family:var(--font-mono);font-size:.7rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
-.share-badge-dot{width:7px;height:7px;background:var(--accent)}
-.share-title{font-family:var(--font-display);font-weight:800;text-transform:uppercase;letter-spacing:-.02em;
-  font-size:clamp(2.4rem,6vw,4rem);margin-bottom:.9rem}
-.share-subtitle{font-size:clamp(1rem,1.5vw,1.15rem);color:var(--text-dim);margin-bottom:2.4rem}
-.share-uploader-wrap{max-width:540px;margin-inline:auto;text-align:left}
+.ui-v2 .share-page{ max-width:760px; }
+.ui-v2 .share-page .share-files-area{ margin-top:32px; }
 
-/* ---- Temp uploads table ------------------------------------------------- */
-.share-files-area{max-width:var(--maxw);margin-inline:auto;padding:0 clamp(1.15rem,4vw,2.5rem) clamp(3rem,7vw,5rem)}
-.temp-files-section{margin-top:.5rem}
-.section-title{font-family:var(--font-display);font-weight:800;text-transform:uppercase;letter-spacing:-.01em;
-  font-size:clamp(1.3rem,2.6vw,1.7rem);margin-bottom:1.2rem}
-.temp-browser{border:2px solid var(--border)}
-.temp-browser-header,.temp-browser-row{display:grid;
-  grid-template-columns:minmax(0,2.4fr) minmax(0,1.5fr) 52px 96px 128px 132px;align-items:center;gap:.6rem;padding:.7rem .9rem}
-.temp-browser-header{background:var(--text);color:var(--bg);font-family:var(--font-mono);font-size:.64rem;
-  font-weight:600;letter-spacing:.08em;text-transform:uppercase}
-.temp-browser-row{border-top:2px solid var(--border);transition:background .15s var(--ease)}
-.temp-browser-row:hover{background:var(--surface)}
-.browser-col{min-width:0}
-.col-name{display:flex;align-items:center;gap:.6rem}
-.file-icon-small{font-size:1.15rem;flex:none;line-height:1}
-.file-icon-small svg{width:20px;height:20px}
-.file-thumbnail{width:30px;height:30px;object-fit:cover;border:1px solid var(--border);flex:none}
-.file-name-text{font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.file-name-ext{color:var(--text-dim)}
-.col-size,.col-date{font-family:var(--font-mono);font-size:.76rem;color:var(--text-dim)}
+/* ---- Your quick shares ------------------------------------------------------ */
+.ui-v2 .share-files-area .rd-panel-title{ display:flex; align-items:center; gap:8px; }
+.ui-v2 .share-count{ display:inline-grid; place-items:center; min-width:20px; height:18px; padding:0 6px; border-radius:9px;
+  background:var(--press); color:var(--text-dim); font-size:.72rem; font-weight:500; font-variant-numeric:tabular-nums; }
+.ui-v2 .temp-browser-row{ display:flex; align-items:center; gap:12px; min-height:60px; padding:10px 10px 10px 16px;
+  border-top:1px solid var(--line); transition:background .1s; }
+.ui-v2 .temp-browser-row:first-child{ border-top:0; }
+@media (hover:hover){ .ui-v2 .temp-browser-row:hover{ background:var(--hover); } }
+.ui-v2 .temp-browser-row .col-name{ flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:12px; }
 
-.file-badge{display:inline-flex;align-items:center;gap:.3rem;font-family:var(--font-mono);font-size:.6rem;
-  letter-spacing:.04em;text-transform:uppercase;border:1px solid var(--border);padding:.15rem .4rem;color:var(--text-dim)}
-.file-badge-expires{border-color:#e5940a;color:#c47a06}
-.file-badge-public{border-color:var(--accent);color:var(--accent)}
-.badge-icon{width:11px;height:11px}
-.enc-icon{width:10px;height:10px;border-radius:50%;display:inline-block}
-.enc-icon-e2e{background:#1f9d57}
-.enc-icon-server{background:var(--text-dim)}
+/* Icon slot: kind-tinted page glyph, replaced by .file-thumbnail when one loads */
+.ui-v2 .share-ico, .ui-v2 .temp-browser-row .file-thumbnail{ flex:none; width:36px; height:36px; border-radius:8px; }
+.ui-v2 .share-ico{ display:grid; place-items:center; background:var(--surface); --k:var(--kind-file); }
+.ui-v2 .share-ico svg{ width:18px; height:22px; }
+.ui-v2 .share-ico[data-kind="image"]{ --k:var(--kind-image); }
+.ui-v2 .share-ico[data-kind="pdf"]{ --k:var(--kind-pdf); }
+.ui-v2 .share-ico[data-kind="archive"]{ --k:var(--kind-archive); }
+.ui-v2 .share-ico[data-kind="sheet"]{ --k:var(--kind-sheet); }
+.ui-v2 .share-ico[data-kind="doc"]{ --k:var(--kind-doc); }
+.ui-v2 .share-ico[data-kind="code"]{ --k:var(--kind-code); }
+.ui-v2 .share-ico[data-kind="media"]{ --k:var(--kind-media); }
+.ui-v2 .share-page-body{ fill:color-mix(in srgb,var(--k) 14%,var(--surface)); stroke:color-mix(in srgb,var(--k) 62%,transparent); stroke-width:2; }
+.ui-v2 .share-page-fold{ fill:color-mix(in srgb,var(--k) 36%,var(--surface)); stroke:color-mix(in srgb,var(--k) 62%,transparent); stroke-width:2; stroke-linejoin:round; }
+.ui-v2 .temp-browser-row .file-thumbnail{ object-fit:cover; background:var(--surface); box-shadow:inset 0 0 0 1px var(--line); }
+.ui-v2 .temp-browser-row :is(.file-icon-preview, .file-thumbnail){ cursor:zoom-in; transition:opacity .12s; }
+.ui-v2 .temp-browser-row :is(.file-icon-preview, .file-thumbnail):hover{ opacity:.82; }
+.ui-v2 .temp-browser-row[data-previewable="false"] .file-thumbnail{ cursor:default; opacity:1; }
+/* Text thumbnails are rendered dark at upload; flip them on the light theme (as files.css does) */
+:root:not([data-theme="frost-dark"]) .ui-v2 .temp-browser-row[data-text-thumb] .file-thumbnail{ filter:invert(1) hue-rotate(180deg) brightness(1.04); }
 
-.col-actions{display:flex;gap:.35rem;justify-content:flex-end}
-.action-btn{width:30px;height:30px;flex:none;display:grid;place-items:center;border:2px solid var(--border);
-  background:transparent;color:var(--text);cursor:pointer;text-decoration:none;transition:all .15s var(--ease)}
-.action-btn svg{width:15px;height:15px}
-.action-btn:hover{border-color:var(--accent);color:var(--accent)}
-.action-delete:hover{border-color:#d8231b;color:#d8231b}
+.ui-v2 .share-row-text{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:4px; }
+.ui-v2 .temp-browser-row .file-name-text{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.88rem; font-weight:500; color:var(--text); }
+.ui-v2 .temp-browser-row .file-name-ext{ color:var(--text-dim); }
+/* Meta line: size · date, then quiet icon labels; only exceptions get colour */
+.ui-v2 .share-row-meta{ display:flex; flex-wrap:wrap; align-items:center; gap:2px 12px; min-width:0; font-size:.76rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.ui-v2 .share-row-meta .col-date{ margin-left:-4px; }
+.ui-v2 .share-row-meta .col-date::before{ content:"·"; margin-right:8px; color:var(--text-faint); }
+.ui-v2 .share-row-meta .rd-pill{ height:auto; padding:0; gap:4px; background:none; color:var(--text-dim); font-size:.76rem; font-weight:400; }
+.ui-v2 .share-row-meta .rd-pill svg{ width:12px; height:12px; flex:none; }
+.ui-v2 .share-row-meta .enc-icon-e2e svg{ color:var(--good); }
+.ui-v2 .share-row-meta .enc-icon-server, .ui-v2 .share-row-meta .rd-pill.is-warn{ color:var(--warn); }
+.ui-v2 .share-row-meta .enc-icon-server::before{ content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
 
-/* ---- Context menu ------------------------------------------------------- */
-.context-menu{position:fixed;z-index:250;min-width:180px;background:var(--bg);border:2px solid var(--border);
-  box-shadow:var(--shadow-2);display:none}
-.context-menu.visible{display:block}
-.context-menu-item{display:flex;align-items:center;gap:.6rem;padding:.55rem .8rem;font-family:var(--font-mono);
-  font-size:.76rem;letter-spacing:.03em;cursor:pointer}
-.context-menu-item:hover{background:var(--accent-soft);color:var(--accent)}
-.context-menu-item.danger:hover{background:rgba(216,35,27,.1);color:#d8231b}
-.context-icon{display:inline-grid;place-items:center}
-.context-icon svg{width:15px;height:15px}
-.context-menu-divider{height:2px;background:var(--border)}
+.ui-v2 .temp-browser-row .col-actions{ flex:none; display:flex; align-items:center; gap:2px; }
+.ui-v2 .temp-browser-row .action-btn{ display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:8px;
+  background:none; color:var(--text-dim); cursor:pointer; text-decoration:none; transition:background .12s, color .12s; }
+.ui-v2 .temp-browser-row .action-btn svg{ width:16px; height:16px; }
+.ui-v2 .temp-browser-row .action-btn:hover{ background:var(--press); color:var(--text); }
+.ui-v2 .temp-browser-row .action-delete:hover{ background:var(--bad-soft); color:var(--bad); }
+.ui-v2 .temp-browser-row .action-btn:disabled{ opacity:.45; cursor:default; }
 
-@media (max-width:720px){
-  .temp-browser-header{display:none}
-  .temp-browser-row{grid-template-columns:1fr auto;gap:.4rem .6rem}
-  .col-tags,.col-encryption,.col-date{display:none}
-  .col-size{grid-column:1;font-size:.7rem}
+@media (max-width:520px){
+  .ui-v2 .temp-browser-row{ gap:8px; padding:10px 6px 10px 12px; }
+  .ui-v2 .temp-browser-row .col-name{ gap:10px; }
+  .ui-v2 .share-row-meta .col-date{ display:none; }
+}
+@media (pointer:coarse){
+  .ui-v2 .temp-browser-row .action-btn{ width:40px; height:40px; }
+  .ui-v2 .temp-browser-row .action-btn svg{ width:18px; height:18px; }
+  .ui-v2 .temp-browser-row .col-actions{ gap:0; }
+}
+
+/* ---- E2EE download toast (#downloadProgress, temp-preview.js) ------------- */
+.ui-v2 .share-dl{ right:20px; bottom:20px; width:min(calc(100vw - 24px),320px); }
+.ui-v2 .share-dl .upload-toast-header{ display:flex; align-items:center; gap:8px; height:40px; padding:0 6px 0 14px; }
+.ui-v2 .share-dl .upload-toast-title{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:.84rem; font-weight:600; letter-spacing:0; text-transform:none; color:var(--text); }
+.ui-v2 .share-dl .upload-toast-close{ display:grid; place-items:center; flex:none; width:28px; height:28px; padding:0; border-radius:7px; color:var(--text-dim); }
+.ui-v2 .share-dl .upload-toast-close:hover{ background:var(--press); color:var(--text); }
+.ui-v2 .share-dl .upload-toast-close svg{ width:14px; height:14px; }
+.ui-v2 .share-dl .upload-toast-body{ padding:12px 14px 14px; }
+.ui-v2 .share-dl .upload-progress-bar{ height:4px; margin-bottom:12px; }
+.ui-v2 .share-dl .upload-progress-fill{ border-radius:4px; transition:width .25s, background .2s; }
+.ui-v2 .share-dl.is-done .upload-progress-fill{ background:var(--good); }
+.ui-v2 .share-dl.is-error .upload-progress-fill{ background:var(--bad); }
+.ui-v2 .share-dl.is-error .upload-toast-title{ color:var(--bad); }
+.ui-v2 .share-dl .upload-stats{ display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,.8fr) minmax(0,1fr); gap:10px; }
+.ui-v2 .share-dl .upload-stat{ min-width:0; gap:1px; }
+.ui-v2 .share-dl .upload-stat-label{ font-size:.72rem; letter-spacing:0; text-transform:none; color:var(--text-dim); }
+.ui-v2 .share-dl .upload-stat-value{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.8rem; font-weight:500;
+  letter-spacing:0; font-variant-numeric:tabular-nums; }
+/* A failure reads as one message, not three truncated stats */
+.ui-v2 .share-dl.is-error .upload-stats{ grid-template-columns:minmax(0,1fr); }
+.ui-v2 .share-dl.is-error .upload-stat:not(:first-child){ display:none; }
+.ui-v2 .share-dl.is-error .upload-stat-value{ white-space:normal; overflow-wrap:anywhere; }
+@media (max-width:620px){ .ui-v2 .share-dl{ right:12px; bottom:max(12px,env(safe-area-inset-bottom)); } }
+
+/* ---- Text editor in the preview (temp-preview.js buildTextEditor) ---------
+   Same card as the Files preview editor (.preview-ed in preview.css/ui-v2.css);
+   the code area stays dark in both themes, like the Files one. */
+.ui-v2 .preview-stage:has(> .preview-editor-container){ overflow:hidden; align-items:stretch; }
+.ui-v2 .preview-editor-container{ display:flex; flex-direction:column; width:min(1000px,100%); height:100%; overflow:hidden;
+  border-radius:12px; background:var(--raise); box-shadow:var(--shadow-2); }
+.ui-v2 .preview-editor-toolbar{ flex:none; display:flex; align-items:center; gap:10px; min-height:44px; padding:0 8px 0 14px; border-bottom:1px solid var(--line); }
+.ui-v2 .preview-editor-lang{ padding:.12rem .45rem; border-radius:5px; background:var(--press); color:var(--text-dim); font-size:.72rem; font-weight:500; white-space:nowrap; }
+.ui-v2 .preview-editor-status{ display:inline-flex; align-items:center; gap:6px; margin-left:auto; font-size:.76rem; color:var(--text-dim); white-space:nowrap; }
+.ui-v2 .preview-editor-status-dot{ width:6px; height:6px; flex:none; border-radius:50%; background:var(--text-faint); }
+.ui-v2 .preview-editor-status.modified{ color:var(--warn); }
+.ui-v2 .preview-editor-status.saving{ color:var(--accent); }
+.ui-v2 .preview-editor-status.saved{ color:var(--good); }
+.ui-v2 .preview-editor-status.error{ color:var(--bad); }
+.ui-v2 .preview-editor-status:is(.modified, .saving, .saved, .error) .preview-editor-status-dot{ background:currentColor; }
+.ui-v2 .preview-editor-save{ flex:none; height:28px; padding:0 .8rem; border:0; border-radius:7px; background:var(--press); color:var(--text-faint);
+  font:inherit; font-size:.8rem; font-weight:500; cursor:default; transition:background .14s, color .14s; }
+.ui-v2 .preview-editor-save.active{ background:var(--accent); color:var(--accent-contrast); cursor:pointer; }
+.ui-v2 .preview-editor-save.active:hover{ box-shadow:inset 0 0 0 100px rgba(255,255,255,.1); }
+.ui-v2 .preview-editor-save:disabled{ opacity:.5; cursor:default; }
+.ui-v2 .preview-editor-wrapper{ position:relative; flex:1 1 auto; min-height:0; display:flex; overflow:hidden; background:var(--code-bg); }
+.ui-v2 .preview-editor-gutter{ flex:none; min-width:44px; padding:14px 0; overflow:hidden; border-right:1px solid rgba(255,255,255,.08);
+  text-align:right; user-select:none; -webkit-user-select:none; }
+.ui-v2 .preview-editor-gutter-inner{ padding-right:10px; font-family:var(--font-mono); font-size:.8rem; line-height:1.65; white-space:pre;
+  color:color-mix(in srgb,var(--code-fg) 35%,transparent); }
+.ui-v2 .preview-editor-scroll{ position:relative; flex:1 1 auto; min-width:0; overflow:auto; overscroll-behavior:contain; }
+.ui-v2 .preview-editor-code-pre{ min-height:100%; margin:0; padding:0; }
+/* pre (not pre-wrap): one visual line per number in the gutter */
+.ui-v2 .preview-editor-code{ display:block; min-height:100%; margin:0; padding:14px; border:0; outline:none; background:transparent !important;
+  color:var(--code-fg); caret-color:var(--code-fg); font-family:var(--font-mono); font-size:.8rem; line-height:1.65; white-space:pre; tab-size:2; }
+.ui-v2 .preview-editor-code::selection, .ui-v2 .preview-editor-code *::selection{ background:rgba(var(--accent-rgb),.35); }
+.ui-v2 .preview-editor-hidden-textarea{ position:absolute; width:0; height:0; opacity:0; overflow:hidden; pointer-events:none; }
+.ui-v2 .preview-editor-footer{ flex:none; display:flex; align-items:center; gap:16px; min-height:30px; padding:0 14px; border-top:1px solid var(--line);
+  font-size:.74rem; color:var(--text-faint); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.ui-v2 .preview-editor-readonly-notice{ padding:8px 14px; border-radius:8px 8px 0 0; background:color-mix(in srgb,var(--warn) 14%,var(--raise));
+  color:var(--warn); font-size:.78rem; font-weight:500; text-align:center; }
+@media (max-width:620px){
+  .ui-v2 .preview-editor-container{ width:100%; border-radius:0; box-shadow:none; }
+  .ui-v2 .preview-editor-footer span:nth-child(2){ display:none; }
+}
+
+/* ---- Passphrase prompt (#e2eePassphraseOverlay, temp-preview.js) ---------- */
+.ui-v2 .e2ee-prompt-overlay{ position:fixed; inset:0; z-index:330; display:grid; place-items:center; padding:16px; }
+.ui-v2 .e2ee-prompt-backdrop{ position:absolute; inset:0; background:var(--scrim); -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px);
+  animation:shareFade .18s ease both; }
+.ui-v2 .e2ee-prompt-card{ position:relative; width:min(360px,100%); display:flex; flex-direction:column; align-items:center; gap:6px;
+  padding:26px 22px 22px; border-radius:14px; background:var(--raise); box-shadow:var(--shadow-2); text-align:center;
+  animation:sharePop .22s cubic-bezier(.2,.9,.3,1) both; }
+.ui-v2 .e2ee-prompt-dismiss{ position:absolute; top:10px; right:10px; display:grid; place-items:center; width:28px; height:28px; padding:0;
+  border:0; border-radius:7px; background:none; color:var(--text-dim); font-size:1.2rem; line-height:1; cursor:pointer; }
+.ui-v2 .e2ee-prompt-dismiss:hover{ background:var(--press); color:var(--text); }
+.ui-v2 .e2ee-prompt-icon{ display:grid; place-items:center; width:44px; height:44px; margin-bottom:6px; border-radius:50%; background:var(--accent-soft); color:var(--accent); }
+.ui-v2 .e2ee-prompt-icon svg{ width:20px; height:20px; }
+.ui-v2 .e2ee-prompt-divider{ display:none; }
+.ui-v2 .e2ee-prompt-title{ font-size:1rem; font-weight:600; letter-spacing:-.01em; color:var(--text); }
+.ui-v2 .e2ee-prompt-desc{ max-width:30ch; font-size:.84rem; line-height:1.5; color:var(--text-dim); }
+.ui-v2 .e2ee-prompt-form{ display:flex; flex-direction:column; gap:8px; width:100%; margin-top:12px; }
+.ui-v2 .e2ee-prompt-input{ width:100%; }
+.ui-v2 .e2ee-prompt-btn{ width:100%; height:38px; }
+@keyframes shareFade{ from{ opacity:0; } }
+@keyframes sharePop{ from{ opacity:0; transform:translateY(8px) scale(.985); } }
+@media (prefers-reduced-motion:reduce){
+  .ui-v2 .e2ee-prompt-backdrop, .ui-v2 .e2ee-prompt-card{ animation:none; }
+  .ui-v2 .temp-browser-row, .ui-v2 .temp-browser-row .action-btn{ transition:none; }
 }

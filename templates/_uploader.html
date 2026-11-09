@@ -1,21 +1,24 @@
 {# Shared quick-share uploader widget. Reuses the existing upload JS
    (script.js / crypto.js / manage-modal.js). Include anywhere and pass
-   temp_max_gb in the template context. Frost styling: uploader.css. #}
+   temp_max_gb in the template context. Self-contained (container queries
+   size it to its own width); styling: uploader.css, v2 pages only.
+   script.js snapshots #dropZone's markup to restore it after an upload. #}
 <div class="rd-uploader">
   <input type="hidden" id="csrf_token" name="csrf_token" value="{{ csrf_token() }}">
   <div class="drop-zone" id="dropZone">
     <div class="drop-zone-body">
-      <div class="drop-zone-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="56" height="56"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+      <span class="drop-zone-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="m7 8.5 5-5 5 5"/><path d="M20 15v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3"/></svg></span>
       <h2 class="drop-zone-title">Drop files here</h2>
-      <p class="drop-zone-text">or click to browse</p>
+      <p class="drop-zone-text">Encrypted in your browser before upload</p>
+      <button type="button" class="rd-btn rd-btn-primary drop-zone-browse">Choose files</button>
     </div>
     <div class="drop-zone-toggles">
-      <span class="drop-zone-limit">Max {{ "%.0f"|format(temp_max_gb) if temp_max_gb == temp_max_gb|int else "%.1f"|format(temp_max_gb) }} GB</span>
-      <div class="drop-zone-toggle"><div class="toggle-switch"><input type="checkbox" id="shortToggle" class="toggle-checkbox"><span class="toggle-slider"></span></div><span class="drop-zone-toggle-label">Short URL</span></div>
-      <div class="drop-zone-toggle"><div class="toggle-switch"><input type="checkbox" id="e2eToggle" class="toggle-checkbox"><span class="toggle-slider"></span></div><span class="drop-zone-toggle-label">E2E encrypt</span></div>
+      <span class="drop-zone-limit">Up to {{ "%.0f"|format(temp_max_gb) if temp_max_gb == temp_max_gb|int else "%.1f"|format(temp_max_gb) }} GB</span>
+      <label class="drop-zone-toggle"><span class="drop-zone-toggle-label">Short link</span><input type="checkbox" id="shortToggle" class="rd-switch" role="switch"></label>
+      <label class="drop-zone-toggle"><span class="drop-zone-toggle-label">End-to-end</span><input type="checkbox" id="e2eToggle" class="rd-switch" role="switch"></label>
     </div>
   </div>
-  <p class="rd-uploader-trust">AES-256-GCM · encrypted in your browser</p>
+  <p class="rd-uploader-trust"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>AES-256-GCM, the key stays in the link</p>
 </div>
 
 <script nonce="{{ csp_nonce }}">
@@ -38,17 +41,6 @@ document.addEventListener('DOMContentLoaded', function() {
   if (!window.crypto || !window.crypto.subtle) {
     if (e2e) { e2e.checked = false; var row = e2e.closest('.drop-zone-toggle'); if (row) row.style.display = 'none'; }
   }
-
-  // Toggle slider clicks (delegated so it survives innerHTML swaps during upload)
-  document.addEventListener('click', function(e) {
-    var slider = e.target.closest('.toggle-slider');
-    if (!slider) return;
-    var checkbox = slider.previousElementSibling;
-    if (checkbox && checkbox.tagName === 'INPUT' && checkbox.type === 'checkbox') {
-      checkbox.checked = !checkbox.checked;
-      checkbox.dispatchEvent(new Event('change'));
-    }
-  });
 
   if (typeof ManageModal !== 'undefined') {
     ManageModal.init({

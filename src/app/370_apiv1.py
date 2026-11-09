@@ -256,6 +256,8 @@ def apiv1_upload():
         )
         if upload_error is not None:
             return upload_error
+        if _backup_read_only(folder_id):
+            return _backup_read_only_error()
 
         if client_upload_id:
             upload_key = client_upload_id if len(client_upload_id) <= 64 else hashlib.sha256(client_upload_id.encode('utf-8')).hexdigest()
@@ -543,10 +545,7 @@ def apiv1_download(file_id):
             return jsonify({'error': 'Download limit reached'}), 410
         return jsonify({'error': 'File no longer available'}), 404
 
-    import mimetypes
-    mimetype, _ = mimetypes.guess_type(file.orig_name)
-    if not mimetype:
-        mimetype = 'application/octet-stream'
+    mimetype = safe_served_mimetype(file.orig_name)
 
     if request.method == 'HEAD':
         return _build_streaming_response(
@@ -615,8 +614,7 @@ def apiv1_download(file_id):
 @app.route('/apiv1/files', methods=['GET'])
 @app.route('/apiv1/files/<int:folder_id>', methods=['GET'])
 @csrf.exempt
-@api_key_required
-@api_permission_required('read')
+@api_or_device_auth('read')
 def apiv1_list_files(folder_id=None):
     """List files and folders in a directory."""
     user = g.api_user
@@ -749,6 +747,8 @@ def apiv1_delete_file(file_id):
         file = File.query.filter_by(id=file_id, registered_user_id=user.id, is_trashed=False).first()
         if not file:
             return jsonify({'error': 'File not found'}), 404
+        if _backup_read_only(file.folder_id):
+            return _backup_read_only_error()
 
         file.is_trashed = True
         file.trashed_at = datetime.now(timezone.utc)
@@ -768,8 +768,7 @@ def apiv1_delete_file(file_id):
 
 @app.route('/apiv1/folders', methods=['POST'])
 @csrf.exempt
-@api_key_required
-@api_permission_required('write')
+@api_or_device_auth('write')
 def apiv1_create_folder():
     """Create a new folder."""
     user = g.api_user
@@ -793,6 +792,8 @@ def apiv1_create_folder():
         parent_folder = Folder.query.filter_by(id=parent_id, user_id=user.id, is_trashed=False).first()
         if not parent_folder:
             return jsonify({'error': 'Parent folder not found'}), 404
+        if _backup_read_only(parent_id):
+            return _backup_read_only_error()
 
     # Check for E2EE folder name fields
     encrypted_name = data.get('encrypted_name')
@@ -844,7 +845,7 @@ def apiv1_create_folder():
     if create_error == 'parent_not_found':
         return jsonify({'error': 'Parent folder not found'}), 404
 
-    resp = {'id': folder.id, 'name': folder.name}
+    resp = {'id': folder.id, 'name': folder.name, 'seq': int(folder.change_seq or 0)}
     if folder.encrypted_name:
         resp['encrypted_name'] = folder.encrypted_name
         resp['name_nonce'] = folder.name_nonce
@@ -871,6 +872,8 @@ def apiv1_delete_folder(folder_id):
         folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
         if not folder:
             return jsonify({'error': 'Folder not found'}), 404
+        if _backup_subtree_read_only(folder.id):
+            return _backup_read_only_error()
 
         folder_name = folder.name
         parent_id_before = folder.parent_id
@@ -945,8 +948,7 @@ def apiv1_search():
 
 @app.route('/apiv1/trash', methods=['GET'])
 @csrf.exempt
-@api_key_required
-@api_permission_required('read')
+@api_or_device_auth('read')
 def apiv1_list_trash():
     """List trashed files and folders."""
     user = g.api_user
@@ -1051,7 +1053,7 @@ def apiv1_restore_file(file_id):
 
         if file.original_folder_id:
             original_folder = Folder.query.filter_by(id=file.original_folder_id, user_id=user.id).first()
-            if original_folder and not original_folder.is_trashed:
+            if original_folder and not original_folder.is_trashed and not _backup_read_only(original_folder.id):
                 file.folder_id = file.original_folder_id
                 file.original_folder_id = None  # breadcrumb fulfilled
             elif original_folder:
@@ -1067,6 +1069,7 @@ def apiv1_restore_file(file_id):
         file.is_trashed = False
         file.trashed_at = None
         file.trashed_via_folder = False
+        file.trashed_by_device_id = None
         touch_folder(file.folder_id)
         db.session.commit()
 

@@ -1,0 +1,68 @@
+# electron-builder config for ONE.GY Desktop. The version comes from
+# desktop/VERSION (-c.extraMetadata.version, see scripts/dist.js and the
+# release workflow). Always build with --publish never: CI uploads the
+# installers. The generic publish entry is only there so the builder writes
+# latest.yml / latest-linux.yml (+ beta) for electron-updater (updater.js).
+appId: gy.one.desktop
+productName: ONE.GY Desktop
+copyright: Copyright © ONE.GY
+directories:
+  output: dist
+  buildResources: build
+files:
+  - package.json
+  - src/**/*
+  - "!**/*.map"
+extraResources:
+  - from: resources/engine
+    to: engine
+    filter:
+      - "onegy-engine"
+      - "onegy-engine.exe"
+asar: true
+publish:
+  provider: generic
+  url: https://github.com/tifuck/one.gy/releases/latest/download
+generateUpdatesFilesForAllChannels: true
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: ONE.GY-Desktop-Setup.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: ONE.GY Desktop
+  uninstallDisplayName: ONE.GY Desktop
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  icon: build/icons
+  category: Network
+  syncDesktopName: true
+  executableName: onegy-desktop
+  synopsis: one.gy in a native window, with end-to-end encrypted folder sync
+  maintainer: tifuck <173309113+tifuck@users.noreply.github.com>
+  vendor: ONE.GY
+appImage:
+  artifactName: ONE.GY-Desktop-x86_64.${ext}
+deb:
+  artifactName: onegy-desktop_amd64.${ext}
+  packageName: onegy-desktop

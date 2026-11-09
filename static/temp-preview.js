@@ -52,23 +52,26 @@
       var overlay = document.createElement('div')
       overlay.id = 'e2eePassphraseOverlay'
       overlay.className = 'e2ee-prompt-overlay'
+      overlay.setAttribute('role', 'dialog')
+      overlay.setAttribute('aria-modal', 'true')
+      overlay.setAttribute('aria-labelledby', 'e2eePassTitle')
       overlay.innerHTML =
         '<div class="e2ee-prompt-backdrop"></div>' +
         '<div class="e2ee-prompt-card">' +
-          '<button class="e2ee-prompt-dismiss" id="e2eePassDismiss" title="DISMISS">&times;</button>' +
+          '<button type="button" class="e2ee-prompt-dismiss" id="e2eePassDismiss" title="Dismiss" aria-label="Dismiss">&times;</button>' +
           '<div class="e2ee-prompt-icon">' +
             '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>' +
           '</div>' +
           '<div class="e2ee-prompt-divider"></div>' +
-          '<div class="e2ee-prompt-title">PASSPHRASE REQUIRED</div>' +
-          '<div class="e2ee-prompt-desc">ENTER YOUR E2E ENCRYPTION PASSPHRASE TO DECRYPT THIS FILE</div>' +
+          '<div class="e2ee-prompt-title" id="e2eePassTitle">Passphrase required</div>' +
+          '<div class="e2ee-prompt-desc">This browser does not hold the key for this file. Enter its passphrase to decrypt it.</div>' +
           '<div class="e2ee-prompt-form">' +
             '<div class="e2ee-prompt-input-wrap">' +
-              '<input type="password" id="passphrasePromptInput" class="e2ee-prompt-input" placeholder="PASSPHRASE" autocomplete="off">' +
+              '<input type="password" id="passphrasePromptInput" class="form-input e2ee-prompt-input" placeholder="Passphrase" autocomplete="off" aria-labelledby="e2eePassTitle">' +
             '</div>' +
-            '<button id="e2eePassDecryptBtn" class="e2ee-prompt-btn">' +
+            '<button type="button" id="e2eePassDecryptBtn" class="rd-btn rd-btn-primary e2ee-prompt-btn">' +
               '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 5-5 5 5 0 0 1 5 5v4"/></svg> ' +
-              'DECRYPT' +
+              'Decrypt' +
             '</button>' +
           '</div>' +
         '</div>'
@@ -206,11 +209,11 @@
     const t = _getDlToastEls()
     if (!t.toast) return t
     t.title.textContent = titleText
-    t.status.textContent = 'PREPARING...'
+    t.status.textContent = 'Preparing…'
     t.percent.textContent = '0%'
-    t.speed.textContent = '-'
+    t.speed.textContent = '–'
     t.fill.style.width = '0%'
-    t.fill.style.background = ''
+    t.toast.classList.remove('is-done', 'is-error')
     t.close.style.display = 'none'
     t.toast.style.display = 'block'
     return t
@@ -226,26 +229,27 @@
 
   function _completeDownloadToast(t) {
     if (!t.toast) return
-    t.title.textContent = 'DOWNLOAD COMPLETE'
-    t.status.textContent = 'COMPLETE!'
+    t.title.textContent = 'Download complete'
+    t.status.textContent = 'Complete'
     t.fill.style.width = '100%'
-    t.fill.style.background = 'linear-gradient(90deg, #22c55e, #16a34a)'
+    t.toast.classList.add('is-done')
     t.percent.textContent = '100%'
-    t.speed.textContent = 'DONE'
-    t.close.style.display = 'block'
+    t.speed.textContent = 'Done'
+    t.close.style.display = ''
     t.close.onclick = () => _hideDownloadToast(t)
     _dlToastTimer = setTimeout(() => _hideDownloadToast(t), 2500)
   }
 
   function _errorDownloadToast(t, msg) {
     if (!t.toast) return
-    t.title.textContent = 'DOWNLOAD FAILED'
-    t.status.textContent = msg || 'FAILED'
-    t.percent.textContent = 'ERROR'
-    t.speed.textContent = '-'
+    t.title.textContent = 'Download failed'
+    t.status.textContent = msg || 'Failed'
+    t.status.title = msg || ''
+    t.percent.textContent = 'Error'
+    t.speed.textContent = '–'
     t.fill.style.width = '100%'
-    t.fill.style.background = 'linear-gradient(90deg, #E8304A, #DE1833)'
-    t.close.style.display = 'block'
+    t.toast.classList.add('is-error')
+    t.close.style.display = ''
     t.close.onclick = () => _hideDownloadToast(t)
     _dlToastTimer = setTimeout(() => _hideDownloadToast(t), 4000)
   }
@@ -255,7 +259,7 @@
     if (!t.toast) return
     t.toast.style.display = 'none'
     t.fill.style.width = '0%'
-    t.fill.style.background = ''
+    t.toast.classList.remove('is-done', 'is-error')
   }
 
   // ─── Blob Download Trigger ────────────────────────────────────────
@@ -385,8 +389,8 @@
 
   // ─── E2EE Download (master-key OR passphrase) ──────────────────────
   async function _e2eeDownloadFile(fileId, fileName) {
-    const t = _showDownloadToast('DOWNLOADING FILE')
-    _updateDownloadToast(t, 'LOADING KEY...', 2, fileName)
+    const t = _showDownloadToast('Downloading file')
+    _updateDownloadToast(t, 'Loading key…', 2, fileName)
 
     try {
       if (typeof OneGyCrypto === 'undefined') {
@@ -402,12 +406,12 @@
           const realName = await OneGyCrypto.decryptFileName(ki.encrypted_name, ki.name_nonce, unlocked.fileKey)
           if (realName) {
             fileName = realName
-            _updateDownloadToast(t, 'LOADING KEY...', 2, fileName)
+            _updateDownloadToast(t, 'Loading key…', 2, fileName)
           }
         } catch (e) { /* non-critical */ }
       }
 
-      _updateDownloadToast(t, 'DOWNLOADING...', 5, fileName, '-')
+      _updateDownloadToast(t, 'Downloading…', 5, fileName, '–')
 
       // Fetch encrypted file with XHR for download progress
       const encData = await new Promise((resolve, reject) => {
@@ -420,18 +424,18 @@
             const dlPct = Math.round(5 + (e.loaded / e.total) * 55)
             const now = Date.now()
             const dt = (now - lastTime) / 1000
-            let speedText = '-'
+            let speedText = '–'
             if (dt > 0.2) {
               const bytesPerSec = (e.loaded - lastLoaded) / dt
               speedText = bytesPerSec >= 1048576
-                ? (bytesPerSec / 1048576).toFixed(1) + ' MB/S'
-                : Math.round(bytesPerSec / 1024) + ' KB/S'
+                ? (bytesPerSec / 1048576).toFixed(1) + ' MB/s'
+                : Math.round(bytesPerSec / 1024) + ' KB/s'
               lastTime = now
               lastLoaded = e.loaded
             }
             const mb = (e.loaded / 1048576).toFixed(1)
             const totalMb = (e.total / 1048576).toFixed(1)
-            _updateDownloadToast(t, 'DOWNLOADING ' + mb + ' / ' + totalMb + ' MB', dlPct, undefined, speedText)
+            _updateDownloadToast(t, mb + ' / ' + totalMb + ' MB', dlPct, undefined, speedText)
           }
         }
         xhr.onload = () => {
@@ -442,14 +446,14 @@
         xhr.send()
       })
 
-      _updateDownloadToast(t, 'DECRYPTING...', 62, undefined, '-')
+      _updateDownloadToast(t, 'Decrypting…', 62, undefined, '–')
 
       const decrypted = await _decryptE2EEFile(fileId, encData, (pct) => {
         const totalPct = Math.round(62 + (pct / 100) * 36)
-        _updateDownloadToast(t, 'DECRYPTING ' + pct + '%', totalPct)
+        _updateDownloadToast(t, 'Decrypting ' + pct + '%', totalPct)
       }, undefined, unlocked)
 
-      _updateDownloadToast(t, 'SAVING...', 99)
+      _updateDownloadToast(t, 'Saving…', 99)
       const blob = new Blob([decrypted], { type: 'application/octet-stream' })
       _triggerBlobDownload(blob, fileName)
 
@@ -1204,13 +1208,13 @@
     const statusDot = document.createElement('span')
     statusDot.className = 'preview-editor-status-dot'
     const statusText = document.createElement('span')
-    statusText.textContent = 'READY'
+    statusText.textContent = 'Ready'
     status.appendChild(statusDot)
     status.appendChild(statusText)
 
     const saveBtn = document.createElement('button')
     saveBtn.className = 'preview-editor-save'
-    saveBtn.textContent = 'SAVE'
+    saveBtn.textContent = 'Save'
     saveBtn.type = 'button'
 
     toolbar.appendChild(langLabel)
@@ -1260,7 +1264,7 @@
     footer.className = 'preview-editor-footer'
 
     const cursorInfo = document.createElement('span')
-    cursorInfo.textContent = 'LN 1, COL 1'
+    cursorInfo.textContent = 'Ln 1, Col 1'
 
     const encodingInfo = document.createElement('span')
     encodingInfo.textContent = 'UTF-8'
@@ -1435,7 +1439,7 @@
       const textBefore = text.substring(0, pos)
       const line = textBefore.split('\n').length
       const col = pos - textBefore.lastIndexOf('\n')
-      cursorInfo.textContent = 'LN ' + line + ', COL ' + col
+      cursorInfo.textContent = 'Ln ' + line + ', Col ' + col
     }
 
     // ---- Modified state ----
@@ -1451,11 +1455,11 @@
       if (nowModified !== isModified) {
         isModified = nowModified
         if (isModified) {
-          statusText.textContent = 'MODIFIED'
+          statusText.textContent = 'Modified'
           status.className = 'preview-editor-status modified'
           saveBtn.classList.add('active')
         } else {
-          statusText.textContent = 'READY'
+          statusText.textContent = 'Ready'
           status.className = 'preview-editor-status'
           saveBtn.classList.remove('active')
         }
@@ -1546,7 +1550,7 @@
       const currentText = getEditorText()
       const submittedRevision = editRevision
 
-      statusText.textContent = 'SAVING...'
+      statusText.textContent = 'Saving…'
       status.className = 'preview-editor-status saving'
       saveBtn.classList.remove('active')
       saveBtn.disabled = true
@@ -1566,12 +1570,12 @@
           if (!editorIsCurrent()) return
           if (editRevision === submittedRevision) {
             isModified = false
-            statusText.textContent = 'SAVED'
+            statusText.textContent = 'Saved'
             status.className = 'preview-editor-status saved'
             saveBtn.classList.remove('active')
           } else {
             isModified = true
-            statusText.textContent = 'MODIFIED'
+            statusText.textContent = 'Modified'
             status.className = 'preview-editor-status modified'
             saveBtn.classList.add('active')
           }
@@ -1587,20 +1591,20 @@
 
           setTimeout(() => {
             if (editorIsCurrent() && editRevision === submittedRevision && !isModified) {
-              statusText.textContent = 'READY'
+              statusText.textContent = 'Ready'
               status.className = 'preview-editor-status'
             }
           }, 2000)
         } else {
           if (!editorIsCurrent()) return
-          statusText.textContent = response.error || 'SAVE FAILED'
+          statusText.textContent = response.error || 'Save failed'
           status.className = 'preview-editor-status error'
           saveBtn.classList.add('active')
         }
       } catch (err) {
         console.error('[TEMP EDITOR] Save failed:', err)
         if (!editorIsCurrent()) return
-        statusText.textContent = 'SAVE FAILED'
+        statusText.textContent = 'Save failed'
         status.className = 'preview-editor-status error'
         saveBtn.classList.add('active')
       } finally {

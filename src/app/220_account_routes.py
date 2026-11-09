@@ -326,18 +326,12 @@ def change_password():
         data = request.get_json(silent=True)
         if not isinstance(data, dict):  # a JSON array/scalar has no .get()
             data = None
-        current_password = data.get('current_password') if data else None
-        new_password = data.get('new_password') if data else None
-        confirm_password = data.get('confirm_password') if data else None
         new_password_length = data.get('new_password_length') if data else None
         current_auth_token = data.get('current_auth_token') if data else None
         new_auth_token = data.get('new_auth_token') if data else None
         new_auth_salt = data.get('new_auth_salt') if data else None
     else:
         data = None
-        current_password = request.form.get('current_password')
-        new_password = request.form.get('new_password')
-        confirm_password = request.form.get('confirm_password')
         new_password_length = None
         current_auth_token = None
         new_auth_token = None
@@ -366,42 +360,29 @@ def change_password():
         if _e2ee_err:
             return _chpw_fail(_e2ee_err, 400)
 
-    # Verify current credentials: split-key auth_token or legacy password (same flow as login)
-    if not _verify_user_credentials(user, password=current_password, auth_token=current_auth_token):
+    # Verify current credentials: split-key auth_token only (same flow as login)
+    if not _verify_user_credentials(user, auth_token=current_auth_token):
         return _chpw_fail('CURRENT PASSWORD IS INCORRECT', 403)
 
-    # AUDIT FIX M10: one shared bounded length policy for register/change/recovery.
-    if new_auth_token and new_auth_salt:
-        _pw_len_ok, _pw_len_err = _validate_asserted_password_length(new_password_length, new_password)
-        if not _pw_len_ok:
-            return _chpw_fail(_pw_len_err, 400)
-    else:
-        if not new_password or not confirm_password:
-            return _chpw_fail('ALL FIELDS ARE REQUIRED', 400)
-        if new_password != confirm_password:
-            return _chpw_fail('NEW PASSWORDS DO NOT MATCH', 400)
-        _pw_len_ok, _pw_len_err = _validate_asserted_password_length(len(new_password))
-        if not _pw_len_ok:
-            return _chpw_fail(_pw_len_err, 400)
-
-    # ── Build every new value, validate it all, THEN assign ───────────────
-    pending = {}
-
-    if new_auth_token and new_auth_salt:
-        # Split-key: store hash of new auth token (client-derived)
-        import hashlib as _hashlib_chpw2
-        pending['auth_token_hash'] = _hashlib_chpw2.sha256(new_auth_token.encode('utf-8')).hexdigest()
-        pending['auth_token_salt'] = new_auth_salt
-        pending['split_key_version'] = 1
-        pending['password_hash'] = 'split-key-v1'  # Placeholder
-    elif user.split_key_version and user.split_key_version >= 1:
-        # v1 user must provide new split-key credentials (client-derived).
-        print(f'[AUTH] Change password rejected for split-key v1 user {user.username}: '
+    if not (new_auth_token and new_auth_salt):
+        print(f'[AUTH] Change password rejected for user {user.username}: '
               'new_auth_token and new_auth_salt are required')
         return _chpw_fail('SPLIT-KEY CREDENTIALS REQUIRED FOR PASSWORD CHANGE', 400)
-    else:
-        # Legacy v0: store Werkzeug password hash
-        pending['password_hash'] = generate_password_hash(new_password, method='pbkdf2:sha256')
+
+    # AUDIT FIX M10: one shared bounded length policy for register/change/recovery.
+    _pw_len_ok, _pw_len_err = _validate_asserted_password_length(new_password_length)
+    if not _pw_len_ok:
+        return _chpw_fail(_pw_len_err, 400)
+
+    # ── Build every new value, validate it all, THEN assign ───────────────
+    # Split-key: store hash of new auth token (client-derived)
+    import hashlib as _hashlib_chpw2
+    pending = {
+        'auth_token_hash': _hashlib_chpw2.sha256(new_auth_token.encode('utf-8')).hexdigest(),
+        'auth_token_salt': new_auth_salt,
+        'split_key_version': 1,
+        'password_hash': 'split-key-v1',  # Placeholder
+    }
 
     # ── AUDIT FIX C3 INVARIANT ────────────────────────────────────────────
     # Credentials are about to rotate. If the account holds E2EE keys, the

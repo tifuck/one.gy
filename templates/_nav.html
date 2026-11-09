@@ -29,6 +29,7 @@
         {% if _cu.is_admin %}<a class="rd-nav-link {{ 'is-active' if _nav == 'admin' }}" href="{{ url_for('admin') }}">Admin</a>{% endif %}
       {% else %}
         <a class="rd-nav-link {{ 'is-active' if _nav == 'docs' }}" href="{{ url_for('docs') }}">Docs</a>
+        <a class="rd-nav-link {{ 'is-active' if _nav == 'desktop' }}" href="{{ url_for('desktop_page') }}">Desktop app</a>
         {% if allow_temp_uploads %}<a class="rd-nav-link {{ 'is-active' if _nav == 'share' }}" href="{{ url_for('share') }}">Quick share</a>{% endif %}
         <a class="rd-nav-link {{ 'is-active' if _nav == 'prompts' }}" href="{{ url_for('prompts_page') }}">Prompts</a>
       {% endif %}
@@ -92,6 +93,7 @@
       </form>
     {% else %}
       <a class="rd-nav-link {{ 'is-active' if _nav == 'docs' }}" href="{{ url_for('docs') }}">Docs</a>
+      <a class="rd-nav-link {{ 'is-active' if _nav == 'desktop' }}" href="{{ url_for('desktop_page') }}">Desktop app</a>
       {% if allow_temp_uploads %}<a class="rd-nav-link {{ 'is-active' if _nav == 'share' }}" href="{{ url_for('share') }}">Quick share</a>{% endif %}
       <a class="rd-nav-link {{ 'is-active' if _nav == 'prompts' }}" href="{{ url_for('prompts_page') }}">Prompts</a>
       {% if allow_registration %}

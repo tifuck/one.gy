@@ -1,247 +1,232 @@
 {% extends 'base.html' %}
-{% block title %}ONE.GY · Zero-knowledge file storage{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('frost-hybrid.css') }}"><link rel="stylesheet" href="{{ versioned_static('uploader.css') }}">{% endblock %}
+{% set ui_v2 = true %}
+{% block title %}ONE.GY · End-to-end encrypted cloud storage{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('frost-hybrid.css') }}">{% if allow_temp_uploads %}<link rel="stylesheet" href="{{ versioned_static('uploader.css') }}">{% endif %}{% endblock %}
 
 {% block content %}
-<!-- ═══ HERO ═══════════════════════════════════════════════════════════ -->
-<section class="rd-hero fh-hero">
-  <div class="rd-container fh-grid">
-    <div class="fh-copy">
-      <p class="fh-eyebrow"><span class="fh-eyebrow-mark" aria-hidden="true"></span>Zero-knowledge file storage</p>
-      <h1 class="rd-h1 fh-title" aria-label="The server knows nothing.">The server<br>knows <span class="fh-cipher" data-word="nothing" aria-hidden="true">nothing</span>.</h1>
-      <p class="rd-lead fh-lead">Files, filenames and notes are encrypted in your browser before they upload.
-        We store only ciphertext and hashes, so there is nothing on our side to read.</p>
+{% set signed_in = session.get('logged_in_user_id') %}
+{% macro primary_cta() -%}
+  {% if session.get('logged_in_user_id') %}<a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('files') }}">Open files</a>
+  {% elif allow_registration %}<a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('register') }}">Get started</a>
+  {% else %}<a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('login') }}">Sign in</a>{% endif %}
+{%- endmacro %}
+{% macro feat(title, body, icon) -%}
+  <li class="fh-feat">
+    <span class="fh-feat-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ icon|safe }}</svg></span>
+    <h3 class="fh-feat-title">{{ title }}</h3>
+    <p class="fh-feat-text">{{ body }}</p>
+  </li>
+{%- endmacro %}
+{% macro page_glyph() -%}<svg class="fh-page" viewBox="0 0 40 48" aria-hidden="true"><path class="fh-page-body" d="M7 1.5h18.5L37.5 13.5V42A4.5 4.5 0 0 1 33 46.5H7A4.5 4.5 0 0 1 2.5 42V6A4.5 4.5 0 0 1 7 1.5z"/><path class="fh-page-fold" d="M25.5 1.5v8.5a3.5 3.5 0 0 0 3.5 3.5h8.5z"/></svg>{%- endmacro %}
+{% macro folder_glyph() -%}<svg class="fh-fold" viewBox="0 0 24 24" aria-hidden="true"><path class="fh-fold-back" d="M2.5 6.2A2.2 2.2 0 0 1 4.7 4h4.1c.55 0 1.08.2 1.48.58L11.8 6h7.5a2.2 2.2 0 0 1 2.2 2.2v9.6a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z"/><path class="fh-fold-front" d="M2.5 9.4A1.4 1.4 0 0 1 3.9 8h16.2a1.4 1.4 0 0 1 1.4 1.4v8.4a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z"/></svg>{%- endmacro %}
+
+<!-- Hero: the pitch, then the product itself -->
+<section class="fh-hero">
+  <div class="rd-container">
+    <div class="fh-hero-copy">
+      <p class="fh-tag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>End-to-end encrypted cloud storage</p>
+      <h1 class="fh-title">Encrypted before it leaves your device.</h1>
+      <p class="fh-lead">Files, filenames and notes are sealed in your browser with <span class="fh-nw">AES-256-GCM</span>. Our servers store only ciphertext, so there is nothing on our side to read.</p>
       <div class="fh-actions">
-        {% if session.get('logged_in_user_id') %}
-          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('files') }}">Open files</a>
-        {% elif allow_registration %}
-          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('register') }}">Get started</a>
-        {% else %}
-          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ url_for('login') }}">Sign in</a>
-        {% endif %}
-        <a class="rd-btn rd-btn-ghost rd-btn-lg" href="#how">How it works</a>
+        {{ primary_cta() }}
+        {% if allow_temp_uploads %}<a class="rd-btn rd-btn-ghost rd-btn-lg" href="#share">Share a file</a>
+        {% else %}<a class="rd-btn rd-btn-ghost rd-btn-lg" href="#security">How it works</a>{% endif %}
       </div>
-      <dl class="fh-specs">
-        <div><dt>Cipher</dt><dd>AES-256-GCM</dd></div>
-        <div><dt>Key derivation</dt><dd>PBKDF2, 600k</dd></div>
-        <div><dt>Sharing</dt><dd>RSA-OAEP 4096</dd></div>
-      </dl>
     </div>
 
+    <div class="fh-shot" aria-hidden="true">
+      <div class="fh-app">
+        <div class="fh-app-nav">
+          <span class="fh-app-logo"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" fill="currentColor"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10" stroke="currentColor" stroke-width="2" fill="none"/></svg><span>ONE<span class="rd-accent">.GY</span></span></span>
+          <span class="fh-app-links"><span class="is-on">Files</span><span>Notes</span>{% if allow_music %}<span>Music</span>{% endif %}<span>Prompts</span></span>
+          <span class="fh-app-me"></span>
+        </div>
+        <div class="fh-app-body">
+          <div class="fh-app-side">
+            <span class="fh-tree is-on"><svg class="fh-chev is-open" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></svg><svg class="fh-tree-ico" viewBox="0 0 24 24"><path d="M3.5 13.5 6 6.2A2 2 0 0 1 7.9 5h8.2a2 2 0 0 1 1.9 1.2l2.5 7.3"/><rect x="3.5" y="13.5" width="17" height="5.5" rx="1.8"/></svg>Files</span>
+            {% for name, kids in [('Archive', false), ('Documents', false), ('Photos', true), ('Projects', true)] %}
+            <span class="fh-tree is-sub">{% if kids %}<svg class="fh-chev" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></svg>{% else %}<i class="fh-chev"></i>{% endif %}<svg class="fh-tree-ico" viewBox="0 0 24 24"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>{{ name }}</span>
+            {% endfor %}
+            <span class="fh-side-foot">
+              <span class="fh-tree"><i class="fh-chev"></i><svg class="fh-tree-ico" viewBox="0 0 24 24"><path d="M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2"/></svg>Trash</span>
+              <span class="fh-meter"><i></i></span>
+            </span>
+          </div>
+          <div class="fh-app-main">
+            <div class="fh-app-bar">
+              <b class="fh-app-crumb">Files</b>
+              <span class="fh-app-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg><span>Search</span></span>
+              <span class="fh-app-seg"><i class="is-on"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/></svg></i><i><svg viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11M4.8 6.5h.01M4.8 12h.01M4.8 17.5h.01"/></svg></i><i><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="9.5" r="1.6"/><path d="m20.5 16-4.8-4.8L7 19.5"/></svg></i><i><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="M9.2 4.5v15M14.8 4.5v15"/></svg></i></span>
+              <span class="fh-app-btn"><svg viewBox="0 0 24 24"><path d="M3.5 18V6.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M12 10.5v6M9 13.5h6"/></svg><span>New folder</span></span>
+              <span class="fh-app-btn is-primary"><svg viewBox="0 0 24 24"><path d="M12 15.5V4.5M7 9.5l5-5 5 5M5 19.5h14"/></svg><span>Upload</span></span>
+            </div>
+            <div class="fh-app-view">
+              <p class="fh-app-label">Folders <span>4</span></p>
+              <div class="fh-app-folders">
+                {% for name, n in [('Archive', '12 items'), ('Documents', '5 items'), ('Photos', '9 items'), ('Projects', '4 items')] %}
+                <span class="fh-folder">{{ folder_glyph() }}<span><b>{{ name }}</b><small>{{ n }}</small></span></span>
+                {% endfor %}
+              </div>
+              <p class="fh-app-label">Files <span>6</span></p>
+              <div class="fh-app-files">
+                <span class="fh-tile"><span class="fh-thumb fh-photo is-dawn"><svg viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><circle class="fh-sun" cx="104" cy="58" r="15"/><path class="fh-ridge is-far" d="M0 74 22 60l18 8 24-20 20 14 18-10 24 16 16-6 18 10v28H0z"/><path class="fh-ridge" d="M0 82 18 74l22 6 20-12 26 14 22-8 18 8 34-4v42H0z"/><rect class="fh-water" y="92" width="160" height="28"/></svg></span><b>Lake at dawn.jpg</b><small>2.4 MB</small></span>
+                <span class="fh-tile"><span class="fh-thumb is-doc" data-kind="pdf">{{ page_glyph() }}<em>PDF</em></span><b>Q3 report.pdf</b><small>418 KB</small></span>
+                <span class="fh-tile"><span class="fh-thumb is-code"><code>{<br>&nbsp;"sync": true,<br>&nbsp;"devices": [<br>&nbsp;&nbsp;"laptop",<br>&nbsp;&nbsp;"phone"<br>&nbsp;]<br>}</code></span><b>config.json</b><small>121 B</small></span>
+                <span class="fh-tile"><span class="fh-thumb fh-photo is-coast"><svg viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><rect class="fh-sea" y="58" width="160" height="40"/><path class="fh-foam" d="M0 86c20-6 34 4 54-1s30-7 50-1 38 4 56-2v8H0z"/><path class="fh-sand" d="M0 92c26-6 52 2 80-2s56-4 80 0v32H0z"/></svg></span><b>Coastline.jpg</b><small>3.1 MB</small></span>
+                <span class="fh-tile"><span class="fh-thumb is-doc" data-kind="archive">{{ page_glyph() }}<em>ZIP</em></span><b>Backup 2026-10.zip</b><small>86 MB</small></span>
+                <span class="fh-tile"><span class="fh-thumb fh-photo is-night"><svg viewBox="0 0 160 120" preserveAspectRatio="xMidYMid slice"><circle class="fh-moon" cx="38" cy="30" r="9"/><path class="fh-tower" d="M8 120V70h18v-8h14v58zM48 120V52h22v68zM78 120V78h16V64h20v56zM120 120V58h12l6-8 6 8h10v62z"/><g class="fh-lit"><rect x="54" y="60" width="4" height="5"/><rect x="62" y="72" width="4" height="5"/><rect x="54" y="88" width="4" height="5"/><rect x="100" y="72" width="4" height="5"/><rect x="126" y="66" width="4" height="5"/><rect x="138" y="84" width="4" height="5"/><rect x="14" y="80" width="4" height="5"/></g></svg></span><b>Night city.jpg</b><small>1.8 MB</small></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="fh-float">
+        <div class="fh-float-head">
+          <span class="fh-float-ico fh-photo is-dawn"></span>
+          <span class="fh-float-name"><b>Lake at dawn.jpg</b><small>Share link</small></span>
+          <span class="rd-pill is-good is-dot">E2EE</span>
+        </div>
+        <div class="fh-link"><span class="fh-link-url">{{ domain }}/f/3f9c2a/</span><span class="fh-link-key">#Ekfv1NU5di9Q</span></div>
+        <p class="fh-float-note">The key after <b>#</b> stays in the browser. It is never sent to us.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Link sharing: how it works, plus the live uploader -->
+<section class="rd-section fh-share" id="share">
+  <div class="rd-container fh-share-grid">
+    <div class="fh-share-copy">
+      {% if allow_temp_uploads %}
+      <h2 class="rd-h2">Share a file without an account.</h2>
+      <p class="rd-lead">Drop a file and get a link. It is encrypted in this browser first, and the key travels inside the link.</p>
+      {% else %}
+      <h2 class="rd-h2">Links that carry their own key.</h2>
+      <p class="rd-lead">Share any file or folder from your drive by link. The key travels inside the link, never through our servers.</p>
+      {% endif %}
+      <ol class="fh-steps">
+        <li><span class="fh-step-n">1</span><div><h3>Encrypted on your device</h3><p>AES-256-GCM runs in the browser before a single byte is uploaded.</p></div></li>
+        <li><span class="fh-step-n">2</span><div><h3>Stored as ciphertext</h3><p>{% if allow_temp_uploads %}Quick shares expire after 24 hours by default, or up to 7 days.{% else %}Links can expire after 30 minutes, a week, or never.{% endif %}</p></div></li>
+        <li><span class="fh-step-n">3</span><div><h3>The key rides after the #</h3><p>Browsers never send the fragment to a server, so only people with the link can decrypt.</p></div></li>
+      </ol>
+    </div>
     {% if allow_temp_uploads %}
-    <div class="fh-drop">
+    <div class="fh-share-drop">
       {% include '_uploader.html' %}
     </div>
     {% else %}
-    <div class="rd-terminal fh-console">
-      <div class="rd-terminal-bar">
-        <span class="rd-tdot"></span><span class="rd-tdot"></span><span class="rd-tdot"></span>
-        <span class="rd-terminal-title">onegy session</span>
+    <div class="fh-anatomy" role="figure" aria-label="Anatomy of a share link">
+      <p class="fh-anatomy-url"><span>https://{{ domain }}/f/3f9c2a/</span><span class="fh-link-key">#Ekfv1NU5di9Q</span></p>
+      <div class="fh-anatomy-parts">
+        <div><span class="rd-pill">Sent to the server</span><p>Which file to fetch. The server returns ciphertext.</p></div>
+        <div><span class="rd-pill is-accent">Stays in the browser</span><p>The decryption key. It never reaches us.</p></div>
       </div>
-<pre class="rd-terminal-body"><span class="rd-t-dim">$</span> onegy login
-<span class="rd-t-dim">deriving keys</span> <span class="rd-t-dim">(PBKDF2, 600k)</span>
-  <span class="rd-t-dim">├─</span> <span class="rd-t-accent">auth token</span>   <span class="rd-t-dim">→ server sees sha-256</span>
-  <span class="rd-t-dim">└─</span> <span class="rd-t-accent">wrapping key</span> <span class="rd-t-dim">→ stays local</span>
-      <span class="rd-t-dim">└─</span> master key <span class="rd-t-dim">(AES-256-GCM)</span>
-<span class="rd-t-ok">✓ unlocked</span> <span class="rd-t-dim">zero-knowledge session</span>
-
-<span class="rd-t-dim">$</span> onegy up report.pdf
-<span class="rd-t-dim">encrypting locally</span> ████████████ <span class="rd-t-ok">ok</span>
-<span class="rd-t-accent">→</span> https://{{ domain }}/f/a1b2c3<span class="rd-t-dim">#passphrase=…</span>
-
-<span class="rd-t-dim">$</span> <span class="fh-caret"></span></pre>
     </div>
     {% endif %}
   </div>
 </section>
 
-<!-- ═══ MARQUEE ════════════════════════════════════════════════════════ -->
-<div class="rd-marquee fh-marquee" aria-hidden="true">
-  <div class="rd-marquee-track">
-    {% for _ in range(2) %}
-    <div class="rd-marquee-group">
-      <span class="rd-marquee-item">AES-256-GCM</span><span class="rd-marquee-item">Split-key auth</span>
-      <span class="rd-marquee-item">Encrypted filenames</span><span class="rd-marquee-item">Auto-expiring links</span>
-      <span class="rd-marquee-item">Multi-node replication</span><span class="rd-marquee-item">RSA-OAEP 4096</span>
-      <span class="rd-marquee-item">Terminal CLI</span><span class="rd-marquee-item">REST API</span>
-      <span class="rd-marquee-item">2FA TOTP</span>
-    </div>
-    {% endfor %}
-  </div>
-</div>
-
-<!-- ═══ LIVE STATUS ════════════════════════════════════════════════════ -->
-<section class="fh-status">
-  <div class="rd-container">
-    <p class="fh-status-head"><span class="rd-status-dot rd-status-{{ landing_stats.backup_completion_status }}"></span>Live from our storage nodes</p>
-    <div class="fh-stats">
-      <div class="fh-stat">
-        <div class="fh-stat-num rd-count" data-final="{{ landing_stats.backup_completion_percent_label }}">{{ landing_stats.backup_completion_percent_label }}</div>
-        <div class="fh-stat-label">Mirrored</div>
-        <div class="fh-stat-sub">Share of stored data with a verified replica</div>
-      </div>
-      <div class="fh-stat">
-        <div class="fh-stat-num rd-count" data-final="{{ landing_stats.total_display_file_bytes_formatted }}">{{ landing_stats.total_display_file_bytes_formatted }}</div>
-        <div class="fh-stat-label">Encrypted</div>
-        <div class="fh-stat-sub">Stored across active nodes</div>
-      </div>
-      <div class="fh-stat">
-        <div class="fh-stat-num rd-count" data-final="{{ landing_stats.files_fully_synced_label }}">{{ landing_stats.files_fully_synced_label }}</div>
-        <div class="fh-stat-label">Fully mirrored files</div>
-        <div class="fh-stat-sub">Of {{ landing_stats.total_active_files_label }} active files</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ HOW IT WORKS (a real sequence: encrypt, store, share) ══════════ -->
-<section class="rd-section fh-how" id="how">
-  <div class="rd-container">
-    <div class="fh-head rd-reveal">
-      <h2 class="rd-h2">Encrypted before it leaves your device.</h2>
-      <p class="rd-lead">Every step that touches your data runs in your browser or the CLI. Our servers only ever handle the sealed result.</p>
-    </div>
-    <ol class="fh-steps">
-      <li class="fh-step rd-reveal">
-        <span class="fh-step-n">1</span>
-        <h3 class="rd-h3">Encrypt locally</h3>
-        <p>Your browser derives keys from your password and seals each file and filename with AES-256-GCM.</p>
-        <div class="fh-artifact">
-          <span class="fh-art-plain">report.pdf</span>
-          <span class="fh-art-arrow" aria-hidden="true">↓</span>
-          <span class="fh-art-cipher">a7f3 09c2 e81b 4d6f 2c90 …</span>
-        </div>
-      </li>
-      <li class="fh-step rd-reveal" style="--rd:.08s">
-        <span class="fh-step-n">2</span>
-        <h3 class="rd-h3">Store ciphertext</h3>
-        <p>We receive encrypted bytes and a SHA-256 hash of your auth token. Replicas are checksum-verified on every node.</p>
-        <div class="fh-artifact">
-          <span class="fh-art-plain">PUT /upload</span>
-          <span class="fh-art-cipher">9f3a 0c7e b21d … c1e0</span>
-          <span class="fh-art-ok">✓ checksum verified</span>
-        </div>
-      </li>
-      <li class="fh-step rd-reveal" style="--rd:.16s">
-        <span class="fh-step-n">3</span>
-        <h3 class="rd-h3">Share with the key in the link</h3>
-        <p>The key rides after the <code>#</code>. Browsers never send that part to a server, so only the recipient can decrypt.</p>
-        <div class="fh-artifact">
-          <span class="fh-art-plain">{{ domain }}/f/a1b2c3<b>#passphrase=…</b></span>
-          <span class="fh-art-dim">fragment stays in the browser</span>
-        </div>
-      </li>
-    </ol>
-  </div>
-</section>
-
-<!-- ═══ CAPABILITIES ═══════════════════════════════════════════════════ -->
-<section class="rd-section fh-caps-sec">
-  <div class="rd-container">
-    <div class="fh-head rd-reveal">
-      <h2 class="rd-h2">One vault. Every workflow.</h2>
-      <p class="rd-lead">Storage, sharing, notes and music in one account, all under the same encryption.</p>
-    </div>
-    <div class="fh-caps">
-      {% set caps = [
-        ('End-to-end encryption', 'AES-256-GCM with a client-side key hierarchy. Keys are derived in your browser and never leave it.', '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
-        ('Cloud drive', 'Folders, trash, bulk actions and instant search in a fast drive built for the keyboard and drag-and-drop.', '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
-        ('Auto-expiring shares', 'Temporary links with download limits, passwords and expiry. Share secrets stay in the link and never reach the server.', '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
-        ('Encrypted notes', 'Notebooks with rich text and a canvas mode. Titles, tags and content are sealed with per-note keys.', '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/>'),
-        ('Built-in music', 'A persistent player with playlists, likes and device sync that keeps playing while you work.', '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'),
-        ('CLI and REST API', 'A static Go binary for encrypted uploads from any terminal, plus a full REST API with scoped keys.', '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>')
-      ] %}
-      {% for title, body, icon in caps %}
-      <article class="fh-cap">
-        <span class="fh-cap-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{{ icon|safe }}</svg></span>
-        <h3 class="rd-h3">{{ title }}</h3>
-        <p>{{ body }}</p>
-      </article>
-      {% endfor %}
-    </div>
-  </div>
-</section>
-
-<!-- ═══ SECURITY LEDGER ════════════════════════════════════════════════ -->
-<section class="rd-section fh-sec">
+<!-- Security model -->
+<section class="rd-section fh-sec" id="security">
   <div class="rd-container fh-sec-grid">
-    <div class="rd-reveal">
-      <h2 class="rd-h2">What we can and can't see.</h2>
-      <p class="rd-lead fh-sec-lead">Your password is split in the browser. One half signs you in; the other unwraps your master key. This is everything we store.</p>
+    <div class="fh-sec-copy">
+      <h2 class="rd-h2">What we can see, and what we can't.</h2>
+      <p class="rd-lead">Your password never reaches us. The browser stretches it with PBKDF2 (600,000 iterations) and splits the result: one half signs you in, the other unlocks your keys.</p>
       <ul class="rd-checklist">
         {% for item in [
-          'Split-key sign-in, so raw passwords are never stored',
-          'Filenames encrypted client-side with per-file keys',
-          'Link secrets derived with HKDF and never stored',
-          'Checksum-verified replication across storage nodes'
+          'Split-key sign-in: passwords are never sent or stored',
+          'A key per file and per note, wrapped by a master key only you can unlock',
+          'Link keys derived with HKDF and never stored',
+          'Two-factor sign-in and a recovery key you keep'
         ] %}
-        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>{{ item }}</li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>{{ item }}</li>
         {% endfor %}
       </ul>
     </div>
-    <div class="rd-reveal" style="--rd:.1s">
-      <table class="fh-ledger">
-        <caption>Server-side record for one account</caption>
-        <thead><tr><th scope="col">Data</th><th scope="col">What we store</th><th scope="col">Readable by us</th></tr></thead>
-        <tbody>
-          <tr><th scope="row">File contents</th><td>Ciphertext</td><td class="no">No</td></tr>
-          <tr><th scope="row">Filenames</th><td>Ciphertext</td><td class="no">No</td></tr>
-          <tr><th scope="row">Note bodies</th><td>Ciphertext</td><td class="no">No</td></tr>
-          <tr><th scope="row">Master key</th><td>Wrapped, never raw</td><td class="no">No</td></tr>
-          <tr><th scope="row">Password</th><td>Not stored</td><td class="no">No</td></tr>
-          <tr><th scope="row">Auth token</th><td>SHA-256 hash</td><td class="hash">Hash only</td></tr>
-        </tbody>
-      </table>
+    <div class="rd-panel fh-ledger">
+      <header class="rd-panel-head"><div><h3 class="rd-panel-title">What the server stores</h3><p class="rd-panel-sub">The complete record for one account</p></div></header>
+      <div class="rd-panel-body is-flush">
+        <table class="rd-table">
+          <thead><tr><th scope="col">Data</th><th scope="col">Stored as</th><th scope="col" class="is-num">Readable by us</th></tr></thead>
+          <tbody>
+            {% for what, stored, readable in [
+              ('File contents', 'Ciphertext', 'No'),
+              ('Filenames', 'Ciphertext', 'No'),
+              ('Notes', 'Ciphertext', 'No'),
+              ('Master key', 'Wrapped, never raw', 'No'),
+              ('Link keys', 'Not stored', 'No'),
+              ('Password', 'Not stored', 'No'),
+              ('Sign-in token', 'SHA-256 hash', 'Hash only')
+            ] %}
+            <tr><th scope="row">{{ what }}</th><td>{{ stored }}</td><td class="is-num"><span class="rd-pill{{ ' is-good' if readable == 'No' }}">{{ readable }}</span></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- ═══ CTA ════════════════════════════════════════════════════════════ -->
+<!-- Everything else in the account -->
+<section class="rd-section fh-feats-sec">
+  <div class="rd-container">
+    <div class="fh-head">
+      <h2 class="rd-h2">One account for files, notes and more.</h2>
+      <p class="rd-lead">The drive is the center. Everything else sits next to it, behind the same sign-in.</p>
+    </div>
+    <ul class="fh-feats">
+      {{ feat('Drive', 'Folders, trash, search and drag-and-drop, in grid, list, gallery or column view.', '<path d="M3.5 13.5 6 6.2A2 2 0 0 1 7.9 5h8.2a2 2 0 0 1 1.9 1.2l2.5 7.3"/><rect x="3.5" y="13.5" width="17" height="5.5" rx="1.8"/><path d="M16.5 16.25h.01"/>') }}
+      {{ feat('Links that expire', 'Share a file or a whole folder by link. Links can expire after 30 minutes, a week, or never.', '<path d="M10 13.5a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10.5a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/>') }}
+      {{ feat('Encrypted notes', 'Notebooks with rich text and a canvas mode. Titles and content are sealed with per-note keys.', '<path d="M14.5 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3.5V8h5"/><path d="M8.5 13h7M8.5 16.5h5"/>') }}
+      {% if allow_music %}{{ feat('Music', 'Stream the music library with playlists and likes. The player keeps going while you work.', '<path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>') }}{% endif %}
+      {{ feat('Replicated storage', 'Files are copied to S3-compatible or SSH storage nodes, and every copy is checksum-verified.', '<ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v6c0 1.38 3.36 2.5 7.5 2.5s7.5-1.12 7.5-2.5v-6"/><path d="M4.5 11.5v6c0 1.38 3.36 2.5 7.5 2.5s7.5-1.12 7.5-2.5v-6"/>') }}
+      {{ feat('Prompts', 'Copy-ready prompts for coding agents, plus a builder. Drafts never leave your browser.', '<path d="m5 8 4 4-4 4"/><path d="M12 17h7"/>') }}
+    </ul>
+  </div>
+</section>
+
+<!-- CLI + API -->
+<section class="rd-section fh-cli">
+  <div class="rd-container fh-cli-grid">
+    <div class="fh-cli-copy">
+      <h2 class="rd-h2">From the terminal, too.</h2>
+      <p class="rd-lead">The onegy CLI encrypts on your machine before it uploads, and decrypts any share link it downloads. One command runs it on Linux or macOS, and every update is checked against a SHA-256 manifest.</p>
+      {% if allow_api_keys %}<p class="fh-cli-api">Prefer HTTP? The REST API covers uploads, folders, search and trash, with per-key permissions and optional IP allowlists.</p>{% endif %}
+      <p class="fh-cli-api">Want folders on your computer kept in sync? The <a class="rd-accent" href="{{ url_for('desktop_page') }}">desktop app</a> for Windows and Linux does that, end-to-end encrypted.</p>
+      <a class="fh-more" href="{{ url_for('docs') }}">Read the API docs<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+    </div>
+    <div class="rd-terminal fh-term">
+      <div class="rd-terminal-bar"><span class="rd-tdot"></span><span class="rd-tdot"></span><span class="rd-tdot"></span><span class="rd-terminal-title">Terminal</span></div>
+{% if allow_temp_uploads %}<pre class="rd-terminal-body"><span class="rd-t-dim">$</span> curl -fsSL https://{{ domain }}/cli.sh \
+    | bash -s -- upload report.pdf
+<span class="rd-t-dim">Encrypting report.pdf (2.4 MB)...</span> done
+<span class="rd-t-dim">Uploading...</span> done
+
+SHARE URL (EXPIRES IN 24H):
+<span class="rd-t-accent">https://{{ domain }}/f/3f9c2a/report.pdf#passphrase=…</span>
+
+<span class="rd-t-dim">The server never sees your encryption key.</span></pre>
+{% else %}<pre class="rd-terminal-body"><span class="rd-t-dim">$</span> curl -fsSL https://{{ domain }}/cli.sh \
+    | bash -s -- download "https://{{ domain }}/f/3f9c2a/report.pdf#Ekfv1NU5di…"
+<span class="rd-t-dim">Fetching file info...</span> done
+<span class="rd-t-dim">Downloading encrypted file...</span> done (2.4 MB)
+<span class="rd-t-dim">Decrypting...</span> done
+<span class="rd-t-ok">Saved: report.pdf (2.4 MB)</span></pre>
+{% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- Final call to action -->
 <section class="fh-cta">
-  <div class="rd-container fh-cta-inner">
-    <div>
-      <h2 class="rd-h2">Put your files under seal.</h2>
-      <p class="fh-cta-sub">Create an account for the full drive, or share a single file without one.</p>
-    </div>
-    <div class="fh-cta-actions">
-      {% if session.get('logged_in_user_id') %}
-        <a class="rd-btn rd-btn-lg fh-btn-invert" href="{{ url_for('files') }}">Open files</a>
-      {% elif allow_registration %}
-        <a class="rd-btn rd-btn-lg fh-btn-invert" href="{{ url_for('register') }}">Create account</a>
-      {% else %}
-        <a class="rd-btn rd-btn-lg fh-btn-invert" href="{{ url_for('login') }}">Sign in</a>
-      {% endif %}
-      {% if allow_temp_uploads %}<a class="rd-btn rd-btn-lg fh-btn-line" href="{{ url_for('share') }}">Quick share</a>{% endif %}
+  <div class="rd-container">
+    <h2 class="rd-h2">Your files, readable only by you.</h2>
+    <p class="rd-lead">{% if signed_in %}Your drive is ready.{% elif allow_registration %}Create an account for the full drive{% if allow_temp_uploads %}, or share a single file without one{% endif %}.{% else %}Sign in to open your drive.{% endif %}</p>
+    <div class="fh-actions">
+      {{ primary_cta() }}
+      {% if allow_temp_uploads %}<a class="rd-btn rd-btn-ghost rd-btn-lg" href="{{ url_for('share') }}">Quick share</a>{% endif %}
     </div>
   </div>
 </section>
-{% endblock %}
-
-{% block scripts %}
-<script nonce="{{ csp_nonce }}">
-// Hero signature: "nothing" arrives as ciphertext and decrypts in place, once.
-;(function () {
-  var el = document.querySelector('.fh-cipher')
-  if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-  var word = el.getAttribute('data-word'), HEX = '0123456789abcdef', n = word.length
-  var plain = document.createElement('span'), noise = document.createElement('span')
-  noise.className = 'fh-cipher-noise'
-  el.style.minWidth = el.getBoundingClientRect().width + 'px'
-  el.textContent = ''
-  el.append(plain, noise)
-  var step = 0, steps = 26
-  function render () {
-    var done = Math.max(0, Math.floor((step - 6) / (steps - 6) * n)), s = ''
-    for (var i = done; i < n; i++) s += HEX[(Math.random() * 16) | 0]
-    plain.textContent = word.slice(0, done)
-    noise.textContent = s
-  }
-  render()
-  var t = setInterval(function () {
-    step++
-    if (step >= steps) { clearInterval(t); el.textContent = word; el.style.minWidth = ''; return }
-    render()
-  }, 55)
-})()
-</script>
 {% endblock %}

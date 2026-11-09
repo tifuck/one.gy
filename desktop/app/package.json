@@ -1,0 +1,30 @@
+{
+  "name": "onegy-desktop",
+  "productName": "ONE.GY Desktop",
+  "desktopName": "onegy-desktop.desktop",
+  "version": "0.0.0-dev",
+  "description": "ONE.GY Desktop: the one.gy website in a native window, plus end-to-end encrypted folder sync.",
+  "homepage": "https://one.gy/desktop",
+  "author": {
+    "name": "tifuck",
+    "email": "173309113+tifuck@users.noreply.github.com"
+  },
+  "license": "MIT",
+  "private": true,
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev:mock": "electron . --mock-engine",
+    "build:engine": "node scripts/build-engine.js",
+    "dist": "node scripts/build-engine.js && node scripts/dist.js",
+    "icons": "node scripts/make-icons.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0"
+  }
+}

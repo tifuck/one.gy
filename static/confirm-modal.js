@@ -88,7 +88,7 @@
           '<h3 class="ucm-title" id="ucmTitle"></h3>' +
           '<p class="ucm-message" id="ucmMessage"></p>' +
           '<div class="ucm-actions">' +
-            '<button class="ucm-btn ucm-btn-cancel" id="ucmCancelBtn">CANCEL</button>' +
+            '<button class="ucm-btn ucm-btn-cancel" id="ucmCancelBtn">Cancel</button>' +
             '<button class="ucm-btn ucm-btn-confirm" id="ucmConfirmBtn">DELETE</button>' +
           '</div>' +
         '</div>' +
@@ -102,12 +102,14 @@
     _modal.addEventListener('click', function(e) {
       if (e.target === _modal) _close(false)
     })
-    document.addEventListener('keydown', function(e) {
+    // Window capture phase: runs before every document-level Escape handler, so
+    // stopPropagation keeps the dialog underneath (e.g. the manage modal) open.
+    window.addEventListener('keydown', function(e) {
       if (e.key === 'Escape' && _modal && _modal.classList.contains('ucm-visible')) {
         e.stopPropagation()
         _close(false)
       }
-    })
+    }, true)
   }
 
   // Pending close of the singleton modal, so a confirm opened during the 180ms

@@ -1,5 +1,5 @@
-{# Frost guest temp-file list (/guest-files). Replaces the legacy
-   templates/files.html.
+{# Guest temp-file list (/guest-files): temporary uploads from this browser
+   session. Read-only listing plus Edit (manage page), Copy link and Delete.
 
    NOTE: the legacy template emitted `const MAX_GB = {{ max_gb }}` but the
    guest_files() route never passed max_gb and it is not in the context
@@ -7,68 +7,89 @@
    killed the whole inline script AND the script.js it pulled in. Neither is
    needed on a read-only listing, so both are gone. #}
 {% extends 'base.html' %}
-{% block title %}YOUR UPLOADS{% endblock %}
+{% set ui_v2 = true %}
+{% block title %}Your uploads{% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('gateway.css') }}">{% endblock %}
 
 {% block content %}
-<section class="gw-section">
-  <div class="gw-card gw-card-wide">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
-    <div class="gw-rule"></div>
-    <h1 class="gw-title">Uploaded files</h1>
-    <p class="gw-sub">Temporary uploads from this browser session</p>
+<div class="rd-page">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
+  <header class="rd-page-head">
+    <h1 class="rd-page-title">Your uploads</h1>
+    <p class="rd-page-sub">Temporary uploads from this browser session. They are removed when they expire.</p>
+    {% if allow_temp_uploads %}
+    <div class="rd-page-actions">
+      <a href="{{ url_for('share') }}" class="rd-btn rd-btn-primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+        Upload
+      </a>
+    </div>
+    {% endif %}
+  </header>
 
+  <section class="rd-panel">
     {% if files %}
-    <div style="overflow-x:auto;margin-top:1.6rem">
-      <table class="gw-table">
-        <thead>
-          <tr>
-            <th>File name</th>
-            <th>Size</th>
-            <th>Expires</th>
-            <th>Status</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for file in files %}
-          <tr>
-            <td><a href="{{ url_for('download', id_or_token=file.id, filename=file.orig_name) }}" class="gw-fname">{{ file.orig_name }}</a></td>
-            <td class="gw-mono">{{ file.size | filesize }}</td>
-            <td class="gw-mono">{% if file.expires_at %}{{ file.expires_at.strftime('%Y-%m-%d %H:%M') }}{% else %}Never{% endif %}</td>
-            <td>
-              {% if file.is_e2e_encrypted %}
-                <span class="gw-tag gw-tag-good">E2EE</span>
-              {% else %}
-                <span class="gw-tag">Server-side</span>
-              {% endif %}
-              {% if file.password_hash %}
-                <span class="gw-tag gw-tag-accent">Protected</span>
-              {% elif file.is_public and not file.is_e2e_encrypted %}
-                <span class="gw-tag gw-tag-accent">Public</span>
-              {% endif %}
-            </td>
-            <td>
-              <div class="gw-row-actions">
-                <a href="{{ url_for('manage', token=file.management_token) }}" class="gw-mini">Edit</a>
-                <button type="button" class="gw-mini gw-copy-link" data-url="{{ url_for('download', id_or_token=file.id, filename=file.orig_name, _external=True) }}">Copy link</button>
-                <button type="button" class="gw-mini gw-mini-danger gw-delete" data-token="{{ file.management_token }}" data-name="{{ file.orig_name }}">Delete</button>
-              </div>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <div class="rd-panel-body is-flush">
+      <div class="rd-table-wrap">
+        <table class="rd-table is-stack gw-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="is-num">Size</th>
+              <th>Expires</th>
+              <th>Status</th>
+              <th class="is-actions" aria-label="Actions"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for file in files %}
+            {% set ext = get_compound_ext(file.orig_name).rsplit('.', 1)[-1] %}
+            <tr>
+              <td class="is-trunc gw-td-name">
+                <div class="gw-name">
+                  <span class="gw-doc is-sm" data-ext="{{ ext }}"><svg viewBox="0 0 40 48" aria-hidden="true"><path class="gw-page-body" d="M7 1.5h18.5L37.5 13.5V42A4.5 4.5 0 0 1 33 46.5H7A4.5 4.5 0 0 1 2.5 42V6A4.5 4.5 0 0 1 7 1.5z"/><path class="gw-page-fold" d="M25.5 1.5v8.5a3.5 3.5 0 0 0 3.5 3.5h8.5z"/></svg></span>
+                  <a href="{{ url_for('download', id_or_token=file.id, filename=file.orig_name) }}" class="gw-fname" title="{{ file.orig_name }}">{{ file.orig_name }}</a>
+                </div>
+              </td>
+              <td class="is-num" data-label="Size">{{ (file.size or 0) | filesize }}</td>
+              <td class="gw-dim" data-label="Expires">{% if file.expires_at %}{{ file.expires_at.strftime('%b %d, %H:%M') }}{% else %}Never{% endif %}</td>
+              <td data-label="Status">
+                <div class="gw-pills">
+                  {% if file.is_e2e_encrypted %}
+                    <span class="rd-pill is-good">E2EE</span>
+                  {% else %}
+                    <span class="rd-pill">Server-side</span>
+                  {% endif %}
+                  {% if file.password_hash %}
+                    <span class="rd-pill is-accent">Protected</span>
+                  {% elif file.is_public and not file.is_e2e_encrypted %}
+                    <span class="rd-pill is-accent">Public</span>
+                  {% endif %}
+                </div>
+              </td>
+              <td class="is-actions gw-td-actions">
+                <div class="gw-row-actions">
+                  <a href="{{ url_for('manage', token=file.management_token) }}" class="rd-btn rd-btn-sm rd-btn-ghost">Edit</a>
+                  <button type="button" class="rd-btn rd-btn-sm rd-btn-ghost gw-copy-link" data-url="{{ url_for('download', id_or_token=file.id, filename=file.orig_name, _external=True) }}">Copy link</button>
+                  <button type="button" class="rd-btn rd-btn-sm rd-btn-danger gw-delete" data-token="{{ file.management_token }}" data-name="{{ file.orig_name }}">Delete</button>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
     {% else %}
-    <a class="gw-empty" href="{{ url_for('share') if allow_temp_uploads else url_for('files') }}" style="margin-top:1.6rem">
-      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>
-      <div class="gw-empty-title">No files uploaded yet</div>
-      <p class="gw-sub">{% if allow_temp_uploads %}Click to upload{% else %}Use your drive to upload files{% endif %}</p>
-    </a>
+    <div class="rd-empty">
+      <span class="rd-empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></span>
+      <h2 class="rd-empty-title">No uploads yet</h2>
+      <p class="rd-empty-text">{% if allow_temp_uploads %}Files you share from this browser show up here until they expire.{% else %}Use your drive to upload files.{% endif %}</p>
+      <a class="rd-btn rd-btn-primary" href="{{ url_for('share') if allow_temp_uploads else url_for('files') }}">{{ 'Upload a file' if allow_temp_uploads else 'Open your drive' }}</a>
+    </div>
     {% endif %}
-  </div>
-</section>
+  </section>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -106,6 +127,8 @@ document.addEventListener('click', async function (e) {
       if (!r.ok) throw new Error('HTTP ' + r.status)
       showToast('FILE DELETED', 'success')
       const row = delBtn.closest('tr'); if (row) row.remove()
+      // Last row gone: reload so the empty state renders instead of a bare header
+      if (!document.querySelector('.gw-table tbody tr')) location.reload()
     } catch (err) {
       showToast('FAILED TO DELETE FILE', 'error')
     }

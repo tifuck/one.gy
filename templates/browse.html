@@ -1,20 +1,20 @@
-{# Frost shared-folder browse page (/f/<share_token>).
+{# Shared-folder browse page (/f/<share_token>), UI v2.
 
-   Replaces the legacy templates/browse_folder.html — a standalone 256 KB page
-   that hardcoded the old header/nav and pulled in static/style.css. This one
-   extends _app_base.html so a share link gets the same shared _nav.html
-   chrome, theme switcher and resizable rail as the rest of the app, and the listing is driven
+   Extends _app_base.html so a share link gets the same shared _nav.html
+   chrome, theme switcher and resizable rail as the rest of the app (its
+   anonymous branch renders the logged-out nav). The listing is driven
    entirely by static/browse.js against /f/<token>/browse-data.
 
    The server still renders the FIRST page's context (folder, is_owner) so the
    title and access decision are server-authoritative; browse.js then takes over
-   for navigation. #}
+   for navigation. Classes that look generic (.mega-browser, .browser-files,
+   .folder-tree-link, .view-toggle-btn, .file-row ...) are keyed on by the
+   testsv2 page objects. #}
 {% extends '_app_base.html' %}
-{% block title %}{{ folder.name if not folder.is_e2e else 'SHARED FOLDER' }}{% endblock %}
-{% set nav_active = 'share' %}
+{% set ui_v2 = true %}
+{% block title %}{{ folder.name if not folder.is_e2e else 'Shared folder' }}{% endblock %}
 {% block head_extra %}
 <link rel="stylesheet" href="{{ versioned_static('browse.css') }}">
-<link rel="stylesheet" href="{{ versioned_static('preview.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -28,17 +28,18 @@
   <!-- Library rail (shares --rd-side-* tokens with Files / Notes / Music) -->
   <aside class="bw-side rd-side" id="bwSide" aria-label="Shared folders">
     <div class="rd-side-inner">
-      <div class="rd-side-head">Shared</div>
-      <nav class="rd-side-scroll" id="bwTree" aria-label="Folder tree">
-        <div class="rd-skel" aria-hidden="true"></div>
-        <div class="rd-skel" aria-hidden="true"></div>
-        <div class="rd-skel" aria-hidden="true"></div>
+      <div class="rd-side-head">Shared folder</div>
+      <nav class="rd-side-scroll bw-tree" id="bwTree" aria-label="Folder tree">
+        <div class="rd-skel bw-tree-skel" aria-hidden="true"></div>
+        <div class="rd-skel bw-tree-skel" aria-hidden="true"></div>
+        <div class="rd-skel bw-tree-skel" aria-hidden="true"></div>
       </nav>
-      <div class="bw-side-foot">
+      <div class="rd-side-foot bw-side-foot">
+        <p class="bw-side-e2e" id="bwE2e" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>End-to-end encrypted</p>
         <div class="bw-side-stat"><span>Files in share</span><b id="bwStatFiles">…</b></div>
         <div class="bw-side-stat"><span>In this folder</span><b id="bwStatHere">…</b></div>
-        <button type="button" class="bw-btn bw-btn-primary" id="bwDownloadAll" style="width:100%;justify-content:center">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+        <button type="button" class="rd-btn rd-btn-primary bw-dl-all" id="bwDownloadAll">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
           Download all
         </button>
       </div>
@@ -51,33 +52,36 @@
   <!-- Main -->
   <div class="bw-main">
     <div class="bw-toolbar">
-      <button type="button" class="bw-side-toggle" id="bwSideToggle" aria-label="Toggle folders">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      <button type="button" class="bw-side-toggle" id="bwSideToggle" aria-label="Show folders" aria-controls="bwSide">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
       </button>
       <div class="bw-bcrumb" id="bwBcrumb" aria-label="Breadcrumb"></div>
       <div class="bw-spacer"></div>
       <div class="bw-tbar-actions">
         <div class="bw-search">
-          <span class="bw-search-btn" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          </span>
-          <input type="search" id="bwSearch" placeholder="Search this share…" autocomplete="off" spellcheck="false" aria-label="Search">
-          <button type="button" class="bw-search-btn" id="bwSearchClear" aria-label="Clear search" title="Clear">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          <label class="bw-search-btn" for="bwSearch" title="Search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </label>
+          <input type="search" id="bwSearch" placeholder="Search this share" autocomplete="off" spellcheck="false" aria-label="Search this share">
+          <button type="button" class="bw-search-btn bw-search-clear" id="bwSearchClear" aria-label="Clear search" title="Clear">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
         </div>
         <div class="bw-seg" role="group" aria-label="View mode" id="bwViewSeg">
-          <button type="button" class="bw-seg-btn view-toggle-btn is-active" data-view="grid" title="Grid" aria-label="Grid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
-          <button type="button" class="bw-seg-btn view-toggle-btn" data-view="list" title="List" aria-label="List"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
+          <button type="button" class="bw-seg-btn view-toggle-btn is-active" data-view="grid" title="Grid" aria-label="Grid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg></button>
+          <button type="button" class="bw-seg-btn view-toggle-btn" data-view="list" title="List" aria-label="List"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg></button>
         </div>
-        <select class="bw-sort" id="bwSort" aria-label="Sort">
-          <option value="name">Name A–Z</option>
-          <option value="name-desc">Name Z–A</option>
-          <option value="date">Newest</option>
-          <option value="date-asc">Oldest</option>
-          <option value="size">Largest</option>
-          <option value="size-asc">Smallest</option>
-        </select>
+        <div class="bw-sort-wrap">
+          <select class="bw-sort" id="bwSort" aria-label="Sort">
+            <option value="name">Name A–Z</option>
+            <option value="name-desc">Name Z–A</option>
+            <option value="date">Newest</option>
+            <option value="date-asc">Oldest</option>
+            <option value="size">Largest</option>
+            <option value="size-asc">Smallest</option>
+          </select>
+          <svg class="bw-sort-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </div>
       </div>
     </div>
 
@@ -95,18 +99,18 @@
 <div class="bw-selbar" id="bwSelbar" role="toolbar" aria-label="Selection actions">
   <span class="bw-selbar-count"><b id="bwSelCount">0</b> selected</span>
   <div class="bw-selbar-sep"></div>
-  <button type="button" class="bw-btn" id="bwSelDownload">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+  <button type="button" class="bw-selbar-btn" id="bwSelDownload">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
     Download
   </button>
-  <button type="button" class="bw-btn" id="bwSelClear" aria-label="Clear selection">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+  <button type="button" class="bw-selbar-btn" id="bwSelClear" aria-label="Clear selection" title="Clear selection">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
   </button>
 </div>
 
 <!-- Client-side decrypt progress -->
 <div class="bw-prog" id="bwProg" role="status" aria-live="polite">
-  <div class="bw-prog-head"><b id="bwProgName">File</b><button type="button" class="bw-prog-close" id="bwProgClose" aria-label="Hide">&times;</button></div>
+  <div class="bw-prog-head"><b id="bwProgName">File</b><button type="button" class="bw-prog-close" id="bwProgClose" aria-label="Hide" title="Hide"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
   <div class="bw-prog-body">
     <div class="bw-prog-track"><div class="bw-prog-fill" id="bwProgFill"></div></div>
     <div class="bw-prog-status" id="bwProgStatus">Starting…</div>

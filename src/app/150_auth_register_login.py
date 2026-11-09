@@ -174,15 +174,11 @@ def register():
                 return jsonify({'error': 'INVALID REQUEST'}), 400
             username = data.get('username')
             email = data.get('email')
-            password = data.get('password')
-            confirm_password = data.get('confirm_password')
             password_length = data.get('password_length')
             captcha_input = (data.get('captcha') or '').strip()
         else:
             username = request.form.get('username')
             email = request.form.get('email')
-            password = request.form.get('password')
-            confirm_password = request.form.get('confirm_password')
             password_length = None
             captcha_input = request.form.get('captcha', '').strip()
         
@@ -196,11 +192,11 @@ def register():
                 flash(captcha_error, 'error')
                 return redirect(url_for('register'))
         
-        # Split-key registration: password is not required when auth_token is provided
-        # (zero-knowledge: password length validation is done client-side)
+        # Split-key only: the browser derives auth_token locally and never sends
+        # the password, so a request without it (e.g. a no-JS form post) is refused.
         has_auth_token = bool(data.get('auth_token') and data.get('auth_salt')) if is_ajax else False
         
-        if not username or (not password and not has_auth_token):
+        if not username or not has_auth_token:
             if is_ajax:
                 return jsonify({'error': 'USERNAME AND PASSWORD ARE REQUIRED'}), 400
             flash('USERNAME AND PASSWORD ARE REQUIRED', 'error')
@@ -224,31 +220,12 @@ def register():
             flash('USERNAME MAY ONLY CONTAIN LETTERS, NUMBERS, UNDERSCORES, HYPHENS, AND DOTS', 'error')
             return redirect(url_for('register'))
         
-        # Password validation only when password is provided (legacy or non-split-key registration)
-        if password:
-            # SECURITY: Password confirmation validation
-            if password != confirm_password:
-                if is_ajax:
-                    return jsonify({'error': 'PASSWORDS DO NOT MATCH'}), 400
-                flash('PASSWORDS DO NOT MATCH', 'error')
-                return redirect(url_for('register'))
-            
-            # SECURITY: Enforce minimum password length
-            if len(password) < 6:
-                if is_ajax:
-                    return jsonify({'error': 'PASSWORD MUST BE AT LEAST 6 CHARACTERS'}), 400
-                flash('PASSWORD MUST BE AT LEAST 6 CHARACTERS', 'error')
-                return redirect(url_for('register'))
-        elif has_auth_token:
-            # AUDIT FIX M10: bounded sanity check on the CLIENT-ASSERTED length.
-            # See the PASSWORD_MIN_LENGTH block for the residual limitation —
-            # this is not a real server-side password policy.
-            _pw_len_ok, _pw_len_err = _validate_asserted_password_length(password_length)
-            if not _pw_len_ok:
-                if is_ajax:
-                    return jsonify({'error': _pw_len_err}), 400
-                flash(_pw_len_err, 'error')
-                return redirect(url_for('register'))
+        # AUDIT FIX M10: bounded sanity check on the CLIENT-ASSERTED length.
+        # See the PASSWORD_MIN_LENGTH block for the residual limitation —
+        # this is not a real server-side password policy.
+        _pw_len_ok, _pw_len_err = _validate_asserted_password_length(password_length)
+        if not _pw_len_ok:
+            return jsonify({'error': _pw_len_err}), 400
 
         # AUDIT FIX M11: validate email format AND length against the bounded
         # db.String(120) column BEFORE any insert. A 200-character value used to
@@ -283,29 +260,19 @@ def register():
             if _auth_field_err:
                 return jsonify({'error': _auth_field_err}), 400
 
-        if auth_token and auth_salt:
-            # New split-key registration: hash the auth token for storage
-            import hashlib as _hashlib_reg
-            auth_token_hash = _hashlib_reg.sha256(auth_token.encode('utf-8')).hexdigest()
-            user = User(
-                username=username,
-                email=email if email else None,
-                password_hash='split-key-v1',  # Placeholder — real auth via auth_token_hash
-                auth_token_hash=auth_token_hash,
-                auth_token_salt=auth_salt,
-                split_key_version=1,
-                storage_limit_gb=DEFAULT_USER_STORAGE_GB,
-                avatar_color=random_avatar_color()
-            )
-        else:
-            # Legacy registration (non-JS fallback)
-            user = User(
-                username=username,
-                email=email if email else None,
-                password_hash=generate_password_hash(password, method='pbkdf2:sha256'),
-                storage_limit_gb=DEFAULT_USER_STORAGE_GB,
-                avatar_color=random_avatar_color()
-            )
+        # Split-key registration: hash the auth token for storage
+        import hashlib as _hashlib_reg
+        auth_token_hash = _hashlib_reg.sha256(auth_token.encode('utf-8')).hexdigest()
+        user = User(
+            username=username,
+            email=email if email else None,
+            password_hash='split-key-v1',  # Placeholder — real auth via auth_token_hash
+            auth_token_hash=auth_token_hash,
+            auth_token_salt=auth_salt,
+            split_key_version=1,
+            storage_limit_gb=DEFAULT_USER_STORAGE_GB,
+            avatar_color=random_avatar_color()
+        )
         
         # Store E2EE key material if provided (AJAX registration)
         if is_ajax and data.get('encrypted_master_key'):
@@ -476,8 +443,8 @@ _CREDENTIAL_PROOF_WINDOW = 900
 
 def _verify_user_credentials(user, password=None, auth_token=None):
     """Verify a user's CURRENT login credentials, using exactly the same rules as
-    /login: split-key auth_token for split_key_version >= 1, legacy Werkzeug
-    password hash for split_key_version 0.
+    /login: split-key auth_token only. A raw password never verifies (the old
+    split_key_version 0 password login is removed).
 
     Every secret comparison goes through hmac.compare_digest so no byte-by-byte
     timing oracle is exposed. Returns True only on a positive match.
@@ -532,22 +499,15 @@ def _verify_user_credentials(user, password=None, auth_token=None):
 
 
 def _credentials_match(user, password, auth_token):
-    """Pure comparison behind _verify_user_credentials (no failure counting)."""
+    """Pure comparison behind _verify_user_credentials (no failure counting).
+    Split-key only: a raw password is never accepted."""
     import hashlib as _hashlib_verify
     import hmac as _hmac_verify
     if auth_token and user.split_key_version and user.split_key_version >= 1 and user.auth_token_hash:
         provided_hash = _hashlib_verify.sha256(auth_token.encode('utf-8')).hexdigest()
         return _hmac_verify.compare_digest(provided_hash, user.auth_token_hash)
     if password:
-        if not user.split_key_version or user.split_key_version == 0:
-            if not user.password_hash:
-                return False
-            try:
-                return check_password_hash(user.password_hash, password)
-            except Exception:
-                return False
-        print(f'[AUTH] Raw-password credential proof rejected for split-key user: {user.username}')
-        return False
+        print(f'[AUTH] Raw-password credential proof rejected for user: {user.username}')
     return False
 
 
@@ -645,27 +605,6 @@ def _build_opaque_prelogin_salt(username):
     digest = _hmac_prelogin.new(secret, b'prelogin:' + normalized_username, hashlib.sha256).digest()
     return base64.b64encode(digest).decode('utf-8')
 
-
-def _build_opaque_prelogin_version(username):
-    """Return a DETERMINISTIC pseudo split_key_version (0 or 1) for a username
-    that does not exist.
-
-    AUDIT FIX C1: /auth/pre-login used to hardcode split_key_version=1 for every
-    username in order to stop enumeration. That forced the client down the
-    split-key branch for EVERY account, so the 166 legacy (split_key_version=0)
-    accounts derived an auth_token the server would never accept and never sent
-    a password either — locking them out permanently and self-locking them via
-    the failed-login counter.
-
-    Real accounts now get their REAL version. Unknown usernames get a stable
-    HMAC-derived pseudo-version so the response is (a) indistinguishable in shape
-    from a real one, (b) identical on every probe of the same username, and
-    (c) unpredictable without SECRET_KEY. Enumeration resistance is preserved."""
-    import hmac as _hmac_prelogin_ver
-    secret = app.config['SECRET_KEY'].encode('utf-8')
-    normalized_username = (username or '').strip().lower().encode('utf-8')
-    digest = _hmac_prelogin_ver.new(secret, b'prelogin-version:' + normalized_username, hashlib.sha256).digest()
-    return digest[0] & 1
 
 # ────────────────────────────────────────────────────────────────────
 # AUDIT FIX H2 / M8: login brute-force throttling
@@ -903,11 +842,8 @@ def pre_login():
     shape, in the same field order, after exactly ONE database query, for every
     username — existing or not.
 
-    AUDIT FIX C1: the version is no longer hardcoded to 1. Real accounts get
-    their REAL split_key_version (legacy v0 accounts previously could not log in
-    at all, because the client was forced down the split-key branch and never
-    sent a password). Unknown usernames get a deterministic HMAC-derived
-    pseudo-version + pseudo-salt, so an attacker cannot tell the two apart:
+    Split-key is the only login, so the version is always 1. Real accounts get
+    their stored salt; unknown usernames get a deterministic HMAC pseudo-salt, so
     both branches are one query, one HMAC, and one identically shaped response."""
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not data:
@@ -920,28 +856,13 @@ def pre_login():
     # Exactly one DB query on BOTH branches so the query count is not a signal.
     user = User.query.filter_by(username=username).first()
 
+    # Compute the opaque salt on both branches so the HMAC work (timing) is flat.
+    auth_token_salt = _build_opaque_prelogin_salt(username)
     if user and user.split_key_version and user.split_key_version >= 1 and user.auth_token_salt:
-        # Real split-key account: real version + real stored salt.
-        split_key_version = int(user.split_key_version)
         auth_token_salt = user.auth_token_salt
-        # Compute (and discard) the opaque values anyway so both branches do the
-        # same amount of HMAC work — the timing profile stays flat.
-        _build_opaque_prelogin_version(username)
-        _build_opaque_prelogin_salt(username)
-    elif user:
-        # Real LEGACY (v0) account, or a v1 row missing its salt: report the real
-        # version so the client takes the password branch and can log in + be
-        # upgraded to split-key. The salt is still opaque (there is none stored).
-        split_key_version = int(user.split_key_version or 0)
-        auth_token_salt = _build_opaque_prelogin_salt(username)
-        _build_opaque_prelogin_version(username)
-    else:
-        # Unknown username: stable, unpredictable pseudo-version + pseudo-salt.
-        split_key_version = _build_opaque_prelogin_version(username)
-        auth_token_salt = _build_opaque_prelogin_salt(username)
 
     return jsonify({
-        'split_key_version': split_key_version,
+        'split_key_version': 1,
         'auth_token_salt': auth_token_salt,
     })
 
@@ -962,11 +883,9 @@ def login():
                     'username', 'password', 'auth_token', 'captcha')):
                 return jsonify({'error': 'INVALID REQUEST'}), 400
             username = data.get('username') if data else None
-            password = data.get('password') if data else None
             auth_token = data.get('auth_token') if data else None
         else:
             username = request.form.get('username')
-            password = request.form.get('password')
             auth_token = None
 
         # AUDIT FIX H2: per-username brute-force lockout. The IP-keyed
@@ -1011,40 +930,19 @@ def login():
 
         user = User.query.filter_by(username=username).first()
         
-        # Authenticate: try split-key auth_token first, then fall back to legacy password
-        auth_ok = False
-        if user and auth_token and user.split_key_version and user.split_key_version >= 1 and user.auth_token_hash:
-            # Split-key auth: compare SHA-256(auth_token) with stored hash.
-            # Use hmac.compare_digest for constant-time comparison to prevent timing attacks.
-            import hashlib as _hashlib_login
-            import hmac as _hmac_login
-            provided_hash = _hashlib_login.sha256(auth_token.encode('utf-8')).hexdigest()
-            auth_ok = _hmac_login.compare_digest(provided_hash, user.auth_token_hash)
-            if not auth_ok:
-                print(f'[AUTH] Split-key auth failed for user: {username}')
-        elif user and password:
-            # Legacy auth: Werkzeug password hash (only valid for split_key_version=0 users)
-            if not user.split_key_version or user.split_key_version == 0:
-                auth_ok = check_password_hash(user.password_hash, password)
-            else:
-                print(f'[AUTH] Split-key v1 user attempted raw-password login: {username}')
-                check_password_hash(_dummy_password_hash(), password or 'x')
-                auth_ok = False
-        else:
-            # Unknown user (or a credential the account cannot use): do the SAME
-            # work the real branch for this credential type does, so timing does
-            # not reveal whether the username exists. Pre-login hands unknown
-            # names a pseudo-version, so honest clients send auth_token for them
-            # about half the time; a PBKDF2 dummy there was a timing oracle.
-            if auth_token and (not password or _build_opaque_prelogin_version(username) >= 1):
-                import hashlib as _hashlib_login_dummy
-                import hmac as _hmac_login_dummy
-                _hmac_login_dummy.compare_digest(
-                    _hashlib_login_dummy.sha256(auth_token.encode('utf-8')).hexdigest(),
-                    '0' * 64,
-                )
-            else:
-                check_password_hash(_dummy_password_hash(), password or 'x')
+        # Split-key only: compare SHA-256(auth_token) with the stored hash in
+        # constant time. Raw passwords are never accepted. Unknown users compare
+        # against a dummy (no SHA-256 hex digest is all zeros) so timing does not
+        # reveal whether the username exists.
+        import hashlib as _hashlib_login
+        import hmac as _hmac_login
+        stored_hash = '0' * 64
+        if user and user.split_key_version and user.split_key_version >= 1 and user.auth_token_hash:
+            stored_hash = user.auth_token_hash
+        provided_hash = _hashlib_login.sha256((auth_token or '').encode('utf-8')).hexdigest()
+        auth_ok = bool(auth_token) and _hmac_login.compare_digest(provided_hash, stored_hash)
+        if user and not auth_ok:
+            print(f'[AUTH] Split-key auth failed for user: {username}')
         
         if auth_ok:
             # Check if 2FA is enabled — require TOTP verification before completing login

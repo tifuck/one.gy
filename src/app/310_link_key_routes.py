@@ -90,10 +90,15 @@ def regenerate_file_link(file_id):
         # Also update replica tracking tables that reference file.id
         _old_local_targets = []
         try:
+            sync_owner = _sync_file_owner(file)
             db.session.execute(
                 db.text('UPDATE file SET id = :new_id, filename = :new_filename WHERE id = :old_id'),
                 {'new_id': new_id, 'new_filename': new_filename, 'old_id': old_id}
             )
+            # Desktop sync: the old id is gone (tombstone) and a new node appears.
+            if sync_owner:
+                _bump_sync_seq_bulk(sync_owner, File, [old_id], deleted=True)
+                _bump_sync_seq_bulk(sync_owner, File, [new_id])
             # AUDIT FIX (regenerate atomic tombstone): the old object has been
             # rotated away to new_id/new_filename. Stage the OLD file + OLD thumbnail
             # remote-delete tombstones AND the old replica-row deletions into THIS

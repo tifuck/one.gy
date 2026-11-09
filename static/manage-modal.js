@@ -171,23 +171,19 @@ window.ManageModal = (function() {
   const _SVG_FOLDER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 4.5C2 3.67 2.67 3 3.5 3H6.29a1 1 0 0 1 .7.29L8 4.3a1 1 0 0 0 .71.29h3.79c.83 0 1.5.67 1.5 1.5V11.5c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5V4.5z" fill="#141414"/></svg>'
 
   // ─── File icon map ──────────────────────────────────────────
+  // Page glyph tinted by file kind (same --kind-* tokens as the Files page).
+  // Emoji icons rendered as empty boxes on systems without an emoji font.
+  const _KIND_BY_EXT = {}
+  ;[['image', 'jpg jpeg png gif bmp svg webp ico heic avif tif tiff'], ['pdf', 'pdf'],
+    ['archive', 'zip rar 7z tar gz bz2 xz zst tar.gz tar.bz2 tar.xz tar.zst iso dmg'], ['sheet', 'xls xlsx csv tsv ods numbers'],
+    ['doc', 'doc docx txt rtf odt md ppt pptx odp key pages'], ['media', 'mp4 avi mkv mov wmv flv webm m4v'],
+    ['code', 'py js ts java cpp c h cs php rb go rs swift kt html css xml json yaml yml toml sh sql']
+  ].forEach(function (g) { g[1].split(' ').forEach(function (e) { _KIND_BY_EXT[e] = g[0] }) })
   function getFileIcon(name) {
     const ext = _getCompoundExt(name)
-    const map = {
-      'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️', 'bmp': '🖼️', 'svg': '🖼️', 'webp': '🖼️', 'ico': '🖼️',
-      'exe': '⚙️', 'msi': '⚙️',
-      'zip': '📦', 'rar': '📦', '7z': '📦', 'tar': '📦', 'gz': '📦', 'bz2': '📦', 'tar.gz': '📦', 'tar.bz2': '📦', 'tar.xz': '📦', 'tar.zst': '📦',
-      'pdf': '📕',
-      'doc': '📝', 'docx': '📝', 'txt': '📝', 'rtf': '📝', 'odt': '📝',
-      'xls': '📊', 'xlsx': '📊', 'csv': '📊', 'ods': '📊',
-      'ppt': '📽️', 'pptx': '📽️', 'odp': '📽️',
-      'mp4': '🎬', 'avi': '🎬', 'mkv': '🎬', 'mov': '🎬', 'wmv': '🎬', 'flv': '🎬', 'webm': '🎬',
-      'mp3': _SVG_AUDIO, 'wav': _SVG_AUDIO, 'flac': _SVG_AUDIO, 'ogg': _SVG_AUDIO, 'm4a': _SVG_AUDIO, 'aac': _SVG_AUDIO,
-      'py': '💻', 'js': '💻', 'java': '💻', 'cpp': '💻', 'c': '💻', 'h': '💻', 'cs': '💻', 'php': '💻', 'rb': '💻', 'go': '💻', 'rs': '💻', 'swift': '💻',
-      'html': '🌐', 'css': '🌐', 'xml': '🌐', 'json': '🌐', 'yaml': '🌐', 'yml': '🌐',
-      'jar': '📱', 'apk': '📱', 'deb': '📱', 'rpm': '📱', 'dmg': '📱', 'pkg': '📱'
-    }
-    return map[ext] || '📄'
+    if (['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac', 'opus'].indexOf(ext) >= 0) return _SVG_AUDIO
+    const kind = _KIND_BY_EXT[ext] || _KIND_BY_EXT[ext.split('.').pop()] || 'file'
+    return '<svg viewBox="0 0 40 48" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" style="color:var(--kind-' + kind + ',var(--accent))"><path d="M7 1.5h18.5L37.5 13.5V42A4.5 4.5 0 0 1 33 46.5H7A4.5 4.5 0 0 1 2.5 42V6A4.5 4.5 0 0 1 7 1.5z"/><path d="M25.5 1.5v8.5a3.5 3.5 0 0 0 3.5 3.5h8.5"/></svg>'
   }
 
   // Track current thumbnail blob URL for cleanup on modal close
@@ -195,12 +191,24 @@ window.ManageModal = (function() {
 
   // ─── Open / Close ──────────────────────────────────────────
   function openManageModal() {
+    // Retargeting an open modal must not stack another history entry or
+    // re-read the scroll position (0 while the page is scroll-locked).
+    const alreadyOpen = manageModal.classList.contains('manage-modal-visible') && !manageModal.classList.contains('manage-modal-hiding')
     manageModal.classList.remove('manage-modal-hiding')
     manageModal.classList.add('manage-modal-visible')
+    if (alreadyOpen) return
     window._manageScrollY = window.scrollY
     document.documentElement.classList.add('preview-scroll-lock')
     document.documentElement.style.top = `-${window._manageScrollY}px`
     history.pushState({ manageModal: true }, '')
+  }
+
+  // Back (browser button, mobile gesture) pops the entry the modal pushed, so
+  // it closes the modal instead of leaving it open over a changed page.
+  function _handleManageModalPopState() {
+    if (!manageModal || !manageModal.classList.contains('manage-modal-visible') || manageModal.classList.contains('manage-modal-hiding')) return
+    if (history.state && history.state.manageModal) return
+    _closeManageModalInternal()
   }
 
   function _closeManageModalInternal() {
@@ -236,7 +244,7 @@ window.ManageModal = (function() {
 
   // ─── Show loading state ─────────────────────────────────────
   function showLoading() {
-    modalScroll.innerHTML = '<div class="manage-modal-loading">LOADING</div>'
+    modalScroll.innerHTML = '<div class="manage-modal-loading">Loading</div>'
     openManageModal()
   }
 
@@ -518,7 +526,7 @@ window.ManageModal = (function() {
   }
 
   // ─── Expiry dropdown helpers ──────────────────────────────────
-  const expiryLabels = { '30m': '30 MINUTES', '6h': '6 HOURS', '1d': '1 DAY', '3d': '3 DAYS', '7d': '7 DAYS', 'never': 'NEVER' }
+  const expiryLabels = { '30m': '30 minutes', '6h': '6 hours', '1d': '1 day', '3d': '3 days', '7d': '7 days', 'never': 'Never' }
 
   // Temp uploads: max 7 days, hide "never", relabel 7d as max
   function filterExpiryForTemp(isTemp) {
@@ -528,14 +536,14 @@ window.ManageModal = (function() {
         el.style.display = isTemp ? 'none' : ''
       }
       if (el.dataset.value === '7d') {
-        el.textContent = isTemp ? '7 DAYS (MAX)' : '7 DAYS'
+        el.textContent = isTemp ? '7 days (max)' : '7 days'
       }
     })
   }
 
   function setExpiryDropdownValue(value) {
     if (!refs.expirySelected || !refs.expiryMenu) return
-    refs.expirySelected.textContent = expiryLabels[value] || 'NEVER'
+    refs.expirySelected.textContent = expiryLabels[value] || 'Never'
     refs.expiryMenu.querySelectorAll('.manage-expiry-item').forEach(function(el) {
       el.classList.toggle('selected', el.dataset.value === value)
     })
@@ -881,7 +889,7 @@ window.ManageModal = (function() {
     const type = currentManageType
 
     refs.regenerateBtn.disabled = true
-    refs.regenerateBtn.innerHTML = '<span class="toggle-spinner"></span>REGENERATING...'
+    refs.regenerateBtn.innerHTML = '<span class="toggle-spinner"></span>Regenerating…'
     refs.regenerateBtn.classList.add('manage-modal-regenerate-working')
     regenerateInFlight = data
 
@@ -968,7 +976,7 @@ window.ManageModal = (function() {
       }
 
       regenerateInFlight = null
-      refs.regenerateBtn.textContent = 'LINK REGENERATED'
+      refs.regenerateBtn.textContent = 'Link regenerated'
       refs.regenerateBtn.classList.remove('manage-modal-regenerate-working')
       refs.regenerateBtn.classList.add('manage-modal-regenerate-success')
       updateWgetVisibility()
@@ -977,7 +985,7 @@ window.ManageModal = (function() {
 
       setTimeout(function() {
         if (refs.regenerateBtn) {
-          refs.regenerateBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> REGENERATE SHARE LINK'
+          refs.regenerateBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Regenerate share link'
           refs.regenerateBtn.disabled = false
           refs.regenerateBtn.classList.remove('manage-modal-regenerate-success')
         }
@@ -985,13 +993,13 @@ window.ManageModal = (function() {
     } catch (err) {
       regenerateInFlight = null
       console.error('[MANAGE MODAL] Regenerate link failed:', err)
-      refs.regenerateBtn.textContent = 'FAILED - TRY AGAIN'
+      refs.regenerateBtn.textContent = 'Failed, try again'
       refs.regenerateBtn.classList.remove('manage-modal-regenerate-working')
       refs.regenerateBtn.disabled = false
 
       setTimeout(function() {
         if (refs.regenerateBtn) {
-          refs.regenerateBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> REGENERATE SHARE LINK'
+          refs.regenerateBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Regenerate share link'
         }
       }, 3000)
     }
@@ -1049,6 +1057,14 @@ window.ManageModal = (function() {
     }
   }
 
+  // Text thumbnails are rendered as a dark code panel; light themes invert
+  // them in CSS (same rule as the Files grid), keyed off data-text.
+  function _markTextThumb(name) {
+    const e = _getCompoundExt(name || '')
+    const media = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v', '3gp', 'pdf']
+    refs.icon.toggleAttribute('data-text', !!e && !media.includes(e))
+  }
+
   // ─── Populate file modal ────────────────────────────────────
   function populateFileModal(data, isActive) {
     currentManageData = data
@@ -1062,6 +1078,7 @@ window.ManageModal = (function() {
           data.name = decryptedName
           data._name_decrypted = true
           _updateModalFileName(decryptedName)
+          _markTextThumb(decryptedName)
            // Update icon if extension changed — but preserve existing thumbnail
           const _existingThumbImg = refs.icon.querySelector('img')
           if (_existingThumbImg) {
@@ -1095,6 +1112,7 @@ window.ManageModal = (function() {
 
     const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico']
     const ext = _getCompoundExt(data.name)
+    _markTextThumb(data.name)
 
     if (!data.is_e2e && (data.has_thumbnail || data.thumbnailable)) {
       // Build the URL via concatenation so the served JS source contains no
@@ -1155,41 +1173,41 @@ window.ManageModal = (function() {
 
     refs.details.innerHTML = `
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>SIZE</strong></span>
+        <span class="manage-modal-detail-label"><strong>Size</strong></span>
         <span class="manage-modal-detail-value">${_esc(data.size_formatted)}</span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>UPLOADED</strong></span>
+        <span class="manage-modal-detail-label"><strong>Uploaded</strong></span>
         <span class="manage-modal-detail-value">${_esc(data.uploaded)}</span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>DOWNLOADS</strong></span>
-        <span class="manage-modal-detail-value"><span class="manage-modal-detail-hint">INCLUDES OWNER VIEWS</span><span>${_esc(data.download_count || 0)}</span></span>
+        <span class="manage-modal-detail-label"><strong>Downloads</strong></span>
+        <span class="manage-modal-detail-value"><span class="manage-modal-detail-hint">Includes owner views</span><span>${_esc(data.download_count || 0)}</span></span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>EXPIRATION</strong></span>
+        <span class="manage-modal-detail-label"><strong>Expiration</strong></span>
         <span class="manage-modal-detail-value">${_esc(data.expires)}</span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>ENCRYPTED</strong></span>
-        <span class="manage-modal-detail-value manage-modal-encryption-value ${data.is_e2e ? 'manage-modal-encryption-e2e' : 'manage-modal-encryption-server'}" id="manageEncryptionValue">${data.is_e2e ? 'END-TO-END' : 'SERVER-SIDE'}</span>
+        <span class="manage-modal-detail-label"><strong>Encryption</strong></span>
+        <span class="manage-modal-detail-value manage-modal-encryption-value ${data.is_e2e ? 'manage-modal-encryption-e2e' : 'manage-modal-encryption-server'}" id="manageEncryptionValue">${data.is_e2e ? 'End-to-end' : 'Server-side'}</span>
       </div>
     `
 
     filterExpiryForTemp(!!data.is_temp)
     setExpiryDropdownValue(data.selected_expire || (data.is_temp ? '1d' : 'never'))
 
-    refs.shareableLabel.textContent = 'SHAREABLE'
+    refs.shareableLabel.textContent = 'Shareable'
     const isShareable = data.is_public || data.parent_is_browsable
     refs.shareableToggle.checked = isShareable
     if (data.parent_is_browsable) {
       refs.shareableSwitch.classList.add('toggle-switch-locked')
       refs.shareableToggle.disabled = true
-      refs.shareableHint.textContent = 'INHERITED FROM PARENT FOLDER'
+      refs.shareableHint.textContent = 'Inherited from parent folder'
     } else {
       refs.shareableSwitch.classList.remove('toggle-switch-locked')
       refs.shareableToggle.disabled = false
-      refs.shareableHint.textContent = isShareable ? 'ANYONE WITH THE LINK CAN ACCESS' : 'ONLY YOU CAN ACCESS'
+      refs.shareableHint.textContent = isShareable ? 'Anyone with the link can access' : 'Only you can access'
     }
 
     // E2E toggle
@@ -1198,7 +1216,7 @@ window.ManageModal = (function() {
       refs.e2eToggle.checked = data.is_e2e
       refs.e2eSwitch.classList.remove('toggle-switch-locked')
       refs.e2eToggle.disabled = false
-      refs.e2eHint.textContent = data.is_e2e ? 'ONLY YOU CAN DECRYPT THIS FILE' : 'SERVER CAN READ THIS FILE'
+      refs.e2eHint.textContent = data.is_e2e ? 'Only you can decrypt this file' : 'The server can read this file'
     }
 
     // Share section
@@ -1288,42 +1306,42 @@ window.ManageModal = (function() {
 
     updateModalBadges()
 
-    let encText = 'NO FILES'
+    let encText = 'No files'
     let encClass = ''
     if ((data.e2e_count > 0 && data.e2e_count < data.file_count) || data.has_mixed_e2e) {
-      encText = 'MIXED'
+      encText = 'Mixed'
       encClass = 'manage-modal-encryption-mixed'
     } else if (data.e2e_count === data.file_count && data.file_count > 0) {
-      encText = 'END-TO-END'
+      encText = 'End-to-end'
       encClass = 'manage-modal-encryption-e2e'
     } else if (data.file_count > 0) {
-      encText = 'SERVER-SIDE'
+      encText = 'Server-side'
       encClass = 'manage-modal-encryption-server'
     }
 
     refs.details.innerHTML = `
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>FILES</strong></span>
+        <span class="manage-modal-detail-label"><strong>Files</strong></span>
         <span class="manage-modal-detail-value">${_esc(data.file_count)}</span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>SIZE</strong></span>
+        <span class="manage-modal-detail-label"><strong>Size</strong></span>
         <span class="manage-modal-detail-value">${_esc(data.folder_size_formatted)}</span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>DOWNLOADS</strong></span>
-        <span class="manage-modal-detail-value"><span class="manage-modal-detail-hint">INCLUDES OWNER VIEWS</span><span>${_esc(data.download_count || 0)}</span></span>
+        <span class="manage-modal-detail-label"><strong>Downloads</strong></span>
+        <span class="manage-modal-detail-value"><span class="manage-modal-detail-hint">Includes owner views</span><span>${_esc(data.download_count || 0)}</span></span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>CREATED</strong></span>
+        <span class="manage-modal-detail-label"><strong>Created</strong></span>
         <span class="manage-modal-detail-value">${_esc(data.created_at)}</span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>EXPIRATION</strong></span>
+        <span class="manage-modal-detail-label"><strong>Expiration</strong></span>
         <span class="manage-modal-detail-value">${_esc(data.expires_display)}</span>
       </div>
       <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>ENCRYPTED</strong></span>
+        <span class="manage-modal-detail-label"><strong>Encryption</strong></span>
         <span class="manage-modal-detail-value manage-modal-encryption-value ${encClass}" id="manageEncryptionValue">${encText}</span>
       </div>
     `
@@ -1331,17 +1349,17 @@ window.ManageModal = (function() {
     filterExpiryForTemp(false)
     setExpiryDropdownValue(data.selected_expire || 'never')
 
-    refs.shareableLabel.textContent = 'SHAREABLE'
+    refs.shareableLabel.textContent = 'Shareable'
     const isShareable = data.is_browsable || data.inherited_browsable
     refs.shareableToggle.checked = isShareable
     if (data.inherited_browsable) {
       refs.shareableSwitch.classList.add('toggle-switch-locked')
       refs.shareableToggle.disabled = true
-      refs.shareableHint.textContent = 'INHERITED FROM PARENT FOLDER'
+      refs.shareableHint.textContent = 'Inherited from parent folder'
     } else {
       refs.shareableSwitch.classList.remove('toggle-switch-locked')
       refs.shareableToggle.disabled = false
-      refs.shareableHint.textContent = isShareable ? 'ANYONE WITH THE LINK CAN ACCESS' : 'ONLY YOU CAN ACCESS'
+      refs.shareableHint.textContent = isShareable ? 'Anyone with the link can access' : 'Only you can access'
     }
 
     if (refs.e2eRow) {
@@ -1349,7 +1367,7 @@ window.ManageModal = (function() {
       refs.e2eToggle.checked = data.is_e2e
       refs.e2eSwitch.classList.remove('toggle-switch-locked')
       refs.e2eToggle.disabled = false
-      refs.e2eHint.textContent = data.is_e2e ? 'ALL FILES ARE END-TO-END ENCRYPTED' : 'FILES USE SERVER-SIDE ENCRYPTION'
+      refs.e2eHint.textContent = data.is_e2e ? 'All files are end-to-end encrypted' : 'Files use server-side encryption'
     }
 
     if (isShareable) {
@@ -1427,12 +1445,12 @@ window.ManageModal = (function() {
     if (currentManageType === 'file') {
       const isPublic = currentManageData.is_public || currentManageData.parent_is_browsable
       if (isPublic) {
-        badgesHtml += '<span class="file-badge file-badge-public">🌐 PUBLIC</span>'
+        badgesHtml += '<span class="file-badge file-badge-public">Public</span>'
       }
     } else {
       const isPublic = currentManageData.is_browsable || currentManageData.inherited_browsable
       if (isPublic) {
-        badgesHtml += '<span class="file-badge file-badge-public">🌐 PUBLIC</span>'
+        badgesHtml += '<span class="file-badge file-badge-public">Public</span>'
       }
     }
     refs.badges.innerHTML = badgesHtml
@@ -1448,25 +1466,25 @@ window.ManageModal = (function() {
 
     if (currentManageType === 'file') {
       if (currentManageData.is_e2e) {
-        el.textContent = 'END-TO-END'
+        el.textContent = 'End-to-end'
         el.classList.add('manage-modal-encryption-e2e')
       } else {
-        el.textContent = 'SERVER-SIDE'
+        el.textContent = 'Server-side'
         el.classList.add('manage-modal-encryption-server')
       }
     } else {
       const d = currentManageData
       if ((d.e2e_count > 0 && d.e2e_count < d.file_count) || d.has_mixed_e2e) {
-        el.textContent = 'MIXED'
+        el.textContent = 'Mixed'
         el.classList.add('manage-modal-encryption-mixed')
       } else if (d.e2e_count === d.file_count && d.file_count > 0) {
-        el.textContent = 'END-TO-END'
+        el.textContent = 'End-to-end'
         el.classList.add('manage-modal-encryption-e2e')
       } else if (d.file_count > 0) {
-        el.textContent = 'SERVER-SIDE'
+        el.textContent = 'Server-side'
         el.classList.add('manage-modal-encryption-server')
       } else {
-        el.textContent = 'NO FILES'
+        el.textContent = 'No files'
       }
     }
   }
@@ -1511,7 +1529,7 @@ window.ManageModal = (function() {
     savingShareable = true
     refs.shareableToggle.disabled = true
     refs.shareableSwitch.classList.add('toggle-switch-locked')
-    refs.shareableHint.innerHTML = '<span class="toggle-spinner"></span>UPDATING VISIBILITY...'
+    refs.shareableHint.innerHTML = '<span class="toggle-spinner"></span>Updating visibility…'
     try {
       if (targetType === 'file') {
         if (targetData.parent_is_browsable) {
@@ -1527,7 +1545,7 @@ window.ManageModal = (function() {
 
         if (checked) {
           refs.shareSection.style.display = ''
-          refs.shareableHint.textContent = 'ANYONE WITH THE LINK CAN ACCESS'
+          refs.shareableHint.textContent = 'Anyone with the link can access'
           if (refs.regenerateBtn) refs.regenerateBtn.style.display = ''
           if (targetData.is_e2e) {
             showShareLinkSpinner()
@@ -1553,7 +1571,7 @@ window.ManageModal = (function() {
               targetData.is_public = false
               refs.shareableToggle.checked = false
               refs.shareSection.style.display = 'none'
-              refs.shareableHint.textContent = 'ONLY YOU CAN ACCESS'
+              refs.shareableHint.textContent = 'Only you can access'
               if (refs.regenerateBtn) refs.regenerateBtn.style.display = 'none'
               throw new Error('SHARING WAS NOT ENABLED BECAUSE THE E2E LINK KEY COULD NOT BE PROVISIONED')
             }
@@ -1563,7 +1581,7 @@ window.ManageModal = (function() {
           }
         } else {
           refs.shareSection.style.display = 'none'
-          refs.shareableHint.textContent = 'ONLY YOU CAN ACCESS'
+          refs.shareableHint.textContent = 'Only you can access'
           if (refs.regenerateBtn) refs.regenerateBtn.style.display = 'none'
           if (targetData.is_e2e) {
             targetData._derivedLinkSecret = null
@@ -1605,7 +1623,7 @@ window.ManageModal = (function() {
             const newUrl = `https://${window.location.host}/f/${targetData.share_token}`
             refs.shareSection.style.display = ''
             targetData.share_url = newUrl
-            refs.shareableHint.textContent = 'ANYONE WITH THE LINK CAN ACCESS'
+            refs.shareableHint.textContent = 'Anyone with the link can access'
             if (refs.regenerateBtn) refs.regenerateBtn.style.display = ''
             if (_folderHasE2EContent(targetData)) {
               showShareLinkSpinner()
@@ -1624,7 +1642,7 @@ window.ManageModal = (function() {
                 targetData.is_browsable = false
                 refs.shareableToggle.checked = false
                 refs.shareSection.style.display = 'none'
-                refs.shareableHint.textContent = 'ONLY YOU CAN ACCESS'
+                refs.shareableHint.textContent = 'Only you can access'
                 if (refs.regenerateBtn) refs.regenerateBtn.style.display = 'none'
                 throw new Error('SHARING WAS NOT ENABLED BECAUSE ALL E2E LINK KEYS COULD NOT BE PROVISIONED')
               }
@@ -1634,7 +1652,7 @@ window.ManageModal = (function() {
             }
           } else {
             refs.shareSection.style.display = 'none'
-            refs.shareableHint.textContent = 'ONLY YOU CAN ACCESS'
+            refs.shareableHint.textContent = 'Only you can access'
             if (refs.regenerateBtn) refs.regenerateBtn.style.display = 'none'
             if (_folderHasE2EContent(targetData)) {
               targetData._derivedLinkSecret = null
@@ -2464,9 +2482,9 @@ window.ManageModal = (function() {
   function updateE2EHint() {
     if (!refs.e2eHint || !currentManageData) return
     if (currentManageType === 'file') {
-      refs.e2eHint.textContent = currentManageData.is_e2e ? 'ONLY YOU CAN DECRYPT THIS FILE' : 'SERVER CAN READ THIS FILE'
+      refs.e2eHint.textContent = currentManageData.is_e2e ? 'Only you can decrypt this file' : 'The server can read this file'
     } else {
-      refs.e2eHint.textContent = currentManageData.is_e2e ? 'ALL FILES ARE END-TO-END ENCRYPTED' : 'FILES USE SERVER-SIDE ENCRYPTION'
+      refs.e2eHint.textContent = currentManageData.is_e2e ? 'All files are end-to-end encrypted' : 'Files use server-side encryption'
     }
   }
 
@@ -2863,6 +2881,7 @@ window.ManageModal = (function() {
       modalClose.addEventListener('click', _handleModalCloseClick)
       manageModal.addEventListener('click', _handleManageModalBackdropClick)
       document.addEventListener('keydown', _handleManageModalKeydown)
+      window.addEventListener('popstate', _handleManageModalPopState)
 
       // Close expiry dropdown when clicking outside
       document.addEventListener('click', closeExpiryDropdown)

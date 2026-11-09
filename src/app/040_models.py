@@ -39,10 +39,17 @@ class User(db.Model):
     two_factor_secret = db.Column(db.String(255), nullable=True)  # TOTP secret for 2FA
     two_factor_enabled = db.Column(db.Boolean, default=False)  # Flag for 2FA enablement
     login_count = db.Column(db.Integer, default=0, nullable=True)  # Track total login count for notification triggers
+    # Desktop sync change feed (045_sync_feed.py): last allocated per-user sequence,
+    # and the highest sequence whose tombstones were pruned (older cursors get 410).
+    sync_seq = db.Column(db.BigInteger, nullable=False, default=0, server_default='0')
+    sync_min_seq = db.Column(db.BigInteger, nullable=False, default=0, server_default='0')
+    # Keep the previous payload as a hidden version on every content replace (377_file_versions.py).
+    keep_file_versions = db.Column(db.Boolean, nullable=False, default=True, server_default='1')
     
     def get_storage_used(self):
-        """Calculate total storage used by this user in bytes (files + notes).
-        Excludes trashed items so users can free quota by trashing files.
+        """Calculate total storage used by this user in bytes (files + notes +
+        previous file versions). Excludes trashed items so users can free quota by
+        trashing files; versions count whatever their live file's state.
         Uses disk_size (actual on-disk encrypted size) when available for accurate
         quota tracking; falls back to size (logical/plaintext size) for older files."""
         file_total = db.session.query(
@@ -51,11 +58,17 @@ class User(db.Model):
             File.registered_user_id == self.id,
             File.is_trashed == False
         ).scalar() or 0
+        live = db.aliased(File)
+        version_total = db.session.query(
+            db.func.sum(db.func.coalesce(File.disk_size, File.size))
+        ).join(live, live.id == File.version_of_id).filter(
+            live.registered_user_id == self.id
+        ).scalar() or 0
         note_total = db.session.query(db.func.sum(Note.size)).filter(
             Note.user_id == self.id,
             Note.is_trashed == False
         ).scalar() or 0
-        return int(file_total or 0) + int(note_total or 0)
+        return int(file_total or 0) + int(version_total or 0) + int(note_total or 0)
     
     def get_storage_used_gb(self):
         """Get storage used in GB"""
@@ -140,7 +153,13 @@ class Folder(db.Model):
     __table_args__ = (
         db.Index('uq_folder_dedupe_sibling', 'user_id', 'parent_id',
                  'client_dedupe_token', unique=True),
+        db.Index('ix_folder_user_change_seq', 'user_id', 'change_seq'),
     )
+    # Desktop sync: user-wide sequence of the last sync-relevant change (045_sync_feed.py).
+    change_seq = db.Column(db.BigInteger, nullable=False, default=0, server_default='0')
+    # Desktop backups (phase 3): folder is a read-only backup owned by one device.
+    is_backup = db.Column(db.Boolean, nullable=True)
+    backup_device_id = db.Column(db.String(36), nullable=True)
     
     # Trash / Recycle Bin fields
     is_trashed = db.Column(db.Boolean, default=False, index=True)
@@ -233,7 +252,20 @@ class File(db.Model):
                  'upload_idempotency_key', unique=True),
         db.Index('uq_file_upload_key_guest', 'user_id',
                  'upload_idempotency_key', unique=True),
+        db.Index('ix_file_owner_change_seq', 'registered_user_id', 'change_seq'),
     )
+    # Desktop sync (desktop/docs/sync-api.md): user-wide change sequence, content
+    # revision, client-encrypted metadata (opaque, AES-GCM under the file key) and
+    # the device that trashed the file.
+    change_seq = db.Column(db.BigInteger, nullable=False, default=0, server_default='0')
+    content_version = db.Column(db.Integer, nullable=False, default=1, server_default='1')
+    encrypted_meta = db.Column(db.Text, nullable=True)
+    meta_nonce = db.Column(db.String(255), nullable=True)
+    trashed_by_device_id = db.Column(db.String(36), nullable=True)
+    # Previous file version (377_file_versions.py): a hidden row with no owner,
+    # folder or expiry that owns the superseded payload <id>.enc and its replicas.
+    # version_of_id is the live file's id; content_version is the one it had.
+    version_of_id = db.Column(db.String(36), nullable=True, index=True)
     # Content integrity: SHA-256 hash computed at upload time.
     # For Fernet files: hash of plaintext (before encryption). For E2E files: hash of encrypted blob (at-rest integrity).
     content_hash = db.Column(db.String(64), nullable=True)
@@ -413,6 +445,64 @@ class ApiKey(db.Model):
             except (ipaddress.AddressValueError, ipaddress.NetmaskValueError, ValueError, TypeError):
                 continue
         return False
+
+class Device(db.Model):
+    """A desktop client authorized for sync (desktop/docs/sync-api.md). Only
+    SHA-256(token) is stored; revoked devices keep their row so a stale token
+    answers device_revoked instead of invalid_token."""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    name = db.Column(db.String(80), nullable=False)
+    platform = db.Column(db.String(16), nullable=False)
+    client_version = db.Column(db.String(32), nullable=True)
+    token_hash = db.Column(db.String(64), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    last_seen_at = db.Column(db.DateTime, nullable=True)
+    last_ip_hash = db.Column(db.String(64), nullable=True)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    revoked_at = db.Column(db.DateTime, nullable=True)
+
+class SyncTombstone(db.Model):
+    """Hard delete of a synced file/folder, served by /apiv1/sync/changes until
+    pruned after sync_tombstone_retention_days. No FK: rows may outlive the user."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, nullable=False, index=True)
+    object_type = db.Column(db.String(8), nullable=False)   # 'file' | 'folder'
+    object_id = db.Column(db.String(36), nullable=False)
+    change_seq = db.Column(db.BigInteger, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    __table_args__ = (
+        db.Index('ix_synctombstone_user_seq', 'user_id', 'change_seq'),
+    )
+
+class SyncUploadSession(db.Model):
+    """Resumable desktop sync upload (376_apiv1_sync_uploads.py). Parts live under
+    <UPLOAD_FOLDER>/.sync-sessions/<id>/, outside replication. parts_received is a
+    JSON list of [index, sha256 hex, size]; meta_json holds the E2EE/name fields
+    used to build the File row at complete. Deleted after expires_at (idle TTL)."""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    device_id = db.Column(db.String(36), nullable=True)
+    upload_id = db.Column(db.String(64), nullable=False)
+    file_id = db.Column(db.String(36), nullable=False)
+    folder_id = db.Column(db.Integer, nullable=True)
+    replace_file_id = db.Column(db.String(36), nullable=True)
+    base_content_version = db.Column(db.Integer, nullable=True)
+    mode = db.Column(db.String(8), nullable=False)               # 'e2ee' | 'standard'
+    chunk_count = db.Column(db.Integer, nullable=False)
+    cipher_size = db.Column(db.BigInteger, nullable=False)       # container size (plaintext size in standard mode)
+    cipher_sha256 = db.Column(db.String(64), nullable=False)
+    header_b64 = db.Column(db.String(32), nullable=True)
+    meta_json = db.Column(db.Text, nullable=True)
+    parts_received = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    expires_at = db.Column(db.DateTime, nullable=False, index=True)
+    state = db.Column(db.String(16), nullable=False, default='open')  # open | committed | aborted
+    committed_file_id = db.Column(db.String(36), nullable=True)
+    __table_args__ = (
+        db.Index('uq_sync_upload_session_user_upload', 'user_id', 'upload_id', unique=True),
+    )
 
 class Notification(db.Model):
     """Admin-created notification banners shown to users across the site."""
@@ -661,6 +751,15 @@ _SETTING_DEFAULTS = {
     'temp_max_gb': '1.0',
     'temp_total_max_gb': '0',
     'music_rescan_interval_seconds': '300',
+    # Desktop sync (375_apiv1_sync.py / 376_apiv1_sync_uploads.py).
+    'allow_desktop_sync': True,
+    'max_devices_per_user': '20',
+    'sync_tombstone_retention_days': '90',
+    'sync_upload_session_ttl': '86400',
+    # File versions (377_file_versions.py): newest N kept per file (0 = off,
+    # existing versions purged), and none older than N days (0 = no age limit).
+    'file_version_retention_count': '10',
+    'file_version_retention_days': '90',
 }
 
 # In-memory settings cache: avoids hitting DB on every page view.
@@ -697,6 +796,7 @@ _SECURITY_RESTRICTIVE_SETTINGS = frozenset({
     'allow_registration',
     'allow_temp_uploads',
     'allow_api_keys',
+    'allow_desktop_sync',
     'captcha_enabled',
 })
 

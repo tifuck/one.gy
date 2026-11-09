@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"onegy/e2ee"
 )
 
 // Embedded at compile time via -ldflags "-X main.serverDomain=..."
@@ -381,36 +383,36 @@ func cmdUpload(filePath string, insecure bool) error {
 	fmt.Fprintf(os.Stderr, "Encrypting %s (%s)... ", origName, formatSize(info.Size()))
 
 	// 1. Generate random file key (32 bytes)
-	fileKey, err := randomBytes(KeySize)
+	fileKey, err := e2ee.RandomBytes(e2ee.KeySize)
 	if err != nil {
 		return fmt.Errorf("could not generate file key: %w", err)
 	}
 
 	// 2. Generate passphrase and derive wrapping key
-	passphrase, err := generatePassphrase()
+	passphrase, err := e2ee.GeneratePassphrase()
 	if err != nil {
 		return fmt.Errorf("could not generate passphrase: %w", err)
 	}
 
-	salt, err := randomBytes(KeySize) // 32-byte PBKDF2 salt
+	salt, err := e2ee.RandomBytes(e2ee.KeySize) // 32-byte PBKDF2 salt
 	if err != nil {
 		return fmt.Errorf("could not generate salt: %w", err)
 	}
 
-	wrappingKey := deriveWrappingKey(passphrase, salt)
+	wrappingKey := e2ee.DerivePassphraseKey(passphrase, salt)
 
 	// 3. Wrap file key with passphrase-derived key
-	wrappedKey, keyNonce, err := wrapFileKey(fileKey, wrappingKey)
+	wrappedKey, keyNonce, err := e2ee.WrapKey(fileKey, wrappingKey)
 	if err != nil {
 		return fmt.Errorf("could not wrap file key: %w", err)
 	}
 
-	encryptedName, nameNonce, err := encryptFileName(origName, fileKey)
+	encryptedName, nameNonce, err := e2ee.EncryptName(origName, fileKey)
 	if err != nil {
 		return fmt.Errorf("could not encrypt filename: %w", err)
 	}
-	storedExtension := extractExtension(origName)
-	uploadIDBytes, err := randomBytes(32)
+	storedExtension := e2ee.ExtractExtension(origName)
+	uploadIDBytes, err := e2ee.RandomBytes(32)
 	if err != nil {
 		return fmt.Errorf("could not generate upload idempotency key: %w", err)
 	}
@@ -492,18 +494,18 @@ func cmdUpload(filePath string, insecure bool) error {
 				return
 			}
 			trackedPart := &uploadPartWriter{w: part}
-			if err := encryptFileStream(in, trackedPart, fileKey, st.Size()); err != nil {
+			if err := e2ee.EncryptStream(in, trackedPart, fileKey, st.Size()); err != nil {
 				result = uploadStreamResult{fmt.Errorf("encryption failed: %w", err), trackedPart.writeErr == nil}
 				return
 			}
 
 			fields := [][2]string{
 				{"e2e", "true"},
-				{"encrypted_file_key", encodeBase64(wrappedKey)},
-				{"file_key_nonce", encodeBase64(keyNonce)},
-				{"file_key_salt", encodeBase64(salt)},
-				{"encrypted_name", encodeBase64(encryptedName)},
-				{"name_nonce", encodeBase64(nameNonce)},
+				{"encrypted_file_key", e2ee.EncodeBase64(wrappedKey)},
+				{"file_key_nonce", e2ee.EncodeBase64(keyNonce)},
+				{"file_key_salt", e2ee.EncodeBase64(salt)},
+				{"encrypted_name", e2ee.EncodeBase64(encryptedName)},
+				{"name_nonce", e2ee.EncodeBase64(nameNonce)},
 				{"stored_extension", storedExtension},
 				{"is_temp", "true"},
 				{"upload_id", uploadID},
@@ -594,7 +596,7 @@ func cmdUpload(filePath string, insecure bool) error {
 	// 7. Construct share URL with passphrase in fragment
 	// Passphrase encoding: base64(utf8(passphrase))
 	// Since our passphrase is ASCII-only, this is just base64(passphrase)
-	passphraseB64 := encodeBase64([]byte(passphrase))
+	passphraseB64 := e2ee.EncodeBase64([]byte(passphrase))
 	shareURL := canonicalDownloadURL + "#passphrase=" + passphraseB64
 
 	fmt.Printf("SHARE URL (EXPIRES IN 24H):\n%s\n\n", shareURL)
@@ -648,7 +650,7 @@ func cmdDownload(rawURL string, insecure bool) error {
 
 	// Base64-decode the fragment value. The actual interpretation (passphrase string
 	// vs raw 32-byte key) is deferred until we have key-info from the server.
-	fragmentBytes, err := decodeBase64(fragmentValue)
+	fragmentBytes, err := e2ee.DecodeBase64(fragmentValue)
 	if err != nil {
 		return fmt.Errorf("could not decode encryption key from URL: %w", err)
 	}
@@ -791,24 +793,24 @@ func cmdDownload(rawURL string, insecure bool) error {
 		// Derive wrapping key via PBKDF2 (210K iterations), then unwrap file key.
 		passphrase := string(fragmentBytes)
 
-		salt, err := decodeBase64(keyInfo.FileKeySalt)
+		salt, err := e2ee.DecodeBase64(keyInfo.FileKeySalt)
 		if err != nil {
 			return fmt.Errorf("could not decode file key salt: %w", err)
 		}
 
-		wrappingKey := deriveWrappingKey(passphrase, salt)
+		wrappingKey := e2ee.DerivePassphraseKey(passphrase, salt)
 
-		encFileKey, err := decodeBase64(keyInfo.EncryptedFileKey)
+		encFileKey, err := e2ee.DecodeBase64(keyInfo.EncryptedFileKey)
 		if err != nil {
 			return fmt.Errorf("could not decode encrypted file key: %w", err)
 		}
 
-		keyNonce, err := decodeBase64(keyInfo.FileKeyNonce)
+		keyNonce, err := e2ee.DecodeBase64(keyInfo.FileKeyNonce)
 		if err != nil {
 			return fmt.Errorf("could not decode file key nonce: %w", err)
 		}
 
-		fileKey, err = unwrapFileKey(encFileKey, keyNonce, wrappingKey)
+		fileKey, err = e2ee.UnwrapKey(encFileKey, keyNonce, wrappingKey)
 		if err != nil {
 			return fmt.Errorf("decryption failed — share link may be corrupted: %w", err)
 		}
@@ -819,10 +821,10 @@ func cmdDownload(rawURL string, insecure bool) error {
 		// falling back to encrypted_file_key / file_key_nonce.
 		// This matches e2e_download.html:decryptWithLinkKey exactly.
 		linkSecret := fragmentBytes
-		if len(linkSecret) != KeySize {
+		if len(linkSecret) != e2ee.KeySize {
 			return fmt.Errorf("invalid link secret in share URL: got %d bytes, expected %d.\n"+
 				"This usually means the share link is incomplete or was copied incorrectly.\n"+
-				"Ask the file owner for a fresh share link", len(linkSecret), KeySize)
+				"Ask the file owner for a fresh share link", len(linkSecret), e2ee.KeySize)
 		}
 
 		candidates := [][2]string{
@@ -836,17 +838,17 @@ func cmdDownload(rawURL string, insecure bool) error {
 			if cand[0] == "" || cand[1] == "" {
 				continue
 			}
-			encFileKey, decErr := decodeBase64(cand[0])
+			encFileKey, decErr := e2ee.DecodeBase64(cand[0])
 			if decErr != nil {
 				lastUnwrap = decErr
 				continue
 			}
-			keyNonce, decErr := decodeBase64(cand[1])
+			keyNonce, decErr := e2ee.DecodeBase64(cand[1])
 			if decErr != nil {
 				lastUnwrap = decErr
 				continue
 			}
-			fk, unwrapErr := unwrapFileKey(encFileKey, keyNonce, linkSecret)
+			fk, unwrapErr := e2ee.UnwrapKey(encFileKey, keyNonce, linkSecret)
 			if unwrapErr != nil {
 				lastUnwrap = unwrapErr
 				continue
@@ -865,7 +867,7 @@ func cmdDownload(rawURL string, insecure bool) error {
 
 	// 4. Try to decrypt the real filename from encrypted_name + name_nonce
 	if keyInfo.EncryptedName != "" && keyInfo.NameNonce != "" {
-		realName, err := decryptFileName(keyInfo.EncryptedName, keyInfo.NameNonce, fileKey)
+		realName, err := e2ee.DecryptName(keyInfo.EncryptedName, keyInfo.NameNonce, fileKey)
 		if err != nil {
 			// Non-critical: fall back to URL/header filename
 			fmt.Fprintf(os.Stderr, "\nWarning: could not decrypt filename: %v\n", err)
@@ -898,7 +900,7 @@ func cmdDownload(rawURL string, insecure bool) error {
 		out.Close()
 		return fmt.Errorf("could not secure temporary output file: %w", err)
 	}
-	written, decErr := decryptFileStream(encResp.Body, out, fileKey)
+	written, decErr := e2ee.DecryptStream(encResp.Body, out, fileKey)
 	if decErr != nil {
 		out.Close()
 		if cleanupErr := os.Remove(tmpOutputPath); cleanupErr != nil {

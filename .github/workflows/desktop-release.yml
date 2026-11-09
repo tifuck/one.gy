@@ -1,0 +1,174 @@
+# Builds ONE.GY Desktop (Windows NSIS, Linux AppImage + deb) and publishes a
+# GitHub release desktop-v<version> when desktop/VERSION names a version that
+# has no release tag yet. Builds are unsigned for now.
+name: Desktop release
+
+on:
+  push:
+    branches: [main]
+    paths: ["desktop/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.tag.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Read desktop/VERSION
+        run: |
+          version="$(tr -d '[:space:]' < desktop/VERSION)"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::desktop/VERSION is not a version: $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - id: tag
+        name: Skip if the release tag exists
+        env:
+          TAG: desktop-v${{ steps.version.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "$TAG already exists; nothing to build."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            builder_args: --win nsis
+            engine: onegy-engine.exe
+            ldflags_extra: -H=windowsgui
+          - os: ubuntu-latest
+            builder_args: --linux AppImage deb
+            engine: onegy-engine
+            ldflags_extra: ""
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/engine/go.mod
+          cache-dependency-path: |
+            desktop/engine/go.sum
+            cli_E2EE_binary/go.sum
+
+      - name: Test the shared crypto package
+        working-directory: cli_E2EE_binary
+        run: go test ./...
+
+      - name: Test the engine
+        working-directory: desktop/engine
+        run: go test ./...
+
+      - name: Build the engine
+        working-directory: desktop/engine
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/tifuck/one.gy/desktop/engine/internal/config.Version=${VERSION} ${{ matrix.ldflags_extra }}" \
+            -o "../app/resources/engine/${{ matrix.engine }}" ./cmd/onegy-engine
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/app/package-lock.json
+
+      - name: Install app dependencies
+        working-directory: desktop/app
+        run: npm ci
+
+      - name: Test the app
+        working-directory: desktop/app
+        run: npm test
+
+      - name: Package
+        working-directory: desktop/app
+        run: npx electron-builder ${{ matrix.builder_args }} --publish never "-c.extraMetadata.version=${VERSION}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            desktop/app/dist/ONE.GY-Desktop-Setup.exe
+            desktop/app/dist/ONE.GY-Desktop-Setup.exe.blockmap
+            desktop/app/dist/ONE.GY-Desktop-x86_64.AppImage
+            desktop/app/dist/onegy-desktop_amd64.deb
+            desktop/app/dist/latest*.yml
+            desktop/app/dist/beta*.yml
+
+  release:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Check the files
+        run: |
+          ls -la artifacts
+          for f in ONE.GY-Desktop-Setup.exe ONE.GY-Desktop-x86_64.AppImage onegy-desktop_amd64.deb latest.yml latest-linux.yml; do
+            test -s "artifacts/$f" || { echo "::error::missing $f"; exit 1; }
+          done
+
+      - name: Write release notes
+        run: |
+          cat > notes.md <<EOF
+          ONE.GY Desktop ${VERSION}
+
+          Downloads:
+          - Windows (64-bit installer): ONE.GY-Desktop-Setup.exe
+          - Linux AppImage (x86_64, updates itself): ONE.GY-Desktop-x86_64.AppImage
+          - Debian / Ubuntu package (amd64): onegy-desktop_amd64.deb
+
+          These builds are not code-signed yet. Windows SmartScreen may warn
+          before the installer runs: choose "More info", then "Run anyway".
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: ONE.GY Desktop ${{ env.VERSION }}
+          body_path: notes.md
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/ONE.GY-Desktop-Setup.exe
+            artifacts/ONE.GY-Desktop-Setup.exe.blockmap
+            artifacts/ONE.GY-Desktop-x86_64.AppImage
+            artifacts/onegy-desktop_amd64.deb
+            artifacts/latest*.yml
+            artifacts/beta*.yml

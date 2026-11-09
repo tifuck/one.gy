@@ -2,6 +2,10 @@
    preview.css — Frost file preview + text editor overlay (preview.js).
    Reuses the _preview_modal.html shell class names (.preview-*), restyled.
    ========================================================================== */
+/* Token colours for the highlighted editor (.hljs-* spans; same palette as the
+   text thumbnails). highlight.js itself is loaded on demand by crypto.js. */
+@import url('vendor/highlight/github-dark.min.css');
+
 .preview-modal{
   position:fixed; inset:0; z-index:200; display:none; flex-direction:column;
   background:rgba(var(--ink-rgb),.86); backdrop-filter:blur(4px);
@@ -82,9 +86,26 @@
 .preview-ed-save{ display:inline-flex; align-items:center; gap:.4rem; padding:.4rem .7rem; border:2px solid var(--border); background:var(--accent); color:var(--accent-contrast); cursor:pointer; font:inherit; font-size:.78rem; }
 .preview-ed-save:disabled{ background:var(--surface); color:var(--text-dim); cursor:default; }
 .preview-ed-body{ flex:1 1 auto; min-height:0; display:flex; overflow:hidden; }
-.preview-ed-gutter{ flex:none; width:48px; overflow:hidden; padding:1rem .5rem 1rem 0; text-align:right; font-family:var(--font-mono); font-size:.8rem; line-height:1.6; color:var(--text-dim); background:var(--bg); border-right:2px solid var(--border); white-space:pre; user-select:none; }
-.preview-ed-ta{ flex:1 1 auto; min-width:0; border:0; outline:0; resize:none; padding:1rem; font-family:var(--font-mono); font-size:.85rem; line-height:1.6; color:var(--text); background:var(--surface); white-space:pre; overflow:auto; tab-size:2; }
+/* Gutter line height must equal the code's (.85rem x 1.6); the extra bottom
+   padding lets it scroll as far as a textarea with a horizontal scrollbar. */
+.preview-ed-gutter{ flex:none; width:48px; overflow:hidden; padding:1rem .5rem calc(1rem + 20px) 0; text-align:right; font-family:var(--font-mono); font-size:.8rem; line-height:calc(.85rem * 1.6); color:color-mix(in srgb, var(--code-fg) 40%, transparent); background:var(--bg); border-right:2px solid var(--border); white-space:pre; user-select:none; }
+/* Highlighting: a <pre> of coloured spans under a transparent-text textarea.
+   Both boxes must share every metric below or the caret drifts off the text. */
+.preview-ed-code{ flex:1 1 auto; min-width:0; position:relative; background:var(--code-bg); }
+.preview-ed-hl, .preview-ed-ta{ position:absolute; inset:0; margin:0; padding:1rem; font-family:var(--font-mono); font-size:.85rem; font-weight:400; line-height:1.6; letter-spacing:normal; font-variant-ligatures:none; white-space:pre; overflow:auto; tab-size:2; }
+.preview-ed-hl{ color:var(--code-fg); pointer-events:none; visibility:hidden; }
+.preview-ed-hl code{ font:inherit; background:none; padding:0; }
+.preview-ed-ta{ width:100%; height:100%; border:0; outline:0; resize:none; color:var(--code-fg); caret-color:var(--code-fg); background:transparent; }
 .preview-ed-ta:focus{ outline:0; }
+.preview-ed-code.is-hl .preview-ed-hl{ visibility:visible; }
+.preview-ed-code.is-hl .preview-ed-ta{ color:transparent; }
+.preview-ed-code.is-hl .preview-ed-ta::selection{ color:transparent; background:rgba(var(--accent-rgb,55,182,255),.35); }
+/* Code is a dark mono panel in every theme (--code-bg, like the text
+   thumbnails). Two-class selectors so shell skins (.ui-v2 ...) keep borders
+   and radius but cannot repaint the panel behind the token colours. */
+.preview-ed-body .preview-ed-gutter{ background:var(--code-bg); border-right-color:rgba(255,255,255,.08); }
+.preview-ed-code .preview-ed-ta{ background:transparent; }
+.preview-stage .preview-text{ background:var(--code-bg); color:var(--code-fg); }
 
 @media (max-width:640px){
   .preview-ed, .preview-pdf{ width:100%; }

@@ -36,7 +36,7 @@
 *{margin:0}
 [hidden]{display:none !important}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%;scrollbar-gutter:stable}
-body{min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden;
+body{min-height:100vh;min-height:100dvh;line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden;
   display:flex;flex-direction:column}
 /* Sticky footer: main fills the viewport so the footer sits at the bottom
    regardless of content length (short pages don't leave it floating). */

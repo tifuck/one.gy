@@ -523,7 +523,7 @@ def disable_2fa():
     if not totp_code:
         return jsonify({'error': '2FA CODE IS REQUIRED'}), 400
 
-    # Authenticate: split-key auth_token or legacy password (same flow as login)
+    # Authenticate: split-key auth_token (same flow as login)
     if not _verify_user_credentials(user, password=password, auth_token=auth_token):
         print(f'[AUTH] Disable 2FA credential proof failed for user {user.username}')
         return jsonify({'error': 'INCORRECT PASSWORD'}), 403
@@ -588,9 +588,13 @@ def sign_out_all_devices():
 
     user.session_epoch = db.func.coalesce(User.session_epoch, 0) + 1  # atomic in SQL: concurrent rotations must not collapse into one
     _deactivate_user_api_keys(user.id)
+    # Desktop devices go too unless the caller opted out (form or JSON 'false').
+    revoke_devices = str(data.get('revoke_devices', request.form.get('revoke_devices', 'true'))).strip().lower() != 'false'
+    revoked_devices = _deactivate_user_devices(user.id) if revoke_devices else 0
     db.session.commit()
     session['session_epoch'] = int(user.session_epoch or 0)
-    print(f'[AUTH] Sign-out-all for user: {user.username} (session_epoch rotated -> all other sessions invalidated)')
+    print(f'[AUTH] Sign-out-all for user: {user.username} (session_epoch rotated -> all other sessions invalidated; '
+          f'{revoked_devices} desktop device(s) revoked)')
     return jsonify({'success': True, 'message': 'SIGNED OUT ON ALL OTHER DEVICES'})
 
 @app.route('/account/2fa/status', methods=['GET'])
@@ -613,15 +617,18 @@ def api_get_keys():
     user = _current_session_user()
     if not user:
         return jsonify({'error': 'USER NOT FOUND'}), 404
-    
+    return jsonify(_user_key_material(user))
+
+
+def _user_key_material(user):
+    """Encrypted key material served by /api/keys and /apiv1/devices/keys."""
     if not user.has_e2ee_keys:
-        return jsonify({
+        return {
             'has_e2ee_keys': False,
             'split_key_version': user.split_key_version or 0,
             'auth_token_salt': user.auth_token_salt,
-        })
-    
-    return jsonify({
+        }
+    return {
         'has_e2ee_keys': True,
         'encrypted_master_key': user.encrypted_master_key,
         'master_key_nonce': user.master_key_nonce,
@@ -632,7 +639,16 @@ def api_get_keys():
         'recovery_key_configured': bool(user.recovery_key_verifier or user.recovery_key_hash),
         'split_key_version': user.split_key_version or 0,
         'auth_token_salt': user.auth_token_salt
-    })
+    }
+
+
+def _deactivate_user_devices(user_id):
+    """Revoke every active desktop device of user_id (caller commits)."""
+    if not user_id:
+        return 0
+    return Device.query.filter_by(user_id=user_id, is_active=True).update(
+        {Device.is_active: False, Device.revoked_at: datetime.now(timezone.utc)},
+        synchronize_session=False)
 
 def _user_has_e2ee_protected_content(user_id):
     """True when the account owns ANY resource whose access depends on the master key.
@@ -740,9 +756,8 @@ def api_update_keys():
             if _user_has_e2ee_protected_content(user.id):
                 print(f'[AUTH] /api/keys overwrite BLOCKED for user {user.username}: E2EE data exists')
                 return jsonify({'error': 'KEY OVERWRITE BLOCKED BECAUSE E2EE DATA ALREADY EXISTS'}), 409
-        proof_password = data.get('current_password') or data.get('password')
         proof_token = data.get('current_auth_token')
-        if not _verify_user_credentials(user, password=proof_password, auth_token=proof_token):
+        if not _verify_user_credentials(user, auth_token=proof_token):
             action = 'INITIALIZE' if is_initial_setup else 'REPLACE'
             print(f'[AUTH] /api/keys {action.lower()} REJECTED for user {user.username}: '
                   'missing/invalid credential proof')

@@ -1,28 +1,28 @@
 {% extends '_app_base.html' %}
-{% block title %}ADMIN{% endblock %}
+{% set ui_v2 = true %}
+{% block title %}Admin{% endblock %}
 {% set nav_active = 'admin' %}
 {% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('admin.css') }}">{% endblock %}
 
 {% block content %}
-<div class="adm-wrap">
-  <div class="adm-head">
-    <div><p class="adm-eyebrow">Operations</p><h1 class="adm-title">Admin<small>CONSOLE</small></h1></div>
-    <p class="adm-head-copy">Manage accounts, platform policy, content and storage health.</p>
+<div class="adm-wrap adm-layout">
+  <aside class="adm-side">
+    <p class="adm-side-head">Admin console</p>
+    <nav class="adm-nav" id="admNav" aria-label="Admin sections" role="tablist">
+      <button class="adm-nav-link is-active" id="admTabOverview" data-tab="overview" role="tab" aria-selected="true" aria-controls="admPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+      <button class="adm-nav-link" id="admTabUsers" data-tab="users" role="tab" aria-selected="false" aria-controls="admPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Accounts</button>
+      <button class="adm-nav-link" id="admTabTempFiles" data-tab="temp-files" role="tab" aria-selected="false" aria-controls="admPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 22h14M5 2h14M17 22v-4.17a2 2 0 0 0-.59-1.42L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22M7 2v4.17a2 2 0 0 0 .59 1.42L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2"/></svg>Temp files</button>
+      <button class="adm-nav-link" id="admTabNotifications" data-tab="notifications" role="tab" aria-selected="false" aria-controls="admPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Notifications</button>
+      <button class="adm-nav-link" id="admTabFeedback" data-tab="feedback" role="tab" aria-selected="false" aria-controls="admPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Feedback</button>
+      <button class="adm-nav-link" id="admTabStatistics" data-tab="statistics" role="tab" aria-selected="false" aria-controls="admPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-3"/></svg>Statistics</button>
+      <button class="adm-nav-link" id="admTabStorage" data-tab="storage" role="tab" aria-selected="false" aria-controls="admPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>Storage</button>
+      <button class="adm-nav-link" id="admTabSettings" data-tab="settings" role="tab" aria-selected="false" aria-controls="admPanel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>Settings</button>
+    </nav>
+  </aside>
+
+  <div class="adm-main">
+    <div id="admPanel" role="tabpanel" aria-labelledby="admTabOverview" tabindex="-1"><div class="adm-loading" role="status" aria-label="Loading"><span class="rd-skel adm-skel-title"></span><span class="rd-skel adm-skel-sub"></span><span class="rd-skel adm-skel-block"></span><span class="rd-skel adm-skel-block is-short"></span></div></div>
   </div>
-
-  <button class="adm-nav-toggle" id="admNavToggle" aria-label="Admin sections" aria-expanded="false" aria-controls="admNav">Sections<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
-  <nav class="adm-nav" id="admNav" aria-label="Admin sections" role="tablist">
-    <button class="adm-nav-link is-active" id="admTabOverview" data-tab="overview" role="tab" aria-selected="true" aria-controls="admPanel">Overview</button>
-    <button class="adm-nav-link" id="admTabUsers" data-tab="users" role="tab" aria-selected="false" aria-controls="admPanel">Accounts</button>
-    <button class="adm-nav-link" id="admTabTempFiles" data-tab="temp-files" role="tab" aria-selected="false" aria-controls="admPanel">Temp files</button>
-    <button class="adm-nav-link" id="admTabNotifications" data-tab="notifications" role="tab" aria-selected="false" aria-controls="admPanel">Notifications</button>
-    <button class="adm-nav-link" id="admTabFeedback" data-tab="feedback" role="tab" aria-selected="false" aria-controls="admPanel">Feedback</button>
-    <button class="adm-nav-link" id="admTabStatistics" data-tab="statistics" role="tab" aria-selected="false" aria-controls="admPanel">Statistics</button>
-    <button class="adm-nav-link" id="admTabStorage" data-tab="storage" role="tab" aria-selected="false" aria-controls="admPanel">Storage</button>
-    <button class="adm-nav-link" id="admTabSettings" data-tab="settings" role="tab" aria-selected="false" aria-controls="admPanel">Settings</button>
-  </nav>
-
-  <div id="admPanel" role="tabpanel" aria-labelledby="admTabOverview" tabindex="-1"><div class="adm-loading" role="status"><span class="adm-spin"></span><span class="sr-only">Loading</span></div></div>
 </div>
 {% endblock %}
 

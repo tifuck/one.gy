@@ -157,14 +157,6 @@ if not fernet_keys:
     raise ValueError('FERNET_KEY does not contain any usable key material.')
 fernet = MultiFernet([Fernet(key.encode()) for key in fernet_keys])
 app.config['FERNET'] = fernet
-_DUMMY_PASSWORD_HASH = None
-
-
-def _dummy_password_hash():
-    global _DUMMY_PASSWORD_HASH
-    if _DUMMY_PASSWORD_HASH is None:
-        _DUMMY_PASSWORD_HASH = generate_password_hash('__onegy-timing-dummy__', method='pbkdf2:sha256')
-    return _DUMMY_PASSWORD_HASH
 app.config['MAX_RETENTION'] = timedelta(days=7)
 
 # Upload processing progress tracking
@@ -1122,8 +1114,8 @@ def request_entity_too_large(e):
     print(f'[UPLOAD] {ip} Request entity too large: {request.content_length} bytes')
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.content_type and 'multipart/form-data' in request.content_type:
         return jsonify({'error': f'File too large. Maximum upload size is {max_gb}GB.'}), 413
-    if request.is_json:
-        return jsonify({'error': 'REQUEST BODY TOO LARGE'}), 413
+    if request.is_json or request.path.startswith('/apiv1/'):
+        return jsonify({'error': 'REQUEST BODY TOO LARGE', 'code': 'bad_request'}), 413
     flash(f'FILE TOO LARGE. MAXIMUM UPLOAD SIZE IS {max_gb}GB.', 'error')
     return _safe_referrer_redirect()
 
@@ -1159,6 +1151,18 @@ def page_not_found(e):
         title='PAGE NOT FOUND',
         subtitle='THE PAGE YOU ARE LOOKING FOR DOES NOT EXIST OR HAS BEEN MOVED'), 404
 
+# 403 Forbidden: branded page instead of the bare Werkzeug one (e.g. /manage/<token> opened by a non-owner)
+@app.errorhandler(403)
+def forbidden(e):
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or request.is_json:
+        return jsonify({'error': 'FORBIDDEN'}), 403
+    return render_template('notfound.html',
+        error_code='4',
+        error_code_mid='0',
+        error_code_end='3',
+        title='ACCESS DENIED',
+        subtitle='YOU DO NOT HAVE PERMISSION TO VIEW THIS PAGE. SIGN IN WITH THE ACCOUNT THAT OWNS IT'), 403
+
 # Safety net: rollback dirty DB sessions on unhandled exceptions.
 # Without this, a failed db.session.commit() leaves the session in an invalid
 # state, causing cascading 500 errors on all subsequent requests in that thread.
@@ -1179,6 +1183,7 @@ def _assign_csp_nonce():
 # (_set_request_upload_cap, or the notes JSON limits in _load_notes_json_request).
 _LARGE_BODY_ENDPOINTS = frozenset({
     'upload', 'apiv1_upload',
+    'apiv1_sync_upload_file', 'apiv1_sync_upload_part',
     'make_file_public', 'make_file_private',
     'file_create_blank', 'file_save_content',
     'notes_create_note', 'notes_update_note', 'notes_send_to_user',

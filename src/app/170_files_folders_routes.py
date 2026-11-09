@@ -636,6 +636,8 @@ def create_folder():
             id=parent_id, user_id=user.id, is_trashed=False).first()
         if not parent_folder:
             return jsonify({'error': 'Parent folder not found'}), 404
+        if _backup_read_only(parent_id):
+            return _backup_read_only_error()
 
     enc_folder_name = request.form.get('encrypted_name')
     enc_folder_name_nonce = request.form.get('name_nonce')
@@ -974,6 +976,8 @@ def delete_folder(folder_id):
         folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
         if not folder:
             return jsonify({'error': 'Folder not found'}), 404
+        if _backup_subtree_read_only(folder.id):
+            return _backup_read_only_error()
 
         folder_name = folder.name
         parent_id_before = folder.parent_id
@@ -992,28 +996,19 @@ def delete_folder(folder_id):
     print(f'[FOLDER] Trashed folder: {_log_safe(folder_name)} and all contents by user: {user.username}')
     return jsonify({'success': True})
 
-@app.route('/folder/<int:folder_id>/rename', methods=['POST'])
-@limiter.limit(folder_ops_rate_limit)
-@login_required
-def rename_folder(folder_id):
-    # Decorator handles authentication
-    user = _current_session_user()
-    
-    folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
-    if not folder:
-        return jsonify({'error': 'Folder not found'}), 404
-    
-    new_name = request.form.get('name')
+def _parse_folder_rename(folder, fields):
+    """Validate rename input (any mapping with .get). Returns (rename, error)."""
+    new_name = fields.get('name')
     if not new_name:
-        return jsonify({'error': 'Folder name required'}), 400
+        return None, 'Folder name required'
     if len(new_name) > 255:
-        return jsonify({'error': 'FOLDER NAME TOO LONG (MAX 255 CHARACTERS)'}), 400
-    
+        return None, 'FOLDER NAME TOO LONG (MAX 255 CHARACTERS)'
+
     # E2EE encrypted folder name fields
-    enc_folder_name = request.form.get('encrypted_name')
-    enc_folder_name_nonce = request.form.get('name_nonce')
-    submitted_name_key = request.form.get('encrypted_name_key')
-    submitted_name_key_nonce = request.form.get('name_key_nonce')
+    enc_folder_name = fields.get('encrypted_name')
+    enc_folder_name_nonce = fields.get('name_nonce')
+    submitted_name_key = fields.get('encrypted_name_key')
+    submitted_name_key_nonce = fields.get('name_key_nonce')
     enc_folder_name_key = submitted_name_key or folder.encrypted_name_key
     enc_folder_name_key_nonce = submitted_name_key_nonce or folder.name_key_nonce
     encrypted_fields_present = any((enc_folder_name, enc_folder_name_nonce, submitted_name_key, submitted_name_key_nonce))
@@ -1024,16 +1019,86 @@ def rename_folder(folder_id):
     # and reject malformed partial payloads instead of silently clearing E2EE.
     if encrypted_fields_present:
         if not has_encrypted_name:
-            return jsonify({'error': 'INCOMPLETE ENCRYPTED FOLDER NAME'}), 400
+            return None, 'INCOMPLETE ENCRYPTED FOLDER NAME'
         if bool(submitted_name_key) != bool(submitted_name_key_nonce):
-            return jsonify({'error': 'INCOMPLETE ENCRYPTED FOLDER NAME'}), 400
+            return None, 'INCOMPLETE ENCRYPTED FOLDER NAME'
         valid, err_msg = validate_encrypted_folder_name_fields(
             enc_folder_name, enc_folder_name_nonce,
             enc_folder_name_key, enc_folder_name_key_nonce,
         )
         if not valid:
-            print(f'[FOLDER] Rejected rename with invalid encrypted name for folder {folder_id}: {err_msg}')
-            return jsonify({'error': err_msg}), 400
+            print(f'[FOLDER] Rejected rename with invalid encrypted name for folder {folder.id}: {err_msg}')
+            return None, err_msg
+    return {
+        'name': new_name,
+        'encrypted_name': enc_folder_name,
+        'name_nonce': enc_folder_name_nonce,
+        'encrypted_name_key': submitted_name_key,
+        'name_key_nonce': submitted_name_key_nonce,
+        'has_encrypted_name': has_encrypted_name,
+    }, None
+
+
+def _plaintext_folder_name_taken(folder, new_name):
+    """True when a live plaintext sibling already has new_name. Caller holds the
+    folder creation lock for folder.parent_id."""
+    # Same canonical key as folder creation (_find_live_folder_creation_winner):
+    # raw SQL equality let ' Alpha' or 'ＡＬＰＨＡ' sit beside 'Alpha'.
+    new_key = _normalize_plaintext_folder_name(new_name)
+    siblings = Folder.query.filter(
+        Folder.user_id == folder.user_id,
+        Folder.parent_id.is_(None) if folder.parent_id is None else Folder.parent_id == folder.parent_id,
+        Folder.is_trashed == False,
+        Folder.encrypted_name.is_(None),
+        Folder.id != folder.id,
+    ).all()
+    return any(_normalize_plaintext_folder_name(s.name) == new_key for s in siblings)
+
+
+def _apply_folder_rename(folder, rename):
+    """Apply a _parse_folder_rename() result (caller commits)."""
+    if rename['has_encrypted_name']:
+        submitted_name_key = rename['encrypted_name_key']
+        folder.encrypted_name = rename['encrypted_name']
+        folder.name_nonce = rename['name_nonce']
+        if submitted_name_key:
+            folder.encrypted_name_key = submitted_name_key
+            folder.name_key_nonce = rename['name_key_nonce']
+        folder.name = f'encrypted_folder_{folder.id}'
+        if submitted_name_key:
+            # A new name key invalidates the link-wrapped copy of the old one.
+            folder.link_encrypted_name_key = None
+            folder.link_name_key_nonce = None
+    else:
+        folder.name = rename['name']
+        # Clear encrypted name fields if renaming as plaintext
+        folder.encrypted_name = None
+        folder.name_nonce = None
+        folder.encrypted_name_key = None
+        folder.name_key_nonce = None
+        folder.link_encrypted_name_key = None
+        folder.link_name_key_nonce = None
+    folder.updated_at = datetime.now(timezone.utc)
+
+
+@app.route('/folder/<int:folder_id>/rename', methods=['POST'])
+@limiter.limit(folder_ops_rate_limit)
+@login_required
+def rename_folder(folder_id):
+    # Decorator handles authentication
+    user = _current_session_user()
+    
+    folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
+    if not folder:
+        return jsonify({'error': 'Folder not found'}), 404
+    if _backup_read_only(folder.id):
+        return _backup_read_only_error()
+    
+    rename, rename_error = _parse_folder_rename(folder, request.form)
+    if rename_error:
+        return jsonify({'error': rename_error}), 400
+    new_name = rename['name']
+    has_encrypted_name = rename['has_encrypted_name']
     
     # Check if folder with same name exists in same parent (exclude trashed)
     # For E2EE folders with encrypted names, server cannot detect duplicates -- client handles this
@@ -1047,41 +1112,11 @@ def rename_folder(folder_id):
             folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
             if not folder:
                 return jsonify({'error': 'Folder not found'}), 404
-            # Same canonical key as folder creation (_find_live_folder_creation_winner):
-            # raw SQL equality let ' Alpha' or 'ＡＬＰＨＡ' sit beside 'Alpha'.
-            new_key = _normalize_plaintext_folder_name(new_name)
-            siblings = Folder.query.filter(
-                Folder.user_id == user.id,
-                Folder.parent_id.is_(None) if folder.parent_id is None else Folder.parent_id == folder.parent_id,
-                Folder.is_trashed == False,
-                Folder.encrypted_name.is_(None),
-                Folder.id != folder_id,
-            ).all()
-            if any(_normalize_plaintext_folder_name(s.name) == new_key for s in siblings):
+            if _plaintext_folder_name_taken(folder, new_name):
                 return jsonify({'error': 'Folder with this name already exists'}), 400
 
         old_name = folder.name
-        if has_encrypted_name:
-            folder.encrypted_name = enc_folder_name
-            folder.name_nonce = enc_folder_name_nonce
-            if submitted_name_key:
-                folder.encrypted_name_key = submitted_name_key
-                folder.name_key_nonce = submitted_name_key_nonce
-            folder.name = f'encrypted_folder_{folder.id}'
-            if submitted_name_key:
-                # A new name key invalidates the link-wrapped copy of the old one.
-                folder.link_encrypted_name_key = None
-                folder.link_name_key_nonce = None
-        else:
-            folder.name = new_name
-            # Clear encrypted name fields if renaming as plaintext
-            folder.encrypted_name = None
-            folder.name_nonce = None
-            folder.encrypted_name_key = None
-            folder.name_key_nonce = None
-            folder.link_encrypted_name_key = None
-            folder.link_name_key_nonce = None
-        folder.updated_at = datetime.now(timezone.utc)
+        _apply_folder_rename(folder, rename)
         db.session.commit()
     finally:
         _release_folder_creation_lock(name_lock)

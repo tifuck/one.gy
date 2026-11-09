@@ -1,5 +1,4 @@
-{# Frost standalone manage page — replaces the legacy templates/manage.html
-   (~1,700 lines of bespoke markup + JS that duplicated the manage modal).
+{# Standalone manage page.
 
    Both /manage/<token> (file, management-token auth, works for anonymous guest
    uploads) and /folder/<id>/manage (folder, login required) render this. Rather
@@ -11,7 +10,8 @@
    Context: is_folder, plus either `file` (with .management_token) or `folder`,
    and `source` for the back link. #}
 {% extends 'base.html' %}
-{% block title %}{{ 'MANAGE FOLDER' if is_folder else 'MANAGE FILE' }}{% endblock %}
+{% set ui_v2 = true %}
+{% block title %}{{ 'Manage folder' if is_folder else 'Manage file' }}{% endblock %}
 {% block head_extra %}
 <link rel="stylesheet" href="{{ versioned_static('gateway.css') }}">
 <link rel="stylesheet" href="{{ versioned_static('manage.css') }}">
@@ -22,19 +22,31 @@
    in app.py). They are NOT computed with {% set %} here on purpose: Jinja
    scopes a block-level set to that block, so {% block scripts %} below would
    see Undefined and |tojson would 500. #}
+{% set item = folder if is_folder else file %}
+{% set item_name = item.name if is_folder else item.orig_name %}
+{# E2EE names are placeholders server-side; the modal decrypts the real one (mirrored below). #}
+{% set shown_name = ('Encrypted folder' if is_folder else 'Encrypted file') if item.encrypted_name else item_name %}
+{% set ext = '' if is_folder else get_compound_ext(item_name).rsplit('.', 1)[-1] %}
 <section class="gw-section">
   <div class="gw-card">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
     <div class="gw-ico">
-      {% if is_folder %}
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>
-      {% else %}
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
-      {% endif %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
     </div>
-    <div class="gw-rule"></div>
     <h1 class="gw-title">{{ 'Manage folder' if is_folder else 'Manage file' }}</h1>
-    <p class="gw-sub" id="gwManageName">{{ folder.name if is_folder else file.orig_name }}</p>
+    <p class="gw-sub">Sharing, expiry and encryption settings.</p>
+
+    <div class="gw-file">
+      {% if is_folder %}
+      <span class="gw-doc is-folder"><svg viewBox="0 0 40 48" aria-hidden="true"><path class="gw-page-body" d="M2.5 13A4.5 4.5 0 0 1 7 8.5h8.5l4 4H33a4.5 4.5 0 0 1 4.5 4.5V38a4.5 4.5 0 0 1-4.5 4.5H7A4.5 4.5 0 0 1 2.5 38z"/></svg></span>
+      {% else %}
+      <span class="gw-doc" data-ext="{{ ext }}"><svg viewBox="0 0 40 48" aria-hidden="true"><path class="gw-page-body" d="M7 1.5h18.5L37.5 13.5V42A4.5 4.5 0 0 1 33 46.5H7A4.5 4.5 0 0 1 2.5 42V6A4.5 4.5 0 0 1 7 1.5z"/><path class="gw-page-fold" d="M25.5 1.5v8.5a3.5 3.5 0 0 0 3.5 3.5h8.5z"/></svg><span class="gw-doc-ext">{{ ext[:4] }}</span></span>
+      {% endif %}
+      <div class="gw-file-text">
+        <div class="gw-file-name" id="gwManageName" title="{{ shown_name }}" data-server-name="{{ item_name }}">{{ shown_name }}</div>
+        <div class="gw-file-meta">{% if is_folder %}Folder{% else %}{{ (file.size or 0)|filesize }} · {{ 'End-to-end encrypted' if file.is_e2e_encrypted else 'Server-side encrypted' }}{% endif %}</div>
+      </div>
+    </div>
 
     {# Share-link QR — only the file manage route passes qr_data (folder manage
        does not), so this block is presence-gated. The QR carries no #key
@@ -42,20 +54,17 @@
        for a file nobody else can open. #}
     {% if qr_data and not file.is_e2e_encrypted and (file.is_public or inherited_public or parent_is_browsable) %}
     <div class="gw-qr">
-      <img src="data:image/png;base64,{{ qr_data }}" alt="Share link QR code" width="150" height="150">
+      <img src="data:image/png;base64,{{ qr_data }}" alt="Share link QR code" width="132" height="132">
     </div>
     <p class="gw-qr-label">Scan to open the share link</p>
     {% endif %}
 
     <div class="gw-actions">
-      <button type="button" class="gw-btn gw-btn-primary" id="gwOpenManage">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <button type="button" class="rd-btn rd-btn-primary rd-btn-lg" id="gwOpenManage">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
         Open settings
       </button>
-      <a href="{{ back_url }}" class="gw-btn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-        {{ back_label }}
-      </a>
+      <a href="{{ back_url }}" class="rd-btn rd-btn-ghost rd-btn-lg">{{ back_label }}</a>
     </div>
   </div>
 </section>
@@ -134,6 +143,18 @@
 
     var btn = document.getElementById('gwOpenManage')
     if (btn) btn.addEventListener('click', open)
+
+    // orig_name is a placeholder for E2EE files; mirror the name the modal
+    // decrypts (anything but the server-side name). Watch the whole modal: it
+    // rebuilds its body with innerHTML.
+    var modalEl = document.getElementById('manageModal')
+    var cardName = document.getElementById('gwManageName')
+    if (modalEl && cardName) {
+      new MutationObserver(function () {
+        var n = document.getElementById('manageModalName')
+        if (n && n.title && n.title !== cardName.dataset.serverName) cardName.textContent = cardName.title = n.title
+      }).observe(modalEl, { subtree: true, attributes: true, attributeFilter: ['title'] })
+    }
 
     open()
   })

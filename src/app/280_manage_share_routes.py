@@ -126,6 +126,9 @@ def manage_post(token):
             abort(404)
 
         expires = request.form.get('expires')
+        # An expiry would let cleanup delete a file of a read-only backup.
+        if expires and expires != 'never' and _backup_read_only(file.folder_id):
+            return _backup_read_only_error()
 
         # Only update public if the public field was explicitly submitted
         if 'public' in request.form:
@@ -234,6 +237,8 @@ def delete_file(token):
     try:
         db.session.rollback()
         file = File.query.filter_by(management_token=token).first_or_404()
+        if _backup_read_only(file.folder_id):
+            return _backup_read_only_error()
         file_name = file.orig_name
         file_size = file.size
         file_is_temp_upload = file.is_temp_upload
@@ -763,10 +768,8 @@ def browse_folder_download_file(share_token, file_id, filename=None):
     
     if file.is_e2e_encrypted:
         if request.method == 'HEAD':
-            import mimetypes
-            head_mimetype, _ = mimetypes.guess_type(file.orig_name)
             return _build_streaming_response(
-                lambda: iter(()), head_mimetype or 'application/octet-stream',
+                lambda: iter(()), safe_served_mimetype(file.orig_name),
                 disposition='attachment', filename=file.orig_name, content_length=file.size,
                 headers={'Cache-Control': 'no-cache, no-store, must-revalidate', 'X-Accel-Buffering': 'no'})
         success, error = check_and_increment_download(file)
@@ -779,10 +782,7 @@ def browse_folder_download_file(share_token, file_id, filename=None):
                 detail='THE DOWNLOAD CHECK FAILED. THE FILE MAY HAVE BEEN REMOVED'), 404
         # E2E files are stored as-is, serve directly.
         # AUDIT Tier 0 #1: verify on-disk size + payload SHA-256.
-        import mimetypes
-        mimetype, _ = mimetypes.guess_type(file.orig_name)
-        if not mimetype:
-            mimetype = 'application/octet-stream'
+        mimetype = safe_served_mimetype(file.orig_name)
         return _build_streaming_response(
             lambda: _iter_file_chunks(
                 file_path,
@@ -804,13 +804,10 @@ def browse_folder_download_file(share_token, file_id, filename=None):
     
     # Stream decrypted file directly (no temp file needed)
     from flask import Response
-    import mimetypes
     if file.orig_name.endswith('.zip'):
         mimetype = 'application/zip'
     else:
-        mimetype, _ = mimetypes.guess_type(file.orig_name)
-        if not mimetype:
-            mimetype = 'application/octet-stream'
+        mimetype = safe_served_mimetype(file.orig_name)
     
     # For large files, decrypt to a temp file first then serve.
     # Streaming decryption directly over SSL causes "bad record mac" errors

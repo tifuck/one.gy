@@ -677,6 +677,12 @@ def admin_api_settings():
         # AUDIT FIX D5: trash retention is a setting now, not a magic constant.
         'trash_retention_hours': get_trash_retention_hours(),
         'temp_max_gb': get_float_setting('temp_max_gb'),
+        'allow_desktop_sync': get_setting('allow_desktop_sync'),
+        'max_devices_per_user': get_numeric_setting('max_devices_per_user'),
+        'sync_tombstone_retention_days': get_numeric_setting('sync_tombstone_retention_days'),
+        'sync_upload_session_ttl': get_numeric_setting('sync_upload_session_ttl'),
+        'file_version_retention_count': get_numeric_setting('file_version_retention_count'),
+        'file_version_retention_days': get_numeric_setting('file_version_retention_days'),
     })
 
 @app.route('/admin/api/settings', methods=['POST'])
@@ -703,8 +709,11 @@ def admin_api_settings_update():
 
     import math as _math
 
-    boolean_keys = {'allow_registration', 'captcha_enabled', 'allow_temp_uploads', 'allow_api_keys', 'welcome_folder_enabled', 'allow_music'}
-    numeric_keys = {'storage_cache_ttl_minutes', 'trash_retention_hours'}
+    boolean_keys = {'allow_registration', 'captcha_enabled', 'allow_temp_uploads', 'allow_api_keys', 'welcome_folder_enabled', 'allow_music',
+                    'allow_desktop_sync'}
+    numeric_keys = {'storage_cache_ttl_minutes', 'trash_retention_hours', 'max_devices_per_user',
+                    'sync_tombstone_retention_days', 'sync_upload_session_ttl',
+                    'file_version_retention_count', 'file_version_retention_days'}
     float_keys = {'temp_max_gb'}
 
     # AUDIT FIX A10/A11: bound numeric input and reject non-finite floats.
@@ -714,6 +723,11 @@ def admin_api_settings_update():
     numeric_bounds = {
         'storage_cache_ttl_minutes': (1, 10080),
         'trash_retention_hours': (1, 8760),
+        'max_devices_per_user': (1, 100),
+        'sync_tombstone_retention_days': (1, 3650),
+        'sync_upload_session_ttl': (3600, 2592000),
+        'file_version_retention_count': (0, 100),
+        'file_version_retention_days': (0, 3650),
     }
     float_bounds = {'temp_max_gb': (0.01, 1024.0)}
 

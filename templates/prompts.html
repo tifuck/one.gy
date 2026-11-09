@@ -1,62 +1,70 @@
 {% extends '_app_base.html' %}
-{% block title %}PROMPTS{% endblock %}
+{% block title %}Prompts{% endblock %}
 {% set nav_active = 'prompts' %}
 {% set nav_ghost = true %}
+{% set ui_v2 = true %}
 {% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('prompts.css') }}">{% endblock %}
 
 {% block content %}
-<div class="pr-layout">
-  <header class="pr-head">
-    <div class="pr-head-copy">
-      <div class="pr-kicker">Coding agents</div>
-      <h1 class="pr-title">Prompts</h1>
-      <p class="pr-lead">Copy-ready prompts for agentic coding tools, plus a local builder. Drafts never leave this browser.</p>
-    </div>
-    <div class="pr-head-side">
-      <div class="pr-tabs" role="tablist" aria-label="Prompts views">
-        <button class="pr-tab" type="button" role="tab" id="prTabLibrary" data-pr-tab="library" aria-selected="true" aria-controls="prLibrary">Library</button>
-        <button class="pr-tab" type="button" role="tab" id="prTabBuilder" data-pr-tab="builder" aria-selected="false" aria-controls="prBuilder">Builder</button>
+<div class="rd-page rd-page-wide pr-layout">
+  <header class="rd-page-head pr-head">
+    <h1 class="rd-page-title">Prompts</h1>
+    <p class="rd-page-sub">Copy-ready prompts for agentic coding tools, plus a local builder. Drafts never leave this browser.</p>
+    <div class="rd-page-actions">
+      <div class="rd-tabs" role="tablist" aria-label="Prompts views">
+        <button class="rd-tab pr-tab" type="button" role="tab" id="prTabLibrary" data-pr-tab="library" aria-selected="true" aria-controls="prLibrary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10v16H5.5A1.5 1.5 0 0 1 4 18.5z"/><path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14z"/></svg>Library</button>
+        <button class="rd-tab pr-tab" type="button" role="tab" id="prTabBuilder" data-pr-tab="builder" aria-selected="false" aria-controls="prBuilder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Builder</button>
       </div>
-      <button class="pr-btn" type="button" id="prFbGeneral">Submit feedback</button>
+      <button class="rd-btn rd-btn-ghost" type="button" id="prFbGeneral">Submit feedback</button>
     </div>
   </header>
 
   <section id="prLibrary" class="pr-lib" role="tabpanel" aria-labelledby="prTabLibrary">
     <div class="pr-toolbar">
-      <input class="form-input pr-search" id="prSearch" type="search" placeholder="Filter prompts" autocomplete="off">
-      <label class="pr-hide-input"><input type="checkbox" id="prHideInput"> Hide prompts that need input</label>
-      <div class="pr-tags" id="prTags" hidden></div>
+      <label class="pr-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input class="form-input" id="prSearch" type="search" placeholder="Filter prompts" autocomplete="off" aria-label="Filter prompts">
+      </label>
+      <label class="rd-check pr-hide-input"><input type="checkbox" id="prHideInput"> Hide prompts that need input</label>
     </div>
+    <div class="pr-tags" id="prTags" role="group" aria-label="Filter by tag" hidden></div>
     <div class="pr-lib-body">
-      <div class="pr-list" id="prList">
-        <div class="pr-empty">Loading catalog…</div>
+      <div class="pr-list" id="prList" aria-live="polite">
+        <div class="pr-loading" aria-label="Loading catalog">
+          <span class="rd-skel pr-skel-title"></span>
+          <div class="pr-group">{% for _ in range(4) %}<div class="pr-skel-row"><span class="rd-skel"></span><span class="rd-skel"></span></div>{% endfor %}</div>
+        </div>
       </div>
-      <aside class="pr-options" aria-labelledby="prOptionsTitle">
-        <h2 class="pr-options-title" id="prOptionsTitle">Prompt options</h2>
-        <label class="pr-option">
-          <input type="checkbox" id="prConciseMode">
-          <span>
-            <b>Concise mode</b>
-            <small>Use the fewest possible words without omitting details.</small>
-          </span>
-        </label>
-        <p class="pr-options-note">Enabled options are added when you copy any library prompt.</p>
+      <aside class="rd-panel pr-options" aria-labelledby="prOptionsTitle">
+        <header class="rd-panel-head"><div><h2 class="rd-panel-title" id="prOptionsTitle">Prompt options</h2></div></header>
+        <div class="rd-panel-body">
+          <label class="pr-option" for="prConciseMode">
+            <span class="pr-option-text">
+              <b>Concise mode</b>
+              <small>Use the fewest possible words without omitting details.</small>
+            </span>
+            <input type="checkbox" class="rd-switch" role="switch" id="prConciseMode">
+          </label>
+          <p class="pr-options-note">Enabled options are added when you copy any library prompt.</p>
+        </div>
       </aside>
     </div>
   </section>
 
   <section id="prBuilder" class="pr-build" role="tabpanel" aria-labelledby="prTabBuilder" hidden>
     <form class="pr-form" id="prForm" autocomplete="off">
-      <div class="pr-seed" id="prSeed" hidden>
-        <div><b id="prSeedTitle">Library prompt</b><span> Seeded into this draft. Edit freely.</span></div>
-        <button class="pr-btn" type="button" id="prSeedClear">Clear seed</button>
+      <div class="rd-callout is-accent pr-seed" id="prSeed" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10v16H5.5A1.5 1.5 0 0 1 4 18.5z"/><path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14z"/></svg>
+        <div class="pr-seed-text"><b id="prSeedTitle">Library prompt</b><span>Seeded into this draft. Edit freely.</span></div>
+        <button class="rd-btn rd-btn-sm rd-btn-ghost" type="button" id="prSeedClear">Clear seed</button>
       </div>
 
-      <div class="pr-card">
-        <h2 class="pr-card-title">Task</h2>
+      <section class="rd-panel pr-card">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Task</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-fields">
           <div class="pr-grid-2">
-            <label class="pr-field"><span>Task type</span>
+            <label class="rd-field pr-field"><span class="rd-field-label">Task type</span>
               <select class="form-input" data-pr="task">
                 <option value="build">Build or change a feature</option>
                 <option value="fix">Fix a bug</option>
@@ -76,7 +84,7 @@
                 <option value="custom">Complete a custom task</option>
               </select>
             </label>
-            <label class="pr-field"><span>Mode</span>
+            <label class="rd-field pr-field"><span class="rd-field-label">Mode</span>
               <select class="form-input" data-pr="mode">
                 <option value="analyze">Analyze only</option>
                 <option value="plan">Plan only</option>
@@ -85,140 +93,162 @@
               </select>
             </label>
           </div>
-          <label class="pr-field"><span>Objective</span>
+          <label class="rd-field pr-field"><span class="rd-field-label">Objective</span>
             <textarea class="form-input" data-pr="objective" rows="3" maxlength="50000" placeholder="What should the agent do"></textarea>
           </label>
-          <label class="pr-field"><span>Target or scope</span>
+          <label class="rd-field pr-field"><span class="rd-field-label">Target or scope</span>
             <input class="form-input" data-pr="scope" type="text" maxlength="50000" placeholder="Optional path, module, or area">
           </label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card" data-pr-show="fix,diagnose">
-        <h2 class="pr-card-title">Bug details</h2>
+      <section class="rd-panel pr-card" data-pr-show="fix,diagnose">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Bug details</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-fields">
-          <label class="pr-field"><span>Observed</span><textarea class="form-input" data-pr="observed" rows="2" maxlength="50000"></textarea></label>
-          <label class="pr-field"><span>Expected</span><textarea class="form-input" data-pr="expected" rows="2" maxlength="50000"></textarea></label>
-          <label class="pr-field"><span>Reproduction</span><textarea class="form-input" data-pr="reproduction" rows="2" maxlength="50000"></textarea></label>
+          <label class="rd-field pr-field"><span class="rd-field-label">Observed</span><textarea class="form-input" data-pr="observed" rows="2" maxlength="50000"></textarea></label>
+          <label class="rd-field pr-field"><span class="rd-field-label">Expected</span><textarea class="form-input" data-pr="expected" rows="2" maxlength="50000"></textarea></label>
+          <label class="rd-field pr-field"><span class="rd-field-label">Reproduction</span><textarea class="form-input" data-pr="reproduction" rows="2" maxlength="50000"></textarea></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card">
-        <h2 class="pr-card-title">Workflow</h2>
+      <section class="rd-panel pr-card">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Workflow</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-checks">
-          <label class="pr-check"><input type="checkbox" data-pr="inspectFirst"><span>Inspect the repo first</span></label>
-          <label class="pr-check" data-pr-show="fix,diagnose,review,security,performance"><input type="checkbox" data-pr="autoDiagnose"><span>Diagnose before changing</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="askWhenBlocked"><span>Ask when blocked</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="persist"><span>Keep going until done</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="subagents"><span>Use subagents when helpful</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="parallel"><span>Prefer parallel tool use</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="inspectFirst"><span>Inspect the repo first</span></label>
+          <label class="rd-check pr-check" data-pr-show="fix,diagnose,review,security,performance"><input type="checkbox" data-pr="autoDiagnose"><span>Diagnose before changing</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="askWhenBlocked"><span>Ask when blocked</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="persist"><span>Keep going until done</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="subagents"><span>Use subagents when helpful</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="parallel"><span>Prefer parallel tool use</span></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card" data-pr-mode="implement">
-        <h2 class="pr-card-title">Implementation constraints</h2>
+      <section class="rd-panel pr-card" data-pr-mode="implement">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Implementation constraints</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-checks">
-          <label class="pr-check"><input type="checkbox" data-pr="smallestChange"><span>Smallest change that works</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="preserveBehavior"><span>Preserve existing behavior</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="avoidDeps"><span>Avoid new dependencies</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="respectChanges"><span>Respect existing changes</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="smallestChange"><span>Smallest change that works</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="preserveBehavior"><span>Preserve existing behavior</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="avoidDeps"><span>Avoid new dependencies</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="respectChanges"><span>Respect existing changes</span></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card" data-pr-show="review,security,performance,diagnose">
-        <h2 class="pr-card-title">Finding requirements</h2>
+      <section class="rd-panel pr-card" data-pr-show="review,security,performance,diagnose">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Finding requirements</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-checks">
-          <label class="pr-check"><input type="checkbox" data-pr="issueOnly"><span>Issues only, no praise</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="focusCorrectness"><span>Focus on correctness</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="focusTests"><span>Focus on tests</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="focusSecurity"><span>Focus on security</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="focusPerformance"><span>Focus on performance</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="focusConcurrency"><span>Focus on concurrency</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="ignoreStyle"><span>Ignore linter-level style</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="fileEvidence"><span>Cite file and line</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="includeImpact"><span>Include impact</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="includeFix"><span>Include a concrete fix</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="issueOnly"><span>Issues only, no praise</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="focusCorrectness"><span>Focus on correctness</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="focusTests"><span>Focus on tests</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="focusSecurity"><span>Focus on security</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="focusPerformance"><span>Focus on performance</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="focusConcurrency"><span>Focus on concurrency</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="ignoreStyle"><span>Ignore linter-level style</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="fileEvidence"><span>Cite file and line</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="includeImpact"><span>Include impact</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="includeFix"><span>Include a concrete fix</span></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card" data-pr-show="frontend">
-        <h2 class="pr-card-title">Frontend quality</h2>
+      <section class="rd-panel pr-card" data-pr-show="frontend">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Frontend quality</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-checks">
-          <label class="pr-check"><input type="checkbox" data-pr="preserveDesign"><span>Preserve the design system</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="responsive"><span>Responsive layout</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="accessibility"><span>Keyboard and screen-reader access</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="avoidGenericUi"><span>Avoid generic UI</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="preserveDesign"><span>Preserve the design system</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="responsive"><span>Responsive layout</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="accessibility"><span>Keyboard and screen-reader access</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="avoidGenericUi"><span>Avoid generic UI</span></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card" data-pr-show="database">
-        <h2 class="pr-card-title">Database safety</h2>
+      <section class="rd-panel pr-card" data-pr-show="database">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Database safety</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-checks">
-          <label class="pr-check"><input type="checkbox" data-pr="migrationSafety"><span>Additive, production-safe schema changes</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="dataIntegrity"><span>Preserve data integrity</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="rollback"><span>Plan rollback</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="queryPerformance"><span>Watch query performance</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="migrationSafety"><span>Additive, production-safe schema changes</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="dataIntegrity"><span>Preserve data integrity</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="rollback"><span>Plan rollback</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="queryPerformance"><span>Watch query performance</span></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card" data-pr-show="research,plan">
-        <h2 class="pr-card-title">Research and planning</h2>
+      <section class="rd-panel pr-card" data-pr-show="research,plan">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Research and planning</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-checks">
-          <label class="pr-check"><input type="checkbox" data-pr="gatherEvidence"><span>Ground in inspected evidence</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="compareOptions"><span>Compare alternatives</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="identifyUnknowns"><span>Call out unknowns</span></label>
-          <label class="pr-check" data-pr-show="plan"><input type="checkbox" data-pr="implementationReady"><span>Implementation-ready plan</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="gatherEvidence"><span>Ground in inspected evidence</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="compareOptions"><span>Compare alternatives</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="identifyUnknowns"><span>Call out unknowns</span></label>
+          <label class="rd-check pr-check" data-pr-show="plan"><input type="checkbox" data-pr="implementationReady"><span>Implementation-ready plan</span></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card">
-        <h2 class="pr-card-title">Instruction packs</h2>
+      <section class="rd-panel pr-card">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Instruction packs</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-checks">
-          <label class="pr-check"><input type="checkbox" data-pr="skillDiagnosis"><span>Systematic diagnosis</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="skillVerification"><span>Verify before completion</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="skillSecurity"><span>Security-first</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="skillPerformance"><span>Measure before optimizing</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="skillResearch"><span>Evidence-backed research</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="skillGit"><span>Scoped git hygiene</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="skillFrontend"><span>Frontend craft</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="skillDatabase"><span>Database operations</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="skillDiagnosis"><span>Systematic diagnosis</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="skillVerification"><span>Verify before completion</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="skillSecurity"><span>Security-first</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="skillPerformance"><span>Measure before optimizing</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="skillResearch"><span>Evidence-backed research</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="skillGit"><span>Scoped git hygiene</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="skillFrontend"><span>Frontend craft</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="skillDatabase"><span>Database operations</span></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card">
-        <h2 class="pr-card-title">Context</h2>
+      <section class="rd-panel pr-card">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Context</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-fields">
-          <label class="pr-field"><span>Background and evidence</span><textarea class="form-input" data-pr="background" rows="3" maxlength="50000"></textarea></label>
-          <label class="pr-field"><span>Additional constraints</span><textarea class="form-input" data-pr="constraints" rows="2" maxlength="50000"></textarea></label>
-          <label class="pr-field"><span>Non-goals</span><textarea class="form-input" data-pr="nonGoals" rows="2" maxlength="50000"></textarea></label>
-          <label class="pr-field"><span>Success criteria</span><textarea class="form-input" data-pr="successCriteria" rows="2" maxlength="50000"></textarea></label>
+          <label class="rd-field pr-field"><span class="rd-field-label">Background and evidence</span><textarea class="form-input" data-pr="background" rows="3" maxlength="50000"></textarea></label>
+          <label class="rd-field pr-field"><span class="rd-field-label">Additional constraints</span><textarea class="form-input" data-pr="constraints" rows="2" maxlength="50000"></textarea></label>
+          <label class="rd-field pr-field"><span class="rd-field-label">Non-goals</span><textarea class="form-input" data-pr="nonGoals" rows="2" maxlength="50000"></textarea></label>
+          <label class="rd-field pr-field"><span class="rd-field-label">Success criteria</span><textarea class="form-input" data-pr="successCriteria" rows="2" maxlength="50000"></textarea></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-card">
-        <h2 class="pr-card-title">Verification</h2>
+      <section class="rd-panel pr-card">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Verification</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-checks">
-          <label class="pr-check"><input type="checkbox" data-pr="runTests"><span>Run tests</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="runFormat"><span>Run formatter</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="runLint"><span>Run linter</span></label>
-          <label class="pr-check"><input type="checkbox" data-pr="runBuild"><span>Run build</span></label>
-          <label class="pr-check" data-pr-show="delivery"><input type="checkbox" data-pr="deployCheck"><span>Verify deploy checks</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="runTests"><span>Run tests</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="runFormat"><span>Run formatter</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="runLint"><span>Run linter</span></label>
+          <label class="rd-check pr-check"><input type="checkbox" data-pr="runBuild"><span>Run build</span></label>
+          <label class="rd-check pr-check" data-pr-show="delivery"><input type="checkbox" data-pr="deployCheck"><span>Verify deploy checks</span></label>
         </div>
-        <label class="pr-field pr-field-spaced"><span>Custom commands</span><textarea class="form-input" data-pr="customCommands" rows="2" maxlength="50000" placeholder="Optional commands to run"></textarea></label>
-      </div>
+        <label class="rd-field pr-field"><span class="rd-field-label">Custom commands</span><textarea class="form-input" data-pr="customCommands" rows="2" maxlength="50000" placeholder="Optional commands to run"></textarea></label>
+        </div>
+      </section>
 
-      <div class="pr-card">
-        <h2 class="pr-card-title">Response</h2>
+      <section class="rd-panel pr-card">
+        <header class="rd-panel-head"><h2 class="rd-panel-title">Response</h2></header>
+        <div class="rd-panel-body">
         <div class="pr-fields">
           <div class="pr-grid-2">
-            <label class="pr-field"><span>Verbosity</span>
+            <label class="rd-field pr-field"><span class="rd-field-label">Verbosity</span>
               <select class="form-input" data-pr="verbosity">
                 <option value="">Default</option>
                 <option value="concise">Concise</option>
                 <option value="detailed">Detailed</option>
               </select>
             </label>
-            <label class="pr-field"><span>Format</span>
+            <label class="rd-field pr-field"><span class="rd-field-label">Format</span>
               <select class="form-input" data-pr="format">
                 <option value="">Default</option>
                 <option value="plan">Plan</option>
@@ -227,7 +257,7 @@
               </select>
             </label>
           </div>
-          <label class="pr-field"><span>Caveman compression</span>
+          <label class="rd-field pr-field"><span class="rd-field-label">Caveman compression</span>
             <select class="form-input" data-pr="caveman">
               <option value="">Off</option>
               <option value="lite">Lite</option>
@@ -235,21 +265,25 @@
               <option value="ultra">Ultra</option>
             </select>
           </label>
-          <label class="pr-field"><span>Custom instructions</span><textarea class="form-input" data-pr="customInstructions" rows="3" maxlength="50000"></textarea></label>
+          <label class="rd-field pr-field"><span class="rd-field-label">Custom instructions</span><textarea class="form-input" data-pr="customInstructions" rows="3" maxlength="50000"></textarea></label>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <div class="pr-actions">
-        <button class="pr-btn pr-btn-primary" type="button" id="prCopy" disabled>Copy</button>
-        <button class="pr-btn" type="button" id="prDownload" disabled>Download .txt</button>
-        <button class="pr-btn" type="button" id="prRestore">Restore recommended</button>
-        <button class="pr-btn" type="button" id="prReset">Reset</button>
-        <span class="pr-status" id="prStatus"></span>
+      <div class="pr-form-foot">
+        <button class="rd-btn rd-btn-ghost" type="button" id="prRestore">Restore recommended</button>
+        <button class="rd-btn rd-btn-ghost" type="button" id="prReset">Reset</button>
       </div>
     </form>
 
-    <aside class="pr-preview" aria-label="Composed prompt">
-      <div class="pr-preview-head"><span>Composed prompt</span></div>
+    <aside class="rd-panel pr-preview" aria-labelledby="prPreviewTitle">
+      <header class="rd-panel-head">
+        <div><h2 class="rd-panel-title" id="prPreviewTitle">Composed prompt</h2><p class="rd-panel-sub pr-status" id="prStatus" role="status"></p></div>
+        <div class="pr-preview-actions">
+          <button class="rd-btn rd-btn-sm rd-btn-ghost" type="button" id="prDownload" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Download .txt</button>
+          <button class="rd-btn rd-btn-sm rd-btn-primary" type="button" id="prCopy" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>Copy</button>
+        </div>
+      </header>
       <pre id="prPreview">No objective provided yet.</pre>
     </aside>
   </section>
@@ -260,7 +294,7 @@
   <div class="rd-modal-panel">
     <div class="rd-modal-head">
       <h3 class="rd-h3" id="prModalTitle"></h3>
-      <button class="rd-modal-close" type="button" data-pr-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      <button class="rd-modal-close" type="button" data-pr-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
     </div>
     <div class="rd-modal-body">
       <p class="pr-detail-blurb" id="prModalBlurb"></p>
@@ -268,10 +302,10 @@
       <div class="pr-detail-flags" id="prModalFlags"></div>
       <pre class="pr-body" id="prModalBody"></pre>
       <div class="pr-detail-actions">
-        <button class="pr-btn pr-btn-primary" type="button" id="prModalCopy">Copy</button>
-        <button class="pr-btn" type="button" id="prModalLink">Copy link</button>
-        <button class="pr-btn" type="button" id="prModalCustomize">Customize</button>
-        <button class="pr-btn pr-fb-btn" type="button" id="prModalFeedback">Submit feedback</button>
+        <button class="rd-btn rd-btn-ghost pr-fb-btn" type="button" id="prModalFeedback">Submit feedback</button>
+        <button class="rd-btn rd-btn-ghost" type="button" id="prModalCustomize">Customize</button>
+        <button class="rd-btn rd-btn-ghost" type="button" id="prModalLink">Copy link</button>
+        <button class="rd-btn rd-btn-primary" type="button" id="prModalCopy">Copy</button>
       </div>
     </div>
   </div>
@@ -282,18 +316,19 @@
   <div class="rd-modal-panel">
     <div class="rd-modal-head">
       <h3 class="rd-h3" id="prFbTitle">Submit feedback</h3>
-      <button class="rd-modal-close" type="button" data-pr-fb-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      <button class="rd-modal-close" type="button" data-pr-fb-close aria-label="Close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
     </div>
     <div class="rd-modal-body">
       <p class="pr-fb-lead" id="prFbLead"></p>
       <form id="prFbForm" autocomplete="off">
         <input class="pr-hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
-        <label class="pr-field"><span>Your feedback</span>
+        <label class="rd-field pr-field"><span class="rd-field-label">Your feedback</span>
           <textarea class="form-input pr-tall" id="prFbMessage" maxlength="2000" rows="6" required></textarea>
         </label>
-        <div class="pr-actions">
-          <button class="pr-btn pr-btn-primary" type="submit" id="prFbSubmit">Send</button>
-          <span class="pr-status" id="prFbStatus"></span>
+        <div class="pr-fb-foot">
+          <span class="pr-status" id="prFbStatus" role="status"></span>
+          <button class="rd-btn rd-btn-ghost" type="button" data-pr-fb-close>Cancel</button>
+          <button class="rd-btn rd-btn-primary" type="submit" id="prFbSubmit">Send</button>
         </div>
       </form>
     </div>

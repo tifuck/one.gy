@@ -1,40 +1,43 @@
-{# Frost "preparing your download" page — server-side (Fernet) decrypt progress.
-   Replaces the legacy templates/preparing_download.html. Polls
-   /download/progress/<prep_id> and then pulls /download/prepared/<prep_id>
-   through a hidden iframe so the page is not navigated away from. #}
+{# "Preparing your download" — server-side (Fernet) decrypt progress for large
+   files. Polls /download/progress/<prep_id> and then pulls
+   /download/prepared/<prep_id> through a hidden iframe so the page is not
+   navigated away from. #}
 {% extends 'base.html' %}
-{% block title %}PREPARING DOWNLOAD{% endblock %}
+{% set ui_v2 = true %}
+{% block title %}Preparing download{% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('gateway.css') }}">{% endblock %}
 
 {% block content %}
+{% set ext = get_compound_ext(filename).rsplit('.', 1)[-1] %}
 <section class="gw-section">
   <div class="gw-card">
-    <div class="gw-ico" id="statusIcon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg>
+    <div class="gw-ico is-accent" id="statusIcon">
+      <svg class="gw-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8" opacity=".25"/><path d="M20 12a8 8 0 0 0-8-8"/></svg>
     </div>
-    <div class="gw-rule"></div>
     <h1 class="gw-title" id="statusTitle">Preparing your download</h1>
-    <p class="gw-sub" id="statusSubtitle">Decrypting {{ filename }}…</p>
+    <p class="gw-sub" id="statusSubtitle">Decrypting on the server. The download starts by itself when it is ready.</p>
 
-    <div class="gw-prog">
-      <div class="gw-prog-head" id="prepName">{{ filename }}</div>
-      <div class="gw-prog-body">
-        <div class="gw-prog-track"><div class="gw-prog-fill" id="progressFill"></div></div>
-        <div class="gw-prog-stats">
-          <div class="gw-prog-stat"><span class="gw-prog-label">Status</span><span class="gw-prog-value" id="prepStatus">Decrypting</span></div>
-          <div class="gw-prog-stat"><span class="gw-prog-label">Progress</span><span class="gw-prog-value" id="progressText">0%</span></div>
-          <div class="gw-prog-stat"><span class="gw-prog-label">Mode</span><span class="gw-prog-value">Server-side</span></div>
-        </div>
+    <div class="gw-file">
+      <span class="gw-doc" data-ext="{{ ext }}"><svg viewBox="0 0 40 48" aria-hidden="true"><path class="gw-page-body" d="M7 1.5h18.5L37.5 13.5V42A4.5 4.5 0 0 1 33 46.5H7A4.5 4.5 0 0 1 2.5 42V6A4.5 4.5 0 0 1 7 1.5z"/><path class="gw-page-fold" d="M25.5 1.5v8.5a3.5 3.5 0 0 0 3.5 3.5h8.5z"/></svg><span class="gw-doc-ext">{{ ext[:4] }}</span></span>
+      <div class="gw-file-text">
+        <div class="gw-file-name" id="prepName">{{ filename }}</div>
+        <div class="gw-file-meta">Server-side encrypted</div>
       </div>
     </div>
 
-    <p class="gw-note" id="statusNote">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-      This may take a moment for large files
-    </p>
-    <div class="gw-actions" id="retryActions" hidden>
-      <button type="button" class="gw-btn gw-btn-primary" id="retryPolling">Retry status check</button>
+    <div class="gw-prog">
+      <div class="gw-prog-track"><div class="gw-prog-fill" id="progressFill"></div></div>
+      <div class="gw-prog-row">
+        <span class="gw-prog-status" id="prepStatus">Decrypting</span>
+        <span class="gw-prog-pct" id="progressText">0%</span>
+      </div>
     </div>
+
+    <div class="gw-actions" id="retryActions" hidden>
+      <button type="button" class="rd-btn rd-btn-primary rd-btn-lg" id="retryPolling">Retry status check</button>
+    </div>
+
+    <p class="gw-note" id="statusNote">This may take a moment for large files. Keep this page open.</p>
   </div>
 </section>
 
@@ -53,20 +56,29 @@ const statusEl = document.getElementById('prepStatus')
 const noteEl = document.getElementById('statusNote')
 const retryActionsEl = document.getElementById('retryActions')
 const retryButtonEl = document.getElementById('retryPolling')
+const iconEl = document.getElementById('statusIcon')
+const ICONS = {
+  accent: iconEl.innerHTML,
+  good: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+  bad: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16.5h.01"/></svg>'
+}
+function setTone(tone) { iconEl.className = 'gw-ico is-' + tone; iconEl.innerHTML = ICONS[tone] }
+// Server errors arrive in caps ("TOO MANY ..."); show them in sentence case.
+function sentence(s) { return String(s).toLowerCase().replace(/(^|[.!?]\s+)([a-z])/g, function (m, p, c) { return p + c.toUpperCase() }) }
 
 async function pollProgress() {
   const startedAt = Date.now()
   let delay = 1000
   while (polling) {
     if (Date.now() - startedAt >= POLL_DEADLINE_MS) {
-      showError('STATUS CHECK TIMED OUT. THE DOWNLOAD MAY STILL BE PREPARING.', true)
+      showError('The status check timed out. The download may still be preparing.', true)
       return
     }
     const controller = new AbortController()
     const timeout = setTimeout(function () { controller.abort() }, FETCH_TIMEOUT_MS)
     try {
       const resp = await fetch('/download/progress/' + prepId, { signal: controller.signal })
-      if (!resp.ok) { showError('SERVER RETURNED ' + resp.status, false); return }
+      if (!resp.ok) { showError('The server answered HTTP ' + resp.status + '.', false); return }
       const data = await resp.json()
       const pct = Math.round(data.progress || 0)
       fillEl.style.width = pct + '%'
@@ -78,8 +90,9 @@ async function pollProgress() {
         fillEl.classList.add('is-done')
         textEl.textContent = '100%'
         statusEl.textContent = 'Ready'
+        setTone('good')
         titleEl.textContent = 'Download ready'
-        subtitleEl.textContent = 'Starting download…'
+        subtitleEl.textContent = 'Starting your download…'
         noteEl.textContent = ''
 
         // Trigger download via hidden iframe so we do not navigate away
@@ -89,14 +102,14 @@ async function pollProgress() {
         document.body.appendChild(iframe)
 
         setTimeout(function () {
-          subtitleEl.textContent = 'The download request was sent'
-          noteEl.textContent = 'If no download appeared, return to the original link and try again'
+          subtitleEl.textContent = 'The download was sent to your browser.'
+          noteEl.textContent = 'If nothing was downloaded, open the original link again.'
         }, 2000)
         return
       }
 
       if (data.status === 'error') {
-        showError(data.error || 'AN ERROR OCCURRED DURING DECRYPTION', false)
+        showError(data.error ? sentence(data.error) : 'An error occurred during decryption.', false)
         return
       }
       delay = Math.min(Math.ceil(delay * 1.5), 10000)
@@ -112,14 +125,15 @@ async function pollProgress() {
 
 function showError(msg, canRetry) {
   polling = false
+  setTone('bad')
   titleEl.textContent = 'Download failed'
   subtitleEl.textContent = msg
   statusEl.textContent = 'Failed'
   fillEl.style.width = '100%'
   fillEl.classList.add('is-error')
   retryMode = canRetry ? 'poll' : 'return'
-  retryButtonEl.textContent = canRetry ? 'Retry status check' : 'Return and retry download'
-  noteEl.textContent = canRetry ? 'Retry the status check without restarting the decryption job' : 'This preparation cannot be resumed'
+  retryButtonEl.textContent = canRetry ? 'Retry status check' : 'Go back and try again'
+  noteEl.textContent = canRetry ? 'Retrying checks the status again without restarting the decryption.' : 'This preparation cannot be resumed.'
   retryActionsEl.hidden = false
 }
 
@@ -130,11 +144,12 @@ retryButtonEl.addEventListener('click', function () {
   }
   polling = true
   retryActionsEl.hidden = true
+  setTone('accent')
   titleEl.textContent = 'Preparing your download'
-  subtitleEl.textContent = 'Checking decryption progress…'
+  subtitleEl.textContent = 'Checking the decryption progress…'
   statusEl.textContent = 'Decrypting'
   fillEl.classList.remove('is-error')
-  noteEl.textContent = 'This may take a moment for large files'
+  noteEl.textContent = 'This may take a moment for large files. Keep this page open.'
   pollProgress()
 })
 

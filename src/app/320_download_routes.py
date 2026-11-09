@@ -293,13 +293,10 @@ def download_file_logic(file_id):
         print(f'[DOWNLOAD] File is_e2e_encrypted: {file.is_e2e_encrypted}')
         print(f'[DOWNLOAD] Encrypted file size: {os.path.getsize(encrypted_path)} bytes')
 
-        import mimetypes
         if file.orig_name.endswith('.zip'):
             mimetype = 'application/zip'
         else:
-            mimetype, _ = mimetypes.guess_type(file.orig_name)
-            if not mimetype:
-                mimetype = 'application/octet-stream'
+            mimetype = safe_served_mimetype(file.orig_name)
 
         # For large files, decrypt to a temp file first then serve.
         # Streaming decryption directly over SSL causes "bad record mac" errors

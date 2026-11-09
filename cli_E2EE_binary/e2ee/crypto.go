@@ -1,4 +1,9 @@
-package main
+// Package e2ee is the ONE.GY end-to-end encryption format, shared by the CLI
+// (cli_E2EE_binary) and the desktop engine. It must stay byte-compatible with
+// static/crypto.js, static/crypto-worker.js and tests/crypto_helper.js.
+//
+// crypto.go owns the chunked file container and name encryption.
+package e2ee
 
 import (
 	"crypto/aes"
@@ -54,8 +59,8 @@ func isSupportedFileFormatVersion(version byte) bool {
 	return version == 1 || version == 2
 }
 
-// randomBytes generates n cryptographically random bytes.
-func randomBytes(n int) ([]byte, error) {
+// RandomBytes generates n cryptographically random bytes.
+func RandomBytes(n int) ([]byte, error) {
 	b := make([]byte, n)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
 		return nil, fmt.Errorf("failed to generate random bytes: %w", err)
@@ -77,7 +82,7 @@ func deriveChunkNonce(baseNonce []byte, chunkIndex uint32) []byte {
 	return derived
 }
 
-// encryptFileData encrypts plaintext using chunked AES-256-GCM.
+// EncryptData encrypts plaintext using chunked AES-256-GCM.
 // Returns the encrypted file bytes with header, matching crypto.js:encryptFileData.
 //
 // File format:
@@ -85,7 +90,7 @@ func deriveChunkNonce(baseNonce []byte, chunkIndex uint32) []byte {
 //	[1 byte version][4 bytes chunk_count BE][12 bytes base_nonce]
 //	For each chunk:
 //	  [4 bytes encrypted_chunk_length BE][encrypted_chunk_data + 16-byte GCM tag]
-func encryptFileData(plaintext []byte, fileKey []byte) ([]byte, error) {
+func EncryptData(plaintext []byte, fileKey []byte) ([]byte, error) {
 	block, err := aes.NewCipher(fileKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
@@ -101,7 +106,7 @@ func encryptFileData(plaintext []byte, fileKey []byte) ([]byte, error) {
 		chunkCount = 1 // empty files produce 1 chunk, matching Math.ceil(0/CHUNK_SIZE) || 1
 	}
 
-	baseNonce, err := randomBytes(NonceSize)
+	baseNonce, err := RandomBytes(NonceSize)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +166,7 @@ func errSourceSizeMismatch(expected, actual int64) error {
 		expected, actual)
 }
 
-// encryptFileStream encrypts plaintext from r to w without buffering the full file.
+// EncryptStream encrypts plaintext from r to w without buffering the full file.
 //
 // totalSize is the caller's declared plaintext length (an os.Stat / fstat taken
 // before the read started) and it is BINDING: the header commits to a chunk
@@ -175,7 +180,7 @@ func errSourceSizeMismatch(expected, actual int64) error {
 // uploaded, and handed out as a share URL that decrypted to a SILENTLY
 // TRUNCATED file — no error on either side. Both a short read and a source that
 // still has data left after totalSize are now hard errors.
-func encryptFileStream(r io.Reader, w io.Writer, fileKey []byte, totalSize int64) error {
+func EncryptStream(r io.Reader, w io.Writer, fileKey []byte, totalSize int64) error {
 	if totalSize < 0 {
 		return fmt.Errorf("invalid source size: %d bytes", totalSize)
 	}
@@ -194,7 +199,7 @@ func encryptFileStream(r io.Reader, w io.Writer, fileKey []byte, totalSize int64
 		chunkCount = 1
 	}
 
-	baseNonce, err := randomBytes(NonceSize)
+	baseNonce, err := RandomBytes(NonceSize)
 	if err != nil {
 		return err
 	}
@@ -263,9 +268,11 @@ func encryptFileStream(r io.Reader, w io.Writer, fileKey []byte, totalSize int64
 	return nil
 }
 
-// encryptFileName encrypts a UTF-8 filename using the file key.
+// EncryptName encrypts a UTF-8 filename using the file key.
 // Matches crypto.js:encryptFileName — single AES-GCM operation (not chunked).
-func encryptFileName(filename string, fileKey []byte) (encryptedName []byte, nonce []byte, err error) {
+// Folder names use the same construction under the folder's name key
+// (crypto.js:encryptFolderName).
+func EncryptName(filename string, fileKey []byte) (encryptedName []byte, nonce []byte, err error) {
 	block, err := aes.NewCipher(fileKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create AES cipher for filename: %w", err)
@@ -274,16 +281,16 @@ func encryptFileName(filename string, fileKey []byte) (encryptedName []byte, non
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create GCM for filename: %w", err)
 	}
-	nonce, err = randomBytes(NonceSize)
+	nonce, err = RandomBytes(NonceSize)
 	if err != nil {
 		return nil, nil, err
 	}
 	return gcm.Seal(nil, nonce, []byte(filename), nil), nonce, nil
 }
 
-// extractExtension mirrors crypto.js:extractExtension. The extension is sent in
+// ExtractExtension mirrors crypto.js:extractExtension. The extension is sent in
 // the clear, so anything but a short lowercase alphanumeric suffix is dropped.
-func extractExtension(filename string) string {
+func ExtractExtension(filename string) string {
 	dot := strings.LastIndex(filename, ".")
 	if dot <= 0 {
 		return ""
@@ -300,14 +307,15 @@ func extractExtension(filename string) string {
 	return "." + ext
 }
 
-// decryptFileName decrypts an AES-256-GCM encrypted filename using the file key.
+// DecryptName decrypts an AES-256-GCM encrypted filename using the file key.
 // Matches crypto.js:decryptFileName — single AES-GCM operation (not chunked).
-func decryptFileName(encryptedNameB64, nameNonceB64 string, fileKey []byte) (string, error) {
-	ciphertext, err := decodeBase64(encryptedNameB64)
+// Also decrypts folder names with the folder name key (crypto.js:decryptFolderName).
+func DecryptName(encryptedNameB64, nameNonceB64 string, fileKey []byte) (string, error) {
+	ciphertext, err := DecodeBase64(encryptedNameB64)
 	if err != nil {
 		return "", fmt.Errorf("could not decode encrypted name: %w", err)
 	}
-	nonce, err := decodeBase64(nameNonceB64)
+	nonce, err := DecodeBase64(nameNonceB64)
 	if err != nil {
 		return "", fmt.Errorf("could not decode name nonce: %w", err)
 	}
@@ -335,9 +343,9 @@ func decryptFileName(encryptedNameB64, nameNonceB64 string, fileKey []byte) (str
 	return string(plaintext), nil
 }
 
-// decryptFileData decrypts chunked AES-256-GCM encrypted data.
+// DecryptData decrypts chunked AES-256-GCM encrypted data.
 // Input is the full encrypted file bytes with header, matching crypto.js:decryptFileData.
-func decryptFileData(encryptedData []byte, fileKey []byte) ([]byte, error) {
+func DecryptData(encryptedData []byte, fileKey []byte) ([]byte, error) {
 	if len(encryptedData) < HeaderSize {
 		return nil, fmt.Errorf("encrypted data too short for header (%d bytes)", len(encryptedData))
 	}
@@ -412,8 +420,8 @@ func decryptFileData(encryptedData []byte, fileKey []byte) ([]byte, error) {
 	return decrypted, nil
 }
 
-// decryptFileStream decrypts chunked AES-256-GCM data from r to w.
-func decryptFileStream(r io.Reader, w io.Writer, fileKey []byte) (int64, error) {
+// DecryptStream decrypts chunked AES-256-GCM data from r to w.
+func DecryptStream(r io.Reader, w io.Writer, fileKey []byte) (int64, error) {
 	header := make([]byte, HeaderSize)
 	if _, err := io.ReadFull(r, header); err != nil {
 		return 0, fmt.Errorf("encrypted data too short for header: %w", err)
@@ -427,7 +435,7 @@ func decryptFileStream(r io.Reader, w io.Writer, fileKey []byte) (int64, error) 
 	chunkCount := binary.BigEndian.Uint32(header[1:5])
 	baseNonce := header[5 : 5+NonceSize]
 
-	// See decryptFileData: a 0-chunk header would decrypt to an empty file with
+	// See DecryptData: a 0-chunk header would decrypt to an empty file with
 	// no error at all. Refuse it loudly instead of writing a 0-byte "download".
 	if chunkCount == 0 {
 		return 0, fmt.Errorf("invalid encrypted container: header declares 0 chunks")

@@ -10,6 +10,8 @@ def delete_user_file(file_id):
         file = File.query.filter_by(id=file_id, registered_user_id=user.id, is_trashed=False).first()
         if not file:
             return jsonify({'error': 'File not found'}), 404
+        if _backup_read_only(file.folder_id):
+            return _backup_read_only_error()
 
         # Move to trash instead of permanent delete
         file.is_trashed = True
@@ -40,6 +42,8 @@ def rename_file(file_id):
     file = File.query.filter_by(id=file_id, registered_user_id=user.id, is_trashed=False).first()
     if not file:
         return jsonify({'error': 'File not found'}), 404
+    if _backup_read_only(file.folder_id):
+        return _backup_read_only_error()
     
     new_name = request.form.get('name')
     if not new_name:
@@ -141,20 +145,10 @@ def file_preview(file_id):
         print(f'[PREVIEW] Refusing to preview {file.id}: on-disk payload size does not match disk_size')
         abort(500)
 
-    import mimetypes
-    mimetype, _ = mimetypes.guess_type(file.orig_name)
-
     # Only types that cannot run script on this origin render inline; anything
     # else (html, svg, every +xml flavour, js, ...) is an opaque download.
-    if mimetype and (
-        mimetype in ('application/pdf', 'text/plain')
-        or mimetype.startswith(('audio/', 'video/'))
-        or (mimetype.startswith('image/') and mimetype != 'image/svg+xml')
-    ):
-        _preview_disposition = 'inline'
-    else:
-        mimetype = 'application/octet-stream'
-        _preview_disposition = 'attachment'
+    mimetype = safe_served_mimetype(file.orig_name)
+    _preview_disposition = 'attachment' if mimetype == 'application/octet-stream' else 'inline'
 
     # Owner previews never count toward max_downloads.
     try:
@@ -313,8 +307,15 @@ def file_create_blank():
         folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
         if not folder:
             return jsonify({'error': 'FOLDER NOT FOUND'}), 404
+        if _backup_read_only(folder_id):
+            return _backup_read_only_error()
 
     is_e2e = request.form.get('e2e') == 'true'
+    if not is_e2e and request.form.get('allow_unencrypted') != 'true':
+        return jsonify({
+            'error': 'UNENCRYPTED FILE NOT CONFIRMED. USE E2E ENCRYPTION OR CONFIRM CREATING IT WITHOUT.',
+            'encryption_required': True,
+        }), 400
     file_id = str(uuid.uuid4())
     management_token = str(uuid.uuid4())
     encrypted_filename = f'{file_id}.enc'
@@ -639,6 +640,8 @@ def file_save_content(file_id):
         if file.is_trashed:
             storage.rollback_staged_file(_m4_staged_name)
             return jsonify({'error': 'CANNOT EDIT TRASHED FILES'}), 410
+        if _backup_read_only(file.folder_id):
+            return _backup_read_only_error()
 
         if file.is_e2e_encrypted:
             # E2E: client sends pre-encrypted blob + key metadata
@@ -721,12 +724,19 @@ def file_save_content(file_id):
                     storage.rollback_staged_file(file.filename)
                     return jsonify({'error': f'Storage limit exceeded. You have {registered_owner.get_storage_remaining_gb():.2f}GB remaining.'}), 413
 
+            # The version keeps the old file key, so it stays decryptable after the rotation below.
+            version = _snapshot_file_version(file, encrypted_size)
             file.size = encrypted_size
             file.disk_size = encrypted_size
             file.content_hash = encrypted_hash
             file.payload_checksum = encrypted_hash
             file.encrypted_file_key = encrypted_file_key
             file.file_key_nonce = file_key_nonce
+            if registered_owner:
+                # New content under a new key: the sync meta is stale and undecryptable.
+                file.content_version = int(file.content_version or 1) + 1
+                file.encrypted_meta = None
+                file.meta_nonce = None
 
             # Preserve file_key_salt for passphrase-wrapped keys (guest E2E uploads)
             file_key_salt = request.form.get('file_key_salt')
@@ -778,6 +788,7 @@ def file_save_content(file_id):
                 # while the disk still holds the old ciphertext.
                 db.session.rollback()
                 storage.rollback_staged_file(_m4_staged_name)
+                _file_version_discard(version)
                 if thumb_written:
                     _undo_thumbnail_write()
 
@@ -838,6 +849,7 @@ def file_save_content(file_id):
             storage.finalize_staged_file(file.filename)
 
             _commit_file_post_finalize_state(file.id, 'E2E SAVE-CONTENT')
+            _file_version_committed(version)
 
             print(f'[FILE] Saved edited E2E content for {file.orig_name} (plain {original_size}, encrypted {encrypted_size} bytes)')
             return jsonify({'success': True, 'new_size': encrypted_size, 'new_size_formatted': format_bytes_for_filesize(encrypted_size), 'has_thumbnail': has_thumb})
@@ -877,11 +889,14 @@ def file_save_content(file_id):
                     storage.rollback_staged_file(file.filename)
                     return jsonify({'error': f'Storage limit exceeded. You have {registered_owner.get_storage_remaining_gb():.2f}GB remaining.'}), 413
 
+            version = _snapshot_file_version(file, encrypted_disk_size)
             # Update file size
             file.size = plain_size
             file.disk_size = encrypted_disk_size
             file.content_hash = content_hash
             file.payload_checksum = payload_checksum
+            if registered_owner:
+                file.content_version = int(file.content_version or 1) + 1
 
             # Mark thumbnail as cleared (disk deletion deferred to after commit)
             file.has_thumbnail = False
@@ -893,12 +908,15 @@ def file_save_content(file_id):
                 'payload_checksum': payload_checksum,
             })
             if _prep_err:
+                db.session.rollback()
+                _file_version_discard(version)
                 return _prep_err
             try:
                 db.session.commit()
             except Exception:
                 db.session.rollback()
                 storage.rollback_staged_file(file.filename)
+                _file_version_discard(version)
                 raise
 
             # DB commit succeeded — safe to delete old thumbnail from disk
@@ -910,6 +928,7 @@ def file_save_content(file_id):
             storage.finalize_staged_file(file.filename)
 
             _commit_file_post_finalize_state(file.id, 'FERNET SAVE-CONTENT')
+            _file_version_committed(version)
 
             # Regenerate thumbnail in the bounded background queue.
             _schedule_thumbnail_bg(file_id, log_prefix='FILE')

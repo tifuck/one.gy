@@ -345,6 +345,7 @@ def _run_startup_maintenance():
             # against the raw local file length.
             File.query.filter(File.id.in_(size_mismatch_ids)).update(
                 {File.size: File.disk_size}, synchronize_session=False)
+            _bump_sync_seq_bulk(None, File, size_mismatch_ids)
             e2e_size_fixed += len(size_mismatch_ids)
             file_replication_requeue_ids.update(size_mismatch_ids)
             print(f'[DB] Fixing E2EE file size for {len(size_mismatch_ids)} file(s) from the authoritative disk_size')

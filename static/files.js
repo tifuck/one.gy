@@ -11,7 +11,7 @@
   // ---- State ---------------------------------------------------------------
   var S = {
     folderId: null,          // current folder (null = root)
-    rootName: (window.__FX_ROOT_NAME__ || 'FILES'),
+    rootName: rootLabel(window.__FX_ROOT_NAME__),
     folders: [], files: [],  // current listing (names decrypted in place)
     breadcrumbs: [],
     sidebar: [],             // flat folder tree
@@ -26,6 +26,8 @@
     treeOpen: new Set(['root']) // expanded sidebar folder ids
   }
 
+  // The server default root name is the legacy uppercase 'FILES'.
+  function rootLabel (n) { return (!n || n === 'FILES') ? 'Files' : n }
   var $ = function (id) { return document.getElementById(id) }
   var el = { view: null }
   var mobileViewMedia = window.matchMedia('(max-width:620px)')
@@ -62,8 +64,39 @@
 
   var ICON = {
     folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>',
-    file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M6 21a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2z"/></svg>',
-    lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>'
+    lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="11" rx="1"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>',
+    // Two-tone filled folder; .fx-fold-front tilts open on drop hover (files.css)
+    folderFill: '<svg class="fx-fold" viewBox="0 0 24 24" aria-hidden="true"><path class="fx-fold-back" d="M2.5 6.2A2.2 2.2 0 0 1 4.7 4h4.1c.55 0 1.08.2 1.48.58L11.8 6h7.5a2.2 2.2 0 0 1 2.2 2.2v9.6a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z"/><path class="fx-fold-front" d="M2.5 9.4A1.4 1.4 0 0 1 3.9 8h16.2a1.4 1.4 0 0 1 1.4 1.4v8.4a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z"/></svg>',
+    drive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 13.5 6 6.2A2 2 0 0 1 7.9 5h8.2a2 2 0 0 1 1.9 1.2l2.5 7.3"/><rect x="3.5" y="13.5" width="17" height="5.5" rx="1.8"/><path d="M16.5 16.25h.01"/></svg>',
+    chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 6 6 6-6 6"/></svg>'
+  }
+  // File kinds drive the type colour (data-kind → --k in files.css) and the
+  // list view's Kind column.
+  var KIND = {}
+  ;[['image', 'jpg jpeg png gif webp bmp svg heic heif tif tiff avif ico'], ['pdf', 'pdf'],
+    ['archive', 'zip rar 7z tar gz tgz bz2 xz zst iso dmg'], ['sheet', 'csv tsv xls xlsx ods numbers'],
+    ['doc', 'txt md rtf doc docx odt pages ppt pptx odp key log epub'],
+    ['code', 'js ts tsx jsx py go rs c cpp h hpp java rb php sh bash html css scss json xml yaml yml toml sql lua swift kt ini cfg conf env bat ps1 r pl diff makefile'],
+    ['audio', 'mp3 wav ogg m4a aac flac opus wma'], ['video', 'mp4 webm mov mkv avi wmv flv m4v 3gp']
+  ].forEach(function (g) { g[1].split(' ').forEach(function (e) { KIND[e] = g[0] }) })
+  var KIND_NOUN = { image: 'image', pdf: 'document', archive: 'archive', sheet: 'spreadsheet', doc: 'document', code: 'file', audio: 'audio', video: 'video', file: 'file' }
+  function kindOf (item) { var e = extOf(item.name, item.extension); return KIND[e] || (isDotenvName(item.name) ? 'code' : 'file') }
+  function kindLabel (item, isFolder) {
+    if (isFolder) return 'Folder'
+    var e = extOf(item.name, item.extension)
+    return e ? e.toUpperCase() + ' ' + KIND_NOUN[kindOf(item)] : 'File'
+  }
+  function pageIcon () {
+    return '<svg class="fx-page" viewBox="0 0 40 48" aria-hidden="true"><path class="fx-page-body" d="M7 1.5h18.5L37.5 13.5V42A4.5 4.5 0 0 1 33 46.5H7A4.5 4.5 0 0 1 2.5 42V6A4.5 4.5 0 0 1 7 1.5z"/><path class="fx-page-fold" d="M25.5 1.5v8.5a3.5 3.5 0 0 0 3.5 3.5h8.5z"/></svg>'
+  }
+  // Small glyph for rows / ghosts; large doc (page + ext label) for tiles.
+  function itemIcon (item, isFolder) {
+    if (isFolder) return '<span class="fx-ico" data-kind="folder">' + ICON.folderFill + '</span>'
+    return '<span class="fx-ico" data-kind="' + kindOf(item) + '">' + pageIcon() + '</span>'
+  }
+  function docIcon (item) {
+    var ext = extOf(item.name, item.extension)
+    return '<span class="fx-doc" data-kind="' + kindOf(item) + '">' + pageIcon() + (ext ? '<span class="fx-doc-ext">' + esc(ext.slice(0, 4)) + '</span>' : '') + '</span>'
   }
   var IMG_EXT = { jpg: 1, jpeg: 1, png: 1, gif: 1, webp: 1, bmp: 1, svg: 1 }
   var AUDIO_EXT = { mp3: 1, wav: 1, ogg: 1, m4a: 1, aac: 1, flac: 1 }
@@ -175,16 +208,34 @@
   }
 
   // ---- Data load -----------------------------------------------------------
+  // What the view currently shows ('f:<id>' | 'trash' | 'search'). A reload of
+  // the same listing (after a move, rename, upload...) swaps content in place;
+  // only real navigation dims the old listing, then fades the new one in.
+  var shownKey = null
+  var skelTimer = null
+  function beginLoad (key) {
+    var nav = key !== shownKey
+    clearTimeout(skelTimer)
+    if (nav) {
+      el.view.classList.add('is-loading')
+      skelTimer = setTimeout(skeleton, shownKey == null ? 0 : 220)
+    }
+    return nav
+  }
+  function endLoad (key) { clearTimeout(skelTimer); el.view.classList.remove('is-loading'); shownKey = key }
+
   async function loadFolder (id, opts) {
     opts = opts || {}
     var seq = newLoad()
+    var key = 'f:' + (id == null ? 'root' : id)
+    var nav = beginLoad(key)
     searchIndex = null
+    S.searchQ = ''
     S.trashMode = false
     $('fxTrashBtn').classList.remove('is-active')
     var restoreAllBtn = $('restoreAllBtn'); if (restoreAllBtn) restoreAllBtn.hidden = true
     $('fxNewFolder').hidden = false; $('fxUploadBtn').hidden = false
     if (!opts.keepSel) resetSelState()
-    skeleton()
     var url = (id == null) ? '/files/list' : '/files/list/' + id
     try {
       var r = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -201,17 +252,19 @@
       S.files = d.files || []
       S.breadcrumbs = d.breadcrumbs || []
       S.sidebar = d.sidebar_folders || []
-      if (d.root_folder_name) S.rootName = d.root_folder_name
+      if (d.root_folder_name) S.rootName = rootLabel(d.root_folder_name)
       await decryptNames(S.files, S.folders)
       await decryptNames(null, S.sidebar)
       await decryptNames(null, S.breadcrumbs)
       if (stale(seq)) return
+      if (opts.keepSel) pruneSel()
+      endLoad('f:' + (S.folderId == null ? 'root' : S.folderId))
       openActiveTreePath()
       renderStorage(d)
       renderTrashCount(d.trash_count || 0)
       renderSidebar(!S._sbAnimated); S._sbAnimated = true
       renderBreadcrumb()
-      render()
+      render(nav)
       if (window.MusicPlayer && MusicPlayer.onFolderChanged) MusicPlayer.onFolderChanged()
       updateSelbar()
       // Compare with the URL, not the previous folder: leaving /trash for the
@@ -220,15 +273,19 @@
       if (!opts.noPush && window.location.pathname !== path) history.pushState({ fx: true, folderId: S.folderId }, '', path)
     } catch (e) {
       if (stale(seq)) return
+      endLoad(null)
       S.loadFailed = true
       el.view.innerHTML = errorState('Could not load this folder.')
     }
   }
 
-  async function loadTrash () {
+  async function loadTrash (opts) {
+    opts = opts || {}
     var seq = newLoad()
+    var nav = beginLoad('trash')
     searchIndex = null
-    S.trashMode = true; resetSelState(); skeleton()
+    S.searchQ = ''
+    S.trashMode = true; resetSelState()
     $('fxNewFolder').hidden = true; $('fxUploadBtn').hidden = true
     try {
       var r = await fetch('/trash/list', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -248,16 +305,19 @@
       await decryptNames(null, S.sidebar)
       if (stale(seq)) return
       S.breadcrumbs = []
+      endLoad('trash')
       renderStorage(d)
       renderTrashCount(d.trash_count || 0)
       renderSidebar(!S._sbAnimated); S._sbAnimated = true
       renderBreadcrumb()
-      render()
+      render(nav)
       var restoreAllBtn = $('restoreAllBtn')
       if (restoreAllBtn) restoreAllBtn.hidden = !(S.files.length || S.folders.length)
       updateSelbar()
+      if (!opts.noPush && window.location.pathname !== '/trash') history.pushState({ fx: true, trash: true }, '', '/trash')
     } catch (e) {
       if (stale(seq)) return
+      endLoad(null)
       S.loadFailed = true
       S.folders = []; S.files = []; S.breadcrumbs = []
       var restoreAllBtn = $('restoreAllBtn'); if (restoreAllBtn) restoreAllBtn.hidden = true
@@ -267,13 +327,21 @@
     $('fxTrashBtn').classList.add('is-active')
   }
 
+  // Re-run whatever is on screen (folder, trash or search results) after a
+  // mutation, so a rename or upload does not silently drop the search view.
+  function reload (opts) {
+    if (S.trashMode) return loadTrash()
+    if (S.searchQ) { searchIndex = null; return doSearch(S.searchQ, opts) }
+    return loadFolder(S.folderId, opts)
+  }
+
   // ---- Rendering: chrome ---------------------------------------------------
   function fmtBytes (b) { if (!b) return '0 B'; var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = Math.min(u.length - 1, Math.floor(Math.log(b) / Math.log(1024))); return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i] }
   function renderStorage (d) {
     // Exact bytes: storage_used_gb is rounded to 0.01 GB, which showed "0 / 25 GB" for anything under ~5 MB
     var used = d.storage_used_bytes, lim = d.storage_limit_gb
     if (used == null) return
-    $('fxStorageTxt').textContent = fmtBytes(used) + ' / ' + lim + ' GB'
+    $('fxStorageTxt').textContent = fmtBytes(used) + ' of ' + lim + ' GB'
     var pct = lim > 0 ? Math.min(100, (used / (lim * 1073741824)) * 100) : 0
     var f = $('fxMeter'); f.style.width = pct + '%'
     f.classList.toggle('is-warn', pct >= 75 && pct < 90)
@@ -289,16 +357,19 @@
     // get a quick slide-in; unchanged ancestors stay put.
     var keys = ['root']
     if (S.trashMode) keys.push('trash')
+    else if (S.searchQ) keys.push('search')
     else S.breadcrumbs.forEach(function (b) { keys.push(String(b.id)) })
     var changed = keys.join('/') !== prevCrumbKeys.join('/')
     function isNew (i) { return prevCrumbKeys[i] !== keys[i] || (changed && i === keys.length - 1) }
     var home = document.createElement('button')
     home.className = 'fx-bc-item' + ((S.folderId == null && !S.trashMode) ? ' is-current' : '') + (isNew(0) ? ' fx-bc-in' : '')
-    home.innerHTML = '<svg class="fx-bc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>' + esc(S.rootName)
+    home.textContent = S.rootName
+    home.setAttribute('data-fid', '')
     home.onclick = function () { loadFolder(null) }
     bc.appendChild(home)
-    if (S.trashMode) {
-      bc.appendChild(sep(isNew(1))); var t = document.createElement('span'); t.className = 'fx-bc-item is-current' + (isNew(1) ? ' fx-bc-in' : ''); t.textContent = 'Trash'; bc.appendChild(t); prevCrumbKeys = keys; tail(); return
+    if (S.trashMode || S.searchQ) {
+      home.classList.remove('is-current')
+      bc.appendChild(sep(isNew(1))); var t = document.createElement('span'); t.className = 'fx-bc-item is-current' + (isNew(1) ? ' fx-bc-in' : ''); t.textContent = S.trashMode ? 'Trash' : 'Search results'; bc.appendChild(t); prevCrumbKeys = keys; tail(); return
     }
     S.breadcrumbs.forEach(function (b, i) {
       var anim = isNew(i + 1)
@@ -307,12 +378,13 @@
       var btn = document.createElement('button')
       btn.className = 'fx-bc-item' + (isLast ? ' is-current' : '') + (anim ? ' fx-bc-in' : '')
       btn.textContent = displayName(b, true)
+      btn.setAttribute('data-fid', b.id)
       if (!isLast) btn.onclick = function () { loadFolder(b.id) }
       bc.appendChild(btn)
     })
     prevCrumbKeys = keys
     tail()
-    function sep (anim) { var s = document.createElement('span'); s.className = 'fx-bc-sep' + (anim ? ' fx-bc-in' : ''); s.textContent = '/'; return s }
+    function sep (anim) { var s = document.createElement('span'); s.className = 'fx-bc-sep' + (anim ? ' fx-bc-in' : ''); s.setAttribute('aria-hidden', 'true'); s.innerHTML = ICON.chev; return s }
     // The bar is a single row now — keep the current folder in view when the path is long
     function tail () { requestAnimationFrame(function () { bc.scrollLeft = bc.scrollWidth }) }
   }
@@ -388,7 +460,7 @@
     var name = f.id == null ? f.name : displayName(f, true)
     row.innerHTML =
       (hasKids ? '<button type="button" class="fx-tree-toggle" title="TOGGLE FOLDER" aria-label="TOGGLE ' + esc(name) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></button>' : '<span class="fx-tree-spacer"></span>') +
-      '<button type="button" class="fx-tree-link"><span class="fx-ico fx-tree-ico">' + ICON.folder + '</span><span class="fx-tree-name">' + esc(name) + '</span></button>' +
+      '<button type="button" class="fx-tree-link"><span class="fx-ico fx-tree-ico">' + (f.id == null ? ICON.drive : ICON.folder) + '</span><span class="fx-tree-name">' + esc(name) + '</span></button>' +
       '<span class="fx-tree-actions"><button type="button" class="fx-tree-action" data-tree-action="new" title="NEW SUBFOLDER" aria-label="NEW SUBFOLDER"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>' +
       (f.id == null ? '' : '<button type="button" class="fx-tree-action is-danger" data-tree-action="delete" title="MOVE TO TRASH" aria-label="MOVE FOLDER TO TRASH"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button>') + '</span>'
     row.querySelector('.fx-tree-toggle') && (row.querySelector('.fx-tree-toggle').onclick = function (e) {
@@ -409,39 +481,36 @@
 
   // ---- Rendering: listing --------------------------------------------------
   function skeleton () {
-    el.view.innerHTML = '<div class="fx-skel">' + Array(8).join('<div class="fx-skel-card"></div>') + '</div>'
+    el.view.classList.remove('is-enter')
+    el.view.innerHTML = '<div class="fx-skel">' + Array(9).join('<div class="fx-skel-card"></div>') + '</div>'
   }
   function errorState (msg) {
     return '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg><h3>Something went wrong</h3><p>' + esc(msg) + '</p></div>'
   }
   function emptyState () {
     if (S.trashMode) return '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg><h3>Trash is empty</h3><p>Deleted files and folders will appear here.</p></div>'
-    return '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg><h3>This folder is empty</h3><p>Drag files here or use Upload. Everything is end-to-end encrypted before it leaves your device.</p></div>'
+    return '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg><h3>This folder is empty</h3><p>Drop files here or upload them. Everything is end‑to‑end encrypted before it leaves your device.</p><button type="button" class="rd-btn rd-btn-primary" data-empty-upload>Upload files</button></div>'
   }
 
-  function render () {
+  // enter = this render follows a navigation: fade the listing in once.
+  function render (enter) {
     updateLockBar()
     el.view.setAttribute('data-view', S.view)
+    el.view.classList.toggle('is-enter', !!enter)
     var folders = sortItems(S.folders, true)
     var files = sortItems(S.files, false)
     if (!folders.length && !files.length) { el.view.innerHTML = emptyState(); return }
     var fn = { grid: renderGrid, list: renderList, gallery: renderGallery, columns: renderColumns }[S.view] || renderGrid
     fn(folders, files)
-    staggerEntrance()
     observeThumbs()
+    var cur = S.view === 'columns' && infoFromKey(S.lastFocus)
+    if (cur) columnPreview(cur.item, cur.isFolder)
   }
 
-  // Entrance stagger: --i feeds the animation-delay in files.css (capped there
-  // via min(), so long listings don't wait — items past the cap pop together).
-  function staggerEntrance () {
-    var items = el.view.querySelectorAll('.fx-item, .fx-row, .fx-gal-item')
-    for (var i = 0; i < items.length; i++) items[i].style.setProperty('--i', i)
-  }
-
+  // E2EE is the default, so it gets no badge; only exceptions are flagged.
   function badges (item, isFolder) {
     var b = ''
-    if (item.is_e2e) b += '<span class="fx-badge is-e2e">E2E</span>'
-    else if (item.is_public) b += '<span class="fx-badge is-public">Public</span>'
+    if (!item.is_e2e && item.is_public) b += '<span class="fx-badge is-public">Public</span>'
     if (item.expires) b += '<span class="fx-badge is-exp">' + item.expires.value + item.expires.unit + '</span>'
     return b
   }
@@ -449,20 +518,21 @@
   // GRID
   function renderGrid (folders, files) {
     var h = ''
-    if (folders.length) { h += '<div class="fx-section-label">Folders · ' + folders.length + '</div><div class="fx-grid">'; folders.forEach(function (f, i) { h += gridCard(f, true, i) }); h += '</div>' }
-    if (files.length) { h += '<div class="fx-section-label">Files · ' + files.length + '</div><div class="fx-grid">'; files.forEach(function (f, i) { h += gridCard(f, false, i) }); h += '</div>' }
+    if (folders.length) { h += sectionLabel('Folders', folders.length) + '<div class="fx-grid">'; folders.forEach(function (f) { h += gridCard(f, true) }); h += '</div>' }
+    if (files.length) { h += sectionLabel('Files', files.length) + '<div class="fx-grid">'; files.forEach(function (f) { h += gridCard(f, false) }); h += '</div>' }
     el.view.innerHTML = h
   }
-  function gridCard (item, isFolder, i) {
+  function sectionLabel (label, n) { return '<div class="fx-section-label">' + label + '<span class="fx-section-count">' + n + '</span></div>' }
+  function gridCard (item, isFolder) {
     var k = keyOf(item, isFolder)
     var nm = displayName(item, isFolder)
     var thumb = isFolder
-      ? '<div class="fx-thumb"><span class="fx-ext-ico fx-ico">' + ICON.folder + '</span></div>'
+      ? '<div class="fx-thumb">' + itemIcon(item, true) + '</div>'
       : fileThumb(item)
     var meta = isFolder
       ? (item.file_count || 0) + ' item' + ((item.file_count === 1) ? '' : 's')
       : (item.size_formatted || '')
-    return '<div class="fx-item' + (isFolder ? ' is-folder' : '') + selClass(k) + '" data-k="' + k + '" data-id="' + item.id + '" data-folder="' + isFolder + '" draggable="true" style="animation-delay:' + Math.min(i * 18, 260) + 'ms">' +
+    return '<div class="fx-item' + (isFolder ? ' is-folder' : '') + selClass(k) + '" data-k="' + k + '" data-id="' + item.id + '" data-folder="' + isFolder + '" draggable="true">' +
       '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>' +
       thumb +
       '<div class="fx-item-body"><div class="fx-item-top">' +
@@ -471,9 +541,17 @@
       '<div class="fx-item-sub"><span class="fx-meta">' + esc(meta) + '</span>' + badges(item, isFolder) + '</div>' +
       '</div></div>'
   }
+  // A decrypted E2EE thumb is a local blob URL, so re-renders paint it straight
+  // away instead of flashing the placeholder while the queue refills it.
+  function cachedThumb (item) {
+    var u = e2eThumbCache.get(String(item.id))
+    return u ? '<img src="' + u + '" alt=""' + (isTextThumb(item) ? ' class="is-text"' : '') + '>' : ''
+  }
+  function isTextThumb (item) { var k = kindOf(item); return k === 'code' || k === 'doc' || k === 'sheet' }
   function fileThumb (item) {
-    var ext = extOf(item.name, item.extension)
-    var ph = '<span class="fx-ext-ico fx-ico">' + ICON.file + '</span>'
+    var ph = docIcon(item)
+    var cached = cachedThumb(item)
+    if (cached) return '<div class="fx-thumb">' + cached + '</div>'
     // Never emit <img src> here. Native loading=lazy still inserts a src for
     // every tile at render, and Chrome's lazy margin is thousands of pixels —
     // a flick-scroll of a large grid opens a burst of GETs. That burst 429s
@@ -483,16 +561,21 @@
     if (canThumb(item)) {
       return '<div class="fx-thumb" data-thumb="' + item.id + '">' + ph + '</div>'
     }
-    return '<div class="fx-thumb">' + ph + (ext ? '<span class="fx-ext-tag">' + esc(ext) + '</span>' : '') + '</div>'
+    return '<div class="fx-thumb">' + ph + '</div>'
   }
 
   // LIST
   function renderList (folders, files) {
+    var col = S.sort.split('-')[0]
+    // Name sorts A→Z by default, size/date largest/newest first.
+    var desc = col === 'name' ? S.sort === 'name-desc' : !/-asc$/.test(S.sort)
+    function head (c, label) {
+      var on = c === col
+      return '<button data-sortcol="' + c + '"' + (on ? ' class="is-sorted" aria-sort="' + (desc ? 'descending' : 'ascending') + '"' : '') + '>' + label +
+        (on ? '<svg class="fx-sort-ind' + (desc ? ' is-desc' : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>' : '') + '</button>'
+    }
     var h = '<div class="fx-list"><div class="fx-list-head">' +
-      '<button data-sortcol="name">Name</button>' +
-      '<button data-sortcol="type">Type</button>' +
-      '<button data-sortcol="size">Size</button>' +
-      '<button data-sortcol="date">Modified</button><span></span></div>'
+      head('name', 'Name') + '<span>Kind</span>' + head('size', 'Size') + head('date', 'Modified') + '<span></span></div>'
     folders.forEach(function (f) { h += listRow(f, true) })
     files.forEach(function (f) { h += listRow(f, false) })
     h += '</div>'
@@ -500,14 +583,13 @@
   }
   function listRow (item, isFolder) {
     var k = keyOf(item, isFolder), nm = displayName(item, isFolder)
-    var type = isFolder ? 'Folder' : (extOf(item.name, item.extension) || 'file').toUpperCase()
-    var size = isFolder ? ((item.file_count || 0) + ' items') : (item.size_formatted || '')
+    var type = kindLabel(item, isFolder)
+    var size = isFolder ? itemCount(item) : (item.size_formatted || '')
     var date = isFolder ? (item.updated_at || '') : (item.upload_date || '')
-    var rowIco = isFolder
-      ? '<span class="fx-ico fx-row-ico" style="color:var(--accent)">' + ICON.folder + '</span>'
-      : (canThumb(item)
-        ? '<span class="fx-row-thumb" data-thumb="' + item.id + '"><span class="fx-ico fx-row-ico">' + ICON.file + '</span></span>'
-        : '<span class="fx-ico fx-row-ico" style="color:var(--accent)">' + ICON.file + '</span>')
+    var ico = itemIcon(item, isFolder).replace('class="fx-ico"', 'class="fx-ico fx-row-ico"')
+    var cached = isFolder ? '' : cachedThumb(item)
+    var rowIco = cached ? '<span class="fx-row-thumb">' + cached + '</span>'
+      : (!isFolder && canThumb(item)) ? '<span class="fx-row-thumb" data-thumb="' + item.id + '">' + ico + '</span>' : ico
     return '<div class="fx-row' + selClass(k) + '" data-k="' + k + '" data-id="' + item.id + '" data-folder="' + isFolder + '" draggable="true">' +
       '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>' +
       '<div class="fx-row-name">' + rowIco +
@@ -522,14 +604,15 @@
   // GALLERY
   function renderGallery (folders, files) {
     var h = ''
-    if (folders.length) { h += '<div class="fx-section-label">Folders</div><div class="fx-grid">'; folders.forEach(function (f, i) { h += gridCard(f, true, i) }); h += '</div><div class="fx-section-label">Files</div>' }
+    if (folders.length) { h += sectionLabel('Folders', folders.length) + '<div class="fx-grid">'; folders.forEach(function (f) { h += gridCard(f, true) }); h += '</div>' + (files.length ? sectionLabel('Files', files.length) : '') }
     h += '<div class="fx-gallery">'
-    files.forEach(function (f, i) {
+    files.forEach(function (f) {
       var k = keyOf(f, false), nm = displayName(f, false)
-      var inner = canThumb(f)
-        ? '<div class="fx-gal-thumb" data-thumb="' + f.id + '"><div class="fx-gal-ph">' + ICON.file + '</div></div>'
-        : '<div class="fx-gal-ph">' + ICON.file + '</div>'
-      h += '<a class="fx-gal-item' + selClass(k) + '" data-k="' + k + '" data-id="' + f.id + '" data-folder="false" draggable="true" style="animation-delay:' + Math.min(i * 16, 240) + 'ms">' +
+      var cached = cachedThumb(f)
+      var inner = cached ? '<div class="fx-gal-thumb">' + cached + '</div>'
+        : canThumb(f) ? '<div class="fx-gal-thumb" data-thumb="' + f.id + '"><div class="fx-gal-ph">' + docIcon(f) + '</div></div>'
+          : '<div class="fx-gal-ph">' + docIcon(f) + '</div>'
+      h += '<a class="fx-gal-item' + selClass(k) + '" data-k="' + k + '" data-id="' + f.id + '" data-folder="false" draggable="true">' +
         '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>' +
         inner +
         '<span class="fx-gal-cap"><span class="fx-name" title="' + esc(nm) + '">' + esc(nm) + '</span></span></a>'
@@ -542,22 +625,25 @@
   function renderColumns (folders, files) {
     var h = '<div class="fx-cols"><div class="fx-col">'
     folders.forEach(function (f) {
-      h += '<button class="fx-col-row' + selClass(keyOf(f, true)) + '" data-k="' + keyOf(f, true) + '" data-id="' + f.id + '" data-folder="true" draggable="true"><span class="fx-ico fx-col-ico">' + ICON.folder + '</span><span class="fx-col-name" title="' + esc(displayName(f, true)) + '">' + esc(displayName(f, true)) + '</span><span class="fx-col-chev">›</span></button>'
+      h += '<button class="fx-col-row' + selClass(keyOf(f, true)) + '" data-k="' + keyOf(f, true) + '" data-id="' + f.id + '" data-folder="true" draggable="true">' + colIcon(f, true) + '<span class="fx-col-name" title="' + esc(displayName(f, true)) + '">' + esc(displayName(f, true)) + '</span><span class="fx-col-chev">' + ICON.chev + '</span></button>'
     })
     files.forEach(function (f) {
-      h += '<button class="fx-col-row' + selClass(keyOf(f, false)) + '" data-k="' + keyOf(f, false) + '" data-id="' + f.id + '" data-folder="false" draggable="true"><span class="fx-ico fx-col-ico">' + ICON.file + '</span><span class="fx-col-name" title="' + esc(displayName(f, false)) + '">' + esc(displayName(f, false)) + '</span></button>'
+      h += '<button class="fx-col-row' + selClass(keyOf(f, false)) + '" data-k="' + keyOf(f, false) + '" data-id="' + f.id + '" data-folder="false" draggable="true">' + colIcon(f, false) + '<span class="fx-col-name" title="' + esc(displayName(f, false)) + '">' + esc(displayName(f, false)) + '</span></button>'
     })
-    h += '</div><div class="fx-col fx-col-preview" id="fxColPreview"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="var(--text-dim)" stroke-width="1.4" stroke-linejoin="round" style="opacity:.4"><path d="M14 3v5h5"/><path d="M6 21a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2z"/></svg><p class="fx-meta">Select an item</p></div></div>'
+    h += '</div><div class="fx-col fx-col-preview" id="fxColPreview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M6 21a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2z"/></svg><p class="fx-meta">Select an item to preview it</p></div></div>'
     el.view.innerHTML = h
   }
+  function colIcon (item, isFolder) { return itemIcon(item, isFolder).replace('class="fx-ico"', 'class="fx-ico fx-col-ico"') }
+  function itemCount (f) { var n = f.file_count || 0; return n + (n === 1 ? ' item' : ' items') }
   function columnPreview (item, isFolder) {
     var p = $('fxColPreview'); if (!p) return
     var nm = displayName(item, isFolder)
-    var thumbAttr = (!isFolder && canThumb(item)) ? ' data-thumb="' + item.id + '"' : ''
-    p.innerHTML = '<div class="fx-cp-thumb"' + thumbAttr + '>' + (isFolder ? ICON.folder : ICON.file) + '</div><h4>' + esc(nm) + '</h4>' +
-      '<div class="fx-meta">' + (isFolder ? (item.file_count || 0) + ' items' : (item.size_formatted || '')) + '</div>' +
+    var cached = isFolder ? '' : cachedThumb(item)
+    var thumbAttr = (!cached && !isFolder && canThumb(item)) ? ' data-thumb="' + item.id + '"' : ''
+    p.innerHTML = '<div class="fx-cp-thumb"' + thumbAttr + '>' + (cached || (isFolder ? itemIcon(item, true) : docIcon(item))) + '</div><h4>' + esc(nm) + '</h4>' +
+      '<div class="fx-meta">' + esc(kindLabel(item, isFolder)) + ' · ' + esc(isFolder ? itemCount(item) : (item.size_formatted || '')) + '</div>' +
       badges(item, isFolder) +
-      (!isFolder ? '<button class="rd-btn rd-btn-primary" data-open-details="1" style="margin-top:.6rem">Details</button>' : '')
+      (!isFolder ? '<button class="rd-btn rd-btn-ghost" data-open-details="1">Details</button>' : '')
     p.querySelector('[data-open-details]') && (p.querySelector('[data-open-details]').onclick = function () { openDetails(item, isFolder) })
     if (thumbAttr) loadThumb(p.querySelector('[data-thumb]'))
   }
@@ -634,6 +720,7 @@
   function paintThumb (node, blobUrl, file) {
     return new Promise(function (resolve) {
       var img = new Image(); img.alt = ''
+      if (file && isTextThumb(file)) img.className = 'is-text'
       img.onload = function () {
         node.innerHTML = ''
         node.appendChild(img)
@@ -697,6 +784,13 @@
     S.lastFocus = null
     S.anchor = null
   }
+  // Drop selected keys whose item is no longer listed (moved, re-keyed, deleted).
+  function pruneSel () {
+    S.sel.forEach(function (k) { if (!infoFromKey(k)) S.sel.delete(k) })
+    if (!S.sel.size) S.multi = false
+    if (!infoFromKey(S.lastFocus)) S.lastFocus = null
+    if (!infoFromKey(S.anchor)) S.anchor = null
+  }
   function listedKeys () {
     var keys = []
     sortItems(S.folders, true).forEach(function (f) { keys.push(keyOf(f, true)) })
@@ -725,6 +819,7 @@
     if (!bar) return
     $('fxSelCount').textContent = n
     bar.classList.toggle('is-open', !!(S.multi && n > 0))
+    if (el.view) el.view.classList.toggle('is-selecting', !!(S.multi && n > 0))
   }
   function selectOnly (k) {
     if (!k) return
@@ -781,9 +876,10 @@
     try { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches) } catch (e) { return false }
   }
 
+  // Resolves true once the server confirmed the move.
   async function moveSidebarItem (raw, targetId) {
     var parts = raw.split(':'), type = parts.shift(), id = parts.join(':')
-    if (!id || (type === 'folder' && targetId != null && String(id) === String(targetId))) return
+    if (!id || (type === 'folder' && targetId != null && String(id) === String(targetId))) return false
     try {
       var response
       if (type === 'folder') {
@@ -809,8 +905,59 @@
         toast('MOVED, BUT SHARE-LINK KEYS FAILED FOR ' + missed + ' OF ' + (linkRes.total || missed) + ' FILE(S). RECIPIENTS CANNOT DECRYPT THEM' + (linkRes.error ? ' (' + linkRes.error + ')' : ''), 'error')
       } else toast('MOVED', 'success')
       if (type === 'folder') revealTreeBranch(targetId)
-      loadFolder(S.folderId)
-    } catch (e) { toast(e.message || 'MOVE FAILED', 'error') }
+      reload()
+      return true
+    } catch (e) { toast(e.message || 'MOVE FAILED', 'error'); return false }
+  }
+
+  // Folder keys ('root' | id) the given items cannot move into: a folder into
+  // itself or anything below it, and the one folder they all already sit in.
+  // Search results carry folder_id/parent_id; a listing's items live in S.folderId.
+  // shallow: skip descendants (drag-and-drop leaves that check to the server).
+  function blockedTargets (items, shallow) {
+    var kids = {}, blocked = new Set()
+    ;(S.sidebar || []).forEach(function (folder) { var p = folder.parent_id == null ? 'root' : String(folder.parent_id); (kids[p] = kids[p] || []).push(String(folder.id)) })
+    var stack = items.filter(function (it) { return it.isFolder }).map(function (it) { return String(it.item.id) })
+    while (stack.length) { var fid = stack.pop(); if (!blocked.has(fid)) { blocked.add(fid); if (!shallow) stack = stack.concat(kids[fid] || []) } }
+    var homes = new Set(items.map(function (it) { var p = it.isFolder ? it.item.parent_id : it.item.folder_id; if (p === undefined) p = S.folderId; return p == null ? 'root' : String(p) }))
+    if (homes.size === 1) homes.forEach(function (home) { blocked.add(home) })
+    return blocked
+  }
+
+  // Move several items at once (Move dialog, multi-item drag). Resolves true on
+  // a complete move; a partial or failed move toasts and keeps the selection.
+  async function bulkMoveTo (items, targetId) {
+    var target = targetId == null ? null : parseInt(targetId, 10)
+    var files = [], folders = []
+    items.forEach(function (it) { (it.isFolder ? folders : files).push(it.item.id) })
+    var expected = files.length + folders.length
+    try {
+      var response = await fetch('/bulk/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify({ file_ids: files, folder_ids: folders, target_folder_id: target })
+      })
+      var data = await response.json().catch(function () { return {} })
+      if (!response.ok) throw new Error(data.error || 'MOVE FAILED')
+      if (folders.length) revealTreeBranch(target)
+      // Key whatever the server DID move before reporting a partial move: those
+      // files already lost their previous folder-link keys.
+      var linkRes = null
+      if (data.needs_link_keys && data.ancestor_share_token && data.file_ids) linkRes = await genLinkKeys(data.file_ids, 'folder', data.ancestor_share_token)
+      if (Number(data.moved) !== expected) throw new Error('ONLY ' + Number(data.moved || 0) + ' OF ' + expected + ' ITEMS MOVED')
+      clearSel()
+      if (linkRes && !linkRes.success) {
+        var missed = Math.max((linkRes.total || 0) - (linkRes.keyed || 0), 1)
+        toast('MOVED, BUT SHARE-LINK KEYS FAILED FOR ' + missed + ' OF ' + (linkRes.total || missed) + ' FILE(S). RECIPIENTS CANNOT DECRYPT THEM' + (linkRes.error ? ': ' + linkRes.error : ''), 'error')
+      }
+      else toast(expected === 1 ? 'MOVED' : ('MOVED ' + expected + ' ITEMS'), 'success')
+      reload()
+      return true
+    } catch (e) {
+      toast(String(e.message || 'MOVE FAILED').toUpperCase(), 'error')
+      reload({ keepSel: true })
+      return false
+    }
   }
 
   // ---- Move picker ---------------------------------------------------------
@@ -825,67 +972,39 @@
   function openMoveModal (items) {
     if (!items || !items.length) return
     moveItemsPending = items.slice(); moveTarget = undefined
-    // A folder cannot move into itself or anything below it, and the folder
-    // every selected item already sits in is a no-op target. Search results
-    // carry folder_id/parent_id; a listing's items all live in S.folderId.
-    var kids = {}, blocked = new Set()
-    ;(S.sidebar || []).forEach(function (folder) { var p = folder.parent_id == null ? 'root' : String(folder.parent_id); (kids[p] = kids[p] || []).push(String(folder.id)) })
-    var stack = items.filter(function (it) { return it.isFolder }).map(function (it) { return String(it.item.id) })
-    while (stack.length) { var fid = stack.pop(); if (!blocked.has(fid)) { blocked.add(fid); stack = stack.concat(kids[fid] || []) } }
-    var homes = new Set(items.map(function (it) { var p = it.isFolder ? it.item.parent_id : it.item.folder_id; if (p === undefined) p = S.folderId; return p == null ? 'root' : String(p) }))
-    if (homes.size === 1) homes.forEach(function (home) { blocked.add(home) })
-    var rows = '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="root" role="option"' + (blocked.has('root') ? ' disabled' : '') + '>' + ICON.folder + '<span>' + esc(S.rootName) + '</span></button>'
-    sortItems(S.sidebar || [], true).forEach(function (folder) {
-      var disabled = blocked.has(String(folder.id))
-      rows += '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="' + folder.id + '" role="option"' + (disabled ? ' disabled' : '') + '>' + ICON.folder + '<span>' + esc(displayName(folder, true)) + '</span></button>'
-    })
+    var blocked = blockedTargets(items)
+    var rows = '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="root" role="option"' + (blocked.has('root') ? ' disabled' : '') + '>' + ICON.drive + '<span>' + esc(S.rootName) + '</span></button>'
+    // Depth-first, indented like the sidebar so same-named folders stay distinguishable
+    var byParent = {}
+    ;(S.sidebar || []).forEach(function (f) { var p = f.parent_id == null ? 'root' : String(f.parent_id); (byParent[p] = byParent[p] || []).push(f) })
+    ;(function walk (parent, depth) {
+      sortItems(byParent[parent] || [], true).forEach(function (folder) {
+        var disabled = blocked.has(String(folder.id))
+        rows += '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="' + folder.id + '" role="option" style="padding-left:' + (10 + depth * 18) + 'px"' + (disabled ? ' disabled' : '') + '>' + ICON.folderFill + '<span>' + esc(displayName(folder, true)) + '</span></button>'
+        walk(String(folder.id), depth + 1)
+      })
+    })('root', 1)
     $('moveFolderTree').innerHTML = rows
     var modal = $('bulkMoveModal'); modal.classList.add('rd-open'); modal.setAttribute('aria-hidden', 'false')
   }
   async function submitMove () {
     if (!moveItemsPending.length || moveTarget === undefined) return
-    var files = [], folders = []
-    moveItemsPending.forEach(function (it) { (it.isFolder ? folders : files).push(it.item.id) })
-    var expected = files.length + folders.length
     var button = $('confirmMoveBtn'); button.disabled = true
-    try {
-      var response = await fetch('/bulk/move', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify({ file_ids: files, folder_ids: folders, target_folder_id: moveTarget })
-      })
-      var data = await response.json().catch(function () { return {} })
-      if (!response.ok) throw new Error(data.error || 'MOVE FAILED')
-      if (folders.length) revealTreeBranch(moveTarget)
-      // Key whatever the server DID move before reporting a partial move: those
-      // files already lost their previous folder-link keys.
-      var linkRes = null
-      if (data.needs_link_keys && data.ancestor_share_token && data.file_ids) linkRes = await genLinkKeys(data.file_ids, 'folder', data.ancestor_share_token)
-      if (Number(data.moved) !== expected) throw new Error('ONLY ' + Number(data.moved || 0) + ' OF ' + expected + ' ITEMS MOVED')
-      closeMoveModal(); clearSel()
-      if (linkRes && !linkRes.success) {
-        var missed = Math.max((linkRes.total || 0) - (linkRes.keyed || 0), 1)
-        toast('MOVED, BUT SHARE-LINK KEYS FAILED FOR ' + missed + ' OF ' + (linkRes.total || missed) + ' FILE(S). RECIPIENTS CANNOT DECRYPT THEM' + (linkRes.error ? ': ' + linkRes.error : ''), 'error')
-      }
-      else toast(expected === 1 ? 'MOVED' : ('MOVED ' + expected + ' ITEMS'), 'success')
-      loadFolder(S.folderId)
-    } catch (e) {
-      button.disabled = false
-      toast(String(e.message || 'MOVE FAILED').toUpperCase(), 'error')
-      loadFolder(S.folderId, { keepSel: true })
-    }
+    if (await bulkMoveTo(moveItemsPending, moveTarget)) closeMoveModal()
+    else button.disabled = false
   }
 
   // ---- Details drawer ------------------------------------------------------
   function openDetails (item, isFolder) {
     var nm = displayName(item, isFolder)
     var body = $('fxDrawerBody')
-    var prev = '<div class="fx-dpreview">' + (isFolder ? ICON.folder : ICON.file) + '</div>'
-    if (!isFolder && canThumb(item)) prev = '<div class="fx-dpreview" data-thumb="' + item.id + '">' + ICON.file + '</div>'
+    var cached = isFolder ? '' : cachedThumb(item)
+    var prev = '<div class="fx-dpreview">' + (cached || (isFolder ? itemIcon(item, true) : docIcon(item))) + '</div>'
+    if (!cached && !isFolder && canThumb(item)) prev = '<div class="fx-dpreview" data-thumb="' + item.id + '">' + docIcon(item) + '</div>'
     var rows = ''
     function row (k, v) { if (v == null || v === '') return; rows += '<dt>' + k + '</dt><dd>' + esc(v) + '</dd>' }
-    row('Type', isFolder ? 'Folder' : (extOf(item.name, item.extension) || 'file').toUpperCase())
-    row('Size', isFolder ? ((item.file_count || 0) + ' items · ' + (item.size_formatted || '0 B')) : item.size_formatted)
+    row('Kind', kindLabel(item, isFolder))
+    row('Size', isFolder ? (itemCount(item) + ', ' + (item.size_formatted || '0 B')) : item.size_formatted)
     row('Modified', isFolder ? item.updated_at : item.upload_date)
     row('Encryption', item.is_e2e ? 'End-to-end' : (item.is_public ? 'Public link' : 'Private'))
     if (item.expires) row('Expires', item.expires.value + item.expires.unit)
@@ -968,7 +1087,7 @@
       if (!failed) toast(list.length > 1 ? ('MOVED ' + list.length + ' ITEMS TO TRASH') : 'MOVED TO TRASH', 'success')
       else if (failed < list.length) toast('MOVED ' + (list.length - failed) + ' OF ' + list.length + ' ITEMS TO TRASH: ' + failed + ' FAILED' + (firstErr ? ': ' + firstErr : ''), 'error')
       else toast((list.length > 1 ? 'COULD NOT MOVE ITEMS TO TRASH' : 'COULD NOT MOVE TO TRASH') + (firstErr ? ': ' + firstErr : ''), 'error')
-      S.trashMode ? loadTrash() : loadFolder(S.folderId, { fallbackRoot: true })
+      reload({ fallbackRoot: true })
     })
   }
 
@@ -1064,7 +1183,7 @@
         var url = isFolder ? ('/folder/' + item.id + '/rename') : ('/file/' + item.id + '/rename')
         var r = await fetch(url, { method: 'POST', body: fd, headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         if (!r.ok) throw new Error(await errText(r))
-        toast('RENAMED', 'success'); closeDrawer(); loadFolder(S.folderId)
+        toast('RENAMED', 'success'); closeDrawer(); reload()
       } catch (e) { toast('RENAME FAILED' + (e && e.message ? ': ' + e.message : ''), 'error') }
     })
   }
@@ -1092,7 +1211,7 @@
         var r = await fetch('/folder/create', { method: 'POST', body: fd })
         if (!r.ok) throw new Error()
         revealTreeBranch(parent)
-        toast('FOLDER CREATED', 'success'); loadFolder(S.folderId)
+        toast('FOLDER CREATED', 'success'); reload()
       } catch (e) { toast('COULD NOT CREATE FOLDER', 'error') }
     })
   }
@@ -1103,7 +1222,8 @@
   var UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024
   var UPLOAD_MAX_LABEL = '2 GB'
   var UPLOAD_MAX_RETRIES = 3
-  async function uploadFiles (fileList) {
+  // dest: folder id to upload into (null = root); omitted = the open folder.
+  async function uploadFiles (fileList, dest) {
     var files = Array.prototype.slice.call(fileList || [])
     if (!files.length) return
     // MUST return: without session keys uploadOne would fall through and POST
@@ -1118,7 +1238,7 @@
     // Capture the destination ONCE. Encrypting a multi-GB file easily outlives
     // a folder navigation, and reading S.folderId at send time filed the upload
     // into whatever folder happened to be on screen when it finished.
-    var destFolderId = S.folderId
+    var destFolderId = dest === undefined ? S.folderId : dest
     var tray = $('fxUptray')
     tray.classList.add('is-open')
     var list = $('fxUpList')
@@ -1147,8 +1267,10 @@
       if (ok) toast('UPLOADED ' + ok + ' OF ' + files.length + ' FILES: ' + failed + ' FAILED' + (firstErr ? ': ' + firstErr : ''), 'error')
       else toast((files.length > 1 ? 'ALL ' + files.length + ' UPLOADS FAILED' : 'UPLOAD FAILED') + (firstErr ? ': ' + firstErr : ''), 'error')
     }
-    // Only refresh if the user is still looking at the folder we uploaded into.
-    if (!S.trashMode && String(S.folderId) === String(destFolderId)) loadFolder(destFolderId)
+    // Only refresh if the user is still looking at the folder we uploaded into
+    // (or at its parent, whose tile shows the item count).
+    var isChild = S.folders.some(function (f) { return String(f.id) === String(destFolderId) })
+    if (!S.trashMode && (S.searchQ || String(S.folderId) === String(destFolderId) || isChild)) reload({ keepSel: true })
   }
   function setPct (row, p) { row.querySelector('.fx-up-bar-fill').style.width = p + '%'; row.querySelector('.fx-up-pct').textContent = Math.round(p) + '%' }
   function failRow (row, reason) {
@@ -1270,10 +1392,15 @@
     trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
     restore: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
     newfolder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>',
-    upload: '<path d="M12 16V4M6 10l6-6 6 6"/><path d="M4 20h16"/>'
+    upload: '<path d="M12 16V4M6 10l6-6 6 6"/><path d="M4 20h16"/>',
+    select: '<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-4.8"/>'
+  }
+  // Touch has no Ctrl/Shift or hover ticks, so the menus offer Select instead.
+  function selectEntry (item, isFolder) {
+    return isCoarsePointer() ? [{ label: 'Select', icon: CI.select, action: function () { toggleSel(keyOf(item, isFolder), true) } }] : []
   }
   function fileMenu (f) {
-    return [
+    return selectEntry(f, false).concat([
       { label: 'Open', icon: CI.open, action: function () { openPreview(f) } },
       { sep: true },
       { label: 'Download', icon: CI.download, action: function () { download(f) } },
@@ -1282,10 +1409,10 @@
       { label: 'Rename', icon: CI.rename, action: function () { renameItem(f, false) } },
       { sep: true },
       { label: 'Move to trash', icon: CI.trash, danger: true, action: function () { deleteItems([{ item: f, isFolder: false }]) } }
-    ]
+    ])
   }
-  function folderMenu (f) {
-    return [
+  function folderMenu (f, inTree) {
+    return (inTree ? [] : selectEntry(f, true)).concat([
       { label: 'Open', icon: CI.open, action: function () { loadFolder(f.id) } },
       { label: 'New subfolder', icon: CI.newfolder, action: function () { newFolder(f.id, true) } },
       { sep: true },
@@ -1294,7 +1421,7 @@
       { label: 'Rename', icon: CI.rename, action: function () { renameItem(f, true) } },
       { sep: true },
       { label: 'Move to trash', icon: CI.trash, danger: true, action: function () { deleteItems([{ item: f, isFolder: true }]) } }
-    ]
+    ])
   }
   function emptyMenu () {
     return [
@@ -1407,8 +1534,8 @@
       getCSRFToken: csrf,
       domain: window.location.host,
       generateLinkKeysForFiles: genLinkKeys,
-      onAfterSave: function () { loadFolder(S.folderId, { keepSel: true }) },
-      onFileIdChanged: function () { loadFolder(S.folderId, { keepSel: true }) },
+      onAfterSave: function () { reload({ keepSel: true }) },
+      onFileIdChanged: function () { reload({ keepSel: true }) },
       onDelete: async function (type, data) {
         var ok = window.showConfirm
           ? await window.showConfirm((data && data.name ? data.name : 'THIS ITEM'), 'This will be moved to trash and auto-deleted after 48 hours.', 'DELETE')
@@ -1421,7 +1548,7 @@
           if (!r.ok) throw new Error(await errText(r))
           toast('MOVED TO TRASH', 'success')
         } catch (e) { toast('DELETE FAILED' + (e && e.message ? ': ' + e.message : ''), 'error') }
-        loadFolder(S.folderId, { fallbackRoot: true })
+        reload({ fallbackRoot: true })
       },
       onDownload: function (type, data) {
         ManageModal.close()
@@ -1506,6 +1633,7 @@
     // Checkbox, Ctrl/Cmd+click and Shift+click build a multi-selection.
     // Right-click / kebab = context menu (selects the target first).
     el.view.addEventListener('click', function (e) {
+      if (e.target.closest('[data-empty-upload]')) { $('fxFileInput').click(); return }
       if (e.target.closest('[data-sortcol]')) { var c = e.target.closest('[data-sortcol]').getAttribute('data-sortcol'); cycleSort(c); return }
       if (e.target.closest('[data-kebab]')) {
         var kb = e.target.closest('[data-kebab]')
@@ -1530,7 +1658,7 @@
       var info = itemFrom(card)
       if (!info.item) return
       var k = card.getAttribute('data-k')
-      if (isCoarsePointer()) { openItem(info); return }
+      if (isCoarsePointer()) { if (S.multi && S.sel.size) toggleSel(k, false); else openItem(info); return }
       if (e.shiftKey) { selectRange(S.anchor || S.lastFocus || k, k); return }
       if (e.ctrlKey || e.metaKey) { toggleSel(k, false); return }
       selectOnly(k)
@@ -1555,19 +1683,7 @@
         ctxOpenAt(e.clientX, e.clientY, info)
       } else if (typeof RdMenu !== 'undefined') { RdMenu.open(e.clientX, e.clientY, S.trashMode ? trashEmptyMenu() : emptyMenu()) }
     })
-    el.view.addEventListener('dragstart', function (e) {
-      var card = e.target.closest('[data-k]'); if (!card || !e.dataTransfer) return
-      var info = itemFrom(card); if (!info.item) return
-      var dk = card.getAttribute('data-k')
-      if (!S.sel.has(dk)) selectOnly(dk)
-      e.dataTransfer.effectAllowed = 'move'
-      e.dataTransfer.setData('text/plain', (info.isFolder ? 'folder:' : 'file:') + info.item.id)
-      card.classList.add('is-dragging')
-    })
-    el.view.addEventListener('dragend', function (e) {
-      var card = e.target.closest('[data-k]'); if (card) card.classList.remove('is-dragging')
-      document.querySelectorAll('.fx-tree-row.is-drop-target').forEach(function (row) { row.classList.remove('is-drop-target') })
-    })
+    wireDrag()
     // Right-click a folder in the sidebar tree.
     $('fxTree').addEventListener('contextmenu', function (e) {
       var row = e.target.closest('.fx-tree-row'); if (!row) return
@@ -1575,23 +1691,7 @@
       var fid = row.getAttribute('data-fid')
       if (!fid) { if (typeof RdMenu !== 'undefined') RdMenu.open(e.clientX, e.clientY, emptyMenu()); return }
       var f = S.sidebar.filter(function (x) { return String(x.id) === String(fid) })[0]
-      if (f && typeof RdMenu !== 'undefined') RdMenu.open(e.clientX, e.clientY, folderMenu(f))
-    })
-    $('fxTree').addEventListener('dragover', function (e) {
-      var row = e.target.closest('.fx-tree-row'); if (!row || !e.dataTransfer) return
-      e.preventDefault(); e.dataTransfer.dropEffect = 'move'
-      document.querySelectorAll('.fx-tree-row.is-drop-target').forEach(function (item) { if (item !== row) item.classList.remove('is-drop-target') })
-      row.classList.add('is-drop-target')
-    })
-    $('fxTree').addEventListener('dragleave', function (e) {
-      var row = e.target.closest('.fx-tree-row'); if (row && !row.contains(e.relatedTarget)) row.classList.remove('is-drop-target')
-    })
-    $('fxTree').addEventListener('drop', function (e) {
-      var row = e.target.closest('.fx-tree-row'); if (!row || !e.dataTransfer) return
-      e.preventDefault(); row.classList.remove('is-drop-target')
-      var raw = e.dataTransfer.getData('text/plain'); if (!/^(file|folder):/.test(raw)) return
-      var targetId = row.getAttribute('data-fid') || null
-      moveSidebarItem(raw, targetId)
+      if (f && typeof RdMenu !== 'undefined') RdMenu.open(e.clientX, e.clientY, folderMenu(f, true))
     })
 
     // Toolbar
@@ -1600,7 +1700,7 @@
       S.view = b.getAttribute('data-view')
       try { localStorage.setItem('onegy_files_view', S.view) } catch (e2) {}
       $('fxViewSeg').querySelectorAll('.fx-seg-btn').forEach(function (x) { x.classList.toggle('is-active', x === b) })
-      render()
+      render(true)
     })
     $('fxSort').addEventListener('change', function () { S.sort = this.value; render() })
     // Must wrap: assigning newFolder directly passes the click PointerEvent as
@@ -1620,27 +1720,33 @@
       sInput.tabIndex = 0
       setTimeout(function () { sInput.focus() }, 30)
     }
-    function closeSearch (reload) {
+    function closeSearch () {
       sBox.classList.remove('is-open')
       sToggle.setAttribute('aria-expanded', 'false')
       sInput.tabIndex = -1
-      var had = sInput.value.trim()
       sInput.value = ''
       sClear.hidden = true
-      clearTimeout(to)
-      if (had && reload !== false) loadFolder(S.folderId)
+      endSearch()
     }
+    // Decided by what is shown (S.searchQ), not by the input text: clearing the
+    // box and blurring within the debounce used to leave stale results up.
+    function endSearch () { clearTimeout(to); if (S.searchQ) loadFolder(S.folderId) }
     // Keep the input from blurring first when the icon is used to collapse it
     sToggle.addEventListener('mousedown', function (e) { if (sBox.classList.contains('is-open')) e.preventDefault() })
     sToggle.onclick = function () { sBox.classList.contains('is-open') ? closeSearch() : openSearch() }
-    sClear.onclick = function () { sInput.value = ''; sClear.hidden = true; clearTimeout(to); loadFolder(S.folderId); sInput.focus() }
+    sClear.onclick = function () { sInput.value = ''; sClear.hidden = true; endSearch(); sInput.focus() }
     sInput.addEventListener('input', function () {
       var q = this.value.trim(); clearTimeout(to)
       sClear.hidden = !q
-      to = setTimeout(function () { q ? doSearch(q) : loadFolder(S.folderId) }, 260)
+      to = setTimeout(function () { q ? doSearch(q) : endSearch() }, 260)
     })
     sInput.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.stopPropagation(); closeSearch(); sToggle.focus() } })
-    sInput.addEventListener('blur', function () { if (!sInput.value.trim()) closeSearch(false) })
+    sInput.addEventListener('blur', function () { if (!sInput.value.trim()) closeSearch() })
+    sBox.addEventListener('mousedown', function (e) { if (e.target === sBox) { e.preventDefault(); openSearch() } })
+    sInput.addEventListener('focus', function () { if (!sBox.classList.contains('is-open')) openSearch() })
+    document.addEventListener('keydown', function (e) {
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !filesKeysBlocked(e)) { e.preventDefault(); openSearch() }
+    })
 
     // Sidebar / trash
     $('fxTrashBtn').onclick = function () { closeSide(); loadTrash() }
@@ -1679,7 +1785,7 @@
       var ok = false
       try { ok = await unlockKeys(pw) } catch (err) { ok = false }
       btn.disabled = false
-      if (ok) { $('fxUnlockPw').value = ''; $('fxLockBar').hidden = true; toast('ENCRYPTION KEYS UNLOCKED', 'success'); loadFolder(S.folderId) }
+      if (ok) { $('fxUnlockPw').value = ''; $('fxLockBar').hidden = true; toast('ENCRYPTION KEYS UNLOCKED', 'success'); reload() }
       else toast('INCORRECT PASSWORD', 'error')
     })
 
@@ -1718,16 +1824,140 @@
       }
     })
 
-    // Drag & drop upload
-    var dropOverlay = $('fxDrop'), dragDepth = 0
-    window.addEventListener('dragenter', function (e) { if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) { dragDepth++; dropOverlay.classList.add('is-active'); $('fxDropDest').textContent = 'to ' + (currentFolderLabel()) + ', end-to-end encrypted' } })
-    window.addEventListener('dragover', function (e) { if (dropOverlay.classList.contains('is-active')) e.preventDefault() })
-    window.addEventListener('dragleave', function () { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dropOverlay.classList.remove('is-active') })
-    window.addEventListener('drop', function (e) {
-      if (dropOverlay.classList.contains('is-active')) { e.preventDefault(); dragDepth = 0; dropOverlay.classList.remove('is-active'); if (e.dataTransfer.files && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files) }
+  }
+
+  // ---- Drag & drop ---------------------------------------------------------
+  // One pipeline for both kinds of drag: items being moved (`drag` is set at
+  // dragstart) and files coming from the desktop (types include 'Files').
+  // Targets: folder tiles / rows in the view, sidebar tree rows and breadcrumb
+  // ancestors. A collapsed tree branch springs open after a short hover.
+  var drag = null            // { items, keys, raw, blocked } while moving items
+  var dropEl = null          // element currently highlighted as the target
+  var springTimer = null, springKey = null
+  var fileDragDepth = 0
+  function isFileDrag (e) { return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) }
+  function folderKey (id) { return id == null || id === '' ? 'root' : String(id) }
+  function dropTargetAt (node) {
+    if (S.trashMode || !node || !node.closest) return null
+    var t = node.closest('.fx-tree-row, .fx-bc-item[data-fid]:not(.is-current), #fxView [data-k][data-folder="true"]')
+    if (!t) return null
+    var raw = t.hasAttribute('data-k') ? t.getAttribute('data-id') : t.getAttribute('data-fid')
+    var id = raw === '' || raw == null ? null : raw
+    if (drag && drag.blocked.has(folderKey(id))) return null
+    return { el: t, id: id }
+  }
+  function setDropEl (node) {
+    if (dropEl === node) return
+    if (dropEl) dropEl.classList.remove('is-drop-target')
+    dropEl = node || null
+    if (dropEl) dropEl.classList.add('is-drop-target')
+  }
+  function folderLabel (id) {
+    if (id == null) return S.rootName
+    var f = S.folders.concat(S.sidebar, S.breadcrumbs).filter(function (x) { return String(x.id) === String(id) })[0]
+    return f ? displayName(f, true) : 'this folder'
+  }
+  function spring (t) {
+    var row = t && t.el.classList.contains('fx-tree-row') && !t.el.classList.contains('is-open') && t.el.querySelector('.fx-tree-toggle')
+    var key = row ? folderKey(t.id) : null
+    if (key === springKey) return
+    clearTimeout(springTimer); springKey = key
+    if (key) springTimer = setTimeout(function () { S.treeOpen.add(key); S.treeReveal = key; dropEl = null; springKey = null; renderSidebar() }, 650)
+  }
+  function dragGhost (e, items) {
+    var first = items[0]
+    var img = !first.isFolder && el.view.querySelector('[data-k="' + keyOf(first.item, false) + '"] img')
+    var g = document.createElement('div'); g.className = 'fx-ghost'
+    g.innerHTML = '<span class="fx-ghost-ico">' + (img ? '<img src="' + img.src + '" alt="">' : itemIcon(first.item, first.isFolder)) + '</span>' +
+      '<span class="fx-ghost-name">' + esc(displayName(first.item, first.isFolder)) + '</span>' +
+      (items.length > 1 ? '<span class="fx-ghost-count">' + items.length + '</span>' : '')
+    document.body.appendChild(g)
+    try { e.dataTransfer.setDragImage(g, 20, 18) } catch (err) {}
+    setTimeout(function () { g.remove() }, 0)
+  }
+  function endDrag () {
+    clearTimeout(springTimer); springKey = null
+    setDropEl(null)
+    document.querySelectorAll('.is-dragging').forEach(function (n) { n.classList.remove('is-dragging') })
+    $('fxDrop').classList.remove('is-active', 'is-on-folder')
+    fileDragDepth = 0
+    drag = null
+  }
+  function markLeaving (keys, on) {
+    keys.forEach(function (k) { var n = el.view.querySelector('[data-k="' + k + '"]'); if (n) n.classList.toggle('is-leaving', on) })
+  }
+  // Moved items shrink away at once; the reload after the server confirms
+  // removes them for good, a failure brings them back.
+  async function dropItems (targetId) {
+    var d = drag; endDrag()
+    if (!d) return
+    markLeaving(d.keys, true)
+    var ok = d.items.length > 1 ? await bulkMoveTo(d.items, targetId) : await moveSidebarItem(d.raw, targetId)
+    if (!ok) markLeaving(d.keys, false)
+  }
+  function wireDrag () {
+    var overlay = $('fxDrop')
+    el.view.addEventListener('dragstart', function (e) {
+      var card = e.target.closest('[data-k]'); if (!card || !e.dataTransfer) return
+      var info = itemFrom(card); if (!info.item) return
+      var dk = card.getAttribute('data-k')
+      if (!S.sel.has(dk)) selectOnly(dk)
+      var items = S.sel.size > 1 ? selectedItems() : [info]
+      var keys = items.map(function (it) { return keyOf(it.item, it.isFolder) })
+      drag = { items: items, keys: keys, raw: (info.isFolder ? 'folder:' : 'file:') + info.item.id, blocked: blockedTargets(items, true) }
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', drag.raw)
+      dragGhost(e, items)
+      // Dim the sources only after the browser has snapshotted the drag image
+      requestAnimationFrame(function () { if (drag) markDragging(keys) })
+    })
+    function markDragging (keys) { keys.forEach(function (k) { var n = el.view.querySelector('[data-k="' + k + '"]'); if (n) n.classList.add('is-dragging') }) }
+    document.addEventListener('dragend', endDrag)
+    document.addEventListener('dragenter', function (e) {
+      if (!drag && isFileDrag(e) && !S.trashMode) { fileDragDepth++; overlay.classList.add('is-active') }
+      onDragMove(e)
+    })
+    // dragenter on the next element fires before dragleave on the last one, and
+    // Chrome leaves relatedTarget null, so only clear once no move followed.
+    var lastMove = 0
+    document.addEventListener('dragleave', function (e) {
+      if (!drag && isFileDrag(e)) {
+        fileDragDepth = Math.max(0, fileDragDepth - 1)
+        if (!fileDragDepth) endDrag()
+      } else if (drag && !e.relatedTarget) {
+        setTimeout(function () { if (Date.now() - lastMove > 90) { setDropEl(null); spring(null) } }, 100)
+      }
+    })
+    document.addEventListener('dragover', onDragMove)
+    function onDragMove (e) {
+      var files = !drag && isFileDrag(e)
+      if (!drag && !files) return
+      lastMove = Date.now()
+      var t = dropTargetAt(e.target)
+      setDropEl(t && t.el); spring(t)
+      if (files) {
+        if (S.trashMode) return
+        e.preventDefault(); e.dataTransfer.dropEffect = 'copy'
+        overlay.classList.toggle('is-on-folder', !!t)
+        $('fxDropTitle').textContent = 'Upload to ' + folderLabel(t ? t.id : S.folderId)
+        return
+      }
+      if (t) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }
+    }
+    document.addEventListener('drop', function (e) {
+      var files = !drag && isFileDrag(e)
+      if (!drag && !files) return
+      var t = dropTargetAt(e.target)
+      e.preventDefault()
+      if (files) {
+        var list = e.dataTransfer.files
+        endDrag()
+        if (!S.trashMode && list && list.length) uploadFiles(list, t ? t.id : undefined)
+        return
+      }
+      if (t) dropItems(t.id); else endDrag()
     })
   }
-  function currentFolderLabel () { return S.folderId == null ? S.rootName : (S.breadcrumbs.length ? displayName(S.breadcrumbs[S.breadcrumbs.length - 1], true) : 'this folder') }
   function closeSide () { $('fxSide').classList.remove('is-open'); $('fxSideScrim').classList.remove('is-open'); $('fxSideToggle').setAttribute('aria-expanded', 'false') }
   function normalizeMobileView () {
     if (!mobileViewMedia.matches || (S.view !== 'gallery' && S.view !== 'columns')) return
@@ -1824,8 +2054,12 @@
     return p
   }
 
-  async function doSearch (q) {
+  // opts.keepSel: a reload of the same query (after a mutation) keeps the
+  // selection; a new query starts with none.
+  async function doSearch (q, opts) {
+    opts = opts || {}
     var seq = newLoad()
+    S.searchQ = q
     // The index holds live items only, so leave trash mode (as loadFolder does):
     // trash-only actions such as Delete forever must not be offered on them.
     if (S.trashMode) {
@@ -1834,10 +2068,12 @@
       var restoreAllBtn = $('restoreAllBtn'); if (restoreAllBtn) restoreAllBtn.hidden = true
       $('fxNewFolder').hidden = false; $('fxUploadBtn').hidden = false
     }
-    skeleton()
+    if (!opts.keepSel) { resetSelState(); updateSelbar() }
+    var nav = beginLoad('search')
     try {
       var idx = await loadSearchIndex()
       if (stale(seq)) return
+      endLoad('search')
       var needle = q.toLowerCase()
       // An E2EE name that did not decrypt is a server placeholder — never match it.
       var hit = function (item, isFolder) { return (!item.is_e2e || item._dec) && displayName(item, isFolder).toLowerCase().indexOf(needle) >= 0 }
@@ -1845,14 +2081,17 @@
       S.folders = idx.folders.filter(function (f) { return hit(f, true) })
       S.files = idx.files.filter(function (f) { return hit(f, false) })
       S.breadcrumbs = []
+      if (opts.keepSel) { pruneSel(); updateSelbar() }
       renderBreadcrumb()
       el.view.setAttribute('data-view', S.view)
       if (!S.folders.length && !S.files.length) { el.view.innerHTML = '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><h3>No matches</h3><p>Nothing found for “' + esc(q) + '”.</p></div>'; return }
-      render()
+      render(nav)
     } catch (e) {
       if (stale(seq)) return
+      endLoad(null)
       S.loadFailed = true
       S.folders = []; S.files = []
+      resetSelState(); updateSelbar()
       el.view.innerHTML = errorState('Search failed. This is not an empty result. Try again.')
     }
   }
@@ -1860,7 +2099,10 @@
   // ---- History -------------------------------------------------------------
   function onPopState (e) {
     if (!e.state || !e.state.fx) return
-    if (e.state.trash) loadTrash(); else loadFolder(e.state.folderId, { noPush: true })
+    // Closing an overlay that pushed its own entry (player fullscreen, manage
+    // modal) pops back to the entry already on screen: nothing to reload.
+    if (e.state.trash ? S.trashMode : (!S.trashMode && String(e.state.folderId) === String(S.folderId))) return
+    if (e.state.trash) loadTrash({ noPush: true }); else loadFolder(e.state.folderId, { noPush: true })
   }
   window.addEventListener('popstate', onPopState)
 
@@ -1876,7 +2118,7 @@
     wire()
     initManageModal()
     if (window.MusicPlayer && MusicPlayer.init) MusicPlayer.init('dashboard')
-    if (window.FxPreview) FxPreview._onSaved = function () { loadFolder(S.folderId, { keepSel: true }) }
+    if (window.FxPreview) FxPreview._onSaved = function () { reload({ keepSel: true }) }
     if (!window.__FX_NO_AUTOLOAD__) {
       // /trash renders this same page and asks for the trash view up front, so
       // the legacy dashboard.html trash screen is no longer needed.

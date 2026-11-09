@@ -197,10 +197,11 @@ _THUMBNAIL_SEMAPHORE = threading.BoundedSemaphore(THUMBNAIL_MAX_CONCURRENT)
 # UnidentifiedImageError that was then swallowed by the outer handler.
 _THUMB_IMAGE_EXTS = frozenset({'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'})
 _THUMB_TEXT_EXTS = frozenset({
-    'txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'py', 'js', 'html',
-    'css', 'sh', 'bat', 'ini', 'cfg', 'conf', 'c', 'cpp', 'h', 'hpp', 'lua',
-    'rb', 'rs', 'go', 'java', 'ts', 'tsx', 'jsx', 'toml', 'ps1', 'sql', 'r',
-    'swift', 'kt', 'php', 'pl', 'diff', 'makefile',
+    'txt', 'md', 'log', 'csv', 'tsv', 'json', 'xml', 'yaml', 'yml', 'py', 'js',
+    'mjs', 'cjs', 'html', 'htm', 'css', 'scss', 'less', 'sh', 'bash', 'zsh', 'bat',
+    'ini', 'cfg', 'conf', 'c', 'cpp', 'h', 'hpp', 'cs', 'lua', 'rb', 'rs', 'go',
+    'java', 'ts', 'tsx', 'jsx', 'toml', 'ps1', 'sql', 'r', 'swift', 'kt', 'php',
+    'pl', 'diff', 'patch', 'makefile',
 })
 _THUMB_VIDEO_EXTS = frozenset({
     'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v', '3gp',
@@ -438,11 +439,10 @@ def _generate_thumbnail_locked(file_record):
     if not encrypted_path or not os.path.exists(encrypted_path):
         return False
     
-    # Skip thumbnail generation for very large image/text files to avoid OOM.
-    # Video is exempt from THIS cap because ffmpeg only reads a few frames -- but
-    # the DECRYPT that feeds ffmpeg is separately bounded below (AUDIT FIX A18);
-    # it used to write a full plaintext copy of the whole video with no cap.
-    if extension not in video_extensions:
+    # Skip thumbnail generation for very large images to avoid OOM. Text only
+    # decrypts its head (see the spooled loop) and video's decrypt is bounded
+    # separately below (AUDIT FIX A18), so neither needs this cap.
+    if extension in image_extensions:
         max_thumbnail_size = 20 * 1024 * 1024  # 20MB
         if file_record.size and file_record.size > max_thumbnail_size:
             print(f'[THUMBNAIL] Skipping thumbnail for large file: {file_record.orig_name} ({file_record.size} bytes)')
@@ -485,7 +485,7 @@ def _generate_thumbnail_locked(file_record):
                     # Try extracting a frame at 2 seconds (avoids common black intro frames)
                     for seek_time in ['2', '0']:
                         result = subprocess.run(
-                            ['ffmpeg', '-y', '-ss', seek_time, '-i', tmp_video_path,
+                            ['ffmpeg', '-y', '-protocol_whitelist', 'file', '-ss', seek_time, '-i', tmp_video_path,
                              '-frames:v', '1', '-f', 'image2', tmp_frame_path],
                             capture_output=True, timeout=30
                         )
@@ -539,16 +539,21 @@ def _generate_thumbnail_locked(file_record):
             with _thumb_tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024) as spooled:
                 for chunk in decrypt_file_chunked(encrypted_path):
                     spooled.write(chunk)
+                    if extension in text_extensions and spooled.tell() >= 2000:
+                        break
                 spooled.seek(0)
                 
                 if extension in image_extensions:
                     # Generate image thumbnail
-                    from PIL import Image
+                    from PIL import Image, ImageOps
                     # AUDIT FIX M3: hard-reject decompression-bomb images so a
                     # crafted upload cannot exhaust worker memory during decode.
                     try:
                         img = Image.open(spooled, formats=image_formats)
                         img.thumbnail((200, 200), Image.LANCZOS)
+                        # Phone photos store rotation in EXIF; browsers honour it,
+                        # so an unrotated thumbnail would be sideways.
+                        img = ImageOps.exif_transpose(img)
                     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as _bomb_err:
                         print(f'[THUMBNAIL] Rejected decompression bomb for {file_record.orig_name}: {_bomb_err}')
                         return False
@@ -590,8 +595,10 @@ def _generate_thumbnail_locked(file_record):
                     # Map file extension to Pygments lexer (mirrors getHighlightLanguage() in dashboard.js)
                     _ext_to_lexer = {
                         'py': 'python', 'js': 'javascript', 'ts': 'typescript', 'tsx': 'typescript', 'jsx': 'javascript',
-                        'json': 'json', 'xml': 'xml', 'html': 'html', 'css': 'css', 'yaml': 'yaml', 'yml': 'yaml',
-                        'sh': 'bash', 'bat': 'batch', 'c': 'c', 'cpp': 'cpp', 'h': 'c', 'hpp': 'cpp',
+                        'mjs': 'javascript', 'cjs': 'javascript', 'json': 'json', 'xml': 'xml', 'html': 'html',
+                        'htm': 'html', 'css': 'css', 'scss': 'scss', 'less': 'less', 'yaml': 'yaml', 'yml': 'yaml',
+                        'sh': 'bash', 'bash': 'bash', 'zsh': 'bash', 'bat': 'batch', 'c': 'c', 'cpp': 'cpp',
+                        'h': 'c', 'hpp': 'cpp', 'cs': 'csharp', 'patch': 'diff',
                         'lua': 'lua', 'rb': 'ruby', 'rs': 'rust', 'go': 'go', 'java': 'java',
                         'kt': 'kotlin', 'swift': 'swift', 'php': 'php', 'pl': 'perl', 'r': 'r',
                         'sql': 'sql', 'md': 'markdown', 'diff': 'diff', 'makefile': 'makefile',
@@ -701,6 +708,11 @@ def _generate_thumbnail_locked(file_record):
             return False
         if expected_content_hash and file_record.content_hash != expected_content_hash:
             print(f'[THUMBNAIL] Skipping stale thumbnail for {safe_name} — content changed during generation')
+            return False
+        # A Fernet->E2E conversion during the render must never get a plaintext
+        # thumbnail published (rows with no content_hash skip the check above).
+        if file_record.is_e2e_encrypted:
+            print(f'[THUMBNAIL] Skipping thumbnail for {safe_name} — file became end-to-end encrypted during generation')
             return False
         if save_thumbnail_to_disk(file_record.id, thumb_bytes, is_e2e=False):
             file_record.has_thumbnail = True

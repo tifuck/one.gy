@@ -1,66 +1,103 @@
 /* ============================================================================
-   FROST UPLOADER — shared drag-drop upload widget (drop-zone + toggles +
-   progress card) that reuses the existing upload JS (script.js/crypto.js).
-   Used by the landing hero and, later, the redesigned Share page.
+   uploader.css — quick-share upload widget (_uploader.html + script.js):
+   drop zone, toggles, and the progress / save-the-link cards script.js swaps
+   into #dropZone. UI v2 only (landing + share pages). Self-contained: it sizes
+   itself with container queries, so it works in any column width; the host
+   page only positions it. Switches use the shared .rd-switch (ui-v2.css).
    ========================================================================== */
-.rd-uploader{position:relative}
-.rd-uploader-trust{margin-top:1.1rem;font-family:var(--font-mono);font-size:.66rem;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--text-dim);text-align:center}
+.ui-v2 .rd-uploader{ container:uploader / inline-size; position:relative; min-width:0; }
 
-.drop-zone{position:relative;display:flex;flex-direction:column;gap:1.1rem;
-  min-height:360px;padding:1.1rem;background:var(--surface);border:2px solid var(--border);
-  box-shadow:8px 8px 0 var(--accent);cursor:pointer;text-align:center;
-  transition:border-color .2s var(--ease),background .2s var(--ease),box-shadow .2s var(--ease),transform .2s var(--ease)}
-.drop-zone:not(.uploading):hover{transform:translate(-2px,-2px);box-shadow:10px 10px 0 var(--accent)}
-.drop-zone.dragover{border-color:var(--accent);background:var(--accent-soft)}
-.drop-zone.uploading{cursor:default;padding:0;gap:0}
-
-/* Dashed target inside the frame: the classic drop affordance */
-.drop-zone-body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.5rem;
-  padding:2rem 1rem;border:2px dashed rgba(var(--ink-rgb),.22);transition:border-color .2s var(--ease),background .2s var(--ease)}
-.drop-zone:hover .drop-zone-body,.drop-zone.dragover .drop-zone-body{border-color:var(--accent)}
-.drop-zone-icon{display:grid;place-items:center;width:68px;height:68px;margin-bottom:.6rem;
-  background:var(--accent-soft);color:var(--accent);transition:background .2s var(--ease),color .2s var(--ease)}
-.drop-zone:hover .drop-zone-icon,.drop-zone.dragover .drop-zone-icon{background:var(--accent);color:var(--accent-contrast)}
-.drop-zone-icon svg{width:34px;height:34px}
-.drop-zone-title{font-family:var(--font-display);font-weight:800;font-size:1.4rem;text-transform:uppercase;letter-spacing:-.01em}
-.drop-zone-text{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim)}
-
-.drop-zone-toggles{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.7rem 1.2rem;
-  padding:.2rem .3rem .1rem}
-.drop-zone-toggles > .drop-zone-limit{margin-right:auto}
-.drop-zone-limit{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
-.drop-zone-toggle{display:inline-flex;align-items:center;gap:.5rem}
-.drop-zone-toggle-label{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text)}
-
-/* Toggle switch (hidden checkbox + slider sibling; click delegated in JS) */
-.toggle-switch{position:relative;width:36px;height:20px;flex:none}
-.toggle-checkbox{position:absolute;opacity:0;width:0;height:0}
-.toggle-slider{position:relative;display:block;width:36px;height:20px;background:var(--toggle-off);border:2px solid var(--border);
-  cursor:pointer;transition:background .2s var(--ease)}
-.toggle-slider::after{content:"";position:absolute;top:1px;left:1px;width:12px;height:12px;background:var(--text-dim);transition:transform .2s var(--ease),background .2s var(--ease)}
-.toggle-checkbox:checked + .toggle-slider{background:var(--accent);border-color:var(--accent)}
-.toggle-checkbox:checked + .toggle-slider::after{transform:translateX(16px);background:#fff}
-
-@media (max-width:560px){
-  .drop-zone-toggles{display:grid;grid-template-columns:1fr auto;text-align:left}
-  .drop-zone-limit{grid-row:1 / 3;align-self:center}
-  .drop-zone-toggle{grid-column:2;width:8.5rem}
+/* ---- Idle drop zone ------------------------------------------------------- */
+.ui-v2 .drop-zone{
+  position:relative; display:flex; flex-direction:column; min-height:296px; overflow:hidden;
+  border:1px solid var(--line); border-radius:14px; background:var(--panel); cursor:pointer;
+  transition:border-color .16s, background .16s, box-shadow .16s;
 }
+.ui-v2 .drop-zone-body{
+  flex:1 1 auto; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
+  margin:8px 8px 0; padding:28px 16px; border:1.5px dashed var(--line-strong); border-radius:10px;
+  text-align:center; transition:border-color .16s, background .16s;
+}
+.ui-v2 .drop-zone.dragover{ border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.ui-v2 .drop-zone.dragover .drop-zone-body{ border-style:solid; border-color:var(--accent); background:var(--accent-soft); }
+.ui-v2 .drop-zone-icon{
+  display:grid; place-items:center; width:44px; height:44px; margin-bottom:8px; border-radius:50%;
+  background:var(--accent-soft); color:var(--accent); transition:background .16s, color .16s, transform .2s cubic-bezier(.3,1.4,.5,1);
+}
+.ui-v2 .drop-zone-icon svg{ width:20px; height:20px; }
+/* Hover only where it exists: on touch a tap would leave it stuck on */
+@media (hover:hover){
+  .ui-v2 .drop-zone:not(.uploading):hover .drop-zone-body{ border-color:rgba(var(--accent-rgb),.55); background:var(--hover); }
+  .ui-v2 .drop-zone:not(.uploading):hover .drop-zone-icon{ background:var(--accent); color:var(--accent-contrast); }
+}
+.ui-v2 .drop-zone.dragover .drop-zone-icon{ background:var(--accent); color:var(--accent-contrast); transform:translateY(-3px); }
+.ui-v2 .drop-zone-title{ font-size:1.05rem; font-weight:600; letter-spacing:-.012em; line-height:1.3; color:var(--text); }
+.ui-v2 .drop-zone-text{ max-width:34ch; font-size:.84rem; line-height:1.45; color:var(--text-dim); }
+.ui-v2 .drop-zone-browse{ margin-top:12px; }
 
-/* Progress card (injected into the drop-zone during upload) */
-.upload-progress-card{display:flex;flex-direction:column;justify-content:center;gap:1.1rem;
-  width:100%;height:100%;min-height:326px;padding:1.7rem}
-.upload-card-header{display:flex;align-items:center;justify-content:space-between;gap:1rem}
-.upload-card-body{display:flex;flex-direction:column;gap:1rem}
-.upload-card-title{font-family:var(--font-display);font-weight:800;text-transform:uppercase;font-size:1rem;letter-spacing:-.01em}
-.upload-card-close{width:30px;height:30px;flex:none;border:2px solid var(--border);background:transparent;color:var(--text);font-size:1.15rem;line-height:1;cursor:pointer}
-.upload-card-close:hover{background:var(--accent);color:var(--accent-contrast);border-color:var(--accent)}
-.upload-card-bar{height:14px;background:var(--surface-2);border:2px solid var(--border);overflow:hidden}
-.upload-card-fill{height:100%;width:0;background:var(--accent);transition:width .3s var(--ease)}
-.upload-card-stats{display:grid;grid-template-columns:repeat(3,1fr);border:2px solid var(--border)}
-.upload-card-stat{display:flex;flex-direction:column;gap:.2rem;padding:.6rem .7rem;border-right:2px solid var(--border)}
-.upload-card-stat:last-child{border-right:none}
-.upload-card-stat-label{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)}
-.upload-card-stat-value{font-family:var(--font-mono);font-size:.84rem;font-weight:600}
-.upload-card-filename{font-family:var(--font-mono);font-size:.7rem;color:var(--text-dim);text-align:center;min-height:1em;word-break:break-all}
+/* Footer: limit + toggles. Labels wrap the switch, so the whole row toggles. */
+.ui-v2 .drop-zone-toggles{ display:flex; flex-wrap:wrap; align-items:center; gap:6px 18px; padding:10px 16px 11px; cursor:default; }
+.ui-v2 .drop-zone-limit{ margin-right:auto; font-size:.78rem; color:var(--text-dim); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.ui-v2 .drop-zone-toggle{ display:inline-flex; align-items:center; gap:9px; min-height:32px; cursor:pointer; }
+.ui-v2 .drop-zone-toggle-label{ font-size:.84rem; font-weight:500; color:var(--text); white-space:nowrap; }
+
+.ui-v2 .rd-uploader-trust{ display:flex; align-items:center; justify-content:center; gap:6px; margin-top:12px;
+  font-size:.78rem; color:var(--text-faint); text-align:center; }
+.ui-v2 .rd-uploader-trust svg{ width:12px; height:12px; flex:none; }
+
+/* ---- Progress card (script.js swaps it in; the height stays locked) ------- */
+.ui-v2 .drop-zone.uploading{ cursor:default; }
+.ui-v2 .upload-progress-card{ flex:1 1 auto; display:flex; flex-direction:column; justify-content:center; gap:20px; min-width:0; padding:24px; }
+.ui-v2 .upload-card-header{ display:flex; align-items:center; gap:12px; min-width:0; }
+.ui-v2 .upload-card-icon{ flex:none; display:grid; place-items:center; width:38px; height:38px; border-radius:10px;
+  background:var(--accent-soft); color:var(--accent); transition:background .2s, color .2s; }
+.ui-v2 .upload-card-icon svg{ width:18px; height:18px; }
+.ui-v2 .upload-card-heading{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.ui-v2 .upload-card-title{ font-size:.95rem; font-weight:600; letter-spacing:-.01em; line-height:1.3; color:var(--text); }
+.ui-v2 .upload-card-sub{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.8rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.ui-v2 .upload-card-sub:empty{ display:none; }
+.ui-v2 .upload-card-close{ flex:none; display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:8px;
+  background:none; color:var(--text-dim); cursor:pointer; transition:background .12s, color .12s, opacity .12s; }
+.ui-v2 .upload-card-close svg{ width:16px; height:16px; }
+.ui-v2 .upload-card-close:hover{ background:var(--press); color:var(--text); }
+.ui-v2 .upload-card-close[aria-disabled="true"]{ cursor:not-allowed; }
+.ui-v2 .upload-card-body{ display:flex; flex-direction:column; gap:14px; min-width:0; }
+.ui-v2 .upload-card-bar{ height:6px; border-radius:6px; background:var(--press); overflow:hidden; }
+.ui-v2 .upload-card-fill{ width:0; height:100%; border-radius:6px; background:var(--accent); transition:width .3s cubic-bezier(.2,.85,.25,1), background .2s; }
+.ui-v2 .upload-card-stats{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.ui-v2 .upload-card-stat{ display:flex; flex-direction:column; gap:2px; min-width:0; }
+.ui-v2 .upload-card-stat-label{ font-size:.74rem; color:var(--text-dim); }
+.ui-v2 .upload-card-stat-value{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.9rem; font-weight:500;
+  color:var(--text); font-variant-numeric:tabular-nums; }
+.ui-v2 .upload-card-filename{ min-height:1.2em; font-size:.78rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.ui-v2 .upload-progress-card.is-done .upload-card-icon{ background:color-mix(in srgb,var(--good) 15%,transparent); color:var(--good); }
+.ui-v2 .upload-progress-card.is-done .upload-card-fill{ background:var(--good); }
+
+/* Save-this-link hand-off (the passphrase could not be stored) */
+.ui-v2 .upload-card-warn{ justify-content:flex-start; }
+.ui-v2 .upload-card-warn .upload-card-icon{ background:color-mix(in srgb,var(--warn) 16%,transparent); color:var(--warn); }
+.ui-v2 .upload-card-note{ font-size:.84rem; line-height:1.5; color:var(--text-dim); }
+.ui-v2 .upload-card-link{ width:100%; font-family:var(--font-mono); font-size:.78rem; }
+.ui-v2 .upload-card-actions{ display:flex; flex-wrap:wrap; gap:8px; }
+
+/* ---- Narrow containers (phones, side columns) ----------------------------- */
+@container uploader (max-width:440px){
+  .ui-v2 .drop-zone{ min-height:268px; }
+  .ui-v2 .drop-zone-body{ padding:24px 14px; }
+  /* Settings-style rows: label left, switch right */
+  .ui-v2 .drop-zone-toggles{ flex-direction:column; align-items:stretch; gap:0; padding:6px 14px 8px; }
+  .ui-v2 .drop-zone-limit{ order:1; margin:6px 0 2px; }
+  .ui-v2 .drop-zone-toggle{ justify-content:space-between; min-height:40px; }
+  .ui-v2 .drop-zone-toggle + .drop-zone-toggle{ border-top:1px solid var(--line); }
+  .ui-v2 .upload-progress-card{ padding:20px 16px; gap:18px; }
+  .ui-v2 .upload-card-stats{ gap:8px; }
+  .ui-v2 .upload-card-stat-value{ font-size:.84rem; }
+  .ui-v2 .upload-card-actions .rd-btn{ flex:1 1 auto; }
+}
+@media (pointer:coarse){
+  .ui-v2 .drop-zone-toggle{ min-height:44px; }
+  .ui-v2 .upload-card-close{ width:40px; height:40px; }
+}
+@media (prefers-reduced-motion:reduce){
+  .ui-v2 .drop-zone, .ui-v2 .drop-zone-body, .ui-v2 .drop-zone-icon, .ui-v2 .upload-card-fill{ transition:none; }
+}

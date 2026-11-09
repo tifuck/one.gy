@@ -1,42 +1,101 @@
 /* ============================================================================
-   FROST AUTH — login / register / 2FA / recovery. Re-skins the existing
-   auth-* + form-* markup; forms and crypto scripts are unchanged.
+   auth.css — sign in / create account / two-factor / recovery (UI v2).
+   Only loaded by login.html, register.html and verify_2fa.html, which all opt
+   into ui-v2, so rules are not scoped (.ui-v2 is only used for specificity
+   against ui-v2.css primitives). Token-only. IDs and the auth-* / captcha-*
+   classes are a contract with the inline scripts and testsv2 page objects.
    ========================================================================== */
-/* Fill main (which flexes to viewport minus footer) and center the card,
-   so there's no 100vh + footer overflow / phantom scrollbar. */
-main:has(.auth-container){display:flex;flex-direction:column}
-.auth-container{flex:1 0 auto;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:1rem;padding:calc(var(--nav-h) + 1.5rem) clamp(1.15rem,4vw,2rem) 2rem}
-.auth-box{width:100%;max-width:26rem;background:var(--surface);border:2px solid var(--border);
-  box-shadow:8px 8px 0 var(--accent);padding:clamp(1.6rem,4vw,2.4rem)}
-.auth-box h1{font-family:var(--font-display);font-weight:800;letter-spacing:-.02em;text-transform:uppercase;
-  font-size:clamp(1.8rem,4vw,2.4rem);margin-bottom:.4rem}
-.auth-subtitle{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.04em;text-transform:uppercase;
-  color:var(--text-dim);line-height:1.5;margin-bottom:1.4rem}
-.auth-form{display:flex;flex-direction:column;gap:1.1rem;margin-top:1.2rem}
-.auth-subtitle + .auth-form{margin-top:0}
 
-.form-group{display:flex;flex-direction:column;gap:.45rem}
-.form-group label{font-family:var(--font-mono);font-size:.66rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim)}
-/* .form-input primitive lives in components.css (sitewide) */
-.auth-hint{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.04em;text-transform:uppercase;color:var(--text-dim)}
+/* main flexes to the viewport minus the footer; the card centres in it */
+main:has(.auth-container){ display:flex; flex-direction:column; }
+.auth-container{ flex:1 0 auto; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:calc(var(--nav-h) + 40px) 16px 56px; }
 
-.btn-primary{margin-top:.4rem;width:100%;padding:.85rem 1rem;background:var(--text);color:var(--bg);border:2px solid var(--text);
-  font-family:var(--font-mono);font-weight:600;font-size:.85rem;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;
-  transition:transform .2s var(--ease),background .2s var(--ease),box-shadow .2s var(--ease)}
-.btn-primary:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast);transform:translate(-2px,-2px);box-shadow:4px 4px 0 var(--text)}
-.btn-primary:active{transform:none;box-shadow:none}
-.btn-primary:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
+/* ---- Card ----------------------------------------------------------------- */
+.auth-box{ width:100%; max-width:400px; padding:32px 32px 24px; background:var(--panel);
+  border:1px solid var(--line); border-radius:14px; }
+.auth-head{ margin-bottom:24px; }
+.auth-mark{ display:grid; place-items:center; width:40px; height:40px; margin-bottom:18px; border-radius:10px;
+  background:var(--surface); color:var(--text); }
+.auth-mark svg{ width:20px; height:20px; }
+.auth-mark.is-accent{ background:var(--accent-soft); color:var(--accent); }
+.auth-title{ font-size:1.375rem; font-weight:600; letter-spacing:-.022em; line-height:1.25; color:var(--text); }
+.auth-subtitle{ margin-top:6px; font-size:.875rem; line-height:1.5; color:var(--text-dim); text-wrap:pretty; }
+.auth-head .rd-callout{ margin-top:16px; }
 
-.auth-link{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.02em;text-transform:uppercase;
-  color:var(--text-dim);text-align:center;margin-top:.9rem;line-height:1.6}
-.auth-link a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
-.auth-link a:hover{border-bottom-color:var(--accent)}
+.auth-form{ display:flex; flex-direction:column; gap:16px; }
+.auth-label-row{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.auth-optional{ font-size:.78rem; color:var(--text-faint); }
+.rd-field:has(.rd-field-error:not(:empty)) .rd-field-hint{ display:none; }
+/* Inputs show focus with their accent border + ring; skip the global outline on top */
+.ui-v2 .form-input:focus-visible{ outline:none; }
+.ui-v2 .auth-mono-input{ font-family:var(--font-mono); font-size:.82rem; }
+.ui-v2 .auth-code-input{ height:52px; padding:0 0 0 .5em; font-size:1.5rem; font-weight:600; letter-spacing:.5em;
+  text-align:center; font-variant-numeric:tabular-nums; }
+.ui-v2 .auth-code-input::placeholder{ font-size:1.5rem; letter-spacing:.5em; color:var(--text-faint); }
 
-/* Captcha */
-.captcha-container{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
-.captcha-image{height:44px;border:2px solid var(--border);background:#fff;flex:none}
-.captcha-refresh{width:40px;height:44px;flex:none;display:grid;place-items:center;border:2px solid var(--border);
-  background:transparent;color:var(--text-dim);cursor:pointer}
-.captcha-refresh:hover{color:var(--accent);border-color:var(--accent)}
-.captcha-input{flex:1;min-width:8rem}
+.ui-v2 .auth-submit{ width:100%; margin-top:4px; }
+/* Busy (the scripts disable the button while keys are derived) */
+.ui-v2 .auth-submit:disabled{ opacity:.7; }
+.ui-v2 .auth-submit:disabled::before{ content:""; width:14px; height:14px; flex:none; border-radius:50%;
+  border:2px solid currentColor; border-right-color:transparent; animation:auth-spin .7s linear infinite; }
+@keyframes auth-spin{ to{ transform:rotate(360deg); } }
+
+/* Links: text colour + hairline underline (the accent stays on the primary action) */
+.auth-text-link{ color:var(--text); font-weight:500; text-decoration:underline; text-decoration-color:var(--line-strong);
+  text-underline-offset:3px; transition:text-decoration-color .14s; }
+.auth-text-link:hover{ text-decoration-color:currentColor; }
+.auth-quiet-link{ font-size:.8rem; color:var(--text-dim); transition:color .14s; }
+.auth-quiet-link:hover{ color:var(--text); }
+
+.auth-foot{ display:flex; flex-direction:column; align-items:center; gap:8px; margin-top:24px; padding-top:20px;
+  border-top:1px solid var(--line); font-size:.84rem; line-height:1.5; color:var(--text-dim); text-align:center; }
+
+/* ---- Captcha (login after failed attempts · register second step) --------- */
+.captcha-container{ display:flex; align-items:center; gap:8px; min-width:0; }
+.captcha-image{ height:42px; width:auto; flex:none; border-radius:8px; box-shadow:0 0 0 1px var(--line-strong); }
+.captcha-refresh{ width:42px; height:42px; flex:none; display:grid; place-items:center; border:0; border-radius:8px;
+  background:var(--hover); color:var(--text-dim); cursor:pointer; transition:background .14s, color .14s; }
+.captcha-refresh:hover{ background:var(--press); color:var(--text); }
+.ui-v2 .captcha-input{ flex:1 1 0; min-width:5.5rem; height:42px; }
+#captchaModal .rd-modal-panel{ max-width:400px; }
+#captchaModal .rd-modal-body p{ margin-bottom:16px; font-size:.86rem; line-height:1.5; }
+#captchaModal .auth-submit{ margin-top:16px; }
+
+/* ---- Recovery-key dialog + retry prompts (built by the inline scripts) ----
+   Not an .rd-modal: core.js closes those on Esc / overlay click, and this one
+   must stay up until the user confirms the key is saved. */
+.auth-dialog{ position:fixed; inset:0; z-index:300; display:flex; align-items:center; justify-content:center; padding:16px;
+  background:var(--scrim); -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px); }
+.auth-dialog-panel{ width:100%; max-width:440px; max-height:calc(100dvh - 32px); overflow-y:auto; padding:24px;
+  background:var(--raise); border-radius:14px; box-shadow:var(--shadow-2); animation:auth-pop .22s cubic-bezier(.2,.9,.3,1); }
+@keyframes auth-pop{ from{ opacity:0; transform:translateY(8px) scale(.985); } }
+.auth-dialog-panel .auth-mark{ margin-bottom:16px; }
+.auth-dialog-title{ font-size:1.1rem; font-weight:600; letter-spacing:-.012em; line-height:1.3; color:var(--text); }
+.auth-dialog-text{ margin-top:6px; font-size:.86rem; line-height:1.55; color:var(--text-dim); }
+.auth-key{ margin-top:16px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--surface);
+  font-family:var(--font-mono); font-size:.8rem; line-height:1.6; color:var(--text); word-break:break-all; user-select:all; }
+.auth-dialog-row{ display:flex; gap:8px; margin-top:8px; }
+.auth-dialog-row .rd-btn{ flex:1 1 0; }
+.auth-dialog-panel .rd-callout{ margin-top:16px; }
+.ui-v2 .auth-dialog-panel .auth-submit{ margin-top:20px; }
+
+/* ---- Mobile: no card chrome, content from the top, footer hidden (core.css) */
+@media (max-width:560px){
+  .auth-container{ justify-content:flex-start; padding:calc(var(--nav-h) + 24px) 20px 32px; }
+  .auth-box{ max-width:none; padding:0; background:none; border:0; border-radius:0; }
+  .auth-head{ margin-bottom:20px; }
+  .auth-foot{ margin-top:28px; }
+  .auth-dialog{ align-items:flex-end; padding:0; }
+  .auth-dialog-panel{ max-width:none; max-height:92dvh; border-radius:16px 16px 0 0;
+    padding:22px 20px max(20px, env(safe-area-inset-bottom)); }
+}
+/* Touch: text links get a 36px hit area without moving the layout */
+@media (pointer:coarse){
+  .auth-text-link, .auth-quiet-link{ display:inline-block; padding-block:8px; }
+  .auth-label-row:has(.auth-quiet-link){ margin-block:-8px; }
+  .auth-foot{ gap:0; }
+}
+@media (prefers-reduced-motion:reduce){
+  .auth-dialog-panel{ animation:none; }
+}

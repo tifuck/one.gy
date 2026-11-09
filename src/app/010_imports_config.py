@@ -227,8 +227,10 @@ app.config['WTF_CSRF_CHECK_DEFAULT'] = True
 app.config['WTF_CSRF_HEADERS'] = ['X-CSRFToken', 'X-CSRF-Token']
 
 def _rate_limit_session_is_live():
+    """Logged-in tier: a live session or an active desktop device token
+    (resolved once per request, see _request_device_auth)."""
     try:
-        return _current_session_user() is not None
+        return _current_session_user() is not None or _request_device_auth()[0] is not None
     except Exception:
         return False
 
@@ -413,6 +415,9 @@ def _rate_limit_key():
         uid = session.get('logged_in_user_id')
         if uid is not None and uid != '':
             return f'user:{uid}'
+        device = _request_device_auth()[0]
+        if device is not None:
+            return f'device:{device.id}'
     except Exception:
         pass
     return f'ip:{get_remote_address()}'

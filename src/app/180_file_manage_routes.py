@@ -43,6 +43,9 @@ def manage_folder(folder_id):
             folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
             if not folder:
                 abort(404)
+            # An expiry would let cleanup trash the backup.
+            if request.form.get('expires', 'never') != 'never' and _backup_subtree_read_only(folder.id):
+                return _backup_read_only_error()
 
             # Handle share settings update - only update fields that are explicitly submitted
             if 'expires' in request.form:
@@ -310,12 +313,22 @@ def files_audio_recursive(folder_id=None):
                 ext = _get_compound_ext(f.orig_name)
                 if ext not in audio_exts:
                     continue
-                result.append({
+                entry = {
                     'id': f.id,
                     'name': f.orig_name,
                     'extension': ext,
                     'is_e2e': f.is_e2e_encrypted,
-                })
+                }
+                # E2EE orig_name is a placeholder; the player decrypts the real
+                # name client-side (same fields /files/list returns).
+                if f.is_e2e_encrypted:
+                    entry.update({
+                        'encrypted_name': f.encrypted_name,
+                        'name_nonce': f.name_nonce,
+                        'encrypted_file_key': f.encrypted_file_key,
+                        'file_key_nonce': f.file_key_nonce,
+                    })
+                result.append(entry)
             stack.extend(reversed(children_map.get(cur, [])))
         return result
 
@@ -323,6 +336,73 @@ def files_audio_recursive(folder_id=None):
 
     print(f'[MUSIC] Found {len(audio_files)} audio files in subfolders of folder_id={folder_id} for user {user.username}')
     return jsonify({'files': audio_files})
+
+def _move_file_to_folder(file, target_folder_id):
+    """Re-home a live file. Caller holds the lifecycle lock, has locked the
+    target via _lock_live_folder_for_placement() and commits."""
+    # E2E mixing is allowed — users can freely move files regardless of encryption type
+    source_folder_id = file.folder_id
+    old_share = _effective_folder_share_info(source_folder_id)
+    new_share = _effective_folder_share_info(target_folder_id)
+    file.folder_id = target_folder_id
+    file.original_folder_id = None  # explicit move supersedes the restore breadcrumb
+    if file.is_e2e_encrypted and (old_share or {}).get('share_token') != (new_share or {}).get('share_token'):
+        _clear_file_folder_link_key(file)
+    touch_folder(source_folder_id)
+    touch_folder(target_folder_id)
+
+
+def _move_folder_to_parent(folder, target_folder_id, user_id):
+    """Re-parent a live folder. Caller holds the lifecycle + folder tree locks
+    and commits. Returns (error_message, http_status, moved_e2e_ids); the error
+    is None on success."""
+    folder_id = folder.id
+    # Cannot move a folder into itself
+    if target_folder_id == folder_id:
+        return 'Cannot move a folder into itself', 400, []
+
+    # Cannot move to a descendant (would create a cycle).
+    # _folder_ancestor_ids is cycle- and depth-bounded.
+    if target_folder_id is not None:
+        target_chain = _folder_ancestor_ids(target_folder_id)
+        if folder_id in target_chain or not _folder_ancestry_complete(target_chain):
+            return 'Cannot move a folder into one of its subfolders', 400, []
+
+    # Verify target folder exists and belongs to user
+    if target_folder_id is not None:
+        target_folder = Folder.query.filter_by(id=target_folder_id, user_id=user_id, is_trashed=False).first()
+        if not target_folder:
+            return 'Target folder not found', 404, []
+
+    tree_ids = _collect_descendant_folder_ids([folder.id], include_roots=True)
+    tree_files = File.query.filter(
+        File.folder_id.in_(list(tree_ids)),
+        File.registered_user_id == user_id,
+        File.is_temp_upload == False,
+        File.is_trashed == False,
+        File.is_e2e_encrypted == True,
+    ).all()
+    old_share_tokens = {
+        f.id: (_effective_folder_share_info(f.folder_id) or {}).get('share_token')
+        for f in tree_files
+    }
+
+    # E2E mixing is allowed — users can freely move folders regardless of encryption types
+    source_parent_id = folder.parent_id
+    folder.parent_id = target_folder_id
+    folder.original_parent_id = None  # explicit move supersedes the restore breadcrumb
+    folder.updated_at = datetime.now(timezone.utc)
+    moved_e2e_ids = []
+    for tree_file in tree_files:
+        new_share = _effective_folder_share_info(tree_file.folder_id)
+        if old_share_tokens.get(tree_file.id) != (new_share or {}).get('share_token'):
+            _clear_file_folder_link_key(tree_file)
+            if new_share and tree_file.encrypted_file_key:
+                moved_e2e_ids.append(tree_file.id)
+    touch_folder(source_parent_id)
+    touch_folder(target_folder_id)
+    return None, 200, moved_e2e_ids
+
 
 @app.route('/file/<file_id>/move', methods=['POST'])
 @login_required
@@ -342,19 +422,12 @@ def move_file(file_id):
         file = File.query.filter_by(id=file_id, registered_user_id=user.id, is_trashed=False).first()
         if not file:
             return jsonify({'error': 'File not found'}), 404
+        if _backup_read_only(file.folder_id) or _backup_read_only(target_folder_id):
+            return _backup_read_only_error()
         if not _lock_live_folder_for_placement(target_folder_id, user.id):
             return jsonify({'error': 'Target folder not found'}), 404
 
-        # E2E mixing is allowed — users can freely move files regardless of encryption type
-        source_folder_id = file.folder_id
-        old_share = _effective_folder_share_info(source_folder_id)
-        new_share = _effective_folder_share_info(target_folder_id)
-        file.folder_id = target_folder_id
-        file.original_folder_id = None  # explicit move supersedes the restore breadcrumb
-        if file.is_e2e_encrypted and (old_share or {}).get('share_token') != (new_share or {}).get('share_token'):
-            _clear_file_folder_link_key(file)
-        touch_folder(source_folder_id)
-        touch_folder(target_folder_id)
+        _move_file_to_folder(file, target_folder_id)
         db.session.commit()
     finally:
         _release_lifecycle_lock(lifecycle_lock)
@@ -402,51 +475,12 @@ def move_folder(folder_id):
         folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
         if not folder:
             return jsonify({'error': 'Folder not found'}), 404
+        if _backup_read_only(folder.id) or _backup_read_only(target_folder_id):
+            return _backup_read_only_error()
 
-        # Cannot move a folder into itself
-        if target_folder_id == folder_id:
-            return jsonify({'error': 'Cannot move a folder into itself'}), 400
-
-        # Cannot move to a descendant (would create a cycle).
-        # _folder_ancestor_ids is cycle- and depth-bounded.
-        if target_folder_id is not None:
-            target_chain = _folder_ancestor_ids(target_folder_id)
-            if folder_id in target_chain or not _folder_ancestry_complete(target_chain):
-                return jsonify({'error': 'Cannot move a folder into one of its subfolders'}), 400
-
-        # Verify target folder exists and belongs to user
-        if target_folder_id is not None:
-            target_folder = Folder.query.filter_by(id=target_folder_id, user_id=user.id, is_trashed=False).first()
-            if not target_folder:
-                return jsonify({'error': 'Target folder not found'}), 404
-
-        tree_ids = _collect_descendant_folder_ids([folder.id], include_roots=True)
-        tree_files = File.query.filter(
-            File.folder_id.in_(list(tree_ids)),
-            File.registered_user_id == user.id,
-            File.is_temp_upload == False,
-            File.is_trashed == False,
-            File.is_e2e_encrypted == True,
-        ).all()
-        old_share_tokens = {
-            f.id: (_effective_folder_share_info(f.folder_id) or {}).get('share_token')
-            for f in tree_files
-        }
-
-        # E2E mixing is allowed — users can freely move folders regardless of encryption types
-        source_parent_id = folder.parent_id
-        folder.parent_id = target_folder_id
-        folder.original_parent_id = None  # explicit move supersedes the restore breadcrumb
-        folder.updated_at = datetime.now(timezone.utc)
-        moved_e2e_ids = []
-        for tree_file in tree_files:
-            new_share = _effective_folder_share_info(tree_file.folder_id)
-            if old_share_tokens.get(tree_file.id) != (new_share or {}).get('share_token'):
-                _clear_file_folder_link_key(tree_file)
-                if new_share and tree_file.encrypted_file_key:
-                    moved_e2e_ids.append(tree_file.id)
-        touch_folder(source_parent_id)
-        touch_folder(target_folder_id)
+        move_error, move_status, moved_e2e_ids = _move_folder_to_parent(folder, target_folder_id, user.id)
+        if move_error:
+            return jsonify({'error': move_error}), move_status
         db.session.commit()
     finally:
         _release_user_folder_tree_lock(tree_lock)
@@ -542,7 +576,7 @@ def file_manage_data(file_id):
         'size': file.size,
         'size_formatted': format_bytes_for_filesize(file.size),
         'uploaded': file.get_upload_time_aware().strftime('%b %d, %Y %H:%M'),
-        'expires': file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') if file.expires_at else 'NEVER',
+        'expires': file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') if file.expires_at else 'Never',
         'expires_at': file.expires_at.isoformat() if file.expires_at else None,
         'selected_expire': selected_expire,
         'is_e2e': file.is_e2e_encrypted,
@@ -629,7 +663,7 @@ def file_manage_data_by_token(token):
         'size': file.size,
         'size_formatted': format_bytes_for_filesize(file.size),
         'uploaded': file.get_upload_time_aware().strftime('%b %d, %Y %H:%M'),
-        'expires': file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') if file.expires_at else 'NEVER',
+        'expires': file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') if file.expires_at else 'Never',
         'expires_at': file.expires_at.isoformat() if file.expires_at else None,
         'selected_expire': selected_expire,
         'is_e2e': file.is_e2e_encrypted,
@@ -764,7 +798,7 @@ def folder_manage_data(folder_id):
         'is_e2e': folder.is_e2e is True,
         'created_at': folder.created_at.strftime('%b %d, %Y %H:%M'),
         'expires_at': folder.expires_at.isoformat() if folder.expires_at else None,
-        'expires_display': folder.expires_at.strftime('%b %d, %Y %H:%M') if folder.expires_at else 'NEVER',
+        'expires_display': folder.expires_at.strftime('%b %d, %Y %H:%M') if folder.expires_at else 'Never',
         'selected_expire': selected_expire,
         'file_count': file_count,
         'folder_size': folder_size,
@@ -903,6 +937,8 @@ def make_file_public(file_id):
     if not file.is_e2e_encrypted:
         # Already non-E2E, nothing to convert
         return jsonify({'success': True})
+    if _backup_read_only(file.folder_id):
+        return _backup_read_only_error()
 
     # AUDIT FIX (upload/download integrity): this route had NO request cap at
     # all, unlike /upload, apiv1_upload and save-content. It writes the new
@@ -1101,6 +1137,8 @@ def make_file_private(file_id):
         file.is_public = False
         db.session.commit()
         return jsonify({'success': True})
+    if _backup_read_only(file.folder_id):
+        return _backup_read_only_error()
 
     # AUDIT FIX (upload/download integrity): this route had NO request cap, no
     # quota check and no quota lock, yet it writes disk_size straight into quota

@@ -10,6 +10,7 @@
   var humanInteracted = false
   var fbKind = 'general'
   var fbPromptId = ''
+  var modalOpener = null
 
   ;['pointerdown','keydown','mousemove','touchstart'].forEach(function(t){
     window.addEventListener(t, function mark(){ humanInteracted = true; window.removeEventListener(t, mark) }, {once:true, passive:true})
@@ -47,35 +48,43 @@
       else {
         tagsEl.hidden = false
         tagsEl.innerHTML = catalog.tags.map(function(t){
-          return '<button type="button" class="pr-chip'+(activeTags[t]?' is-on':'')+'" data-tag="'+esc(t)+'">'+esc(t)+'</button>'
+          return '<button type="button" class="pr-chip'+(activeTags[t]?' is-on':'')+'" data-tag="'+esc(t)+'" aria-pressed="'+(activeTags[t]?'true':'false')+'">'+esc(t)+'</button>'
         }).join('')
       }
     }
 
     var html = ''
     var shown = 0
-    var idx = 0
     catalog.categories.forEach(function(c){
       var rows = (c.prompts||[]).filter(function(p){ return matches(p, c) })
       if(!rows.length) return
-      html += '<section class="pr-sec" id="pr-cat-'+esc(c.id)+'"><div class="pr-sec-head"><h2 class="pr-sec-title">'+esc(c.name)+'</h2></div>'
-      html += '<p class="pr-sec-blurb">'+esc(c.blurb||'')+'</p>'
+      html += '<section class="pr-sec" id="pr-cat-'+esc(c.id)+'"><div class="pr-sec-head"><h2 class="pr-sec-title">'+esc(c.name)+'</h2><span class="pr-sec-count">'+rows.length+'</span></div>'
+      html += '<p class="pr-sec-blurb">'+esc(c.blurb||'')+'</p><div class="pr-group">'
       rows.forEach(function(p){
         shown++
-        html += '<div class="pr-row" data-id="'+esc(p.id)+'" role="button" tabindex="0" style="--i:'+(idx++)+'">'
-        html += '<div><h3 class="pr-row-title">'+esc(p.title)+'</h3><p class="pr-row-blurb">'+esc(p.blurb||'')+'</p>'
-        html += '<div class="pr-row-meta">'
-        ;(p.tags||[]).forEach(function(t){ html += '<span class="pr-flag">'+esc(t)+'</span>' })
-        if(p.makes_changes) html += '<span class="pr-flag pr-flag-edit">Edits</span>'
-        if(p.needs_input) html += '<span class="pr-flag pr-flag-input">Needs input</span>'
-        html += '</div></div>'
-        html += '<button type="button" class="pr-row-copy" data-copy="'+esc(p.id)+'">Copy</button>'
+        html += '<div class="pr-row" data-id="'+esc(p.id)+'" role="button" tabindex="0">'
+        html += '<div class="pr-row-main"><h3 class="pr-row-title">'+esc(p.title)+'</h3><p class="pr-row-blurb">'+esc(p.blurb||'')+'</p>'
+        html += '<div class="pr-row-meta">'+flagsHtml(p, 'Edits')+'</div></div>'
+        html += '<button type="button" class="rd-btn rd-btn-sm rd-btn-ghost pr-row-copy" data-copy="'+esc(p.id)+'">Copy</button>'
         html += '</div>'
       })
-      html += '</section>'
+      html += '</div></section>'
     })
-    if(!shown) html = '<div class="pr-empty">No prompts match these filters.</div>'
+    if(!shown) html = emptyHtml('No prompts match these filters', 'Try a different search or clear the tag filters.')
     listEl.innerHTML = html
+  }
+
+  function flagsHtml(p, editsLabel){
+    var h = ''
+    if(p.needs_input) h += '<span class="rd-pill is-warn pr-flag pr-flag-input">Needs input</span>'
+    if(p.makes_changes) h += '<span class="rd-pill is-accent pr-flag pr-flag-edit">'+editsLabel+'</span>'
+    ;(p.tags||[]).forEach(function(t){ h += '<span class="rd-pill pr-flag">'+esc(t)+'</span>' })
+    return h
+  }
+
+  function emptyHtml(title, text){
+    return '<div class="rd-empty pr-empty"><span class="rd-empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span>' +
+      '<h3 class="rd-empty-title">'+esc(title)+'</h3><p class="rd-empty-text">'+esc(text)+'</p></div>'
   }
 
   function openModal(id){
@@ -87,24 +96,25 @@
     $('prModalBlurb').textContent = p.blurb || ''
     $('prModalSummary').textContent = p.summary || ''
     var flags = $('prModalFlags')
-    var fh = ''
-    ;(p.tags||[]).forEach(function(t){ fh += '<span class="pr-flag">'+esc(t)+'</span>' })
-    if(p.makes_changes) fh += '<span class="pr-flag pr-flag-edit">Edits files</span>'
-    if(p.needs_input) fh += '<span class="pr-flag pr-flag-input">Needs input</span>'
-    flags.innerHTML = fh
+    flags.innerHTML = flagsHtml(p, 'Edits files')
     $('prModalBody').textContent = preparePrompt(p.body)
     openId = id
+    if(!modal.classList.contains('rd-open')) modalOpener = document.activeElement
     modal.classList.add('rd-open')
     modal.setAttribute('aria-hidden', 'false')
+    setTimeout(function(){ $('prModalCopy').focus({preventScroll:true}) }, 50)
     try{ history.replaceState(null, '', '#p/'+encodeURIComponent(id)) }catch(e){}
   }
 
   function closeModal(){
     var modal = $('prModal')
     if(!modal) return
+    var wasOpen = modal.classList.contains('rd-open')
     modal.classList.remove('rd-open')
     modal.setAttribute('aria-hidden', 'true')
     openId = ''
+    if(wasOpen && modalOpener && modalOpener.focus) modalOpener.focus({preventScroll:true})
+    modalOpener = null
     try{
       if(/^#p\//.test(location.hash)) history.replaceState(null, '', location.pathname + location.search)
     }catch(e){}
@@ -358,7 +368,7 @@
       })
       .catch(function(){
         var list = $('prList')
-        if(list) list.innerHTML = '<div class="pr-empty">Could not load the prompt catalog.</div>'
+        if(list) list.innerHTML = emptyHtml('Could not load the prompt catalog', 'Check your connection and reload the page.')
       })
   }
 

@@ -1,136 +1,93 @@
 {% extends 'base.html' %}
-{% block title %}SHARE{% endblock %}
+{% set ui_v2 = true %}
+{% block title %}Quick share{% endblock %}
 {% set nav_active = 'share' %}
-{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('uploader.css') }}"><link rel="stylesheet" href="{{ versioned_static('manage.css') }}"><link rel="stylesheet" href="{{ versioned_static('share.css') }}"><link rel="stylesheet" href="{{ versioned_static('preview.css') }}">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('uploader.css') }}"><link rel="stylesheet" href="{{ versioned_static('manage.css') }}"><link rel="stylesheet" href="{{ versioned_static('preview.css') }}"><link rel="stylesheet" href="{{ versioned_static('share.css') }}">{% endblock %}
 
 {% block content %}
-<section class="rd-section share-hero-sec">
-  <div class="rd-container">
-    <span class="share-badge"><span class="share-badge-dot"></span>Zero-knowledge</span>
-    <h1 class="share-title">Quick share</h1>
-    <p class="share-subtitle">Drop a file. Get a link. No account needed.</p>
-    {% if allow_temp_uploads %}
-    <div class="share-uploader-wrap">{% include '_uploader.html' %}</div>
-    {% endif %}
-  </div>
-</section>
+{% set signed_in = session.get('logged_in_user_id') %}
+{% set text_exts = ['txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'py', 'js', 'html', 'css', 'sh', 'ini', 'cfg', 'conf', 'c', 'cpp', 'h', 'hpp', 'lua', 'rb', 'rs', 'go', 'java', 'ts', 'tsx', 'jsx', 'toml', 'bat', 'ps1', 'sql', 'r', 'swift', 'kt', 'php', 'pl', 'diff', 'makefile', 'env'] %}
+<div class="rd-page rd-page-narrow share-page">
+  <header class="rd-page-head">
+    <h1 class="rd-page-title">Quick share</h1>
+    <p class="rd-page-sub">Drop a file, get an expiring link.{% if not signed_in %} No account needed.{% endif %}</p>
+  </header>
 
-{% if temp_files %}
-  <div class="share-files-area">
-    <div class="temp-files-section">
-      <h2 class="section-title">YOUR TEMPORARY UPLOADS</h2>
-      <div class="temp-browser">
-    <div class="temp-browser-header">
-      <div class="browser-col col-name">NAME</div>
-      <div class="browser-col col-tags"></div>
-      <div class="browser-col col-encryption">E2E</div>
-      <div class="browser-col col-size">SIZE</div>
-      <div class="browser-col col-date">UPLOADED</div>
-      <div class="browser-col col-actions">ACTIONS</div>
-    </div>
-    <div class="temp-browser-files">
+  {% if allow_temp_uploads %}
+  {% include '_uploader.html' %}
+  {% endif %}
+
+  {% if temp_files %}
+  <section class="rd-panel share-files-area" aria-labelledby="shareFilesTitle">
+    <header class="rd-panel-head">
+      <div>
+        <h2 class="rd-panel-title" id="shareFilesTitle">Your quick shares <span class="share-count">{{ temp_files|length }}</span></h2>
+        <p class="rd-panel-sub">{{ 'Linked to your account until they expire' if signed_in else 'Only this browser can manage these' }}</p>
+      </div>
+    </header>
+    <div class="rd-panel-body is-flush temp-browser-files">
       {% for file in temp_files %}
       {% set extension = get_compound_ext(file.orig_name) %}
-      {% if extension in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico'] %}
-        {% set file_icon = '🖼️' %}
-      {% elif extension in ['exe', 'msi'] %}
-        {% set file_icon = '⚙️' %}
-      {% elif extension in ['zip', 'rar', '7z', 'tar', 'gz', 'bz2'] %}
-        {% set file_icon = '📦' %}
-      {% elif extension in ['pdf'] %}
-        {% set file_icon = '📕' %}
-      {% elif extension in ['doc', 'docx', 'txt', 'rtf', 'odt'] %}
-        {% set file_icon = '📝' %}
-      {% elif extension in ['xls', 'xlsx', 'csv', 'ods'] %}
-        {% set file_icon = '📊' %}
-      {% elif extension in ['ppt', 'pptx', 'odp'] %}
-        {% set file_icon = '📽️' %}
-      {% elif extension in ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v'] %}
-        {% set file_icon = '🎬' %}
-      {% elif extension in ['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac'] %}
-        {% set file_icon = '<svg class="audio-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>' %}
-      {% elif extension in ['py', 'js', 'java', 'cpp', 'c', 'h', 'cs', 'php', 'rb', 'go', 'rs', 'swift'] %}
-        {% set file_icon = '💻' %}
-      {% elif extension in ['html', 'css', 'xml', 'json', 'yaml', 'yml'] %}
-        {% set file_icon = '🌐' %}
-      {% elif extension in ['jar', 'apk', 'deb', 'rpm', 'dmg', 'pkg'] %}
-        {% set file_icon = '📱' %}
-      {% else %}
-        {% set file_icon = '📄' %}
-      {% endif %}
-      <div class="temp-browser-row file-row" data-file-id="{{ file.id }}" data-management-token="{{ file.management_token }}" data-file-name="{{ file.orig_name }}" data-size="{{ file.size or 0 }}" data-e2e="{{ 'true' if file.is_e2e_encrypted else 'false' }}" data-extension="{{ extension }}" data-previewable="{{ 'true' if extension in previewable_exts else 'false' }}"{% if file.short_code %} data-short-code="{{ file.short_code }}"{% endif %}{% if file.is_e2e_encrypted and file.has_thumbnail and file.encrypted_thumbnail_nonce %} data-enc-thumb-nonce="{{ file.encrypted_thumbnail_nonce }}"{% endif %}{% if file.is_e2e_encrypted and file.encrypted_name %} data-encrypted-name="{{ file.encrypted_name }}" data-name-nonce="{{ file.name_nonce }}" data-encrypted-file-key="{{ file.encrypted_file_key }}" data-file-key-nonce="{{ file.file_key_nonce }}"{% if file.file_key_salt %} data-file-key-salt="{{ file.file_key_salt }}"{% endif %}{% endif %}>
+      {% set ext = extension.rsplit('.', 1)[-1] %}
+      {% if ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'heic', 'avif'] %}{% set kind = 'image' %}
+      {% elif ext == 'pdf' %}{% set kind = 'pdf' %}
+      {% elif ext in ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'iso', 'dmg'] %}{% set kind = 'archive' %}
+      {% elif ext in ['csv', 'tsv', 'xls', 'xlsx', 'ods'] %}{% set kind = 'sheet' %}
+      {% elif ext in ['doc', 'docx', 'txt', 'rtf', 'odt', 'md', 'ppt', 'pptx', 'odp'] %}{% set kind = 'doc' %}
+      {% elif ext in ['py', 'js', 'ts', 'java', 'cpp', 'c', 'h', 'cs', 'php', 'rb', 'go', 'rs', 'swift', 'html', 'css', 'xml', 'json', 'yaml', 'yml', 'sh', 'sql', 'toml', 'ini'] %}{% set kind = 'code' %}
+      {% elif ext in ['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac', 'mp4', 'avi', 'mkv', 'mov', 'wmv', 'webm', 'm4v'] %}{% set kind = 'media' %}
+      {% else %}{% set kind = 'file' %}{% endif %}
+      {% set icon_cls = 'file-icon-small share-ico' ~ (' file-icon-preview' if extension in previewable_exts else '') %}
+      {% set glyph = '<svg viewBox="0 0 40 48" aria-hidden="true"><path class="share-page-body" d="M7 1.5h18.5L37.5 13.5V42A4.5 4.5 0 0 1 33 46.5H7A4.5 4.5 0 0 1 2.5 42V6A4.5 4.5 0 0 1 7 1.5z"/><path class="share-page-fold" d="M25.5 1.5v8.5a3.5 3.5 0 0 0 3.5 3.5h8.5z"/></svg>' %}
+      <div class="temp-browser-row file-row" data-file-id="{{ file.id }}" data-management-token="{{ file.management_token }}" data-file-name="{{ file.orig_name }}" data-size="{{ file.size or 0 }}" data-e2e="{{ 'true' if file.is_e2e_encrypted else 'false' }}" data-extension="{{ extension }}" data-previewable="{{ 'true' if extension in previewable_exts else 'false' }}"{% if ext in text_exts %} data-text-thumb{% endif %}{% if file.short_code %} data-short-code="{{ file.short_code }}"{% endif %}{% if file.is_e2e_encrypted and file.has_thumbnail and file.encrypted_thumbnail_nonce %} data-enc-thumb-nonce="{{ file.encrypted_thumbnail_nonce }}"{% endif %}{% if file.is_e2e_encrypted and file.encrypted_name %} data-encrypted-name="{{ file.encrypted_name }}" data-name-nonce="{{ file.name_nonce }}" data-encrypted-file-key="{{ file.encrypted_file_key }}" data-file-key-nonce="{{ file.file_key_nonce }}"{% if file.file_key_salt %} data-file-key-salt="{{ file.file_key_salt }}"{% endif %}{% endif %}>
         <div class="browser-col col-name">
           {% if not file.is_e2e_encrypted and (file.has_thumbnail or is_thumbnailable_name(file.orig_name)) %}
-            <span class="file-icon-small{% if extension in previewable_exts %} file-icon-preview{% endif %}" data-thumb-fill="{{ file.id }}">{{ file_icon|safe }}</span>
+            <span class="{{ icon_cls }}" data-kind="{{ kind }}" data-thumb-fill="{{ file.id }}">{{ glyph|safe }}</span>
           {% else %}
-            <span class="file-icon-small{% if extension in previewable_exts %} file-icon-preview{% endif %}">{{ file_icon|safe }}</span>
+            <span class="{{ icon_cls }}" data-kind="{{ kind }}">{{ glyph|safe }}</span>
           {% endif %}
-          {% if '.' in file.orig_name %}
-            <span class="file-name-text"><span class="file-name-base">{{ file.orig_name.rsplit('.', 1)[0] }}</span><span class="file-name-ext">.{{ file.orig_name.rsplit('.', 1)[1] }}</span></span>
-          {% else %}
-            <span class="file-name-text">{{ file.orig_name }}</span>
-          {% endif %}
-        </div>
-        <div class="browser-col col-tags">
-          {% if file.expires_at %}
-            <span class="file-badge file-badge-expires" title="Expires {{ file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') }} UTC" data-expires-at="{{ file.get_expires_at_aware().isoformat() }}">
-              <svg class="badge-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <span class="expires-text"></span>
+          <div class="share-row-text">
+            {% if '.' in file.orig_name %}
+              <span class="file-name-text file-name" title="{{ file.orig_name }}"><span class="file-name-base">{{ file.orig_name.rsplit('.', 1)[0] }}</span><span class="file-name-ext">.{{ file.orig_name.rsplit('.', 1)[1] }}</span></span>
+            {% else %}
+              <span class="file-name-text file-name" title="{{ file.orig_name }}">{{ file.orig_name }}</span>
+            {% endif %}
+            <span class="share-row-meta">
+              <span class="col-size">{{ file.size | filesize }}</span>
+              <span class="col-date">{{ file.get_upload_time_aware().strftime('%b %d, %Y') }}</span>
+              {% if file.is_e2e_encrypted %}
+                <span class="rd-pill is-good enc-icon enc-icon-e2e" title="End-to-end encrypted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>E2EE</span>
+              {% else %}
+                <span class="rd-pill enc-icon enc-icon-server" title="Server-side encrypted">Server-side</span>
+              {% endif %}
+              {% if file.expires_at %}
+                <span class="rd-pill file-badge file-badge-expires" title="Expires {{ file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') }} UTC" data-expires-at="{{ file.get_expires_at_aware().isoformat() }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span class="expires-text">Expires</span></span>
+              {% endif %}
+              {% if not file.is_public %}
+                <span class="rd-pill file-badge file-badge-private" title="Link turned off: only you can open it"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 15l6-6"/><path d="M11 6l.5-.5a5 5 0 0 1 7 7l-.5.5"/><path d="M13 18l-.5.5a5 5 0 0 1-7-7l.5-.5"/></svg>Link off</span>
+              {% endif %}
             </span>
-          {% endif %}
-          {% if file.is_public %}
-            <span class="file-badge file-badge-public" title="Publicly accessible via link">🌐 PUBLIC</span>
-          {% endif %}
+          </div>
         </div>
-        <div class="browser-col col-encryption">
-          {% if file.is_e2e_encrypted %}
-            <span class="enc-icon enc-icon-e2e" title="END-TO-END ENCRYPTED"></span>
-          {% else %}
-            <span class="enc-icon enc-icon-server" title="SERVER-SIDE ENCRYPTED"></span>
-          {% endif %}
-        </div>
-        <div class="browser-col col-size">{{ file.size | filesize }}</div>
-        <div class="browser-col col-date">{{ file.get_upload_time_aware().strftime('%b %d, %Y') }}</div>
         <div class="browser-col col-actions">
-          <a href="{{ url_for('download', id_or_token=file.id, filename=file.orig_name) }}" class="action-btn action-download" title="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>
-          <button class="action-btn action-manage manage-temp-file-btn" data-token="{{ file.management_token }}" title="Manage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
-          <button class="action-btn action-delete delete-temp-file-btn" data-token="{{ file.management_token }}" data-filename="{{ file.orig_name }}" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+          <a href="{{ url_for('download', id_or_token=file.id, filename=file.orig_name) }}" class="action-btn action-download" title="Download" aria-label="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg></a>
+          <button type="button" class="action-btn action-manage manage-temp-file-btn" data-token="{{ file.management_token }}" title="Manage" aria-label="Manage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></button>
+          <button type="button" class="action-btn action-delete delete-temp-file-btn" data-token="{{ file.management_token }}" data-filename="{{ file.orig_name }}" title="Delete" aria-label="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg></button>
         </div>
       </div>
       {% endfor %}
     </div>
-      </div>
-    </div>
-  </div>
+  </section>
   {% endif %}
-
-<div class="context-menu" id="contextMenu">
-  <div class="context-menu-item" data-action="download">
-    <span class="context-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
-    <span>DOWNLOAD</span>
-  </div>
-  <div class="context-menu-item" data-action="copy-link">
-    <span class="context-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
-    <span>COPY LINK</span>
-  </div>
-  <div class="context-menu-item" data-action="properties">
-    <span class="context-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
-    <span>MANAGE</span>
-  </div>
-  <div class="context-menu-divider"></div>
-  <div class="context-menu-item danger" data-action="delete">
-    <span class="context-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
-    <span>DELETE</span>
-  </div>
 </div>
 
 {% include '_manage_modal.html' %}
 {# temp-preview.js (loaded by _uploader.html) drives these two. #}
 {% include 'partials/_preview_modal.html' %}
-<div id="downloadProgress" class="upload-progress-toast" role="status" aria-live="polite" style="display: none;">
+<div id="downloadProgress" class="upload-progress-toast share-dl" role="status" aria-live="polite" style="display: none;">
   <div class="upload-toast-header">
-    <span class="upload-toast-title" id="downloadProgressTitle">DOWNLOADING FILE</span>
-    <button type="button" class="upload-toast-close" id="downloadProgressClose" title="CLOSE" style="display: none;">&times;</button>
+    <span class="upload-toast-title" id="downloadProgressTitle">Downloading file</span>
+    <button type="button" class="upload-toast-close" id="downloadProgressClose" title="Close" aria-label="Close" style="display: none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
   </div>
   <div class="upload-toast-body">
     <div class="upload-progress-bar">
@@ -138,16 +95,16 @@
     </div>
     <div class="upload-stats">
       <div class="upload-stat">
-        <span class="upload-stat-label">STATUS</span>
-        <span class="upload-stat-value" id="downloadProgressStatus">PREPARING...</span>
+        <span class="upload-stat-label">Status</span>
+        <span class="upload-stat-value" id="downloadProgressStatus">Preparing…</span>
       </div>
       <div class="upload-stat">
-        <span class="upload-stat-label">PROGRESS</span>
+        <span class="upload-stat-label">Progress</span>
         <span class="upload-stat-value" id="downloadProgressPercent">0%</span>
       </div>
       <div class="upload-stat">
-        <span class="upload-stat-label">SPEED</span>
-        <span class="upload-stat-value" id="downloadProgressSpeed">-</span>
+        <span class="upload-stat-label">Speed</span>
+        <span class="upload-stat-value" id="downloadProgressSpeed">–</span>
       </div>
     </div>
   </div>
@@ -162,7 +119,7 @@ document.addEventListener('click', async function(e){
   var d = e.target.closest('.delete-temp-file-btn');
   if (d){
     var tok=d.dataset.token, name=d.dataset.filename;
-    var ok = await showConfirm(name || 'THIS FILE', 'This file will be permanently deleted. This action cannot be undone.', 'DELETE');
+    var ok = await showConfirm(name || 'This file', 'This file will be permanently deleted. This action cannot be undone.', 'Delete');
     if(!ok) return;
     var fd=new FormData(); var t=document.getElementById('csrf_token'); if(t) fd.append('csrf_token', t.value);
     d.disabled=true;
@@ -173,7 +130,9 @@ document.addEventListener('click', async function(e){
       var row = d.closest('.temp-browser-row'); if(row) row.remove();
       if(typeof showToast==='function') showToast('FILE DELETED','success');
       var files=document.querySelector('.temp-browser-files');
-      if(files && !files.querySelector('.temp-browser-row')){ var s=document.querySelector('.share-files-area'); if(s) s.remove(); }
+      var left = files ? files.querySelectorAll('.temp-browser-row').length : 0;
+      var count = document.querySelector('.share-count'); if(count) count.textContent = left;
+      if(!left){ var s=document.querySelector('.share-files-area'); if(s) s.remove(); }
     } catch(err) {
       d.disabled=false;
       if(typeof showToast==='function') showToast('FAILED TO DELETE FILE: '+String(err.message || 'UNKNOWN ERROR'),'error');
@@ -195,6 +154,14 @@ document.querySelectorAll('[data-thumb-fill]').forEach(function (slot) {
     img.src = '/file/' + encodeURIComponent(id) + '/thumbnail'
   }
   attempt()
+})
+// Relative expiry on each row ("23h left"); the absolute time stays in the title.
+document.querySelectorAll('.file-badge-expires[data-expires-at]').forEach(function (badge) {
+  var ms = new Date(badge.getAttribute('data-expires-at')) - Date.now()
+  if (!isFinite(ms)) return
+  var m = Math.max(0, Math.round(ms / 60000)), h = Math.round(m / 60), d = Math.round(h / 24)
+  badge.querySelector('.expires-text').textContent = m < 1 ? 'Expiring' : m < 60 ? m + 'm left' : h < 48 ? h + 'h left' : d + 'd left'
+  if (m < 60) badge.classList.add('is-warn')
 })
 </script>
 {% endblock %}

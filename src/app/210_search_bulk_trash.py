@@ -225,6 +225,8 @@ def bulk_delete():
     lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
     try:
         db.session.rollback()
+        if _backup_items_read_only(user.id, file_ids, folder_ids, subtree=True):
+            return _backup_read_only_error()
         # AUDIT Tier 1: Bulk-load files and folders by ID in a single query each
         # instead of one .first() per ID. With 100 selected items this turns 200
         # round-trips into 2.
@@ -388,7 +390,9 @@ def _restore_folder_to_original_parent(folder, user):
     original_parent = Folder.query.filter_by(id=folder.original_parent_id, user_id=user.id).first()
     # The original parent may have been moved under this folder's restored
     # descendants while it sat in the trash; re-parenting would form a cycle.
+    # A read-only backup never takes a restored folder back: it stays at the root.
     if (original_parent and not original_parent.is_trashed
+            and not _backup_read_only(original_parent.id)
             and not _parent_would_form_cycle(folder.id, folder.original_parent_id)):
         # While this folder sat detached in the trash, a retried creation may have
         # reused its dedupe token under the same parent; re-parenting would then
@@ -679,6 +683,7 @@ def restore_folder_recursive(folder_id):
         file.trashed_at = None
         file.original_folder_id = None
         file.trashed_via_folder = False
+        file.trashed_by_device_id = None
 
 @app.route('/bulk/move', methods=['POST'])
 @limiter.limit(file_ops_rate_limit)
@@ -718,6 +723,8 @@ def bulk_move():
             target_folder = Folder.query.filter_by(id=target_folder_id, user_id=user.id, is_trashed=False).first()
             if not target_folder:
                 return jsonify({'error': 'Target folder not found'}), 404
+        if _backup_read_only(target_folder_id) or _backup_items_read_only(user.id, file_ids, folder_ids):
+            return _backup_read_only_error()
 
         # Pre-compute the target's ancestor chain once (used to reject cycle-forming
         # moves). Cycle- and depth-bounded.
@@ -839,6 +846,36 @@ def trash():
                            current_folder=None,
                            root_folder_name=user.root_folder_name or 'FILES')
 
+def _restore_trashed_file(file, user):
+    """Bring one trashed file back. Caller holds the quota + lifecycle locks,
+    has checked quota and commits."""
+    # Restore to original folder if it still exists and is not trashed
+    # A read-only backup never takes a restored file back: it lands at the root.
+    if file.original_folder_id:
+        original_folder = Folder.query.filter_by(id=file.original_folder_id, user_id=user.id).first()
+        if original_folder and not original_folder.is_trashed and not _backup_read_only(original_folder.id):
+            file.folder_id = file.original_folder_id
+            file.original_folder_id = None  # breadcrumb fulfilled
+        elif original_folder:
+            # AUDIT FIX (finding 11): the folder still EXISTS (merely
+            # trashed). Restore the file to the drive root but KEEP the
+            # original_folder_id breadcrumb so the later folder restore
+            # can re-associate it, instead of erasing where it came from.
+            file.folder_id = None
+        else:
+            # Folder is gone entirely -- the breadcrumb is dead.
+            file.folder_id = None
+            file.original_folder_id = None
+    else:
+        file.folder_id = None
+
+    file.is_trashed = False
+    file.trashed_at = None
+    file.trashed_via_folder = False
+    file.trashed_by_device_id = None
+    touch_folder(file.folder_id)
+
+
 @app.route('/trash/restore/<file_id>', methods=['POST'])
 @login_required
 def restore_file(file_id):
@@ -858,29 +895,7 @@ def restore_file(file_id):
         if not user.has_storage_available(_quota_bytes_for_file(file)):
             return _storage_limit_json(user)
     
-        # Restore to original folder if it still exists and is not trashed
-        if file.original_folder_id:
-            original_folder = Folder.query.filter_by(id=file.original_folder_id, user_id=user.id).first()
-            if original_folder and not original_folder.is_trashed:
-                file.folder_id = file.original_folder_id
-                file.original_folder_id = None  # breadcrumb fulfilled
-            elif original_folder:
-                # AUDIT FIX (finding 11): the folder still EXISTS (merely
-                # trashed). Restore the file to the drive root but KEEP the
-                # original_folder_id breadcrumb so the later folder restore
-                # can re-associate it, instead of erasing where it came from.
-                file.folder_id = None
-            else:
-                # Folder is gone entirely -- the breadcrumb is dead.
-                file.folder_id = None
-                file.original_folder_id = None
-        else:
-            file.folder_id = None
-    
-        file.is_trashed = False
-        file.trashed_at = None
-        file.trashed_via_folder = False
-        touch_folder(file.folder_id)
+        _restore_trashed_file(file, user)
         db.session.commit()
     
         print(f'[TRASH] Restored file: {file.orig_name} by user: {user.username}')
@@ -960,7 +975,7 @@ def restore_all_files():
         for file in trashed_files:
             if file.original_folder_id:
                 original_folder = _parent_lookup.get(file.original_folder_id)
-                if original_folder and not original_folder.is_trashed:
+                if original_folder and not original_folder.is_trashed and not _backup_read_only(original_folder.id):
                     file.folder_id = file.original_folder_id
                     file.original_folder_id = None  # breadcrumb fulfilled
                 elif original_folder:
@@ -977,6 +992,7 @@ def restore_all_files():
             file.is_trashed = False
             file.trashed_at = None
             file.trashed_via_folder = False
+            file.trashed_by_device_id = None
             touch_folder(file.folder_id)
             restored_files += 1
 
@@ -1275,7 +1291,7 @@ def bulk_restore():
                 continue
             if file.original_folder_id:
                 original_folder = _parent_lookup.get(file.original_folder_id)
-                if original_folder and not original_folder.is_trashed:
+                if original_folder and not original_folder.is_trashed and not _backup_read_only(original_folder.id):
                     file.folder_id = file.original_folder_id
                     file.original_folder_id = None  # breadcrumb fulfilled
                 elif original_folder:
@@ -1291,6 +1307,7 @@ def bulk_restore():
             file.is_trashed = False
             file.trashed_at = None
             file.trashed_via_folder = False
+            file.trashed_by_device_id = None
             touch_folder(file.folder_id)
             restored += 1
 

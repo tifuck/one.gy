@@ -71,26 +71,20 @@ function _showUnsavedShareLinkPanel(shareUrl, alreadyCopied) {
     // Release the locked progress-card height so the warning can size itself
     dropZone.style.height = '';
     dropZone.innerHTML = `
-      <div class="upload-progress-card">
+      <div class="upload-progress-card upload-card-warn">
         <div class="upload-card-header">
-          <span class="upload-card-title">SAVE THIS LINK NOW</span>
+          <span class="upload-card-icon" aria-hidden="true">${_CARD_ICONS.warn}</span>
+          <div class="upload-card-heading">
+            <span class="upload-card-title">Save this link now</span>
+            <span class="upload-card-sub">It could not be stored in this browser</span>
+          </div>
         </div>
         <div class="upload-card-body">
-          <div class="upload-card-stats">
-            <div class="upload-card-stat">
-              <span class="upload-card-stat-label">KEYCHAIN</span>
-              <span class="upload-card-stat-value">NOT SAVED</span>
-            </div>
-            <div class="upload-card-stat">
-              <span class="upload-card-stat-label">RECOVERY</span>
-              <span class="upload-card-stat-value">THIS LINK ONLY</span>
-            </div>
-          </div>
-          <p class="upload-card-filename">THIS LINK HOLDS THE ONLY COPY OF THE DECRYPTION SECRET AND COULD NOT BE STORED IN THIS BROWSER. IT WILL NOT BE IN THE MANAGE PANEL. IF YOU LEAVE WITHOUT SAVING IT, NOBODY CAN EVER DECRYPT THIS FILE.</p>
-          <input type="text" id="unsavedShareLink" readonly style="width:100%;padding:.6rem;border:2px solid var(--border);background:var(--surface-2);color:var(--text);font-family:var(--font-mono);font-size:.72rem">
-          <div style="display:flex;gap:.6rem;flex-wrap:wrap;justify-content:center">
-            <button type="button" id="unsavedShareCopy" class="rd-btn rd-btn-primary">COPY LINK</button>
-            <button type="button" id="unsavedShareAck" class="rd-btn rd-btn-ghost">I HAVE SAVED IT</button>
+          <p class="upload-card-note">This link holds the only copy of the decryption secret. It will not appear in the manage panel, and if you leave without saving it nobody can ever decrypt this file.</p>
+          <input type="text" id="unsavedShareLink" class="form-input upload-card-link" readonly aria-label="Share link">
+          <div class="upload-card-actions">
+            <button type="button" id="unsavedShareCopy" class="rd-btn rd-btn-primary">Copy link</button>
+            <button type="button" id="unsavedShareAck" class="rd-btn rd-btn-ghost">I have saved it</button>
           </div>
         </div>
       </div>
@@ -125,7 +119,7 @@ function _showUnsavedShareLinkPanel(shareUrl, alreadyCopied) {
           }
         }
         if (ok) {
-          copyBtn.textContent = 'COPIED';
+          copyBtn.textContent = 'Copied';
           acknowledged = true;
           if (ackBtn) ackBtn.disabled = false;
           showToast('SHARE LINK COPIED. STORE IT SOMEWHERE SAFE', 'success');
@@ -147,6 +141,39 @@ function _showUnsavedShareLinkPanel(shareUrl, alreadyCopied) {
       resolve();
     }
   });
+}
+
+const _CARD_ICONS = {
+  up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m6 11 6-6 6 6"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>'
+};
+
+// Progress card that replaces the drop zone while files are prepared and sent.
+// `title` is trusted markup-free text; the file label goes in via textContent.
+function _progressCardHTML(icon, title, status, cancellable) {
+  return `
+    <div class="upload-progress-card">
+      <div class="upload-card-header">
+        <span class="upload-card-icon" aria-hidden="true">${_CARD_ICONS[icon]}</span>
+        <div class="upload-card-heading">
+          <span class="upload-card-title">${title}</span>
+          <span class="upload-card-sub" id="progressSub"></span>
+        </div>
+        ${cancellable ? '<button type="button" id="progressCancel" class="upload-card-close" title="Cancel upload" aria-label="Cancel upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>' : ''}
+      </div>
+      <div class="upload-card-body">
+        <div class="upload-card-bar"><div class="upload-card-fill" id="progressFill"></div></div>
+        <div class="upload-card-stats" role="status" aria-live="polite">
+          <div class="upload-card-stat"><span class="upload-card-stat-label">Status</span><span class="upload-card-stat-value" id="progressStatus">${status}</span></div>
+          <div class="upload-card-stat"><span class="upload-card-stat-label">Progress</span><span class="upload-card-stat-value" id="progressPercent">0%</span></div>
+          <div class="upload-card-stat"><span class="upload-card-stat-label" id="progressSpeedLabel">Speed</span><span class="upload-card-stat-value" id="progressSpeed">–</span></div>
+        </div>
+        <div class="upload-card-filename" id="progressEta"></div>
+      </div>
+    </div>`;
 }
 
 function formatBytes(bytes) {
@@ -310,20 +337,28 @@ async function _uploadFiles(files) {
   if (!dropZone) return;
   const maxGb = typeof MAX_GB !== 'undefined' ? MAX_GB : 1.0;
   const maxBytes = maxGb * 1024 * 1024 * 1024;
-  const maxGbDisplay = maxGb === Math.floor(maxGb) ? maxGb.toFixed(0) : maxGb.toFixed(1);
   // Capture toggle states before replacing HTML so we can restore them
   const _shortChecked = document.getElementById('shortToggle')?.checked ?? false;
   const _e2eChecked = document.getElementById('e2eToggle')?.checked ?? true;
-  const originalHTML = `<div class="drop-zone-body">
-  <div class="drop-zone-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="56" height="56"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
-  <h2 class="drop-zone-title">DROP FILES HERE</h2>
-  <p class="drop-zone-text">OR CLICK TO BROWSE</p>
-</div>
-<div class="drop-zone-toggles">
-  <span class="drop-zone-limit">MAX ${maxGbDisplay} GB</span>
-  <div class="drop-zone-toggle"><div class="toggle-switch"><input type="checkbox" id="shortToggle" class="toggle-checkbox"${_shortChecked ? ' checked' : ''}><span class="toggle-slider"></span></div><span class="drop-zone-toggle-label">SHORT URL</span></div>
-  <div class="drop-zone-toggle"><div class="toggle-switch"><input type="checkbox" id="e2eToggle" class="toggle-checkbox"${_e2eChecked ? ' checked' : ''}><span class="toggle-slider"></span></div><span class="drop-zone-toggle-label">E2E ENCRYPT</span></div>
-</div>`;
+  // The idle markup comes from _uploader.html; snapshot it (checked is a
+  // property, not markup, so the toggles are re-applied on restore).
+  const idleHTML = dropZone.innerHTML;
+  function restoreDropZone() {
+    dropZone.classList.remove('uploading');
+    dropZone.innerHTML = idleHTML;
+    dropZone.style.height = '';
+    const shortToggle = document.getElementById('shortToggle');
+    const e2eToggle = document.getElementById('e2eToggle');
+    if (shortToggle) shortToggle.checked = _shortChecked;
+    if (e2eToggle) e2eToggle.checked = _e2eChecked;
+  }
+  function showProgressCard(icon, title, status, cancellable) {
+    dropZone.classList.add('uploading');
+    dropZone.innerHTML = _progressCardHTML(icon, title, status, cancellable);
+    document.getElementById('progressSub').textContent = files.length === 1
+      ? `${files[0].name} · ${formatBytes(files[0].size)}`
+      : `${files.length} files · ${formatBytes(totalSize)}`;
+  }
 
   // Check file sizes before upload
   let totalSize = 0;
@@ -351,21 +386,24 @@ async function _uploadFiles(files) {
 
   const isE2E = _e2eChecked;
 
-  // Warn user if uploading without E2E encryption
+  // Warn user if uploading without E2E encryption. Only an accepted warning
+  // sends allow_unencrypted; logged-in uploads are refused without it.
+  let unencryptedConfirmed = false;
   if (!isE2E && typeof showConfirm === 'function') {
-    const shieldIcon = '🔓';
-    const fileCount = files.length;
-    const fileLabel = fileCount === 1 ? 'FILE' : 'FILES';
+    const unlockIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-1"/></svg>';
+    const fileLabel = files.length === 1 ? 'file' : 'files';
     const confirmed = await showConfirm(
-      'NO END-TO-END ENCRYPTION',
-      `YOUR ${fileLabel} WILL BE UPLOADED WITH SERVER-SIDE ENCRYPTION ONLY. FOR MAXIMUM PRIVACY, ENABLE THE E2E ENCRYPTION TOGGLE.`,
-      'UPLOAD ANYWAY',
-      shieldIcon
+      'No end-to-end encryption',
+      `Your ${fileLabel} will be uploaded with server-side encryption only. For maximum privacy, turn on End-to-end.`,
+      'Upload anyway',
+      unlockIcon,
+      'confirm-no-e2e'
     );
     if (!confirmed) {
       dropZone.style.height = '';
       return;
     }
+    unencryptedConfirmed = true;
   }
 
   let encryptedFiles = files;
@@ -376,34 +414,7 @@ async function _uploadFiles(files) {
   // For non-E2E uploads with folder structure or multiple files, create zip first
   // This preserves folder structure in the zip
   if (!isE2E && (files.length > 1 || hasFolderStructure)) {
-    const fileText = files.length === 1 ? 'FILE' : 'FILES';
-    dropZone.classList.add('uploading');
-    dropZone.innerHTML = `
-      <div class="upload-progress-card">
-        <div class="upload-card-header">
-          <span class="upload-card-title">PREPARING ${files.length} ${fileText}</span>
-        </div>
-        <div class="upload-card-body">
-          <div class="upload-card-bar">
-            <div class="upload-card-fill" id="progressFill"></div>
-          </div>
-          <div class="upload-card-stats">
-            <div class="upload-card-stat">
-              <span class="upload-card-stat-label">STATUS</span>
-              <span class="upload-card-stat-value" id="progressStatus">PREPARING...</span>
-            </div>
-            <div class="upload-card-stat">
-              <span class="upload-card-stat-label">PROGRESS</span>
-              <span class="upload-card-stat-value" id="progressPercent">0%</span>
-            </div>
-            <div class="upload-card-stat">
-              <span class="upload-card-stat-label">SPEED</span>
-              <span class="upload-card-stat-value" id="progressSpeed">--</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
+    showProgressCard('box', `Preparing ${files.length} ${files.length === 1 ? 'file' : 'files'}`, 'Zipping…', false);
     
     try {
       // Create zip with folder structure preserved
@@ -420,9 +431,7 @@ async function _uploadFiles(files) {
       encryptedFiles = [new File([zipBlob], zipName, { type: 'application/zip' })];
     } catch (error) {
       showToast('FAILED TO PREPARE FILES: ' + error.message, 'error');
-      dropZone.classList.remove('uploading');
-      dropZone.innerHTML = originalHTML;
-      dropZone.style.height = '';
+      restoreDropZone();
       return;
     }
   }
@@ -460,34 +469,7 @@ async function _uploadFiles(files) {
     const passphrase = _generatePassphrase();
     e2eGuestPassphrase = passphrase;
     
-    const fileText = files.length === 1 ? 'FILE' : 'FILES';
-    dropZone.classList.add('uploading');
-    dropZone.innerHTML = `
-      <div class="upload-progress-card">
-        <div class="upload-card-header">
-          <span class="upload-card-title">ENCRYPTING ${files.length} ${fileText}</span>
-        </div>
-        <div class="upload-card-body">
-          <div class="upload-card-bar">
-            <div class="upload-card-fill" id="progressFill"></div>
-          </div>
-          <div class="upload-card-stats">
-            <div class="upload-card-stat">
-              <span class="upload-card-stat-label">STATUS</span>
-              <span class="upload-card-stat-value" id="progressStatus">ENCRYPTING...</span>
-            </div>
-            <div class="upload-card-stat">
-              <span class="upload-card-stat-label">PROGRESS</span>
-              <span class="upload-card-stat-value" id="progressPercent">0%</span>
-            </div>
-            <div class="upload-card-stat">
-              <span class="upload-card-stat-label">SPEED</span>
-              <span class="upload-card-stat-value" id="progressSpeed">--</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
+    showProgressCard('lock', `Encrypting ${files.length} ${files.length === 1 ? 'file' : 'files'}`, 'Encrypting…', false);
     try {
       const fillEl = document.getElementById('progressFill');
       const percentEl = document.getElementById('progressPercent');
@@ -506,11 +488,11 @@ async function _uploadFiles(files) {
       const e2eHasFolderStructure = files.some(f => f.fullPath && f.fullPath !== f.name);
       
       if (files.length === 1 && !e2eHasFolderStructure) {
-        statusEl.textContent = 'PREPARING FILE...';
+        statusEl.textContent = 'Preparing…';
         dataToEncrypt = files[0];
         uploadFileName = files[0].name;
       } else {
-        statusEl.textContent = 'PREPARING FILES...';
+        statusEl.textContent = 'Zipping…';
         dataToEncrypt = await createZip(files);
         // Use original folder name if this was a folder upload
         uploadFileName = `files_${files.length}.zip`;
@@ -523,7 +505,7 @@ async function _uploadFiles(files) {
         }
       }
       
-      statusEl.textContent = 'ENCRYPTING...';
+      statusEl.textContent = 'Encrypting…';
       if (fillEl) fillEl.style.width = '10%';
       if (percentEl) percentEl.textContent = '10%';
       
@@ -554,7 +536,7 @@ async function _uploadFiles(files) {
       
       if (fillEl) fillEl.style.width = '100%';
       if (percentEl) percentEl.textContent = '100%';
-      statusEl.textContent = 'ENCRYPTION COMPLETE';
+      statusEl.textContent = 'Encrypted';
       
       // Encrypt filename (zero-knowledge: server never sees real name)
       try {
@@ -572,15 +554,12 @@ async function _uploadFiles(files) {
       
     } catch (error) {
       showToast('ENCRYPTION FAILED: ' + error.message, 'error');
-      dropZone.classList.remove('uploading');
-      dropZone.innerHTML = originalHTML;
-      dropZone.style.height = '';
+      restoreDropZone();
       return;
     }
   }
 
   const MAX_RETRIES = 3;
-  const fileText = files.length === 1 ? 'FILE' : 'FILES';
   const totalUploadSize = encryptedFiles.reduce((sum, file) => sum + file.size, 0);
   
   // Collect form settings once (before innerHTML replacement)
@@ -600,35 +579,7 @@ async function _uploadFiles(files) {
   // the file, so an abort would orphan it (and lose the E2E passphrase).
   let bodyFullySent = false;
   
-  dropZone.classList.add('uploading');
-  dropZone.innerHTML = `
-    <div class="upload-progress-card">
-      <div class="upload-card-header">
-        <span class="upload-card-title">UPLOADING ${files.length} ${fileText}</span>
-        <button id="progressCancel" class="upload-card-close" title="CANCEL UPLOAD">&times;</button>
-      </div>
-      <div class="upload-card-body">
-        <div class="upload-card-bar">
-          <div class="upload-card-fill" id="progressFill"></div>
-        </div>
-        <div class="upload-card-stats">
-          <div class="upload-card-stat">
-            <span class="upload-card-stat-label">STATUS</span>
-            <span class="upload-card-stat-value" id="progressStatus">UPLOADING...</span>
-          </div>
-          <div class="upload-card-stat">
-            <span class="upload-card-stat-label">PROGRESS</span>
-            <span class="upload-card-stat-value" id="progressPercent">0%</span>
-          </div>
-          <div class="upload-card-stat">
-            <span class="upload-card-stat-label" id="progressSpeedLabel">SPEED</span>
-            <span class="upload-card-stat-value" id="progressSpeed">--</span>
-          </div>
-        </div>
-        <div class="upload-card-filename" id="progressEta"></div>
-      </div>
-    </div>
-  `;
+  showProgressCard('up', `Uploading ${files.length} ${files.length === 1 ? 'file' : 'files'}`, 'Uploading…', true);
   
   // Wire up cancel button
   document.getElementById('progressCancel').addEventListener('click', () => {
@@ -657,6 +608,7 @@ async function _uploadFiles(files) {
     // users a public file that self-destructed in 24h), so the intent has to
     // be stated here rather than inferred.
     fd.append('is_temp', 'true');
+    if (!isE2E && unencryptedConfirmed) fd.append('allow_unencrypted', 'true');
     if (isE2E) {
       fd.append('e2e', 'true');
       // MEGA-style: per-file wrapped key metadata
@@ -705,24 +657,22 @@ async function _uploadFiles(files) {
   // Retry loop
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     if (cancelled) {
-      dropZone.classList.remove('uploading');
-      dropZone.innerHTML = originalHTML;
-      dropZone.style.height = '';
+      restoreDropZone();
       return;
     }
     
     if (attempt > 1) {
       const delay = Math.pow(2, attempt) * 1000;
-      document.getElementById('progressStatus').textContent = `RETRYING (${attempt}/${MAX_RETRIES})...`;
-      document.getElementById('progressSpeed').textContent = `Wait ${delay / 1000}s...`;
+      document.getElementById('progressStatus').textContent = `Retrying (${attempt}/${MAX_RETRIES})…`;
+      document.getElementById('progressSpeed').textContent = `Wait ${delay / 1000}s`;
       const speedLabel = document.getElementById('progressSpeedLabel');
-      if (speedLabel) speedLabel.textContent = 'SPEED';
+      if (speedLabel) speedLabel.textContent = 'Speed';
       await new Promise(r => setTimeout(r, delay));
-      if (cancelled) { dropZone.classList.remove('uploading'); dropZone.innerHTML = originalHTML; dropZone.style.height = ''; return; }
-      document.getElementById('progressStatus').textContent = 'UPLOADING...';
+      if (cancelled) { restoreDropZone(); return; }
+      document.getElementById('progressStatus').textContent = 'Uploading…';
       document.getElementById('progressFill').style.width = '0%';
       document.getElementById('progressPercent').textContent = '0%';
-      document.getElementById('progressSpeed').textContent = '--';
+      document.getElementById('progressSpeed').textContent = '–';
       document.getElementById('progressEta').textContent = '';
     }
     
@@ -756,36 +706,36 @@ async function _uploadFiles(files) {
           if (!statusEl) return;
           
           if (data.phase === 'encrypting') {
-            statusEl.textContent = 'ENCRYPTING...';
+            statusEl.textContent = 'Encrypting…';
             if (data.percent >= lastDisplayedPercent) {
               lastDisplayedPercent = data.percent;
               percentEl.textContent = data.percent + '%';
               fillEl.style.width = data.percent + '%';
             }
-            if (speedLabel) speedLabel.textContent = 'SPEED';
+            if (speedLabel) speedLabel.textContent = 'Speed';
             speedEl.textContent = data.speed ? data.speed + ' MB/s' : '--';
             if (etaEl) etaEl.textContent = '';
           } else if (data.phase === 'zipping') {
-            statusEl.textContent = 'ZIPPING...';
+            statusEl.textContent = 'Zipping…';
             if (data.percent >= lastDisplayedPercent) {
               lastDisplayedPercent = data.percent;
               percentEl.textContent = data.percent + '%';
               fillEl.style.width = data.percent + '%';
             }
-            if (speedLabel) speedLabel.textContent = 'SPEED';
-            speedEl.textContent = '--';
+            if (speedLabel) speedLabel.textContent = 'Speed';
+            speedEl.textContent = '–';
             if (etaEl) etaEl.textContent = '';
           } else if (data.phase === 'finalizing') {
-            statusEl.textContent = 'SAVING...';
+            statusEl.textContent = 'Saving…';
             percentEl.textContent = '100%';
             fillEl.style.width = '100%';
-            if (speedLabel) speedLabel.textContent = 'SPEED';
-            speedEl.textContent = '--';
+            if (speedLabel) speedLabel.textContent = 'Speed';
+            speedEl.textContent = '–';
             if (etaEl) etaEl.textContent = '';
           } else if (data.phase === 'saving') {
-            statusEl.textContent = 'PROCESSING...';
-            if (speedLabel) speedLabel.textContent = 'SPEED';
-            speedEl.textContent = '--';
+            statusEl.textContent = 'Processing…';
+            if (speedLabel) speedLabel.textContent = 'Speed';
+            speedEl.textContent = '–';
             if (etaEl) etaEl.textContent = '';
           }
         } catch (e) {
@@ -799,7 +749,7 @@ async function _uploadFiles(files) {
         clearInterval(progressPollInterval);
         progressPollInterval = null;
         const speedLabel = document.getElementById('progressSpeedLabel');
-        if (speedLabel) speedLabel.textContent = 'SPEED';
+        if (speedLabel) speedLabel.textContent = 'Speed';
       }
     }
     
@@ -830,7 +780,7 @@ async function _uploadFiles(files) {
               const timeStr = secondsRemaining < 60 ? `${secondsRemaining}s` : `${Math.ceil(secondsRemaining / 60)}m`;
               document.getElementById('progressSpeed').textContent = speed + ' MB/s';
               const etaEl = document.getElementById('progressEta');
-              if (etaEl) etaEl.textContent = timeStr + ' REMAINING';
+              if (etaEl) etaEl.textContent = timeStr + ' remaining';
             }
             
             if (e.loaded === e.total && !uploadFinished) {
@@ -840,11 +790,12 @@ async function _uploadFiles(files) {
               const cancelNowBtn = document.getElementById('progressCancel');
               if (cancelNowBtn) {
                 cancelNowBtn.style.opacity = '.45';
-                cancelNowBtn.title = 'UPLOAD ALREADY SENT. CANNOT BE CANCELLED WHILE THE SERVER SAVES IT';
+                cancelNowBtn.title = 'Already sent. It cannot be cancelled while the server saves it';
+                cancelNowBtn.setAttribute('aria-disabled', 'true');
               }
               lastDisplayedPercent = 0;
-              document.getElementById('progressStatus').textContent = 'PROCESSING...';
-              document.getElementById('progressSpeed').textContent = '--';
+              document.getElementById('progressStatus').textContent = 'Processing…';
+              document.getElementById('progressSpeed').textContent = '–';
               const etaEl = document.getElementById('progressEta');
               if (etaEl) etaEl.textContent = '';
               startProgressPolling();
@@ -927,16 +878,22 @@ async function _uploadFiles(files) {
       
       // Success — handle response and exit
       if (typeof _pendingUploadRefresh !== 'undefined') _pendingUploadRefresh = true;
-      document.getElementById('progressStatus').textContent = 'COMPLETE!';
+      document.getElementById('progressStatus').textContent = 'Complete';
       document.getElementById('progressFill').style.width = '100%';
       document.getElementById('progressPercent').textContent = '100%';
       const speedDone = document.getElementById('progressSpeed');
-      if (speedDone) speedDone.textContent = 'DONE';
+      if (speedDone) speedDone.textContent = 'Done';
       const etaDone = document.getElementById('progressEta');
       if (etaDone) etaDone.textContent = '';
       // Hide cancel button on success
       const cancelBtn = document.getElementById('progressCancel');
       if (cancelBtn) cancelBtn.style.display = 'none';
+      const doneCard = dropZone.querySelector('.upload-progress-card');
+      if (doneCard) {
+        doneCard.classList.add('is-done');
+        doneCard.querySelector('.upload-card-icon').innerHTML = _CARD_ICONS.check;
+        doneCard.querySelector('.upload-card-title').textContent = 'Uploaded';
+      }
       // Keep the client-side thumbnail in memory only — it is a plaintext
       // render of a file we just end-to-end encrypted (see _getMemThumbStore)
       if (pendingThumbnailDataUrl && result.response.file_id) {
@@ -956,9 +913,9 @@ async function _uploadFiles(files) {
           if (fullShareUrl && typeof showConfirm === 'function') {
             const lockIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
             const shouldCopy = await showConfirm(
-              'COPY SHARE LINK?',
-              'THIS LINK CONTAINS THE DECRYPTION SECRET. COPYING IT MAY EXPOSE THE SECRET IN CLIPBOARD HISTORY.',
-              'COPY LINK',
+              'Copy share link?',
+              'This link contains the decryption secret. Copying it may expose the secret in clipboard history.',
+              'Copy link',
               lockIcon,
               'confirm-warn'
             );
@@ -981,9 +938,7 @@ async function _uploadFiles(files) {
             console.error(`[UPLOAD] Passphrase could not be persisted for ${result.response.file_id} — forcing manual save`);
             await _showUnsavedShareLinkPanel(fullShareUrl, copied);
             e2eGuestPassphrase = null;
-            dropZone.classList.remove('uploading');
-            dropZone.innerHTML = originalHTML;
-            dropZone.style.height = '';
+            restoreDropZone();
             showToast('UPLOAD COMPLETE. THE LINK YOU SAVED IS THE ONLY WAY TO DECRYPT IT', 'success');
             return;
           }
@@ -1003,26 +958,20 @@ async function _uploadFiles(files) {
           return;
         }
         // Reset drop zone then open manage overlay
-        dropZone.classList.remove('uploading');
-        dropZone.innerHTML = originalHTML;
-        dropZone.style.height = '';
+        restoreDropZone();
         if (typeof ManageModal !== 'undefined') {
           ManageModal.openFileByToken(result.response.management_token);
         } else if (result.response.redirect) {
           window.location.href = result.response.redirect;
         }
       } else {
-        dropZone.classList.remove('uploading');
-        dropZone.innerHTML = originalHTML;
-        dropZone.style.height = '';
+        restoreDropZone();
       }
       return;
       
     } catch (err) {
       if (err.cancelled || cancelled) {
-        dropZone.classList.remove('uploading');
-        dropZone.innerHTML = originalHTML;
-        dropZone.style.height = '';
+        restoreDropZone();
         return;
       }
       
@@ -1036,9 +985,7 @@ async function _uploadFiles(files) {
           errorMsg += `\n\nLarge file (${fileSizeGB}GB): Try uploading from the Files dashboard, or try a wired connection.`;
         }
         showToast(errorMsg, 'error');
-        dropZone.classList.remove('uploading');
-        dropZone.innerHTML = originalHTML;
-        dropZone.style.height = '';
+        restoreDropZone();
         return;
       }
       

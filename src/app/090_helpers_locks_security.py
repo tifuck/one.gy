@@ -270,6 +270,21 @@ def safe_content_disposition(disposition, filename):
     utf8_name = urllib.parse.quote(filename, safe='')
     return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}"
 
+def safe_served_mimetype(filename):
+    """MIME type for serving user content from this origin. Only types that
+    cannot run script here keep their real type; html, svg, js, css, every
+    +xml flavour, ... become application/octet-stream, so an uploaded file can
+    never satisfy script-src 'self' (a <script src> ignores Content-Disposition)."""
+    import mimetypes
+    mimetype, _ = mimetypes.guess_type(filename or '')
+    if mimetype and (
+        mimetype in ('application/pdf', 'text/plain')
+        or mimetype.startswith(('audio/', 'video/'))
+        or (mimetype.startswith('image/') and mimetype != 'image/svg+xml')
+    ):
+        return mimetype
+    return 'application/octet-stream'
+
 def escape_like_pattern(value):
     if value is None:
         return ''

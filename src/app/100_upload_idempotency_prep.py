@@ -164,6 +164,184 @@ def _upload_idempotent_reuse_response(existing_upload, manager_cookie=None):
         )
     return resp
 
+def _acquire_upload_key_locks(upload_scope):
+    """Host flock + MariaDB GET_LOCK for one upload idempotency scope, both with
+    bounded waits. Returns (flock, db_lock, busy). busy=True means fail closed
+    with 503 + Retry-After; the caller still releases whatever was returned."""
+    flock = _acquire_upload_idempotency_lock(upload_scope, timeout=_UPLOAD_IDEMPOTENCY_WAIT_SECONDS)
+    if upload_scope and flock is None:
+        print(f'[UPLOAD] Timed out after {_UPLOAD_IDEMPOTENCY_WAIT_SECONDS}s waiting for '
+              'the upload idempotency lock; failing closed with 503')
+        return None, None, True
+    try:
+        db_lock = _acquire_upload_idempotency_database_lock(upload_scope)
+    except RuntimeError as db_lock_err:
+        print(f'[UPLOAD] Upload idempotency database lock not acquired ({db_lock_err}); '
+              'failing closed with 503')
+        return flock, None, True
+    return flock, db_lock, False
+
+
+def _acquire_finalize_quota_lock(user_id):
+    """Per-user quota flock for the short finalize+commit window only (bounded
+    wait, never across the body transfer), then a fresh read snapshot so the
+    authoritative quota check sees concurrent commits. Returns the lock, or None
+    on timeout: fail closed, proceeding would race the check-and-commit."""
+    quota_lock = _acquire_user_quota_lock(user_id, timeout=_UPLOAD_QUOTA_FLOCK_WAIT_SECONDS)
+    if quota_lock is None:
+        print('[UPLOAD] Timed out waiting for the per-user quota lock; '
+              'failing closed with 503')
+        return None
+    _refresh_quota_snapshot()
+    return quota_lock
+
+
+def _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_written, thumbnail_written):
+    """Remove payload/thumbnail artifacts left behind by a failed upload.
+
+    AUDIT FIX D15: the upload failure handlers used to run these deletes inside
+    bare `try/except Exception: pass` blocks guarded by `'name' in dir()` string
+    probes, so a written payload silently stayed on disk (and on every replica)
+    with nothing in the log. Failures are logged with [ERROR] and each artifact
+    is gated on an explicit sentinel."""
+    if payload_written and encrypted_filename:
+        try:
+            storage.delete_file(encrypted_filename)
+        except Exception as e:
+            print(f'[ERROR] Upload cleanup failed to remove payload {encrypted_filename}: {e}')
+    if thumbnail_written and file_id:
+        try:
+            delete_thumbnail_from_disk(file_id)
+        except Exception as e:
+            print(f'[ERROR] Upload cleanup failed to remove thumbnail for {file_id}: {e}')
+
+
+def _commit_new_upload(file_record, staged_path, owner_id, key_scope,
+                       thumbnail_part=None, thumbnail_nonce=None, log_prefix='UPLOAD'):
+    """Publish a staged payload and commit its new File row. Shared by /upload
+    and the desktop sync uploads (376_apiv1_sync_uploads.py).
+
+    The caller holds the upload-key locks and, for a registered owner, the quota
+    lock with the authoritative quota check done. This takes the owner's
+    lifecycle lock for the publish + commit window (before the INSERT can
+    autoflush parent-folder row locks). key_scope holds the owner kwargs of
+    _find_existing_upload_by_key() for the DB unique-index backstop.
+    thumbnail_part is any object with read(n) (E2EE only).
+
+    Returns (outcome, row): ('committed', file_record), ('reused', winner) when
+    another request committed the idempotency key first, ('folder_missing',
+    None) or ('db_error', None). Unless committed, the session is rolled back
+    and nothing this call wrote is left behind, also when it raises."""
+    file_id = file_record.id
+    encrypted_filename = file_record.filename
+    upload_key = file_record.upload_idempotency_key
+    folder_id = file_record.folder_id
+    is_e2e = bool(file_record.is_e2e_encrypted)
+    payload_written = False
+    thumbnail_written = False
+    lifecycle_lock = _acquire_user_lifecycle_lock(owner_id) if owner_id else None
+    try:
+        # AUDIT FIX P0-2/P1-13: add the File row BEFORE store_file so
+        # _mark_replica_synced (called inside store_file) sees the pending row
+        # through the identity map and back-fills the local FileReplica.
+        db.session.add(file_record)
+        # AUDIT FIX H4: drop any stale tombstone for this key before the row can
+        # replicate (belt and braces; Phase B also checks).
+        _clear_pending_remote_deletes_for('files', [encrypted_filename, file_id])
+        touch_folder(folder_id)
+        payload_written = True  # from here on a payload may exist under encrypted_filename
+        storage.store_file(encrypted_filename, staged_path)
+        print(f'[{log_prefix}] Saved file: {encrypted_filename}, content size: {file_record.size} bytes')
+        if is_e2e and thumbnail_part and thumbnail_nonce:
+            try:
+                # AUDIT FIX (upload/download integrity): bounded read, never the
+                # whole part into the worker heap.
+                thumb_data, thumb_oversized = read_bounded_upload_part(
+                    thumbnail_part, _MAX_ENCRYPTED_THUMBNAIL_BYTES)
+                if thumb_oversized:
+                    print(f'[{log_prefix}] E2E thumbnail exceeds {_MAX_ENCRYPTED_THUMBNAIL_BYTES} bytes, skipping')
+                elif len(thumbnail_nonce) > 255:
+                    # encrypted_thumbnail_nonce is String(255): an oversized value
+                    # would fail the File commit, not just the thumbnail.
+                    print(f'[{log_prefix}] E2E thumbnail nonce exceeds 255 characters, skipping thumbnail')
+                elif thumb_data and save_thumbnail_to_disk(file_id, thumb_data, is_e2e=True):
+                    thumbnail_written = True
+                    file_record.encrypted_thumbnail_nonce = thumbnail_nonce
+                    file_record.has_thumbnail = True
+            except ReplicaSessionRollbackError as thumb_db_err:
+                # AUDIT FIX H3: replica bookkeeping rolled back the shared session,
+                # which expunged the pending File row. Committing would persist
+                # nothing while reporting success; abort and clean up instead.
+                print(f'[{log_prefix}] E2E thumbnail bookkeeping rolled back the DB session; aborting upload {file_id}: {thumb_db_err}')
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+                _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_written, True)
+                payload_written = thumbnail_written = False
+                return 'db_error', None
+            except Exception as e:
+                print(f'[{log_prefix}] E2E thumbnail save failed (non-critical): {e}')
+
+        if owner_id and not _lock_live_folder_for_placement(folder_id, owner_id):
+            db.session.rollback()
+            _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_written, thumbnail_written)
+            payload_written = thumbnail_written = False
+            return 'folder_missing', None
+
+        try:
+            # AUDIT FIX H3: refuse to commit unless the File row is still tracked
+            # by the session (an internal rollback may have expunged it).
+            _file_row_state = inspect(file_record)
+            if not (_file_row_state.pending or _file_row_state.persistent):
+                raise RuntimeError(
+                    f'UPLOAD ABORT: File row {file_id} was expunged from the DB '
+                    'session by an internal rollback before commit; refusing to '
+                    'report success for a row that was never committed'
+                )
+            # AUDIT FIX A20: retry on a short_code uniqueness collision instead of
+            # failing an upload whose payload is already written and encrypted.
+            _commit_with_short_code_retry(file_record)
+        except _IdempotencyIntegrityError as _key_err:
+            # AUDIT FIX M9: the per-owner UNIQUE indexes on upload_idempotency_key
+            # back the flock + GET_LOCK locks. Losing that race is an idempotent
+            # retry: serve the winner's row (or release trashed duplicates and
+            # retry once) instead of failing after the payload was written.
+            if not upload_key or 'upload_idempotency_key' not in str(getattr(_key_err, 'orig', _key_err)).lower():
+                raise
+            db.session.rollback()
+            existing_upload, conflict_action = _resolve_upload_key_unique_conflict(upload_key, **key_scope)
+            if conflict_action == 'retry':
+                print(f'[{log_prefix}] Released trashed duplicate idempotency rows for key {upload_key}; retrying insert')
+                db.session.add(file_record)
+                _clear_pending_remote_deletes_for('files', [encrypted_filename, file_id])
+                touch_folder(folder_id)
+                _commit_with_short_code_retry(file_record)
+            elif conflict_action == 'reused':
+                # This attempt's payload is an orphan: the winner's row owns the key.
+                _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_written, thumbnail_written)
+                payload_written = thumbnail_written = False
+                print(f'[{log_prefix}] Reused existing upload for idempotency key (DB unique backstop): {upload_key}')
+                return 'reused', existing_upload
+            else:
+                raise RuntimeError(
+                    f'UPLOAD CONFLICT: idempotency key {upload_key} is held by a live file row '
+                    f'outside this request\'s dedup scope; refusing to create a duplicate'
+                )
+        # The committed row now owns the payload and thumbnail.
+        payload_written = thumbnail_written = False
+        return 'committed', file_record
+    except BaseException:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_written, thumbnail_written)
+        raise
+    finally:
+        _release_lifecycle_lock(lifecycle_lock)
+
+
 def _storage_limit_json(user):
     return jsonify({'error': f'STORAGE LIMIT EXCEEDED. YOU HAVE {user.get_storage_remaining_gb():.2f}GB REMAINING.'}), 413
 

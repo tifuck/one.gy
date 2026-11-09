@@ -1,138 +1,148 @@
 /* ============================================================================
-   FROST GATEWAY — the anonymous / hand-off pages that sit between a share link
-   and the actual bytes: 404, password prompt, E2EE decrypt page, server-side
-   decrypt progress, guest temp-file list, and the standalone manage page.
-
-   These render on base.html (public shell: _nav + _footer), so they
-   get core.css + components.css + themes.css + editorial-base.css. Everything
-   here is token-driven — NEVER hardcode a hex colour, it breaks the themes.
-
-   Shared prefix: .gw-*  (gateway)
+   GATEWAY — the single-purpose public pages between a share link and the
+   bytes: 404/errors, password prompt, E2EE decrypt, server-side prepare,
+   guest uploads and the standalone manage page. All of them opt into UI v2
+   (base.html shell + ui-v2.css), so this file only adds the .gw-* layout on
+   top of the shared primitives (.rd-btn, .rd-field, .rd-callout, .rd-table…).
+   Token-only: no hex colours here.
    ========================================================================== */
 
 /* ---- Shell ---------------------------------------------------------------
-   main is a flex column on these pages so the card centres in the space left
-   over by nav + footer instead of forcing 100vh and creating a phantom
-   scrollbar (same trick auth.css uses for .auth-container). */
-main:has(.gw-section){display:flex;flex-direction:column}
-.gw-section{flex:1 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:calc(var(--nav-h) + 2rem) clamp(1.15rem,4vw,2rem) 3rem}
+   main is a flex column so the card centres in the space nav + footer leave
+   (core.css hides the footer under 560px on .gw-section pages). */
+main:has(.gw-section){ display:flex; flex-direction:column; }
+.gw-section{ flex:1 0 auto; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  padding:calc(var(--nav-h) + 40px) 16px 64px; }
 
-.gw-card{width:100%;max-width:34rem;background:var(--surface);border:2px solid var(--border);
-  box-shadow:8px 8px 0 var(--accent);padding:clamp(1.6rem,4vw,2.6rem);text-align:center}
-.gw-card-wide{max-width:56rem;text-align:left}
+.gw-card{ width:100%; max-width:420px; padding:32px 28px 28px; background:var(--panel); border:1px solid var(--line);
+  border-radius:14px; text-align:center; }
 
-/* ---- Head ---------------------------------------------------------------- */
-.gw-ico{width:56px;height:56px;margin:0 auto 1.1rem;display:grid;place-items:center;
-  border:2px solid var(--border);color:var(--accent);background:var(--bg)}
-.gw-ico svg{width:28px;height:28px}
-.gw-rule{width:56px;height:3px;background:var(--accent);margin:0 auto 1.1rem}
-.gw-card-wide .gw-rule{margin-left:0}
+/* ---- Head: icon tile, optional code line, title, sub ---------------------- */
+.gw-ico{ display:grid; place-items:center; width:48px; height:48px; margin:0 auto 18px; border-radius:12px;
+  background:var(--surface); color:var(--text-dim); }
+.gw-ico svg{ width:22px; height:22px; }
+.gw-ico.is-accent{ background:var(--accent-soft); color:var(--accent); }
+.gw-ico.is-good{ background:color-mix(in srgb,var(--good) 14%,transparent); color:var(--good); }
+.gw-ico.is-warn{ background:color-mix(in srgb,var(--warn) 15%,transparent); color:var(--warn); }
+.gw-ico.is-bad{ background:var(--bad-soft); color:var(--bad); }
+.gw-spin{ animation:gwspin .9s linear infinite; transform-origin:50% 50%; }
+@keyframes gwspin{ to{ transform:rotate(360deg); } }
 
-.gw-title{font-family:var(--font-display);font-weight:800;letter-spacing:-.02em;text-transform:uppercase;
-  font-size:clamp(1.5rem,3.6vw,2.1rem);line-height:1.1;margin-bottom:.55rem;word-break:break-word}
-.gw-sub{font-family:var(--font-mono);font-size:.76rem;letter-spacing:.04em;text-transform:uppercase;
-  color:var(--text-dim);line-height:1.6}
-.gw-note{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.05em;text-transform:uppercase;
-  color:var(--text-dim);line-height:1.6;margin-top:1.4rem;
-  display:flex;align-items:center;justify-content:center;gap:.45rem}
-.gw-note svg{flex:none;opacity:.8}
-.gw-err{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.04em;text-transform:uppercase;
-  color:var(--bad);border:2px solid var(--bad);padding:.6rem .8rem;margin-top:1rem}
+.gw-code{ margin-bottom:6px; font-size:.78rem; font-weight:500; color:var(--text-faint); font-variant-numeric:tabular-nums; }
+.gw-title{ font-size:1.3rem; font-weight:600; letter-spacing:-.02em; line-height:1.25; color:var(--text); overflow-wrap:anywhere; }
+.gw-sub{ max-width:36ch; margin:6px auto 0; font-size:.9rem; line-height:1.5; color:var(--text-dim);
+  text-wrap:balance; overflow-wrap:anywhere; }
+.gw-detail{ margin-top:20px; text-align:left; }
 
-/* ---- 404 digits ---------------------------------------------------------- */
-.gw-code{display:flex;justify-content:center;gap:.35rem;margin-bottom:1.1rem}
-.gw-digit{font-family:var(--font-display);font-weight:800;font-size:clamp(3.4rem,11vw,5.4rem);
-  line-height:.9;letter-spacing:-.04em;color:var(--text)}
-.gw-digit-accent{color:var(--accent)}
-.gw-detail{display:inline-flex;align-items:center;gap:.5rem;margin-top:1rem;padding:.55rem .8rem;
-  border:2px solid var(--border);background:var(--bg);
-  font-family:var(--font-mono);font-size:.68rem;letter-spacing:.04em;text-transform:uppercase;color:var(--text-dim)}
-.gw-detail svg{flex:none;color:var(--accent)}
+/* ---- File identity row (decrypt / prepare / manage) ----------------------- */
+.gw-file{ display:flex; align-items:center; gap:12px; min-width:0; margin-top:24px; padding:12px 14px 12px 12px;
+  border-radius:12px; background:var(--surface); text-align:left; }
+.gw-file-text{ flex:1 1 auto; min-width:0; }
+.gw-file-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.9rem; font-weight:600; color:var(--text); }
+.gw-file-meta{ margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.78rem; color:var(--text-dim);
+  font-variant-numeric:tabular-nums; }
 
-/* ---- Share QR (standalone manage page) -----------------------------------
-   White panel is deliberate (same as .acc-qr on the account page): the QR PNG
-   itself is black-on-white, so the frame matches the image's quiet zone in
-   both themes. */
-.gw-qr{display:grid;place-items:center;width:max-content;margin:1.2rem auto 0;
-  padding:.85rem;background:#fff;border:2px solid var(--border)}
-.gw-qr img{width:150px;height:150px;display:block;image-rendering:pixelated}
-.gw-qr-label{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.05em;text-transform:uppercase;
-  color:var(--text-dim);margin-top:.55rem}
+/* Page glyph tinted by file kind (same drawing as the Files page). The kind
+   comes from the extension: data-ext → --k. */
+.gw-doc{ --k:var(--kind-file); position:relative; flex:none; display:block; width:30px; height:36px; }
+.gw-doc svg{ display:block; width:100%; height:100%; }
+.gw-doc .gw-page-body{ fill:color-mix(in srgb,var(--k) 13%,var(--surface)); stroke:color-mix(in srgb,var(--k) 60%,transparent); stroke-width:1.6; }
+.gw-doc .gw-page-fold{ fill:color-mix(in srgb,var(--k) 35%,var(--surface)); stroke:color-mix(in srgb,var(--k) 60%,transparent); stroke-width:1.6; stroke-linejoin:round; }
+.gw-doc-ext{ position:absolute; left:50%; bottom:6px; transform:translateX(-50%); max-width:28px; overflow:hidden;
+  padding:0 3px; border-radius:3px; background:color-mix(in srgb,var(--k) 58%,var(--glyph-shade)); color:var(--on-media); font-size:.5rem; font-weight:700;
+  letter-spacing:.03em; line-height:1.45; text-transform:uppercase; white-space:nowrap; }
+.gw-doc-ext:empty{ display:none; }
+.gw-doc.is-sm{ width:20px; height:24px; }
+.gw-doc.is-folder{ --k:var(--kind-folder); }
+.gw-doc.is-folder .gw-page-body{ fill:var(--k); stroke:none; }
+.gw-doc[data-ext="jpg"], .gw-doc[data-ext="jpeg"], .gw-doc[data-ext="png"], .gw-doc[data-ext="gif"], .gw-doc[data-ext="webp"],
+.gw-doc[data-ext="bmp"], .gw-doc[data-ext="svg"], .gw-doc[data-ext="heic"], .gw-doc[data-ext="heif"], .gw-doc[data-ext="tif"],
+.gw-doc[data-ext="tiff"], .gw-doc[data-ext="avif"], .gw-doc[data-ext="ico"]{ --k:var(--kind-image); }
+.gw-doc[data-ext="pdf"]{ --k:var(--kind-pdf); }
+.gw-doc[data-ext="zip"], .gw-doc[data-ext="rar"], .gw-doc[data-ext="7z"], .gw-doc[data-ext="tar"], .gw-doc[data-ext="gz"],
+.gw-doc[data-ext="tgz"], .gw-doc[data-ext="bz2"], .gw-doc[data-ext="xz"], .gw-doc[data-ext="zst"], .gw-doc[data-ext="iso"],
+.gw-doc[data-ext="dmg"]{ --k:var(--kind-archive); }
+.gw-doc[data-ext="csv"], .gw-doc[data-ext="tsv"], .gw-doc[data-ext="xls"], .gw-doc[data-ext="xlsx"], .gw-doc[data-ext="ods"],
+.gw-doc[data-ext="numbers"]{ --k:var(--kind-sheet); }
+.gw-doc[data-ext="txt"], .gw-doc[data-ext="md"], .gw-doc[data-ext="rtf"], .gw-doc[data-ext="doc"], .gw-doc[data-ext="docx"],
+.gw-doc[data-ext="odt"], .gw-doc[data-ext="pages"], .gw-doc[data-ext="ppt"], .gw-doc[data-ext="pptx"], .gw-doc[data-ext="odp"],
+.gw-doc[data-ext="key"], .gw-doc[data-ext="log"], .gw-doc[data-ext="epub"]{ --k:var(--kind-doc); }
+.gw-doc[data-ext="js"], .gw-doc[data-ext="ts"], .gw-doc[data-ext="py"], .gw-doc[data-ext="go"], .gw-doc[data-ext="rs"],
+.gw-doc[data-ext="c"], .gw-doc[data-ext="cpp"], .gw-doc[data-ext="java"], .gw-doc[data-ext="rb"], .gw-doc[data-ext="php"],
+.gw-doc[data-ext="sh"], .gw-doc[data-ext="html"], .gw-doc[data-ext="css"], .gw-doc[data-ext="json"], .gw-doc[data-ext="xml"],
+.gw-doc[data-ext="yaml"], .gw-doc[data-ext="yml"], .gw-doc[data-ext="toml"], .gw-doc[data-ext="sql"]{ --k:var(--kind-code); }
+.gw-doc[data-ext="mp3"], .gw-doc[data-ext="wav"], .gw-doc[data-ext="ogg"], .gw-doc[data-ext="m4a"], .gw-doc[data-ext="aac"],
+.gw-doc[data-ext="flac"], .gw-doc[data-ext="opus"], .gw-doc[data-ext="mp4"], .gw-doc[data-ext="webm"], .gw-doc[data-ext="mov"],
+.gw-doc[data-ext="mkv"], .gw-doc[data-ext="avi"], .gw-doc[data-ext="m4v"]{ --k:var(--kind-media); }
 
-/* ---- Actions ------------------------------------------------------------- */
-.gw-actions{display:flex;flex-wrap:wrap;gap:.7rem;justify-content:center;margin-top:1.6rem}
-.gw-card-wide .gw-actions{justify-content:flex-start}
-.gw-btn{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 1.15rem;border:2px solid var(--border);
-  background:transparent;color:var(--text);text-decoration:none;cursor:pointer;
-  font-family:var(--font-mono);font-weight:600;font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;
-  transition:transform .2s var(--ease),background .2s var(--ease),color .2s var(--ease),box-shadow .2s var(--ease)}
-.gw-btn:hover{transform:translate(-2px,-2px);box-shadow:4px 4px 0 var(--accent-soft)}
-.gw-btn:active{transform:none;box-shadow:none}
-.gw-btn:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
-.gw-btn-primary{background:var(--text);border-color:var(--text);color:var(--bg)}
-.gw-btn-primary:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast);
-  box-shadow:4px 4px 0 var(--text)}
+/* ---- Progress (E2EE decrypt + server-side prepare) ----------------------- */
+.gw-prog{ margin-top:14px; text-align:left; }
+.gw-prog-track{ height:4px; overflow:hidden; border-radius:4px; background:var(--press); }
+.gw-prog-fill{ width:0; height:100%; border-radius:4px; background:var(--accent); transition:width .3s cubic-bezier(.2,.9,.3,1), background .2s; }
+.gw-prog-fill.is-done{ background:var(--good); }
+.gw-prog-fill.is-error{ background:var(--bad); }
+.gw-prog-row{ display:flex; align-items:baseline; gap:12px; margin-top:8px; font-size:.8rem; font-variant-numeric:tabular-nums; }
+.gw-prog-status{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-dim); }
+.gw-prog-speed{ flex:none; color:var(--text-faint); }
+.gw-prog-speed:empty{ display:none; }
+.gw-prog-pct{ flex:none; min-width:3ch; text-align:right; font-weight:500; color:var(--text); }
 
 /* ---- Form ---------------------------------------------------------------- */
-.gw-form{display:flex;flex-direction:column;gap:.9rem;margin-top:1.5rem;text-align:left}
-.gw-form .gw-btn{justify-content:center}
+.gw-form{ display:flex; flex-direction:column; gap:12px; margin-top:24px; text-align:left; }
+.gw-form .rd-btn{ width:100%; }
 
-/* ---- Progress panel (E2EE decrypt + server-side prepare) ----------------- */
-.gw-prog{margin-top:1.5rem;border:2px solid var(--border);background:var(--bg);text-align:left}
-.gw-prog-head{padding:.6rem .8rem;border-bottom:2px solid var(--border);background:var(--surface);
-  font-family:var(--font-mono);font-size:.72rem;font-weight:600;letter-spacing:.04em;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.gw-prog-body{padding:.9rem .8rem}
-.gw-prog-track{height:10px;background:var(--toggle-off);border:2px solid var(--border);overflow:hidden}
-.gw-prog-fill{height:100%;width:0;background:var(--accent);transition:width .3s var(--ease)}
-.gw-prog-fill.is-done{background:var(--good)}
-.gw-prog-fill.is-error{background:var(--bad)}
-.gw-prog-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:.7rem;margin-top:.8rem}
-.gw-prog-stat{display:flex;flex-direction:column;gap:.2rem;min-width:0}
-.gw-prog-label{font-family:var(--font-mono);font-size:.6rem;font-weight:600;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--text-dim)}
-.gw-prog-value{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.02em;
-  font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ---- Actions + footnote -------------------------------------------------- */
+.gw-actions{ display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:24px; }
+.gw-actions[hidden]{ display:none; }
+.gw-retry{ width:100%; margin-top:16px; }
+.gw-note{ margin:28px -28px -28px; padding:14px 24px; border-top:1px solid var(--line); font-size:.78rem; line-height:1.5;
+  color:var(--text-dim); text-wrap:balance; }
+.gw-note svg{ display:inline-block; width:13px; height:13px; margin-right:6px; vertical-align:-2px; color:var(--text-faint); }
+.gw-note span{ display:inline-block; }
+.gw-note:empty{ display:none; }
 
-/* ---- Guest temp-file table ----------------------------------------------- */
-.gw-table{width:100%;border:2px solid var(--border);background:var(--surface);border-collapse:collapse}
-.gw-table th{font-family:var(--font-mono);font-size:.62rem;font-weight:600;letter-spacing:.1em;
-  text-transform:uppercase;color:var(--text-dim);text-align:left;
-  padding:.65rem .8rem;border-bottom:2px solid var(--border);white-space:nowrap}
-.gw-table td{padding:.7rem .8rem;border-bottom:1px solid var(--border);font-size:.85rem;vertical-align:middle}
-.gw-table tr:last-child td{border-bottom:0}
-.gw-table tbody tr:hover{background:var(--accent-soft)}
-.gw-fname{color:var(--text);text-decoration:none;font-weight:600;word-break:break-all}
-.gw-fname:hover{color:var(--accent)}
-.gw-mono{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.02em;color:var(--text-dim);white-space:nowrap}
-.gw-tag{display:inline-block;font-family:var(--font-mono);font-size:.6rem;font-weight:600;letter-spacing:.08em;
-  text-transform:uppercase;padding:.2rem .45rem;border:1px solid var(--border);color:var(--text-dim);
-  margin-right:.3rem;white-space:nowrap}
-.gw-tag-accent{border-color:var(--accent);color:var(--accent)}
-.gw-tag-good{border-color:var(--good);color:var(--good)}
-.gw-row-actions{display:flex;gap:.4rem;flex-wrap:wrap}
-.gw-mini{padding:.35rem .6rem;border:2px solid var(--border);background:transparent;color:var(--text);
-  text-decoration:none;cursor:pointer;font-family:var(--font-mono);font-size:.64rem;font-weight:600;
-  letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;
-  transition:background .15s var(--ease),color .15s var(--ease),border-color .15s var(--ease)}
-.gw-mini:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-contrast)}
-.gw-mini-danger:hover{background:var(--bad);border-color:var(--bad);color:var(--surface)}
+/* ---- Share QR (standalone manage page) -----------------------------------
+   The PNG is black on white, so the frame is the image's quiet zone in both
+   themes (--on-media is white in both). */
+.gw-qr{ display:grid; place-items:center; width:max-content; margin:20px auto 0; padding:10px; border-radius:10px; background:var(--on-media); }
+.gw-qr img{ display:block; width:132px; height:132px; image-rendering:pixelated; }
+.gw-qr-label{ margin-top:8px; font-size:.78rem; color:var(--text-dim); }
 
-.gw-empty{border:2px dashed var(--border);background:var(--surface);padding:clamp(2rem,6vw,3.4rem) 1.2rem;
-  text-align:center;text-decoration:none;color:inherit;display:block}
-.gw-empty:hover{border-color:var(--accent)}
-.gw-empty-title{font-family:var(--font-display);font-weight:800;text-transform:uppercase;
-  font-size:1.15rem;margin:.7rem 0 .35rem}
+/* ---- Guest uploads (rd-page + rd-panel + rd-table) ----------------------- */
+.gw-name{ display:flex; align-items:center; gap:10px; min-width:0; }
+.gw-name a{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); font-weight:500; text-decoration:none; }
+.gw-name a:hover{ color:var(--accent); }
+.gw-pills{ display:flex; gap:4px; }
+.gw-row-actions{ display:flex; justify-content:flex-end; gap:6px; }
+.gw-dim{ color:var(--text-dim); white-space:nowrap; }
 
-@media (max-width:640px){
-  .gw-prog-stats{grid-template-columns:1fr 1fr}
-  .gw-table thead{display:none}
-  .gw-table,.gw-table tbody,.gw-table tr,.gw-table td{display:block;width:100%}
-  .gw-table tr{border-bottom:2px solid var(--border);padding:.4rem 0}
-  .gw-table tr:last-child{border-bottom:0}
-  .gw-table td{border-bottom:0;padding:.35rem .8rem}
+/* ---- Mobile: drop the card chrome, full-width touch actions -------------- */
+@media (max-width:560px){
+  .gw-section{ justify-content:flex-start; padding:calc(var(--nav-h) + clamp(24px,9vh,72px)) 20px 32px; }
+  .gw-card{ max-width:none; padding:0; background:none; border:0; border-radius:0; }
+  .gw-actions{ flex-direction:column; }
+  .gw-actions .rd-btn{ width:100%; }
+  .gw-note{ margin:28px 0 0; padding:14px 4px 0; }
+}
+/* Guest list on phones: name, one compact meta line (size · expiry · pills),
+   then full-width actions, instead of the label/value stack of .is-stack.
+   The meta starts under the name text (first track = 12px cell pad + 20px
+   glyph + 10px gap); pills wrap inside their own track.
+   .is-stack in the selectors outranks the primitive's stacked-cell rules. */
+@media (max-width:620px){
+  .ui-v2 .gw-table.is-stack tr{ display:grid; grid-template-columns:42px auto auto minmax(0,1fr); align-items:center; padding:10px 0 12px; }
+  .ui-v2 .gw-table.is-stack td:is(.gw-td-name, .gw-td-actions){ grid-column:1 / -1; }
+  .ui-v2 .gw-table.is-stack td.gw-td-name{ padding:0 14px 0 12px; }
+  .ui-v2 .gw-table.is-stack td[data-label]{ display:inline-flex; align-items:center; vertical-align:middle; min-height:24px; padding:2px 0 0 10px;
+    font-size:.78rem; line-height:20px; color:var(--text-dim); text-align:left; }
+  .ui-v2 .gw-table.is-stack td[data-label]::before{ content:none; }
+  .ui-v2 .gw-table.is-stack td[data-label="Size"]{ grid-column:2; padding-left:0; }
+  .ui-v2 .gw-table.is-stack td[data-label="Status"]{ padding-right:14px; }
+  .ui-v2 .gw-table.is-stack td.gw-td-actions{ padding:10px 14px 0 12px; }
+  .gw-pills{ flex-wrap:wrap; }
+  .gw-row-actions .rd-btn{ flex:1 1 0; }
 }
 @media (prefers-reduced-motion:reduce){
-  .gw-btn,.gw-prog-fill{transition-duration:.001ms}
+  .gw-prog-fill{ transition:none; }
+  .gw-spin{ animation-duration:2.4s; }
 }

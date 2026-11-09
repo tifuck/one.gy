@@ -1,0 +1,5 @@
+# The repo root ignores build/ and dist/; build/ here holds the app icons.
+!/build/
+/dist/
+/node_modules/
+/resources/engine/

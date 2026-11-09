@@ -86,6 +86,7 @@
   let _syncPhantomPlaying = false   // whether remote is playing (for interpolation)
   let _syncPhantomPollTs = 0        // Date.now() when last phantom state was received
   let _syncPhantomTrackId = null    // track ID to detect track changes
+  let _syncPhantomQueueKey = null   // remote queue ids last rendered in the playlist panel
   let _syncPhantomRAF = null        // requestAnimationFrame handle for interpolation
   let _syncPhantomStateTs = null    // ISO timestamp of last state update from active device
   let _syncPhantomStale = false     // true = remote device stopped updating (>10s)
@@ -109,6 +110,7 @@
   let _fxCtx = null
   let _fxConnected = false
   let _fxSmoothed = null  // smoothed bar heights for silky animation
+  let _fxRgb = [55, 182, 255]  // bar colour, refreshed from --accent-rgb on resize
 
   // ─── Chaos Mode (Easter Egg) ────────────────────────────────────
   let _chaosMode = false
@@ -302,7 +304,7 @@
     // Build playlist from provided tracks
     playlist = tracks.map(t => ({
       id: t.id,
-      name: (t.title || 'UNKNOWN').toUpperCase(),
+      name: t.title || 'Unknown',
       extension: 'opus',
       isE2E: false,
       sourceUrl: '/music/stream/' + t.id,
@@ -416,6 +418,10 @@
       audio.play().catch(function() {})
       return
     }
+    // A pause during the last seconds must stop the incoming track too, or the
+    // crossfade timer finishes and resumes playback. A natural end also fires
+    // 'pause' (audio.ended) and must let the crossfade complete.
+    if (_crossfadeActive && !audio.ended) _cancelCrossfade()
     isPlaying = false
     _updatePlayButton()
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'
@@ -424,7 +430,11 @@
 
   function _onGlobalKeydown(e) {
     if (!isVisible) return
+    // defaultPrevented: the page already used the key (Space toggles the
+    // selection on /files); focused controls keep Space for activation.
+    if (e.defaultPrevented) return
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return
+    if (e.target.closest && e.target.closest('button, a[href], select, [role="button"]')) return
 
     if (e.key === ' ' && !e.target.closest('.preview-modal') && !e.target.closest('.modal') && !e.target.closest('.music-modal-overlay')) {
       e.preventDefault()
@@ -689,6 +699,9 @@
       if (rightEl && volumeEl) {
         rightEl.insertBefore(volumeEl, rightEl.firstChild)
       }
+      // Autoplay is a queue setting, not a transport control: right group too
+      var autoplayEl = document.getElementById('mpAutoplay')
+      if (rightEl && autoplayEl) rightEl.insertBefore(autoplayEl, rightEl.firstChild)
 
       // Add heart + "add to playlist" buttons inside info area, next to title/artist
       var infoEl = playerEl.querySelector('.music-player-info')
@@ -697,7 +710,7 @@
         var barHeartBtn = document.createElement('button')
         barHeartBtn.className = 'mp-btn mp-btn-sm mp-bar-heart'
         barHeartBtn.id = 'mpBarHeart'
-        barHeartBtn.title = 'LIKE'
+        barHeartBtn.title = 'Like'
         barHeartBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>'
         infoEl.appendChild(barHeartBtn)
 
@@ -705,15 +718,29 @@
         var addBtn = document.createElement('button')
         addBtn.className = 'mp-btn mp-btn-sm mp-add-to-playlist'
         addBtn.id = 'mpAddToPlaylist'
-        addBtn.title = 'ADD TO PLAYLIST'
+        addBtn.title = 'Add to playlist'
         addBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>'
         infoEl.appendChild(addBtn)
+        // Same "add to playlist" menu as the fullscreen + button (music.js owns it)
+        addBtn.addEventListener('click', function(e) {
+          e.stopPropagation()
+          var trackId = MusicPlayer.getCurrentTrackId()
+          if (trackId) document.dispatchEvent(new CustomEvent('musicplayer:fsadd', { detail: { id: trackId, button: addBtn } }))
+        })
 
-        // Heart button click — call like API directly (works on all pages)
+        // Heart button click: on the music page music.js owns like state and
+        // queues the requests (same path as the fullscreen heart); elsewhere call
+        // the API directly, one request at a time so a double click is not lost.
         barHeartBtn.addEventListener('click', function(e) {
           e.stopPropagation()
           var trackId = (currentIndex >= 0 && playlist[currentIndex]) ? playlist[currentIndex].id : null
           if (!trackId) return
+          if (window.MusicBrowse) {
+            document.dispatchEvent(new CustomEvent('musicplayer:fslike', { detail: { id: trackId, button: barHeartBtn } }))
+            return
+          }
+          if (barHeartBtn._busy) return
+          barHeartBtn._busy = true
           // Ask for the state the heart shows the user, not a server-side toggle.
           fetch('/music/api/likes/' + encodeURIComponent(trackId), {
             method: 'POST',
@@ -737,6 +764,7 @@
             .catch(function() {
               if (typeof showToast === 'function') showToast('COULD NOT UPDATE LIKE', 'error')
             })
+            .then(function() { barHeartBtn._busy = false })
         })
       }
 
@@ -825,12 +853,24 @@
       })
     }
 
+    // Scrubbing: the thumb follows the pointer and only the release seeks.
+    // timeupdate / phantom interpolation rewrote the value mid-drag (the thumb
+    // fought the pointer) and every input event seeked, or in phantom mode sent
+    // a remote seek command. Keyboard steps still seek one by one.
     if (progressEl) {
-      progressEl.addEventListener('input', (e) => {
-        if (!isNaN(audio.duration) && audio.duration > 0) {
-          audio.currentTime = (e.target.value / 1000) * audio.duration
-        }
+      progressEl.addEventListener('pointerdown', function() {
+        _scrubbing = true
+        document.addEventListener('pointerup', function() { setTimeout(function() { _scrubbing = false }, 0) }, { once: true })
+      })
+      progressEl.addEventListener('input', function() {
         _updateProgressFill()
+        if (!_scrubbing) { _seekToProgress(); return }
+        var dur = _syncPhantomMode ? _syncPhantomDuration : audio.duration
+        if (currentTimeEl && dur > 0 && isFinite(dur)) currentTimeEl.textContent = _formatTime((progressEl.value / 1000) * dur)
+      })
+      progressEl.addEventListener('change', function() {
+        if (_scrubbing) _seekToProgress()
+        _scrubbing = false
       })
     }
 
@@ -1043,9 +1083,6 @@
       _syncStart()
     }
 
-    // Patch control buttons for phantom mode interception
-    _patchSyncControls()
-
     // ── Pre-warm autoplay permission for phantom mode ──
     // Mobile browsers require a user gesture to allow audio.play().
     // Phantom mode enters from a fetch() callback (no gesture), so the
@@ -1152,11 +1189,21 @@
       const existingIds = new Set(playlist.map(t => t.id))
       let added = 0
 
-      for (const f of data.files) {
+      // E2EE names arrive as server placeholders ("encrypted_<id>.mp3"):
+      // decrypt them with the session keys, as the file list does.
+      let masterKey = null
+      if (data.files.some(f => f.is_e2e) && typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys()) {
+        try { masterKey = await OneGyCrypto.getMasterKeyFromSession() } catch (e) {}
+      }
+      const names = await Promise.all(data.files.map(f => _subfolderTrackName(f, masterKey)))
+      if (playlist !== targetPlaylist) return
+      const firstNew = playlist.length
+
+      for (const [i, f] of data.files.entries()) {
         if (existingIds.has(f.id)) continue
         playlist.push({
           id: f.id,
-          name: f.name,
+          name: names[i],
           extension: f.extension,
           isE2E: f.is_e2e === true,
           sourceUrl: _buildSourceUrl(f.id, f.name, f.is_e2e === true),
@@ -1165,12 +1212,26 @@
       }
 
       if (added > 0) {
-        if (shuffleMode) _generateShuffleOrder()
+        // Queue the new tracks after the existing order; reshuffling everything
+        // reset the position and replayed tracks already heard.
+        if (shuffleMode) _appendShuffleOrder(firstNew)
         _renderPlaylist()
       }
     } catch (err) {
       console.error('[MusicPlayer] Failed to fetch subfolder audio:', err)
     }
+  }
+
+  async function _subfolderTrackName(f, masterKey) {
+    if (!f.is_e2e) return f.name
+    if (masterKey && f.encrypted_name && f.name_nonce && f.encrypted_file_key) {
+      try {
+        const fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(f.encrypted_file_key, f.file_key_nonce, masterKey)
+        const name = fileKey && await OneGyCrypto.decryptFileName(f.encrypted_name, f.name_nonce, fileKey)
+        if (name) return name
+      } catch (e) {}
+    }
+    return 'Encrypted file.' + f.extension
   }
 
   // ─── Build playlist from current folder view ───────────────────
@@ -1309,18 +1370,18 @@
   }
 
   async function _loadE2ETrack(track, loadSeq) {
-    _setTitle(track.name + ' (DECRYPTING...)')
+    _setTitle(track.name + ' (decrypting…)')
 
     try {
       if (_context === 'dashboard') {
         if (typeof OneGyCrypto === 'undefined' || !OneGyCrypto.hasSessionKeys()) {
-          _setTitle(track.name + ' (E2E KEYS UNAVAILABLE)')
+          _setTitle(track.name + ' (E2E keys unavailable)')
           return
         }
         const masterKey = await OneGyCrypto.getMasterKeyFromSession()
         if (loadSeq !== _loadSeq) return
         if (!masterKey) {
-          _setTitle(track.name + ' (MASTER KEY UNAVAILABLE)')
+          _setTitle(track.name + ' (master key unavailable)')
           return
         }
         const keyResp = await fetch(`/f/${track.id}/key-info`)
@@ -1328,13 +1389,13 @@
         const keyInfo = await keyResp.json()
         if (loadSeq !== _loadSeq) return
         if (!keyInfo.encrypted_file_key) {
-          _setTitle(track.name + ' (FILE KEY NOT FOUND)')
+          _setTitle(track.name + ' (file key not found)')
           return
         }
         const encResp = await fetch(`/f/${track.id}/encrypted?preview=1`)
         if (loadSeq !== _loadSeq) return
         if (!encResp.ok) {
-          _setTitle(track.name + ' (FETCH FAILED)')
+          _setTitle(track.name + ' (fetch failed)')
           return
         }
         const encData = await encResp.arrayBuffer()
@@ -1357,7 +1418,7 @@
       } else if (_context === 'temp') {
         // Temp upload page E2E: supports both passphrase and master-key wrapped files
         if (typeof OneGyCrypto === 'undefined') {
-          _setTitle(track.name + ' (CRYPTO UNAVAILABLE)')
+          _setTitle(track.name + ' (crypto unavailable)')
           return
         }
         var keyResp = await fetch('/f/' + track.id + '/key-info')
@@ -1365,13 +1426,13 @@
         var keyInfo = await keyResp.json()
         if (loadSeq !== _loadSeq) return
         if (!keyInfo.encrypted_file_key) {
-          _setTitle(track.name + ' (FILE KEY NOT FOUND)')
+          _setTitle(track.name + ' (file key not found)')
           return
         }
         var encResp = await fetch('/f/' + track.id + '/encrypted?preview=1')
         if (loadSeq !== _loadSeq) return
         if (!encResp.ok) {
-          _setTitle(track.name + ' (FETCH FAILED)')
+          _setTitle(track.name + ' (fetch failed)')
           return
         }
         var encData = await encResp.arrayBuffer()
@@ -1386,7 +1447,7 @@
           }
           if (!passphrase) passphrase = _ssGet('e2e_passphrase')
           if (!passphrase) {
-            _setTitle(track.name + ' (PASSPHRASE UNAVAILABLE)')
+            _setTitle(track.name + ' (passphrase unavailable)')
             return
           }
           decrypted = await OneGyCrypto.decryptFileForGuestDownload(
@@ -1400,7 +1461,7 @@
             encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
           )
         } else {
-          _setTitle(track.name + ' (KEYS UNAVAILABLE)')
+          _setTitle(track.name + ' (keys unavailable)')
           return
         }
         if (loadSeq !== _loadSeq) return
@@ -1418,12 +1479,12 @@
       } else if (_context === 'browse') {
         // Browse page E2E uses link secret
         if (typeof OneGyCrypto === 'undefined') {
-          _setTitle(track.name + ' (CRYPTO UNAVAILABLE)')
+          _setTitle(track.name + ' (crypto unavailable)')
           return
         }
         const linkSecret = window._mpLinkSecret || ''
         if (!linkSecret || linkSecret.length < 10) {
-          _setTitle(track.name + ' (LINK KEY UNAVAILABLE)')
+          _setTitle(track.name + ' (link key unavailable)')
           return
         }
         const keyResp = await fetch(`/f/${track.id}/key-info`)
@@ -1433,13 +1494,13 @@
         const encKey = keyInfo.link_encrypted_file_key || keyInfo.encrypted_file_key
         const encNonce = keyInfo.link_file_key_nonce || keyInfo.file_key_nonce
         if (!encKey) {
-          _setTitle(track.name + ' (FILE KEY NOT FOUND)')
+          _setTitle(track.name + ' (file key not found)')
           return
         }
         const encResp = await fetch(`/f/${track.id}/encrypted?preview=1`)
         if (loadSeq !== _loadSeq) return
         if (!encResp.ok) {
-          _setTitle(track.name + ' (FETCH FAILED)')
+          _setTitle(track.name + ' (fetch failed)')
           return
         }
         const encData = await encResp.arrayBuffer()
@@ -1460,12 +1521,40 @@
     } catch (err) {
       if (loadSeq !== _loadSeq) return
       console.error('[MUSIC PLAYER] E2E decrypt error:', err)
-      _setTitle(track.name + ' (DECRYPT FAILED)')
+      _setTitle(track.name + ' (decrypt failed)')
+    }
+  }
+
+  var _scrubbing = false
+  function _seekToProgress() {
+    var dur = _syncPhantomMode ? _syncPhantomDuration : audio.duration
+    if (!(dur > 0) || !isFinite(dur)) return
+    var t = (progressEl.value / 1000) * dur
+    if (_syncPhantomMode) {
+      _syncSendCommand('seek', { seekTime: t })
+      // Optimistic update — reset interpolation origin
+      _syncPhantomTime = t
+      _syncPhantomPollTs = Date.now()
+    } else {
+      audio.currentTime = t
     }
   }
 
   // ─── Playback Controls ─────────────────────────────────────────
+  // Phantom mode (another device is playing): every entry point — buttons,
+  // mini bar, Space — sends a remote command instead of driving the local
+  // silent keepalive. This used to live only on the buttons' click handlers.
   function togglePlay() {
+    if (_syncPhantomMode) {
+      var play = !isPlaying
+      _syncSendCommand(play ? 'play' : 'pause')
+      // Optimistic UI update
+      isPlaying = play
+      _syncPhantomPlaying = play
+      if (play) _syncPhantomPollTs = Date.now()
+      _updatePlayButton()
+      return
+    }
     _resumeAudioContext()
     if (audio.paused) {
       audio.play().catch(function(err) {
@@ -1480,6 +1569,7 @@
   }
 
   function playNext() {
+    if (_syncPhantomMode) { _syncSendCommand('next'); return }
     if (playlist.length === 0) return
     _resumeAudioContext()
     if (repeatMode === 'one') {
@@ -1565,6 +1655,7 @@
   }
 
   function playPrevious() {
+    if (_syncPhantomMode) { _syncSendCommand('prev'); return }
     if (playlist.length === 0) return
     // If more than 3 seconds in, restart current track
     if (audio.currentTime > 3) {
@@ -1603,7 +1694,10 @@
     return _autoplayEnabled && _context === 'music-library'
   }
 
+  // Shuffle/repeat in phantom mode belong to the remote device (no remote
+  // command exists); the next poll would silently revert a local toggle.
   function toggleShuffle() {
+    if (_syncPhantomMode) return
     shuffleMode = !shuffleMode
     if (shuffleBtn) {
       shuffleBtn.classList.toggle('mp-btn-active', shuffleMode)
@@ -1613,7 +1707,13 @@
     }
   }
 
+  function _renderModeButtons() {
+    if (shuffleBtn) shuffleBtn.classList.toggle('mp-btn-active', shuffleMode)
+    _updateRepeatButton()
+  }
+
   function cycleRepeat() {
+    if (_syncPhantomMode) return
     if (repeatMode === 'none') {
       repeatMode = 'all'
     } else if (repeatMode === 'all') {
@@ -1679,8 +1779,10 @@
   function _updateProgressFill() {
     if (!progressEl) return
     var pct = (progressEl.value / progressEl.max) * 100
-    var fillColor = _isFullscreen ? '#fff' : 'rgba(222,24,51,0.85)'
-    var trackColor = _isFullscreen ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.08)'
+    // Colours come from --mp-fill / --mp-track (music.css sets them per state)
+    var cs = getComputedStyle(progressEl)
+    var fillColor = cs.getPropertyValue('--mp-fill').trim() || 'rgba(222,24,51,0.85)'
+    var trackColor = cs.getPropertyValue('--mp-track').trim() || 'rgba(255,255,255,0.08)'
     progressEl.style.background = 'linear-gradient(to right, ' + fillColor + ' ' + pct + '%, ' + trackColor + ' ' + pct + '%)'
   }
 
@@ -1688,9 +1790,11 @@
   function _onTimeUpdate() {
     if (_syncPhantomMode) return  // phantom mode drives progress via interpolation, not the silent keepalive
     if (!isNaN(audio.duration) && audio.duration > 0) {
-      if (progressEl) progressEl.value = Math.round((audio.currentTime / audio.duration) * 1000)
-      if (currentTimeEl) currentTimeEl.textContent = _formatTime(audio.currentTime)
-      _updateProgressFill()
+      if (!_scrubbing) {
+        if (progressEl) progressEl.value = Math.round((audio.currentTime / audio.duration) * 1000)
+        if (currentTimeEl) currentTimeEl.textContent = _formatTime(audio.currentTime)
+        _updateProgressFill()
+      }
 
       // Update Media Session position state (throttled to ~every 5s)
       var now = Date.now()
@@ -1765,7 +1869,7 @@
     if (!audio.getAttribute('src')) return
     console.error('[MUSIC PLAYER] Audio error:', e)
     var track = playlist[currentIndex]
-    if (track) _setTitle(track.name + ' (PLAYBACK ERROR)')
+    if (track) _setTitle(track.name + ' (playback error)')
 
     // Reset playing state so the UI accurately reflects that nothing is playing
     isPlaying = false
@@ -1840,6 +1944,16 @@
         }
       })
     }
+
+    // Fullscreen: the queue/devices sheet sits over the controls behind a scrim
+    // drawn by the player itself (music.css), so a tap on it closes the sheet.
+    playerEl.addEventListener('click', function(e) {
+      if (!_isFullscreen || e.target !== playerEl) return
+      if (playlistPanel) playlistPanel.classList.remove('mp-playlist-visible')
+      if (devicesPanel) devicesPanel.classList.remove('mp-devices-visible')
+      if (playlistBtn) playlistBtn.classList.remove('mp-btn-active')
+      if (fsPlaylistBtn) fsPlaylistBtn.classList.remove('mp-btn-active')
+    })
 
     // Tap on mini player bar (art or info area) to expand -- only on mobile
     var artEl = playerEl.querySelector('.music-player-art')
@@ -1934,7 +2048,7 @@
   function _setFsHeartState(liked) {
     if (!fsHeartBtn) return
     fsHeartBtn.classList.toggle('liked', !!liked)
-    fsHeartBtn.title = liked ? 'UNLIKE' : 'LIKE'
+    fsHeartBtn.title = liked ? 'Unlike' : 'Like'
     if (liked) {
       fsHeartBtn.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>'
     } else {
@@ -1946,7 +2060,7 @@
     var btn = document.getElementById('mpBarHeart')
     if (!btn) return
     btn.classList.toggle('liked', !!liked)
-    btn.title = liked ? 'UNLIKE' : 'LIKE'
+    btn.title = liked ? 'Unlike' : 'Like'
     if (liked) {
       btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>'
     } else {
@@ -1958,7 +2072,8 @@
     if (_isFullscreen || !playerEl) return
     _isFullscreen = true
     playerEl.classList.remove('mp-fs-closing')
-    playerEl.classList.add('mp-fullscreen')
+    // mp-fs-open on the player too: ui-v2.css / files.css key off .music-player.mp-fs-open
+    playerEl.classList.add('mp-fullscreen', 'mp-fs-open')
     document.body.classList.add('mp-fs-open')
     // Store scroll position before locking
     document.body.dataset.mpScrollY = window.scrollY
@@ -2001,7 +2116,7 @@
     window.scrollTo(0, scrollY)
 
     if (instant) {
-      playerEl.classList.remove('mp-fullscreen', 'mp-fs-closing')
+      playerEl.classList.remove('mp-fullscreen', 'mp-fs-open', 'mp-fs-closing')
       return
     }
 
@@ -2010,7 +2125,7 @@
     function cleanup() {
       if (cleaned) return
       cleaned = true
-      playerEl.classList.remove('mp-fullscreen', 'mp-fs-closing')
+      playerEl.classList.remove('mp-fullscreen', 'mp-fs-open', 'mp-fs-closing')
     }
     playerEl.addEventListener('animationend', function handler(e) {
       if (e.target !== playerEl) return // ignore bubbled events from children
@@ -2023,13 +2138,13 @@
 
   function _setTitle(text) {
     if (!titleEl) return
-    // Strip file extension for display (keep status suffixes like "(DECRYPTING...)")
+    // Strip file extension for display (keep status suffixes like "(decrypting…)")
     let display = text
     const statusMatch = display.match(/^(.+?)(\s*\([^)]+\))$/)
     let baseName = statusMatch ? statusMatch[1] : display
     const suffix = statusMatch ? statusMatch[2] : ''
     baseName = _stripAudioExtension(baseName)
-    display = (baseName + suffix).toUpperCase()
+    display = baseName + suffix
     titleEl.title = text
 
     // Update artist subtitle (works for music-library tracks and suggested tracks in any context)
@@ -2038,12 +2153,12 @@
       if (track && track.artists && track.artists.length > 0) {
         // Render each artist as a separate clickable link
         var artistHtml = track.artists.map(function(a) {
-          return '<span class="mp-artist-link" data-artist-id="' + _escMp(a.id) + '">' + _escMp(String(a.name == null ? '' : a.name).toUpperCase()) + '</span>'
+          return '<span class="mp-artist-link" data-artist-id="' + _escMp(a.id) + '">' + _escMp(a.name == null ? '' : a.name) + '</span>'
         }).join('<span class="mp-artist-sep">, </span>')
         artistEl.innerHTML = artistHtml
         artistEl.style.display = ''
       } else if (track && track.artistName) {
-        artistEl.textContent = String(track.artistName).toUpperCase()
+        artistEl.textContent = String(track.artistName)
         artistEl.style.display = ''
       } else {
         artistEl.textContent = ''
@@ -2108,14 +2223,14 @@
     if (repeatMode === 'all') {
       repeatBtn.classList.add('mp-btn-active')
       repeatBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-      repeatBtn.title = 'REPEAT ALL'
+      repeatBtn.title = 'Repeat all'
     } else if (repeatMode === 'one') {
       repeatBtn.classList.add('mp-btn-active', 'mp-btn-accent')
       repeatBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/><text x="12" y="16" text-anchor="middle" fill="currentColor" stroke="none" font-size="8" font-weight="bold">1</text></svg>'
-      repeatBtn.title = 'REPEAT ONE'
+      repeatBtn.title = 'Repeat one'
     } else {
       repeatBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-      repeatBtn.title = 'REPEAT OFF'
+      repeatBtn.title = 'Repeat off'
     }
   }
 
@@ -2182,7 +2297,7 @@
     if (!list) return
 
     if (playlist.length === 0) {
-      list.innerHTML = '<div class="mp-playlist-empty">NO AUDIO FILES IN THIS FOLDER</div>'
+      list.innerHTML = '<div class="mp-playlist-empty">No audio files in this folder</div>'
       return
     }
 
@@ -2192,12 +2307,12 @@
       const track = playlist[i]
       const isCurrent = i === currentIndex
       const nameparts = _splitTrackName(track.name)
-      // Insert "UP NEXT — SUGGESTED" divider before the first suggested track
+      // Insert an "Up next: suggested" divider before the first suggested track
       if (!insertedDivider && track.suggested) {
-        html += '<div class="mp-playlist-divider"><span>UP NEXT &mdash; SUGGESTED</span></div>'
+        html += '<div class="mp-playlist-divider"><span>Up next: suggested</span></div>'
         insertedDivider = true
       }
-      var artistHtml = (track.artistName) ? `<span class="mp-playlist-artist" style="display:block;font-size:9px;color:#555;margin-top:1px">${_escMp(track.artistName)}</span>` : ''
+      var artistHtml = (track.artistName) ? `<span class="mp-playlist-artist">${_escMp(track.artistName)}</span>` : ''
       html += `<div class="mp-playlist-item${isCurrent ? ' mp-playlist-current' : ''}${track.suggested ? ' mp-playlist-suggested' : ''}" data-index="${i}">
         <span class="mp-playlist-num">${i + 1}</span>
         <span class="mp-playlist-name">${_escMp(nameparts.base)}<span class="mp-playlist-ext">${_escMp(nameparts.ext)}</span>${artistHtml}</span>
@@ -2413,6 +2528,9 @@
     _fxCanvas.width = rect.width * dpr
     _fxCanvas.height = rect.height * dpr
     _fxCtx.scale(dpr, dpr)
+    // Bars use the theme accent (--accent-rgb, e.g. "55,182,255")
+    var rgb = getComputedStyle(_fxCanvas).getPropertyValue('--accent-rgb').split(',').map(Number)
+    if (rgb.length === 3 && rgb.every(function(n) { return n >= 0 && n <= 255 })) _fxRgb = rgb
   }
 
   // Frequency-dependent gain to balance the visualizer so all bars contribute
@@ -2520,11 +2638,8 @@
       const x = i * (barW + gap)
       const y = H - barH
 
-      // Color: deep red to hot pink/white based on frequency position + intensity
-      const freq = i / barCount
-      const r = Math.round(222 + (255 - 222) * freq * val)
-      const g = Math.round(24 + (80 - 24) * val * val)
-      const b = Math.round(51 + (180 - 51) * freq)
+      // Color: theme accent, brighter with intensity
+      const r = _fxRgb[0], g = _fxRgb[1], b = _fxRgb[2]
       const alpha = 0.55 + val * 0.45
 
       // Subtle glow on hot bars (skip in chaos mode for perf)
@@ -3081,7 +3196,7 @@
     _lsSet('mp_autoplay', _autoplayEnabled ? '1' : '0')
     if (autoplayBtn) {
       autoplayBtn.classList.toggle('mp-btn-active', _autoplayEnabled)
-      autoplayBtn.title = _autoplayEnabled ? 'AUTOPLAY ON' : 'AUTOPLAY OFF'
+      autoplayBtn.title = _autoplayEnabled ? 'Autoplay on' : 'Autoplay off'
     }
   }
 
@@ -3163,7 +3278,7 @@
       var newTracks = data.songs.map(function(t) {
         return {
           id: t.id,
-          name: (t.title || 'UNKNOWN').toUpperCase(),
+          name: t.title || 'Unknown',
           extension: 'opus',
           isE2E: false,
           sourceUrl: '/music/stream/' + t.id,
@@ -3486,7 +3601,7 @@
       }).map(function(a) { return { id: a.id, name: a.name } })
       tracks.push({
         id: t.id,
-        name: typeof t.name === 'string' ? t.name : 'UNKNOWN',
+        name: typeof t.name === 'string' ? t.name : 'Unknown',
         extension: 'opus',
         isE2E: false,
         sourceUrl: '/music/stream/' + encodeURIComponent(t.id),
@@ -3849,7 +3964,7 @@
     // Update UI with remote state
     playerEl.classList.add('mp-phantom')
     if (phantomLabel) {
-      phantomLabel.textContent = 'PLAYING ON ' + String(data.active_device_name || 'ANOTHER DEVICE').toUpperCase()
+      phantomLabel.textContent = 'Playing on ' + String(data.active_device_name || 'another device')
     }
 
     // Store the remote playlist/index FIRST so _setTitle() can read artist info
@@ -3877,6 +3992,7 @@
     shuffleOrder = Array.isArray(state.shuffleOrder) ? state.shuffleOrder : []
     shufflePos = Number.isInteger(state.shufflePos) ? state.shufflePos : -1
     _suggestedStartIndex = Number.isInteger(state.suggestedStartIndex) ? state.suggestedStartIndex : -1
+    _renderModeButtons()
 
     // Track state freshness — reset stale flag on fresh data
     _syncPhantomStateTs = data.state_updated_at || null
@@ -3899,7 +4015,10 @@
     _syncPhantomStartInterpolation()
 
     _syncUpdateDevicesButton()
-    if (trackChanged) _renderPlaylist()
+    // The remote queue can grow (suggestions) without a track change.
+    var queueKey = playlist.map(function(t) { return t.id }).join(',')
+    if (trackChanged || queueKey !== _syncPhantomQueueKey) _renderPlaylist()
+    _syncPhantomQueueKey = queueKey
 
     // Explicitly set Media Session state for lock-screen/notification controls
     if ('mediaSession' in navigator) {
@@ -3934,7 +4053,7 @@
         coverPath: track.cover_path || track.coverPath || playlist[currentIndex].coverPath,
       })
     }
-    _setTitle((track.title || track.name || 'UNKNOWN').toUpperCase())
+    _setTitle(track.title || track.name || 'Unknown')
     var coverPath = track.cover_path || track.coverPath || null
     if (coverPath) _updatePlayerArt({ coverPath: coverPath })
     // Reset progress to 0 for new track
@@ -3982,6 +4101,7 @@
   }
 
   function _syncPhantomRenderProgress(time, duration) {
+    if (_scrubbing) return
     if (progressEl && duration > 0) {
       progressEl.value = Math.round((time / duration) * 1000)
       _updateProgressFill()
@@ -4043,14 +4163,14 @@
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'
 
     // Update phantom label to reflect disconnected state
-    // Extract the device name from the current label ("PLAYING ON <NAME>") or use fallback
-    var prevName = 'REMOTE DEVICE'
+    // Extract the device name from the current label ("Playing on <name>") or use fallback
+    var prevName = 'remote device'
     if (phantomLabel && phantomLabel.textContent) {
-      var match = phantomLabel.textContent.match(/^PLAYING ON (.+)$/)
+      var match = phantomLabel.textContent.match(/^Playing on (.+)$/)
       if (match) prevName = match[1]
     }
     if (phantomLabel) {
-      phantomLabel.textContent = 'PAUSED - ' + prevName + ' DISCONNECTED'
+      phantomLabel.textContent = 'Paused: ' + prevName + ' disconnected'
     }
 
     _syncUpdateDevicesButton()
@@ -4254,8 +4374,8 @@
 
     // Sync toggle
     html += '<div class="mp-devices-sync-toggle">'
-    html += '<span class="mp-devices-sync-label">CROSS-DEVICE SYNC</span>'
-    html += '<button class="mp-sync-toggle' + (_syncEnabled ? ' mp-sync-on' : '') + '" id="mpSyncToggle" title="' + (_syncEnabled ? 'DISABLE' : 'ENABLE') + ' SYNC"></button>'
+    html += '<span class="mp-devices-sync-label">Cross-device sync</span>'
+    html += '<button class="mp-sync-toggle' + (_syncEnabled ? ' mp-sync-on' : '') + '" id="mpSyncToggle" role="switch" aria-checked="' + _syncEnabled + '" title="' + (_syncEnabled ? 'Disable' : 'Enable') + ' sync"></button>'
     html += '</div>'
 
     for (var i = 0; i < devices.length; i++) {
@@ -4280,24 +4400,24 @@
       html += '<div class="mp-device-name">' + _escMp(d.device_name) + '</div>'
       var badge = ''
       if (isActive && isSelf) {
-        badge = '<span class="mp-device-badge mp-device-badge-active">THIS DEVICE &middot; PLAYING</span>'
+        badge = '<span class="mp-device-badge mp-device-badge-active">This device &middot; Playing</span>'
       } else if (isActive && !isSelf) {
-        badge = '<span class="mp-device-badge mp-device-badge-active">PLAYING</span>'
+        badge = '<span class="mp-device-badge mp-device-badge-active">Playing</span>'
       } else if (isSelf && _syncPhantomMode) {
-        badge = '<span class="mp-device-badge mp-device-badge-transfer">TAP TO PLAY HERE</span>'
+        badge = '<span class="mp-device-badge mp-device-badge-transfer">Tap to play here</span>'
       } else if (isSelf) {
-        badge = '<span class="mp-device-badge">THIS DEVICE</span>'
+        badge = '<span class="mp-device-badge">This device</span>'
       } else if (!isSelf && _syncIsActive) {
-        badge = '<span class="mp-device-badge mp-device-badge-transfer">TAP TO TRANSFER</span>'
+        badge = '<span class="mp-device-badge mp-device-badge-transfer">Tap to transfer</span>'
       }
       html += badge
       html += '</div>'
 
       // Actions
       html += '<div class="mp-device-actions">'
-      html += '<button class="mp-device-action-btn" data-action="rename" title="RENAME"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></button>'
+      html += '<button class="mp-device-action-btn" data-action="rename" title="Rename"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></button>'
       if (!isSelf) {
-        html += '<button class="mp-device-action-btn" data-action="remove" title="REMOVE"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>'
+        html += '<button class="mp-device-action-btn" data-action="remove" title="Remove"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>'
       }
       html += '</div>'
       html += '</div>'
@@ -4423,76 +4543,6 @@
       }
     }
   })
-
-  // ─── Override play/pause/next/prev for phantom mode ─────────────
-
-  // We need to intercept the control buttons when in phantom mode.
-  // Instead of patching existing functions, we hook into the button
-  // click handlers. The existing handlers call togglePlay/playNext/etc.
-  // We wrap those to check phantom mode first.
-
-  // Wrap after init runs. We use a MutationObserver-style approach:
-  // patch on first call or defer until playBtn exists.
-  function _patchSyncControls() {
-    // Patch togglePlay
-    function _phantomTogglePlay(e) {
-      if (_syncPhantomMode) {
-        e.stopImmediatePropagation()
-        if (isPlaying) {
-          _syncSendCommand('pause')
-          // Optimistic UI update
-          isPlaying = false
-          _syncPhantomPlaying = false
-          _updatePlayButton()
-        } else {
-          _syncSendCommand('play')
-          isPlaying = true
-          _syncPhantomPlaying = true
-          _syncPhantomPollTs = Date.now()
-          _updatePlayButton()
-        }
-      }
-    }
-    if (playBtn && !playBtn._syncPatched) {
-      playBtn._syncPatched = true
-      playBtn.addEventListener('click', _phantomTogglePlay, true)
-    }
-    if (miniPlayBtn && !miniPlayBtn._syncPatched) {
-      miniPlayBtn._syncPatched = true
-      miniPlayBtn.addEventListener('click', _phantomTogglePlay, true)
-    }
-    if (nextBtn && !nextBtn._syncPatched) {
-      nextBtn._syncPatched = true
-      nextBtn.addEventListener('click', function(e) {
-        if (_syncPhantomMode) {
-          e.stopImmediatePropagation()
-          _syncSendCommand('next')
-        }
-      }, true)
-    }
-    if (prevBtn && !prevBtn._syncPatched) {
-      prevBtn._syncPatched = true
-      prevBtn.addEventListener('click', function(e) {
-        if (_syncPhantomMode) {
-          e.stopImmediatePropagation()
-          _syncSendCommand('prev')
-        }
-      }, true)
-    }
-    // Progress bar seek in phantom mode
-    if (progressEl && !progressEl._syncPatched) {
-      progressEl._syncPatched = true
-      progressEl.addEventListener('input', function(e) {
-        if (_syncPhantomMode && _syncPhantomDuration > 0) {
-          var seekTime = (e.target.value / 1000) * _syncPhantomDuration
-          _syncSendCommand('seek', { seekTime: seekTime })
-          // Optimistic update — reset interpolation origin
-          _syncPhantomTime = seekTime
-          _syncPhantomPollTs = Date.now()
-        }
-      }, true)
-    }
-  }
 
   // Hook into the audio play event to mark this device as active
   audio.addEventListener('play', function() {

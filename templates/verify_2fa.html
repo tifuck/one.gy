@@ -1,27 +1,30 @@
-{# Frost 2FA challenge. Replaces the legacy templates/verify_2fa.html.
-   The markup already used the auth-* / form-* primitives that auth.css
-   styles, so only the shell changed — the fetch/JSON flow below is unchanged. #}
+{# Standalone 2FA challenge (no-JS / server-redirect path; /login normally
+   shows the inline #twoFactorBox instead). Same auth-* markup as login.html. #}
 {% extends 'base.html' %}
-{% block title %}TWO-FACTOR AUTH{% endblock %}
+{% set ui_v2 = true %}
+{% block title %}Two-factor authentication{% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('auth.css') }}">{% endblock %}
 
 {% block content %}
 <div class="auth-container">
-  <div class="auth-box">
-    <h1>Two-factor auth</h1>
-    <p class="auth-subtitle">Enter the 6-digit code from your authenticator app</p>
+  <section class="auth-box" aria-labelledby="twoFactorTitle">
+    <header class="auth-head">
+      <span class="auth-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg></span>
+      <h1 class="auth-title" id="twoFactorTitle">Two-factor authentication</h1>
+      <p class="auth-subtitle">Enter the 6-digit code from your authenticator app.</p>
+    </header>
     <form id="twoFactorForm" class="auth-form" autocomplete="off" method="POST" action="{{ url_for('verify_2fa') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
-      <div class="form-group">
-        <label for="totp_code">Authentication code</label>
+      <div class="rd-field">
+        <label class="rd-field-label" for="totp_code">Authentication code</label>
         <input type="text" id="totp_code" name="totp_code" class="form-input auth-code-input" required autofocus
                maxlength="6" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"
                placeholder="000000">
       </div>
-      <button type="submit" id="verifyBtn" class="btn-primary">Verify</button>
+      <button type="submit" id="verifyBtn" class="rd-btn rd-btn-primary rd-btn-lg auth-submit">Verify</button>
     </form>
-    <p class="auth-link"><a href="{{ url_for('login') }}">Back to sign in</a></p>
-  </div>
+    <div class="auth-foot"><p><a class="auth-text-link" href="{{ url_for('login') }}">Back to sign in</a></p></div>
+  </section>
 </div>
 
 <script nonce="{{ csp_nonce }}">
@@ -51,7 +54,7 @@ document.getElementById('twoFactorForm').addEventListener('submit', async functi
   }
 
   btn.disabled = true
-  btn.textContent = 'VERIFYING...'
+  btn.textContent = 'Verifying…'
 
   try {
     const response = await fetch('{{ url_for("verify_2fa") }}', {
@@ -77,14 +80,16 @@ document.getElementById('twoFactorForm').addEventListener('submit', async functi
     console.error('[2FA]', err)
     showFlash(err.message || 'VERIFICATION FAILED', 'error')
     btn.disabled = false
-    btn.textContent = 'VERIFY'
+    btn.textContent = 'Verify'
     document.getElementById('totp_code').value = ''
+    document.getElementById('totp_code').setAttribute('aria-invalid', 'true')
     document.getElementById('totp_code').focus()
   }
 })
 
 // Auto-submit when 6 digits entered
 document.getElementById('totp_code').addEventListener('input', function() {
+  this.removeAttribute('aria-invalid')
   this.value = this.value.replace(/[^0-9]/g, '')
   if (this.value.length === 6) {
     document.getElementById('verifyBtn').click()

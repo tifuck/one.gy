@@ -1,188 +1,376 @@
 /* ============================================================================
-   notes.css — Frost Notes. Three panes: notebooks rail · notes list · editor.
-   Token-driven; works across Frost + Frost Dark.
+   notes.css — Notes (UI v2). Three panes: notebooks rail · notes list ·
+   editor. Token-driven (themes.css .ui-v2 block); the sidebar rows, buttons,
+   menus and dialogs come from ui-v2.css. Only notes.html loads this file.
+   Prefix: .nt-*. Ids/classes are a contract with notes.js and the tests.
    ========================================================================== */
-.nt-shell{ display:grid; grid-template-columns:var(--rd-side-eff) var(--rd-list-eff) minmax(0,1fr); height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h)); min-height:0; overflow:hidden;
-  /* position: anchors the absolutely-positioned .rd-resizer / .rd-rail-label */
+.nt-shell{
+  display:grid; grid-template-columns:var(--rd-side-eff) var(--rd-list-eff) minmax(0,1fr);
+  height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h));
+  min-height:0; overflow:hidden; background:var(--bg);
+  /* anchors the absolutely-positioned .rd-resizer / .rd-rail-label */
   position:relative;
-  transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1); }
-/* Collapsing the notes list hides its body; the vertical label takes over. */
-:root[data-rd-list="collapsed"] .nt-list{ overflow:hidden }
-:root[data-rd-list="collapsed"] .nt-list > *{ display:none }
+  transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1);
+}
+/* The seam lights up on focus (app-shell.css); skip ui-v2's generic ring */
+.nt-shell .rd-resizer:focus-visible{ outline:none; }
+/* The wrapper only matters for the one-pane phone layout */
+.nt-panes{ display:contents; }
+/* Collapsing the notes list hides its body; the vertical label takes over.
+   Phones show one pane at a time, so the collapse never applies there. */
+@media (min-width:721px){
+  :root[data-rd-list="collapsed"] .nt-list > *{ display:none; }
+}
 
-/* ---- Lock overlay (E2E unlock — fullscreen) ------------------------------- */
-.nt-lock{ position:fixed; top:var(--nav-h); left:0; right:0; bottom:0; z-index:120; display:flex; align-items:center; justify-content:center; padding:1.5rem; background:var(--scrim); backdrop-filter:blur(8px); }
-.nt-lock-card{ width:min(420px,100%); background:var(--surface); border:2px solid var(--border); box-shadow:10px 10px 0 var(--accent); padding:2.2rem 2rem; text-align:center; display:flex; flex-direction:column; align-items:center; gap:.7rem; }
-.nt-lock-ico{ width:60px; height:60px; border:2px solid var(--border); display:flex; align-items:center; justify-content:center; color:var(--accent); margin-bottom:.3rem; }
-.nt-lock-ico svg{ width:30px; height:30px; }
-.nt-lock-title{ font-family:var(--font-display); font-size:1.5rem; font-weight:800; }
-.nt-lock-sub{ font-size:.86rem; color:var(--text-dim); line-height:1.5; max-width:34ch; }
-.nt-lock-form{ display:flex; flex-direction:column; gap:.6rem; width:100%; margin-top:.7rem; }
-.nt-lock-form .form-input{ width:100%; text-align:center; font-size:1rem; padding:.65rem; }
-.nt-lock-form .rd-btn{ width:100%; justify-content:center; padding:.65rem; }
+/* ---- Lock overlay (E2EE unlock) ------------------------------------------ */
+.nt-lock{
+  position:fixed; top:var(--nav-h); left:0; right:0; bottom:0; z-index:120; display:flex;
+  align-items:center; justify-content:center; padding:1.5rem;
+  background:var(--scrim); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); animation:rdFade .2s ease both;
+}
+.nt-lock[hidden]{ display:none; }
+.nt-lock-card{
+  width:min(380px,100%); padding:28px 26px 24px; border-radius:16px; background:var(--raise); box-shadow:var(--shadow-2);
+  display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center;
+}
+.nt-lock-ico{ width:48px; height:48px; margin-bottom:6px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:var(--accent-soft); color:var(--accent); }
+.nt-lock-ico svg{ width:22px; height:22px; }
+.nt-lock-title{ font-size:1.1rem; font-weight:600; letter-spacing:-.01em; }
+.nt-lock-sub{ font-size:.86rem; color:var(--text-dim); line-height:1.5; max-width:32ch; }
+.nt-lock-form{ display:flex; flex-direction:column; gap:8px; width:100%; margin-top:10px; }
+.nt-lock-form .form-input{ width:100%; }
+.nt-lock-form .rd-btn{ width:100%; height:38px; justify-content:center; }
 
-/* ---- Rail (notebooks) -----------------------------------------------------
-   Container / head / scroll body / pinned foot all come from .rd-side* in
-   app-shell.css — shared with the Files sidebar. Only row internals here.
-   Rows carry the same 26px lead-in as a Files tree row (toggle column +
-   link padding) so both sidebars line their icons up on the same column. */
-.nt-rail-item{ gap:.5rem; padding:0 .55rem 0 calc(26px + .2rem); border:0; border-left:3px solid transparent;
-  background:none; cursor:pointer; font:inherit; font-size:.86rem; color:var(--text); text-align:left; }
-.nt-rail-item svg{ width:16px; height:16px; flex:none; color:var(--accent); }
-.nt-nb-dot{ width:13px; height:13px; flex:none; margin:0 1.5px; border:1.5px solid var(--border); }
-.nt-nb-name{ flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.nt-nb-count{ font-family:var(--font-mono); font-size:.66rem; color:var(--text-dim); }
+/* ---- Rail (notebooks) ----------------------------------------------------
+   Container, head, scroll body and pinned foot are .rd-side* (ui-v2.css),
+   shared with the Files sidebar; only the row internals live here. */
+.nt-rail .rd-side-head{ display:none; }
+.nt-rail .rd-side-inner{ padding-top:8px; }
+.nt-rail-item{
+  gap:10px; padding:0 8px 0 10px; border:0; background:none; cursor:pointer;
+  font:inherit; font-size:.84rem; color:var(--text); text-align:left;
+}
+.nt-rail-item svg{ width:16px; height:16px; flex:none; color:var(--text-dim); transition:color .12s; }
+.nt-rail-item.is-active svg{ color:var(--accent); }
+.nt-rail-item.has-color svg{ color:var(--nt-color); }
+.nt-nb-name{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nt-nb-count{ flex:none; font-size:.74rem; color:var(--text-faint); font-variant-numeric:tabular-nums; }
+.nt-rail .rd-side-subhead{ margin-top:14px; padding-right:4px; }
+.nt-rail .rd-side-subhead button{
+  width:22px; height:22px; border:0; border-radius:6px; background:none; color:var(--text-faint);
+  transition:background .12s, color .12s;
+}
+.nt-rail .rd-side-subhead button:hover{ background:var(--press); color:var(--text); }
+.nt-rail .rd-side-subhead button svg{ width:14px; height:14px; }
+.nt-rail .rd-side-hint{ padding:4px 10px; font-size:.8rem; color:var(--text-faint); }
 
 /* ---- Notes list ----------------------------------------------------------- */
-.nt-list{ border-right:2px solid var(--border); background:var(--bg); display:flex; flex-direction:column; min-height:0; overflow:hidden; }
-.nt-list-head{ display:flex; align-items:center; justify-content:space-between; height:58px; flex:none; box-sizing:border-box; padding:.55rem .85rem; gap:.5rem; }
-.nt-list-title{ font-family:var(--font-display); font-size:1.3rem; font-weight:700; }
-.nt-newnote{ width:32px; height:32px; border:2px solid var(--border); background:var(--surface); cursor:pointer; color:var(--text); display:inline-flex; align-items:center; justify-content:center; }
-.nt-newnote:hover{ background:var(--accent); color:var(--accent-contrast); }
-.nt-newnote svg{ width:16px; height:16px; }
-.nt-search{ position:relative; height:48px; flex:none; box-sizing:border-box; padding:0 .85rem .55rem; border-bottom:2px solid var(--border); }
-.nt-search svg{ position:absolute; left:1.45rem; top:calc(50% - .275rem); transform:translateY(-50%); width:14px; height:14px; color:var(--text-dim); pointer-events:none; }
-.nt-search input{ width:100%; padding:.45rem .6rem .45rem 2rem; border:2px solid var(--border); background:var(--surface); color:var(--text); font:inherit; font-size:.82rem; }
-.nt-search input:focus{ outline:none; box-shadow:3px 3px 0 var(--accent); }
-.nt-items{ flex:1 1 auto; overflow-y:auto; }
-.nt-item{ position:relative; display:flex; flex-direction:column; gap:.3rem; width:100%; padding:.78rem .9rem; border:0; border-bottom:1px solid var(--border); background:none; cursor:pointer; text-align:left; color:var(--text); transition:background .1s; }
-/* :hover / .is-active use background-COLOR (not the shorthand) so the colour
-   wash on .has-color cards below survives hover and selection. */
-.nt-item:hover{ background-color:var(--accent-soft); }
-.nt-item.is-active{ background-color:var(--accent-soft); box-shadow:inset 3px 0 0 var(--accent); }
-.nt-item-bar{ position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--nt-color); }
+.nt-list{
+  display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden;
+  background:var(--bg); border-right:1px solid var(--line); container-type:inline-size;
+}
+.nt-list-head{
+  flex:none; display:flex; align-items:center; gap:6px; height:52px; box-sizing:border-box;
+  padding:0 10px 0 16px; border-bottom:1px solid var(--line);
+}
+.nt-list-title{
+  flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:.98rem; font-weight:600; letter-spacing:-.01em; line-height:1.3;
+}
+.nt-newgroup{ display:inline-flex; align-items:center; gap:4px; flex:none; }
+.nt-newnote{
+  height:30px; min-width:30px; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  padding:0; border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
+  font:inherit; font-size:.82rem; font-weight:500; white-space:nowrap; transition:background .14s, color .14s, box-shadow .14s;
+}
+.nt-newnote:hover{ background:var(--hover); color:var(--text); }
+.nt-newnote svg{ width:15px; height:15px; flex:none; }
+#ntNewNote{ padding:0 11px 0 9px; background:var(--accent); color:var(--accent-contrast); }
+#ntNewNote:hover{ box-shadow:inset 0 0 0 100px rgba(255,255,255,.1); }
+.nt-empty-trash{ padding:0 10px; color:var(--bad); }
+.nt-empty-trash:hover{ background:var(--bad-soft); color:var(--bad); }
+@container (max-width:290px){
+  #ntNewNote{ width:30px; padding:0; }
+  #ntNewNote span{ display:none; }
+}
 
-/* ---- Coloured notes -------------------------------------------------------
-   --nt-color is set inline per card by renderList(). The colour reads as a
-   glowing left rail plus a wash that fades out well before the text, so it
-   tints the row without fighting the title for attention. */
-.nt-item.has-color{ background-image:linear-gradient(90deg, color-mix(in srgb, var(--nt-color) 10%, transparent) 0%, transparent 42%); }
-.nt-item.has-color:hover,
-.nt-item.has-color.is-active{ background-image:linear-gradient(90deg, color-mix(in srgb, var(--nt-color) 17%, transparent) 0%, transparent 52%); }
-/* Selected colour note keeps its own colour on the active rail */
-.nt-item.has-color.is-active{ box-shadow:inset 3px 0 0 var(--nt-color); }
-.nt-item.has-color .nt-item-bar{ box-shadow:0 0 8px color-mix(in srgb, var(--nt-color) 60%, transparent); }
-/* Dark surfaces swallow a light wash — lift the mix a little */
-:root[data-theme="frost-dark"] .nt-item.has-color{ background-image:linear-gradient(90deg, color-mix(in srgb, var(--nt-color) 18%, transparent) 0%, transparent 52%); }
-:root[data-theme="frost-dark"] .nt-item.has-color:hover,
-:root[data-theme="frost-dark"] .nt-item.has-color.is-active{ background-image:linear-gradient(90deg, color-mix(in srgb, var(--nt-color) 28%, transparent) 0%, transparent 60%); }
-.nt-item-row{ display:flex; align-items:center; gap:.4rem; }
-.nt-item-title{ flex:1 1 auto; font-size:.9rem; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:.35rem; }
-/* The title is a flex row (pin + name), so the ellipsis has to live on the name itself. */
-.nt-item-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.nt-pin{ width:13px; height:13px; color:var(--accent); flex:none; }
-.nt-badge{ font-family:var(--font-mono); font-size:.56rem; letter-spacing:.1em; text-transform:uppercase; padding:.06rem .3rem; border:1.5px solid var(--accent); color:var(--accent); }
-.nt-item-meta{ font-family:var(--font-mono); font-size:.66rem; color:var(--text-dim); letter-spacing:.03em; }
-.nt-empty-sm{ padding:2rem 1rem; text-align:center; color:var(--text-dim); font-size:.85rem; }
-.nt-list-loading{ display:flex; justify-content:center; padding:2rem; }
+.nt-search{ position:relative; flex:none; padding:10px 10px 6px; }
+.nt-search svg{ position:absolute; left:20px; top:calc(50% + 2px); transform:translateY(-50%); width:15px; height:15px; color:var(--text-faint); pointer-events:none; }
+.nt-search input{
+  width:100%; height:32px; padding:0 10px 0 32px; border:0; border-radius:8px;
+  background:var(--surface); color:var(--text); font:inherit; font-size:.84rem;
+  transition:background .14s, box-shadow .14s;
+}
+.nt-search input::placeholder{ color:var(--text-faint); }
+.nt-search input:hover{ background:var(--surface-2); }
+.nt-search input:focus, .nt-search input:focus-visible{ outline:none; background:var(--surface); box-shadow:inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+.nt-search input::-webkit-search-cancel-button{ -webkit-appearance:none; appearance:none; }
+
+.nt-items{ flex:1 1 auto; min-height:0; overflow-y:auto; padding:2px 6px 32px; }
+.nt-section{
+  display:flex; align-items:baseline; gap:6px; padding:12px 10px 6px;
+  font-size:.76rem; font-weight:600; color:var(--text-dim);
+}
+.nt-section:first-child{ padding-top:6px; }
+.nt-section span{ font-weight:500; color:var(--text-faint); font-variant-numeric:tabular-nums; }
+.nt-item{
+  position:relative; display:flex; align-items:center; gap:10px; width:100%; min-height:50px;
+  padding:7px 10px; border:0; border-radius:9px; background:none; cursor:pointer;
+  text-align:left; color:var(--text); font:inherit; transition:background .1s;
+  -webkit-tap-highlight-color:transparent;
+}
+.nt-item + .nt-item{ margin-top:1px; }
+.nt-item:hover{ background:var(--hover); }
+.nt-item.is-active{ background:var(--sel); }
+.nt-item:focus-visible{ outline-offset:-2px; }
+/* Leading type glyph; a note colour (--nt-color, set inline) tints it */
+.nt-item-ico{
+  flex:none; width:30px; height:30px; display:grid; place-items:center; border-radius:8px;
+  background:var(--surface); color:var(--text-dim);
+}
+.nt-item-ico svg{ width:16px; height:16px; }
+.nt-item.has-color .nt-item-ico{ background:color-mix(in srgb,var(--nt-color) 18%,transparent); color:var(--nt-color); }
+.nt-item.is-active .nt-item-ico{ background:color-mix(in srgb,var(--nt-color,var(--accent)) 20%,transparent); }
+.nt-item:not(.has-color).is-active .nt-item-ico{ color:var(--accent); }
+.nt-item-main{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.nt-item-row{ display:flex; align-items:center; gap:6px; min-width:0; }
+.nt-item-title{ flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:5px; overflow:hidden; font-size:.86rem; font-weight:500; line-height:1.35; }
+/* The title is a flex row (pin + name), so the ellipsis lives on the name. */
+.nt-item-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nt-pin{ width:12px; height:12px; flex:none; color:var(--text-faint); }
+.nt-item-meta{
+  display:flex; align-items:center; gap:6px; min-width:0; overflow:hidden; white-space:nowrap;
+  font-size:.76rem; line-height:1.3; color:var(--text-dim); font-variant-numeric:tabular-nums;
+}
+.nt-item-meta > span{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.nt-badge{
+  flex:none; display:inline-flex; align-items:center; height:16px; padding:0 6px; border-radius:8px;
+  background:var(--press); color:var(--text-dim); font-size:.66rem; font-weight:600; letter-spacing:.01em;
+}
+.nt-items .rd-empty{ padding:clamp(32px,8vh,72px) 12px 24px; }
+.nt-items .rd-empty-icon{ width:48px; height:48px; }
+.nt-items .rd-empty-icon svg{ width:20px; height:20px; }
 
 /* ---- Skeletons + entrances ------------------------------------------------ */
-.nt-skel-row{ height:34px; margin:.15rem .65rem; }
-.nt-skel-list{ padding:.6rem .9rem; display:flex; flex-direction:column; gap:.5rem; }
-.nt-skel-item{ height:52px; }
-/* List entrance — only when .is-anim is set (fresh data load); re-renders from
-   note clicks / search keystrokes must not replay it */
-.nt-list.is-anim .nt-item{ animation:rdSlideL .2s cubic-bezier(0,0,.2,1) backwards; animation-delay:calc(min(var(--i,0),12)*18ms); }
-.nt-rail.is-anim .rd-side-scroll > *, .nt-rail.is-anim .rd-side-foot > *{ animation:rdSlideL .22s cubic-bezier(0,0,.2,1) backwards; animation-delay:calc(min(var(--i,0),14)*16ms); }
+.nt-skel-row{ height:24px; margin:3px 6px; }
+.nt-skel-list{ padding:52px 12px 0; display:flex; flex-direction:column; gap:10px; }
+.nt-items .nt-skel-list{ padding:8px 6px 0; }
+.nt-skel-title{ display:block; width:96px; height:14px; }
+.nt-skel-item{ height:40px; }
+/* Only fresh data loads set .is-anim; re-renders from clicks/search must not replay it */
+.nt-list.is-anim .nt-item{ animation:rdFade .2s ease backwards; animation-delay:calc(min(var(--i,0),10)*14ms); }
+.nt-rail.is-anim .rd-side-scroll > *, .nt-rail.is-anim .rd-side-foot > *{ animation:rdFade .2s ease backwards; }
 
 /* ---- Editor --------------------------------------------------------------- */
-.nt-editor{ display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:var(--surface); }
-/* Note switch: outgoing content dims while the next note decrypts (spinner is
-   held back ~180ms so fast opens never flash it), incoming content fades in */
+.nt-editor{ display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:var(--bg); }
+/* Note switch: outgoing content dims while the next note decrypts (the spinner
+   is held back ~180ms so fast opens never flash it); incoming content fades in */
 .nt-editor.nt-ed-busy > *{ opacity:.45; transition:opacity .15s; }
-.nt-editor > *{ animation:rdFade .18s ease backwards; }
-.nt-editor > .nt-ed-body{ animation:rdRise .22s cubic-bezier(0,0,.2,1) backwards; }
+.nt-editor > *{ animation:rdFade .16s ease backwards; }
 .nt-ed-loading{ display:flex; flex:1 1 auto; align-items:center; justify-content:center; padding:3rem; animation:rdFade .18s .05s backwards; }
-.nt-ed-head{ display:flex; align-items:center; gap:.7rem; height:58px; flex:none; box-sizing:border-box; padding:.55rem 1.1rem; border-bottom:2px solid var(--border); overflow:hidden; }
-.nt-back{ display:none; }
-.nt-ed-title{ flex:1 1 auto; min-width:0; width:0; border:0; background:none; font-family:var(--font-display); font-size:clamp(1.15rem,2vw,1.45rem); font-weight:700; color:var(--text); padding:.2rem 0; text-overflow:ellipsis; }
+.nt-ed-head{
+  flex:none; display:flex; align-items:center; gap:8px; height:52px; box-sizing:border-box;
+  padding:0 10px 0 16px; border-bottom:1px solid var(--line); overflow:hidden;
+}
+.nt-ed-title{
+  flex:1 1 auto; min-width:0; width:0; height:32px; margin-left:-8px; padding:0 8px;
+  border:0; border-radius:7px; background:none; color:var(--text);
+  font:inherit; font-size:.98rem; font-weight:600; letter-spacing:-.01em; text-overflow:ellipsis;
+  transition:background .12s, box-shadow .12s;
+}
+.nt-ed-title::placeholder{ color:var(--text-faint); }
+.nt-ed-title:not([readonly]):hover{ background:var(--hover); }
 .nt-ed-title:focus{ outline:none; }
-.nt-ed-actions{ display:flex; align-items:center; gap:.35rem; flex:none; }
-.nt-savestate{ font-family:var(--font-mono); font-size:.64rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); min-width:52px; text-align:right; }
-.nt-conflict-btn{ border:1.5px solid var(--bad); background:transparent; color:var(--bad); font:inherit; font-weight:700; text-transform:uppercase; padding:.22rem .4rem; cursor:pointer; }
-.nt-conflict-btn:hover{ background:var(--bad); color:#fff; }
-.nt-toolbar{ display:flex; align-items:center; gap:.15rem; height:48px; flex:none; box-sizing:border-box; padding:.3rem 1rem; border-bottom:2px solid var(--border); flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
+.nt-ed-title:not([readonly]):focus{ background:var(--surface); box-shadow:inset 0 0 0 1px var(--line-strong); }
+.nt-ed-actions{ display:flex; align-items:center; gap:2px; flex:none; }
+.nt-savestate{ display:inline-flex; align-items:center; margin-right:6px; font-size:.76rem; color:var(--text-faint); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.nt-savestate:empty{ margin-right:0; }
+.nt-conflict-btn{
+  height:24px; padding:0 8px; border:0; border-radius:6px; background:var(--bad-soft); color:var(--bad);
+  font:inherit; font-size:.76rem; font-weight:500; cursor:pointer; transition:background .12s, color .12s;
+}
+.nt-conflict-btn:hover{ background:var(--bad); color:var(--on-bad); }
+.nt-ed-actions [data-pin][aria-pressed="true"]{ color:var(--accent); }
+.nt-ed-actions .rd-btn + .rd-btn{ margin-left:6px; }
+.nt-ro{
+  flex:none; display:flex; align-items:center; gap:8px; padding:8px 16px;
+  border-bottom:1px solid var(--line); background:var(--pane); font-size:.82rem; color:var(--text-dim);
+}
+.nt-ro svg{ width:15px; height:15px; flex:none; color:var(--text-faint); }
+
+/* Formatting toolbar */
+.nt-toolbar{
+  flex:none; display:flex; align-items:center; gap:2px; height:44px; box-sizing:border-box;
+  padding:0 10px; border-bottom:1px solid var(--line); overflow-x:auto; overflow-y:hidden; scrollbar-width:none;
+}
 .nt-toolbar::-webkit-scrollbar{ display:none; }
-.nt-tb-btn{ min-width:32px; height:30px; padding:0 .5rem; border:0; background:none; cursor:pointer; color:var(--text); font-size:.85rem; font-family:var(--font-mono); display:inline-flex; align-items:center; justify-content:center; }
-.nt-tb-btn:hover{ background:var(--accent-soft); color:var(--accent); }
-.nt-tb-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
-.nt-tb-sep{ width:2px; height:20px; background:var(--border); margin:0 .3rem; }
-.nt-tb-color{ position:relative; width:32px; height:30px; flex:none; display:inline-flex; align-items:center; justify-content:center; font:700 .75rem var(--font-mono); cursor:pointer; }
-.nt-tb-color:hover{ background:var(--accent-soft); }
-.nt-tb-color input{ position:absolute; inset:auto 4px 2px; width:24px; height:5px; padding:0; border:0; opacity:.9; cursor:pointer; }
-.nt-ed-body{ flex:1 1 auto; overflow-y:auto; padding:1.6rem 1.6rem 4rem; max-width:820px; width:100%; font-size:1rem; line-height:1.7; color:var(--text); }
-.nt-ed-body:focus{ outline:none; }
-.nt-ed-body h2{ font-family:var(--font-display); font-size:1.5rem; font-weight:700; margin:1.2rem 0 .5rem; }
-.nt-ed-body h1{ font-family:var(--font-display); font-size:1.85rem; font-weight:800; margin:1.35rem 0 .6rem; }
-.nt-ed-body h3{ font-family:var(--font-display); font-size:1.2rem; font-weight:600; margin:1rem 0 .4rem; }
-.nt-ed-body p{ margin:.6rem 0; }
-.nt-ed-body ul, .nt-ed-body ol{ margin:.6rem 0; padding-left:1.5rem; }
-.nt-ed-body ul{ list-style:revert; } /* core.css strips bullets from every ul */
-.nt-ed-body table{ border-collapse:collapse; margin:.8rem 0; }
-.nt-ed-body td, .nt-ed-body th{ border:1px solid var(--border); padding:.3rem .55rem; vertical-align:top; }
-.nt-ed-body li{ margin:.25rem 0; }
-.nt-ed-body a{ color:var(--accent); }
-.nt-ed-body blockquote{ margin:.8rem 0; padding:.4rem .8rem; border-left:4px solid var(--accent); background:var(--accent-soft); }
-.nt-ed-body pre{ margin:.8rem 0; padding:.8rem; overflow:auto; border:2px solid var(--border); background:var(--code-bg); color:var(--code-fg); font:13px/1.5 var(--font-mono); white-space:pre-wrap; }
-.nt-ed-body img{ display:block; max-width:100%; height:auto; margin:.8rem 0; border:1px solid var(--border); }
-.nt-ed-body:empty::before{ content:'Start writing…'; color:var(--text-dim); }
-.nt-ed-loading{ display:flex; justify-content:center; padding:3rem; }
+.nt-tb-btn{
+  flex:none; min-width:30px; height:30px; padding:0 7px; display:inline-flex; align-items:center; justify-content:center;
+  border:0; border-radius:7px; background:none; color:var(--text-dim); cursor:pointer;
+  font:inherit; font-size:.86rem; font-weight:500; line-height:1; transition:background .12s, color .12s;
+}
+.nt-tb-btn:hover{ background:var(--hover); color:var(--text); }
+.nt-tb-btn:active{ background:var(--press); }
+.nt-tb-btn:focus-visible{ outline-offset:-2px; }
+.nt-tb-btn svg{ width:16px; height:16px; }
+.nt-tb-sep{ flex:none; width:1px; height:18px; margin:0 6px; background:var(--line-strong); }
+.nt-tb-color{
+  position:relative; flex:none; width:30px; height:30px; display:inline-flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+  border-radius:7px; color:var(--text-dim); cursor:pointer; transition:background .12s, color .12s;
+}
+.nt-tb-color:hover{ background:var(--hover); color:var(--text); }
+.nt-tb-color svg{ width:15px; height:15px; }
+.nt-tb-color input{ width:16px; height:4px; padding:0; border:0; border-radius:2px; background:none; cursor:pointer; -webkit-appearance:none; appearance:none; }
+.nt-tb-color input::-webkit-color-swatch-wrapper{ padding:0; }
+.nt-tb-color input::-webkit-color-swatch{ border:0; border-radius:2px; }
+.nt-tb-color input::-moz-color-swatch{ border:0; border-radius:2px; }
+.nt-tb-color input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+/* Document body: the scroller spans the pane (scrollbar at the edge) while
+   the writing column stays centred at a readable measure. */
+.nt-ed-body{
+  flex:1 1 auto; min-height:0; overflow-y:auto; box-sizing:border-box;
+  padding:28px max(24px, calc((100% - 720px) / 2)) 120px;
+  font-size:15px; line-height:1.7; color:var(--text); overflow-wrap:break-word;
+}
+.nt-editor > .nt-ed-body{ animation:rdFade .2s ease backwards; }
+.nt-ed-body:focus, .nt-ed-body:focus-visible, .nt-ed-title:focus-visible{ outline:none; }
+.nt-ed-body:empty::before{ content:'Start writing…'; color:var(--text-faint); }
+.nt-ed-body h1, .nt-ed-body h2, .nt-ed-body h3, .nt-ed-body h4, .nt-ed-body h5, .nt-ed-body h6{ font-family:var(--font-body); color:var(--text); line-height:1.3; text-wrap:pretty; }
+.nt-ed-body h1{ font-size:1.7rem; font-weight:700; letter-spacing:-.025em; margin:1.4em 0 .45em; }
+.nt-ed-body h2{ font-size:1.32rem; font-weight:600; letter-spacing:-.018em; margin:1.35em 0 .4em; }
+.nt-ed-body h3{ font-size:1.1rem; font-weight:600; letter-spacing:-.01em; margin:1.2em 0 .35em; }
+.nt-ed-body h4, .nt-ed-body h5, .nt-ed-body h6{ font-size:1rem; font-weight:600; margin:1.1em 0 .3em; }
+.nt-ed-body > :first-child{ margin-top:0; }
+.nt-ed-body p{ margin:.55em 0; }
+.nt-ed-body ul, .nt-ed-body ol{ margin:.55em 0; padding-left:1.5em; }
+.nt-ed-body ul{ list-style:disc; } /* core.css strips bullets from every ul */
+.nt-ed-body li{ margin:.2em 0; }
+.nt-ed-body li::marker{ color:var(--text-dim); }
+.nt-ed-body a{ color:var(--accent); text-decoration:underline; text-decoration-color:rgba(var(--accent-rgb),.4); text-underline-offset:2px; }
+.nt-ed-body blockquote{ margin:.9em 0; padding:.1em 0 .1em 1em; border-left:3px solid var(--line-strong); color:var(--text-dim); }
+.nt-ed-body pre{
+  margin:.9em 0; padding:12px 14px; overflow:auto; border-radius:9px; background:var(--surface);
+  color:var(--text); font:13px/1.6 var(--font-mono); white-space:pre-wrap;
+}
+.nt-ed-body code{ padding:.1em .35em; border-radius:4px; background:var(--press); font:.88em var(--font-mono); }
+.nt-ed-body pre code{ padding:0; background:none; font:inherit; }
+.nt-ed-body hr{ margin:1.6em 0; border:0; border-top:1px solid var(--line-strong); }
+.nt-ed-body table{ border-collapse:collapse; margin:.9em 0; font-size:.94em; }
+.nt-ed-body td, .nt-ed-body th{ border:1px solid var(--line-strong); padding:6px 10px; vertical-align:top; text-align:left; }
+.nt-ed-body th{ background:var(--surface); font-weight:600; }
+.nt-ed-body img{ display:block; max-width:100%; height:auto; margin:.9em 0; border-radius:8px; }
+.nt-ed-body input[type="checkbox"]{ width:15px; height:15px; margin:0 .45em 0 0; vertical-align:-2px; accent-color:var(--accent); }
 
 /* Canvas note mount fills the editor area below the header */
 .nt-canvas-mount{ flex:1 1 auto; min-width:0; min-height:0; display:flex; overflow:hidden; }
-.nt-newgroup{ display:inline-flex; gap:.3rem; }
 
-/* ---- Shared: empty / spinner --------------------------------------------- */
-.nt-empty{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.9rem; padding:3rem 1.5rem; color:var(--text-dim); text-align:center; flex:1 1 auto; }
-.nt-empty svg{ width:52px; height:52px; opacity:.4; }
-.nt-empty h3{ font-family:var(--font-display); font-size:1.3rem; color:var(--text); }
-.nt-empty p{ font-size:.9rem; max-width:34ch; }
-.nt-spin{ width:30px; height:30px; border:3px solid var(--accent-soft); border-top-color:var(--accent); border-radius:50%; animation:ntspin .7s linear infinite; }
+/* ---- Empty / error / spinner ---------------------------------------------- */
+.nt-editor > .rd-empty{ flex:1 1 auto; justify-content:center; padding-bottom:12vh; }
+.nt-empty-actions{ display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:10px; }
+.nt-empty-actions .rd-btn{ margin-top:0; }
+.rd-empty.is-error .rd-empty-icon{ background:var(--bad-soft); color:var(--bad); }
+.nt-spin{ width:20px; height:20px; border:2px solid var(--line-strong); border-top-color:var(--accent); border-radius:50%; animation:ntspin .7s linear infinite; }
 @keyframes ntspin{ to{ transform:rotate(360deg); } }
 
-/* ---- Mobile --------------------------------------------------------------- */
+/* ---- Dialogs + menus ------------------------------------------------------ */
+#ntNbModal .rd-modal-panel, #ntPromptModal .rd-modal-panel{ max-width:24rem; }
+.nt-modal-foot{ display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
+.rd-modal-body .rd-field-hint{ margin:0; }
+.nt-canvas-mount > .rd-empty{ flex:1 1 auto; justify-content:center; }
+/* Colour swatches in the note menu (context-menu.css, only Notes uses them) */
+.ui-v2 .rd-cmenu-swatches{ gap:6px; padding:4px 10px 8px; }
+.ui-v2 .rd-cmenu-sw{ width:18px; height:18px; border:0; border-radius:50%; box-shadow:inset 0 0 0 1px var(--line-strong); transition:transform .1s, box-shadow .1s; }
+.ui-v2 .rd-cmenu-sw:hover, .ui-v2 .rd-cmenu-sw:focus-visible{ transform:scale(1.12); outline:none; }
+.ui-v2 .rd-cmenu-sw.is-active, .ui-v2 .rd-cmenu-sw:focus-visible{ box-shadow:0 0 0 2px var(--raise), 0 0 0 3.5px var(--text); }
+.ui-v2 .rd-cmenu-sw.is-none{ overflow:hidden; background:var(--surface); }
+.ui-v2 .rd-cmenu-sw.is-none::after{ background:linear-gradient(to bottom right, transparent 45%, var(--text-faint) 45%, var(--text-faint) 55%, transparent 55%); }
+.ui-v2 .rd-cmenu-item[disabled]{ opacity:.4; }
+.ui-v2 .rd-cmenu-item[disabled]:hover{ background:none; }
+
+/* ---- Tablet: rail becomes a drawer ---------------------------------------- */
 .nt-rail-scrim{ display:none; }
 .nt-rail-toggle, .nt-back{ display:none; }
 @media (max-width:1024px){
-  /* Rail becomes an off-canvas drawer, so only the notes list stays resizable.
-     With the rail track gone, the list seam sits at the list width itself. */
+  /* Only the notes list stays resizable; its seam sits at the list width. */
   .nt-shell{ grid-template-columns:var(--rd-list-eff) minmax(0,1fr); }
-  .nt-shell .rd-resizer[data-rd-resize="side"]{ display:none !important; }
-  .nt-shell .rd-rail-label[data-rd-label="side"]{ display:none !important; }
+  .nt-shell .rd-resizer[data-rd-resize="side"], .nt-shell .rd-rail-label[data-rd-label="side"]{ display:none !important; }
   .nt-shell .rd-resizer[data-rd-resize="list"]{ left:var(--rd-list-eff); }
   .nt-shell .rd-rail-label[data-rd-label="list"]{ left:0; }
   :root[data-rd-side="collapsed"] .nt-rail > .rd-side-inner{ display:flex; }
-  .nt-rail{ position:fixed; top:var(--nav-h); left:0; bottom:0; width:260px; z-index:75; transform:translateX(-102%); transition:transform .28s cubic-bezier(.2,.85,.25,1); }
-  /* Shadow only while open: a closed drawer's shadow bleeds onto the page's left edge. */
-  .nt-rail.is-open{ transform:none; box-shadow:14px 0 34px rgba(0,0,0,.16); }
-  .nt-rail-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; background:rgba(0,0,0,.4); z-index:74; opacity:0; pointer-events:none; transition:opacity .2s; }
+  .nt-rail{
+    position:fixed; top:var(--nav-h); left:0; bottom:0; width:272px; max-width:86vw; z-index:75;
+    transform:translateX(-102%); visibility:hidden; transition:transform .28s cubic-bezier(.2,.85,.25,1), visibility 0s .28s;
+  }
+  /* Shadow only while open: a closed drawer's shadow bleeds onto the page edge */
+  .nt-rail.is-open{ transform:none; visibility:visible; transition-delay:0s; box-shadow:24px 0 48px -16px rgba(0,0,0,.5); }
+  .nt-rail-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; z-index:74; background:var(--scrim); opacity:0; pointer-events:none; transition:opacity .2s; }
   .nt-rail-scrim.is-open{ opacity:1; pointer-events:auto; }
-  .nt-rail-toggle{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:2px solid var(--border); background:var(--surface); cursor:pointer; color:var(--text); margin-right:.4rem; }
-  .nt-rail-toggle svg{ width:15px; height:15px; }
+  .nt-rail-toggle{
+    display:inline-flex; align-items:center; justify-content:center; flex:none; width:30px; height:30px; margin-left:-6px;
+    border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
+  }
+  .nt-rail-toggle:hover{ background:var(--hover); color:var(--text); }
+  .nt-rail-toggle svg{ width:18px; height:18px; }
+  .nt-list-head{ padding-left:12px; }
 }
+
+/* ---- Phone: one pane at a time (list -> editor) --------------------------- */
 @media (max-width:720px){
-  .nt-shell{ grid-template-columns:1fr; }
-  /* Single-pane phone layout — nothing left to resize or collapse. */
+  .nt-shell{ grid-template-columns:minmax(0,1fr); }
   .nt-shell .rd-resizer, .nt-shell .rd-rail-label{ display:none !important; }
-  :root[data-rd-list="collapsed"] .nt-list{ overflow:auto; }
-  :root[data-rd-list="collapsed"] .nt-list > *{ display:revert; }
-  .nt-panes{ display:grid; grid-template-columns:1fr; min-width:0; min-height:0; }
+  .nt-panes{ display:grid; grid-template-columns:minmax(0,1fr); min-width:0; min-height:0; }
+  .nt-list{ border-right:0; }
   .nt-editor{ display:none; }
   .nt-panes.nt-show-editor .nt-list{ display:none; }
   .nt-panes.nt-show-editor .nt-editor{ display:flex; }
-  .nt-back{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:2px solid var(--border); background:var(--surface); cursor:pointer; color:var(--text); }
-  .nt-back svg{ width:16px; height:16px; }
-  .nt-ed-head{ height:52px; padding:.4rem .6rem; gap:.4rem; }
-  .nt-savestate{ min-width:0; max-width:56px; overflow:hidden; }
-  .nt-ed-actions{ gap:.2rem; }
-  .nt-ed-actions .rd-icon-btn{ width:34px; height:34px; }
+  .nt-list-head{ gap:4px; padding:0 8px 0 10px; }
+  .nt-list-title{ font-size:1.05rem; }
+  .nt-newnote{ height:36px; min-width:36px; }
+  #ntNewNote{ width:36px; padding:0; border-radius:50%; }
+  #ntNewNote span{ display:none; }
+  .nt-search{ padding:10px 12px 8px; }
+  .nt-search svg{ left:22px; }
+  .nt-search input{ height:38px; font-size:16px; }
+  .nt-items{ padding:2px 8px 40px; }
+  .nt-item{ min-height:58px; gap:12px; padding:8px 10px; }
+  .nt-item-ico{ width:34px; height:34px; border-radius:9px; }
+  .nt-item-title{ font-size:.92rem; }
+  .nt-item-meta{ font-size:.78rem; }
+  .nt-back{
+    display:inline-flex; align-items:center; justify-content:center; flex:none; width:36px; height:36px; margin-left:-4px;
+    border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
+  }
+  .nt-back:hover{ background:var(--hover); color:var(--text); }
+  .nt-back svg{ width:20px; height:20px; }
+  .nt-ed-head{ gap:4px; padding:0 6px 0 8px; }
+  .nt-ed-title{ margin-left:0; }
+  .nt-savestate{ max-width:64px; overflow:hidden; margin-right:2px; }
+  .nt-ed-actions .rd-btn{ padding:0 10px; }
+  .nt-ed-actions .rd-btn + .rd-btn{ margin-left:4px; }
+  .nt-ro{ padding:8px 12px; }
+  /* Fade the trailing edge so a clipped button reads as "scroll for more";
+     the end padding lets the last button scroll clear of the fade. */
+  .nt-toolbar{ height:46px; padding:0 28px 0 6px; -webkit-mask-image:linear-gradient(to right,var(--text) calc(100% - 28px),transparent); mask-image:linear-gradient(to right,var(--text) calc(100% - 28px),transparent); }
+  .nt-ed-body{ padding:20px 18px 120px; font-size:16px; }
 }
-/* panes wrapper spans list+editor within the grid */
-.nt-panes{ display:contents; }
-@media (max-width:720px){ .nt-panes{ display:grid; } }
+@media (max-width:420px){
+  /* Restore / Delete forever must both stay on screen next to the title */
+  .nt-ed-actions [data-delete-perm] .nt-btn-label{ display:none; }
+}
+
+/* Touch: comfortable targets */
+@media (pointer:coarse){
+  .nt-rail .nt-rail-item{ min-height:40px; }
+  .nt-rail .rd-side-trash{ height:40px; }
+  .nt-rail .rd-side-subhead button{ width:32px; height:32px; }
+  .nt-rail-toggle{ width:38px; height:38px; }
+  .nt-tb-btn, .nt-tb-color{ min-width:36px; height:36px; }
+  .nt-ed-actions .rd-icon-btn{ width:38px; height:38px; }
+}
 
 @media (prefers-reduced-motion:reduce){
-  .nt-rail{ transition:none !important; }
+  .nt-rail, .nt-rail-scrim{ transition:none !important; }
   .nt-list.is-anim .nt-item, .nt-rail.is-anim .rd-side-scroll > *, .nt-rail.is-anim .rd-side-foot > *,
-  .nt-editor > *, .nt-ed-loading, .rd-skel{ animation:none !important; }
+  .nt-editor > *, .nt-ed-loading, .nt-lock, .rd-skel{ animation:none !important; }
 }

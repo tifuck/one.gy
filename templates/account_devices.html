@@ -1,0 +1,149 @@
+{% extends '_app_base.html' %}
+{% block title %}Devices{% endblock %}
+{% set nav_active = 'account' %}
+{% set ui_v2 = true %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('desktop.css') }}">{% endblock %}
+
+{% macro close_btn() -%}
+<button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+{%- endmacro %}
+
+{% block content %}
+<div class="rd-page">
+  <header class="rd-page-head">
+    <h1 class="rd-page-title">Devices</h1>
+    <p class="rd-page-sub">Computers signed in with ONE.GY Desktop. Removing one signs it out and stops its syncs. Files already on it stay there.</p>
+    <div class="rd-page-actions">
+      <a class="rd-btn rd-btn-ghost" href="{{ url_for('account') }}#security">Back to account</a>
+      {% if devices %}<a class="rd-btn rd-btn-primary" href="{{ url_for('desktop_page') }}">Get the desktop app</a>{% endif %}
+    </div>
+  </header>
+
+  {% if devices %}
+  <section class="rd-panel">
+    <div class="rd-panel-body is-flush">
+      <div class="rd-table-wrap">
+        <table class="rd-table is-stack dk-devices">
+          <thead><tr><th>Name</th><th>Platform</th><th>Version</th><th>Added</th><th>Last seen</th><th class="is-actions"><span class="dk-sr">Actions</span></th></tr></thead>
+          <tbody>
+          {% for d in devices %}
+            <tr>
+              <td class="is-trunc dk-device-name" title="{{ d.name }}">{{ d.name }}</td>
+              <td data-label="Platform">{{ {'windows': 'Windows', 'linux': 'Linux'}.get(d.platform, d.platform or 'Unknown') }}</td>
+              <td data-label="Version">{{ d.client_version or '—' }}</td>
+              <td data-label="Added">{{ d.created_at.strftime('%b %d, %Y') if d.created_at else '—' }}</td>
+              <td data-label="Last seen">{{ d.last_seen_at.strftime('%b %d, %Y %H:%M') ~ ' UTC' if d.last_seen_at else 'Never' }}</td>
+              <td class="is-actions"><div class="dk-row-actions">
+                <button type="button" class="rd-btn rd-btn-sm rd-btn-ghost" data-rd-modal-open="devRename{{ loop.index }}">Rename</button>
+                <button type="button" class="rd-btn rd-btn-sm rd-btn-danger" data-rd-modal-open="devRevoke{{ loop.index }}">Remove</button>
+              </div></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  {% else %}
+  <div class="rd-empty">
+    <span class="rd-empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8 20h8M12 16.5V20"/></svg></span>
+    <h2 class="rd-empty-title">No desktop devices yet</h2>
+    <p class="rd-empty-text">Install ONE.GY Desktop on Windows or Linux and sign in. The computer shows up here.</p>
+    <a class="rd-btn rd-btn-primary" href="{{ url_for('desktop_page') }}">Get the desktop app</a>
+  </div>
+  {% endif %}
+
+  {% if backups %}
+  <section class="rd-panel">
+    <header class="rd-panel-head"><div><h2 class="rd-panel-title">Backups</h2>
+      <p class="rd-panel-sub">Folders a device backs up. They are read-only here; only that device changes them.</p></div></header>
+    <div class="rd-panel-body is-flush">
+      <div class="rd-table-wrap">
+        <table class="rd-table is-stack dk-devices">
+          <thead><tr><th>Folder</th><th>Device</th><th class="is-actions"><span class="dk-sr">Actions</span></th></tr></thead>
+          <tbody>
+          {% for b in backups %}
+            <tr>
+              <td class="is-trunc" data-label="Folder"><a href="{{ url_for('files', folder_id=b.id) }}">{{ 'Encrypted folder' if b.encrypted_name else b.name }}</a></td>
+              <td data-label="Device">{% if device_names.get(b.backup_device_id) %}{{ device_names[b.backup_device_id] }}{% else %}<span class="rd-pill is-warn">Removed device</span>{% endif %}</td>
+              <td class="is-actions"><div class="dk-row-actions">
+                <button type="button" class="rd-btn rd-btn-sm rd-btn-ghost" data-rd-modal-open="bkStop{{ loop.index }}">Stop backup</button>
+              </div></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="rd-panel">
+    <header class="rd-panel-head"><div><h2 class="rd-panel-title">Previous versions</h2>
+      <p class="rd-panel-sub">When a file's content is replaced, by the desktop app or an edit on the website, keep the old content as a version you can download or restore. Versions count toward your storage.</p></div></header>
+    <form method="post" action="{{ url_for('set_keep_file_versions') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="rd-panel-body">
+        <div class="rd-field-row">
+          <label class="rd-field-label" for="keepFileVersions">Keep previous versions</label>
+          <input type="checkbox" class="rd-switch" role="switch" id="keepFileVersions" name="keep_file_versions"{{ ' checked' if user.keep_file_versions }}>
+        </div>
+      </div>
+      <footer class="rd-panel-foot"><button type="submit" class="rd-btn rd-btn-primary">Save</button></footer>
+    </form>
+  </section>
+</div>
+
+{% for b in backups %}
+<div class="rd-modal dk-dialog" id="bkStop{{ loop.index }}" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="bkStopTitle{{ loop.index }}">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3" id="bkStopTitle{{ loop.index }}">Stop this backup?</h3>{{ close_btn() }}</div>
+    <form class="dk-form" method="post" action="{{ url_for('stop_backup', folder_id=b.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <p>The device stops writing to it. Keep it as a normal folder you can change, or move it to the trash.</p>
+      <div class="dk-form-foot">
+        <button type="button" class="rd-btn rd-btn-ghost" data-rd-modal-close>Cancel</button>
+        <button type="submit" name="action" value="trash" class="rd-btn rd-btn-danger">Move to trash</button>
+        <button type="submit" name="action" value="keep" class="rd-btn rd-btn-primary">Keep as folder</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+{% for d in devices %}
+<div class="rd-modal dk-dialog" id="devRename{{ loop.index }}" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="devRenameTitle{{ loop.index }}">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3" id="devRenameTitle{{ loop.index }}">Rename device</h3>{{ close_btn() }}</div>
+    <form class="dk-form" method="post" action="{{ url_for('rename_device', device_id=d.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="rd-field">
+        <label class="rd-field-label" for="devName{{ loop.index }}">Name</label>
+        <input type="text" id="devName{{ loop.index }}" name="name" class="form-input" value="{{ d.name }}" maxlength="{{ device_name_max }}" required autocomplete="off">
+      </div>
+      <div class="dk-form-foot">
+        <button type="button" class="rd-btn rd-btn-ghost" data-rd-modal-close>Cancel</button>
+        <button type="submit" class="rd-btn rd-btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="rd-modal dk-dialog" id="devRevoke{{ loop.index }}" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="devRevokeTitle{{ loop.index }}">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3" id="devRevokeTitle{{ loop.index }}">Remove {{ d.name }}?</h3>{{ close_btn() }}</div>
+    <form class="dk-form" method="post" action="{{ url_for('revoke_device', device_id=d.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <p>Its access ends now. The next time the app connects, it signs out, wipes its key and stops syncing. Files on that computer are not deleted.</p>
+      <div class="dk-form-foot">
+        <button type="button" class="rd-btn rd-btn-ghost" data-rd-modal-close>Cancel</button>
+        <button type="submit" class="rd-btn rd-btn-danger">Remove device</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

@@ -11,12 +11,16 @@
   'use strict'
 
   var EDITOR_MAX = 5 * 1024 * 1024
+  // Syntax colouring re-highlights the whole buffer: per keystroke up to
+  // HL_SYNC_MAX chars, debounced up to HL_MAX, plain text above that.
+  var HL_SYNC_MAX = 30000
+  var HL_MAX = 300000
   // Anything decrypted or read into page memory is refused above this size.
   var PREVIEW_MAX = 512 * 1024 * 1024
   // /file/<id>/preview answers a Range request for audio over 50 MB with 403.
   var AUDIO_RANGE_MAX = 50 * 1024 * 1024
   var IMG = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
-  var TXT = ['txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'py', 'js', 'html', 'css', 'sh', 'ini', 'cfg', 'conf', 'c', 'cpp', 'h', 'hpp', 'lua', 'rb', 'rs', 'go', 'java', 'ts', 'tsx', 'jsx', 'toml', 'bat', 'ps1', 'sql', 'r', 'swift', 'kt', 'php', 'pl', 'diff', 'makefile']
+  var TXT = ['txt', 'md', 'log', 'csv', 'tsv', 'json', 'xml', 'yaml', 'yml', 'py', 'js', 'mjs', 'cjs', 'html', 'htm', 'css', 'scss', 'less', 'sh', 'bash', 'zsh', 'ini', 'cfg', 'conf', 'env', 'c', 'cpp', 'h', 'hpp', 'cs', 'lua', 'rb', 'rs', 'go', 'java', 'ts', 'tsx', 'jsx', 'toml', 'bat', 'ps1', 'sql', 'r', 'swift', 'kt', 'php', 'pl', 'diff', 'patch', 'makefile']
   var VID = ['mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv']
   var AUD = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac']
   var PDF = ['pdf']
@@ -25,6 +29,7 @@
   var _dlBlobUrl = null
   var _zoomCleanup = null
   var _editorDirty = false
+  var _saving = false  // a save-content request is in flight
   var _openGeneration = 0
   var _previewAbort = null
   var _historyOpen = false
@@ -37,6 +42,14 @@
   function revoke () {
     if (_blobUrl) { try { URL.revokeObjectURL(_blobUrl) } catch (e) {} _blobUrl = null }
     if (_dlBlobUrl) { try { URL.revokeObjectURL(_dlBlobUrl) } catch (e) {} _dlBlobUrl = null }
+  }
+  // A video/audio preview autoplays: stop the music player instead of mixing the
+  // two (phantom mode only loops a silent keepalive and is left alone).
+  function pauseMusic () {
+    var mp = window.MusicPlayer
+    if (!mp || !mp.getAudioElement || (mp.isPhantomMode && mp.isPhantomMode())) return
+    var a = mp.getAudioElement()
+    if (a && !a.paused) a.pause()
   }
   function detachZoom () { if (_zoomCleanup) { _zoomCleanup(); _zoomCleanup = null } }
   function isCurrent (generation) { return generation === _openGeneration }
@@ -86,8 +99,10 @@
     var badge = $('previewZoomBadge'); if (badge) { badge.textContent = ''; badge.classList.remove('visible') }
     _historyOpen = false
   }
-  // Close on X / Esc / click-outside — but guard unsaved editor changes.
+  // Close on X / Esc / click-outside — but guard unsaved editor changes. While
+  // a save is in flight the old prompt said "discard" although the save went on.
   function requestClose () {
+    if (_saving) { toast('SAVING. WAIT FOR THE SAVE TO FINISH', 'info'); return }
     if (_editorDirty && !window.confirm('Discard unsaved changes to this file?')) return
     _editorDirty = false
     close()
@@ -95,7 +110,8 @@
   function onPopState (e) {
     if (!_historyOpen) return
     e.stopImmediatePropagation()
-    if (_editorDirty && !window.confirm('Discard unsaved changes to this file?')) {
+    if (_saving) toast('SAVING. WAIT FOR THE SAVE TO FINISH', 'info')
+    if (_saving || (_editorDirty && !window.confirm('Discard unsaved changes to this file?'))) {
       history.pushState(Object.assign({}, history.state || {}, { fxPreview: true }), '', window.location.href)
       return
     }
@@ -126,6 +142,31 @@
     }
     return { text: new TextDecoder('utf-8').decode(u8), enc: 'utf-8', bom: false }
   }
+  // Unlisted or extension-less files (Makefile, README, .gitignore, ...) still
+  // open in the editor when their bytes are text: UTF-16 with a BOM, or
+  // NUL-free valid UTF-8.
+  function looksLikeText (bytes) {
+    var u8 = new Uint8Array(bytes).subarray(0, 8192)
+    if (u8.length >= 2 && ((u8[0] === 0xFF && u8[1] === 0xFE) || (u8[0] === 0xFE && u8[1] === 0xFF))) return true
+    if (u8.indexOf(0) >= 0) return false
+    try { new TextDecoder('utf-8', { fatal: true }).decode(u8, { stream: true }); return true } catch (e) { return false }
+  }
+
+  // Fills `codeEl` with highlighted HTML when highlight.js knows the language.
+  // `source` is the text or a function returning it, read once highlight.js has
+  // loaded so edits made meanwhile are not lost. Resolves to the language name,
+  // or null (codeEl left untouched).
+  function highlightInto (codeEl, source, ext, generation) {
+    if (typeof OneGyCrypto === 'undefined' || !OneGyCrypto.loadHighlighter) return Promise.resolve(null)
+    return OneGyCrypto.loadHighlighter().then(function (h) {
+      var lang = h && OneGyCrypto.highlightLanguage(ext)
+      var text = typeof source === 'function' ? source() : source
+      if (!lang || !h.getLanguage(lang) || !isCurrent(generation) || text.length > HL_MAX) return null
+      try { codeEl.innerHTML = h.highlight(text, { language: lang, ignoreIllegals: true }).value } catch (e) { return null }
+      return lang
+    })
+  }
+
   function detectEol (text) {
     if (text.indexOf('\r\n') >= 0) return '\r\n'
     if (text.indexOf('\r') >= 0) return '\r'
@@ -183,7 +224,8 @@
     // Plain files stream straight from the server into the media element /
     // download link; only E2EE content, text and SVG (served as an attachment)
     // have to be read into memory first.
-    var direct = !item.is_e2e && (!known || VID.indexOf(ext) >= 0 || PDF.indexOf(ext) >= 0 ||
+    // Small unlisted files are read so a text one can still open in the editor.
+    var direct = !item.is_e2e && ((!known && (item.size || 0) > EDITOR_MAX) || VID.indexOf(ext) >= 0 || PDF.indexOf(ext) >= 0 ||
       (IMG.indexOf(ext) >= 0 && ext !== 'svg') || (AUD.indexOf(ext) >= 0 && (item.size || 0) <= AUDIO_RANGE_MAX))
     var directUrl = '/file/' + encodeURIComponent(item.id) + '/preview'
     if (!direct && (item.size || 0) > PREVIEW_MAX) {
@@ -211,7 +253,7 @@
         img.onload = function () { if (!isCurrent(generation)) return; body.innerHTML = ''; body.appendChild(img); if (resEl) { resEl.textContent = img.naturalWidth + ' × ' + img.naturalHeight; resEl.classList.add('visible') } attachZoom(img, body, generation) }
         img.onerror = function () { if (isCurrent(generation)) body.innerHTML = '<div class="preview-error">COULD NOT DISPLAY IMAGE</div>' }
         img.src = url
-      } else if (TXT.indexOf(ext) >= 0) {
+      } else if (TXT.indexOf(ext) >= 0 || (!known && bytes && looksLikeText(bytes))) {
         blob('text/plain')
         var decoded = decodeTextBytes(bytes)
         decoded.eol = detectEol(decoded.text)
@@ -221,17 +263,20 @@
           var pre = document.createElement('pre'); pre.className = 'preview-text'; pre.textContent = text.slice(0, 50000)
           var note = document.createElement('div'); note.className = 'preview-ro-note'; note.textContent = 'FILE TOO LARGE TO EDIT: READ-ONLY'
           body.appendChild(note); body.appendChild(pre)
+          highlightInto(pre, pre.textContent, ext, generation)
         } else {
           body.appendChild(buildEditor(text, ext, item, decoded, generation))
         }
       } else if (VID.indexOf(ext) >= 0) {
         var mimeV = { mp4: 'video/mp4', webm: 'video/webm', ogg: 'video/ogg', mov: 'video/quicktime', m4v: 'video/x-m4v', mkv: 'video/x-matroska' }[ext] || 'video/mp4'
+        pauseMusic()
         var v = document.createElement('video'); v.className = 'preview-video'; v.controls = true; v.autoplay = true; v.src = blob(mimeV)
         body.innerHTML = ''; body.appendChild(v)
       } else if (AUD.indexOf(ext) >= 0) {
         var mimeA = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac' }[ext] || 'audio/mpeg'
         var wrap = document.createElement('div'); wrap.className = 'preview-audio-wrap'
         wrap.innerHTML = '<div class="preview-audio-ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg></div>'
+        pauseMusic()
         var a = document.createElement('audio'); a.controls = true; a.autoplay = true; a.src = blob(mimeA); a.className = 'preview-audio'
         wrap.appendChild(a); body.innerHTML = ''; body.appendChild(wrap)
       } else if (PDF.indexOf(ext) >= 0) {
@@ -293,8 +338,12 @@
       '<div class="preview-ed-head"><span class="preview-ed-lang">' + esc((ext || 'txt').toUpperCase()) + '</span>' +
       '<span class="preview-ed-status" data-status></span>' +
       '<button class="preview-ed-save" data-save disabled><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Save</button></div>' +
-      '<div class="preview-ed-body"><div class="preview-ed-gutter" data-gutter></div><textarea class="preview-ed-ta" spellcheck="false" wrap="off"></textarea></div>'
+      '<div class="preview-ed-body"><div class="preview-ed-gutter" data-gutter></div>' +
+      '<div class="preview-ed-code"><pre class="preview-ed-hl" aria-hidden="true"><code></code></pre><textarea class="preview-ed-ta" spellcheck="false" wrap="off"></textarea></div></div>'
     var ta = wrap.querySelector('.preview-ed-ta')
+    var codeBox = wrap.querySelector('.preview-ed-code')
+    var hl = wrap.querySelector('.preview-ed-hl')
+    var hlCode = hl.firstChild
     var gutter = wrap.querySelector('[data-gutter]')
     var saveBtn = wrap.querySelector('[data-save]')
     var status = wrap.querySelector('[data-status]')
@@ -302,18 +351,38 @@
     var dirty = false
     var editRevision = 0
     var saving = false
+    var hlOn = false
+    var hlTimer = null
     function updGutter () { var n = ta.value.split('\n').length; var s = ''; for (var i = 1; i <= n; i++) s += i + '\n'; gutter.textContent = s }
-    function syncScroll () { gutter.scrollTop = ta.scrollTop }
+    function syncScroll () { gutter.scrollTop = ta.scrollTop; hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft }
+    // The transparent textarea sits on top of the highlighted <pre>. A trailing
+    // newline is a real (empty) last line in a textarea but not in a <pre>.
+    function hlSource () { var v = ta.value; return v.slice(-1) === '\n' ? v + ' ' : v }
+    function paintHl () {
+      hlTimer = null
+      highlightInto(hlCode, hlSource, ext, generation).then(function (lang) {
+        hlOn = !!lang
+        codeBox.classList.toggle('is-hl', hlOn)
+        syncScroll()
+      })
+    }
+    function repaintHl () {
+      if (!hlOn) return
+      clearTimeout(hlTimer)
+      if (ta.value.length <= HL_SYNC_MAX) { paintHl(); return }
+      hlCode.textContent = hlSource()
+      hlTimer = setTimeout(paintHl, 200)
+    }
     function mark () { if (!isCurrent(generation)) return; editRevision++; dirty = true; _editorDirty = true; if (!saving) saveBtn.disabled = false; status.textContent = 'Modified'; status.className = 'preview-ed-status is-mod' }
-    ta.addEventListener('input', function () { updGutter(); mark() })
+    ta.addEventListener('input', function () { updGutter(); repaintHl(); mark() })
     ta.addEventListener('scroll', syncScroll)
     ta.addEventListener('keydown', function (e) {
-      if (e.key === 'Tab') { e.preventDefault(); var s = ta.selectionStart, en = ta.selectionEnd; ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en); ta.selectionStart = ta.selectionEnd = s + 2; mark() }
+      if (e.key === 'Tab') { e.preventDefault(); var s = ta.selectionStart, en = ta.selectionEnd; ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en); ta.selectionStart = ta.selectionEnd = s + 2; repaintHl(); mark() }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); doSave() }
     })
     async function doSave () {
       if (!dirty || saving || !isCurrent(generation)) return
-      saving = true
+      saving = true; _saving = true
       var submittedText = ta.value
       var submittedRevision = editRevision
       saveBtn.disabled = true; status.textContent = 'Saving…'; status.className = 'preview-ed-status is-saving'
@@ -325,22 +394,24 @@
         // explicit success counts; anything else keeps `dirty` set so the
         // unsaved-changes guard still protects the text in the textarea.
         if (!res || res.success !== true) throw new Error((res && res.error) || 'SAVE FAILED')
+        // The file changed server-side whatever happens to this preview now.
+        if (window.FxPreview && window.FxPreview._onSaved) window.FxPreview._onSaved(item)
         if (!isCurrent(generation)) return
         if (editRevision === submittedRevision) {
           dirty = false; _editorDirty = false; status.textContent = 'Saved'; status.className = 'preview-ed-status is-saved'
         } else {
           dirty = true; _editorDirty = true; status.textContent = 'Modified'; status.className = 'preview-ed-status is-mod'; saveBtn.disabled = false
         }
-        if (window.FxPreview && window.FxPreview._onSaved) window.FxPreview._onSaved(item)
       } catch (e) {
         if (!isCurrent(generation)) return
         status.textContent = 'Save failed'; status.className = 'preview-ed-status is-err'; saveBtn.disabled = false; toast('COULD NOT SAVE FILE: ' + String((e && e.message) || 'UNKNOWN ERROR').toUpperCase(), 'error')
       } finally {
-        saving = false
+        saving = false; _saving = false
       }
     }
     saveBtn.addEventListener('click', doSave)
     updGutter()
+    paintHl()
     return wrap
   }
 

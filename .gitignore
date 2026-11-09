@@ -80,3 +80,9 @@ devtools/.shotbot.json
 
 # Screenshots
 screenshots/
+
+# Desktop app build output
+node_modules/
+desktop/app/dist/
+desktop/app/resources/engine/
+desktop/engine/bin/

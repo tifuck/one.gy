@@ -34,55 +34,72 @@
   var hasCrypto = !!(window.crypto && window.crypto.subtle)
 
   // ---- Credential proof helpers -----------------------------------------
-  // The server accepts EITHER a split-key auth_token (split_key_version >= 1)
-  // or a raw password (legacy v0). Which one is correct depends on the account,
-  // so ask /api/keys and derive accordingly — exactly like login.html does.
+  // The server only accepts a split-key auth_token, derived from the password
+  // with the account's salt from /api/keys — exactly like login.html does.
   var _keyInfo = null
   async function keyInfo (force) {
     if (_keyInfo && !force) return _keyInfo
     var r = await fetch('/api/keys', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     _keyInfo = await parse(r, function (d) {
-      return typeof d.has_e2ee_keys === 'boolean' && Number.isInteger(d.split_key_version) && d.split_key_version >= 0 &&
-        (d.split_key_version === 0 || (typeof d.auth_token_salt === 'string' && !!d.auth_token_salt))
+      return typeof d.has_e2ee_keys === 'boolean' && Number.isInteger(d.split_key_version) && d.split_key_version >= 1 &&
+        typeof d.auth_token_salt === 'string' && !!d.auth_token_salt
     })
     return _keyInfo
   }
 
-  /* Build the credential-proof payload for the given password.
-     Returns { auth_token } for split-key accounts, { password } for legacy. */
+  /* Build the credential-proof payload ({ auth_token }) for the given password. */
   async function credentialProof (password) {
     var info = await keyInfo()
-    var ver = info.split_key_version
-    if (ver >= 1) {
-      if (!hasCrypto || !window.OneGyCrypto) throw new Error('THIS BROWSER CANNOT VERIFY YOUR PASSWORD SECURELY')
-      var split = await OneGyCrypto.deriveAuthAndWrappingKeys(password, info.auth_token_salt)
-      return { auth_token: split.authToken, _split: split }
-    }
-    if (ver === 0) return { password: password }
-    throw new Error('INVALID SERVER RESPONSE')
+    if (!hasCrypto || !window.OneGyCrypto) throw new Error('THIS BROWSER CANNOT VERIFY YOUR PASSWORD SECURELY')
+    var split = await OneGyCrypto.deriveAuthAndWrappingKeys(password, info.auth_token_salt)
+    return { auth_token: split.authToken, _split: split }
   }
   function proofBody (proof, extra) {
     var body = extra || {}
     if (proof.auth_token) body.auth_token = proof.auth_token
-    if (proof.password) body.password = proof.password
     return body
   }
 
-  // ---- Sidebar scroll-spy + smooth scroll --------------------------------
+  // ---- Section nav: scroll-spy + smooth scroll ---------------------------
+  // A clicked section stays active until the user scrolls again: a short last
+  // section can never reach the top, so the spy alone would mark its neighbour.
   var links = [].slice.call(document.querySelectorAll('.acc-nav-link'))
+  var nav = document.querySelector('.acc-nav')
   var secs = links.map(function (l) { return document.getElementById(l.dataset.sec) }).filter(Boolean)
+  var reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches
+  var curSec = '', spyLocked = false, spyFrame = 0
+  function markSec (id) {
+    if (id === curSec) return
+    curSec = id
+    links.forEach(function (l) {
+      var on = l.dataset.sec === id
+      l.classList.toggle('is-active', on)
+      if (on) l.setAttribute('aria-current', 'true'); else l.removeAttribute('aria-current')
+      // Mobile: the nav is a sideways strip; keep the active tab in view.
+      if (on && nav && nav.scrollWidth > nav.clientWidth &&
+          (l.offsetLeft < nav.scrollLeft || l.offsetLeft + l.offsetWidth > nav.scrollLeft + nav.clientWidth)) {
+        nav.scrollTo({ left: l.offsetLeft - 12, behavior: reduceMotion ? 'auto' : 'smooth' })
+      }
+    })
+  }
+  function spy () {
+    spyFrame = 0
+    if (spyLocked || !secs.length) return
+    var cur = secs[0]
+    secs.forEach(function (s) { if (s.getBoundingClientRect().top <= 180) cur = s })
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) cur = secs[secs.length - 1]
+    markSec(cur.id)
+  }
   links.forEach(function (l) { l.addEventListener('click', function (e) {
     var t = document.getElementById(l.dataset.sec); if (!t) return
-    e.preventDefault(); window.scrollTo({ top: t.offsetTop - 84, behavior: 'smooth' })
+    e.preventDefault()
+    spyLocked = true
+    markSec(l.dataset.sec)
+    t.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' })
   }) })
-  if ('IntersectionObserver' in window && secs.length) {
-    var io = new IntersectionObserver(function (ents) {
-      ents.forEach(function (en) { if (en.isIntersecting) {
-        links.forEach(function (l) { l.classList.toggle('is-active', l.dataset.sec === en.target.id) })
-      } })
-    }, { rootMargin: '-45% 0px -50% 0px' })
-    secs.forEach(function (s) { io.observe(s) })
-  }
+  ;['wheel', 'touchmove', 'keydown'].forEach(function (t) { window.addEventListener(t, function () { spyLocked = false }, { passive: true }) })
+  window.addEventListener('scroll', function () { if (!spyFrame) spyFrame = requestAnimationFrame(spy) }, { passive: true })
+  spy()
 
   // ---- Default Files layout preference (localStorage) --------------------
   var LKEY = 'onegy_files_layout', LDEF = 'grid'
@@ -93,12 +110,28 @@
   markLayout()
 
   // ---- Simple modal open/close (reuse .rd-modal styling) -----------------
-  function openModal (id) { var m = document.getElementById(id); if (!m) return; m.classList.add('rd-open'); m.setAttribute('aria-hidden', 'false'); document.documentElement.style.overflow = 'hidden' }
-  function closeModal (m) { if (!m) return; m.classList.remove('rd-open'); m.setAttribute('aria-hidden', 'true'); document.documentElement.style.overflow = '' }
+  var modalOpener = null
+  function openModal (id) {
+    var m = document.getElementById(id); if (!m) return
+    m.querySelectorAll('[aria-invalid]').forEach(function (el) { el.removeAttribute('aria-invalid') })
+    modalOpener = document.activeElement
+    m.classList.add('rd-open'); m.setAttribute('aria-hidden', 'false'); document.documentElement.style.overflow = 'hidden'
+  }
+  function closeModal (m) {
+    if (!m) return; m.classList.remove('rd-open'); m.setAttribute('aria-hidden', 'true'); document.documentElement.style.overflow = ''
+    if (modalOpener && modalOpener.focus && document.contains(modalOpener)) modalOpener.focus({ preventScroll: true })
+    modalOpener = null
+  }
   document.addEventListener('click', function (e) {
     if (e.target.closest('[data-rd-modal-close]') || e.target.classList.contains('rd-modal-overlay')) closeModal(e.target.closest('.rd-modal'))
   })
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { var o = document.querySelector('.rd-modal.rd-open'); if (o) closeModal(o) } })
+  // Dialog forms exist for Enter-to-submit: the submit button's click handler
+  // does the work, so the native submission itself is always cancelled.
+  document.addEventListener('submit', function (e) { if (e.target.closest('.acc-dialog')) e.preventDefault() })
+  // Client-side validation: flag the field, focus it, explain in a toast.
+  function need (el, msg) { if (el) { el.setAttribute('aria-invalid', 'true'); el.focus() } toast(msg, 'error') }
+  document.addEventListener('input', function (e) { if (e.target.removeAttribute) e.target.removeAttribute('aria-invalid') })
 
   // ---- Two-factor --------------------------------------------------------
   // AUDIT FIX H5: /account/2fa/setup and /account/2fa/confirm now require proof
@@ -111,14 +144,19 @@
   // The enrolment password proof is held only for the setup -> confirm hop.
   var tfaPendingProof = null
   function setTfa (on) {
-    if (tfaStatus) { tfaStatus.dataset.on = on ? 'true' : 'false'; tfaStatus.textContent = on ? 'ON' : 'OFF' }
+    if (tfaStatus) {
+      tfaStatus.dataset.on = on ? 'true' : 'false'; tfaStatus.textContent = on ? 'On' : 'Off'
+      tfaStatus.classList.toggle('is-good', on); tfaStatus.classList.toggle('is-dot', on)
+    }
     if (tfaEnable) tfaEnable.hidden = on
     if (tfaDisable) tfaDisable.hidden = !on
     // API-key creation requires an authenticator code exactly when 2FA is on.
     var keyTotp = document.getElementById('keyTotp')
     var keyTotpLabel = document.getElementById('keyTotpLabel')
+    var keyTotpField = document.getElementById('keyTotpField')
     if (keyTotp) { keyTotp.hidden = !on; keyTotp.value = '' }
     if (keyTotpLabel) keyTotpLabel.hidden = !on
+    if (keyTotpField) keyTotpField.hidden = !on
   }
 
   if (tfaEnable) tfaEnable.addEventListener('click', function () {
@@ -130,13 +168,13 @@
   if (tfaStart) tfaStart.addEventListener('click', async function () {
     var pwEl = document.getElementById('tfaStartPw')
     var pw = pwEl ? pwEl.value : ''
-    if (!pw) { toast('ENTER YOUR PASSWORD', 'error'); return }
+    if (!pw) { need(pwEl, 'ENTER YOUR PASSWORD'); return }
     tfaStart.disabled = true
     try {
       var proof = await credentialProof(pw)
       var d = await parse(await jpost('/account/2fa/setup', proofBody(proof)), function (v) { return typeof v.secret === 'string' && !!v.secret && typeof v.qr_code === 'string' && !!v.qr_code })
       // Keep the proof for the confirm call, then discard it.
-      tfaPendingProof = { auth_token: proof.auth_token, password: proof.password }
+      tfaPendingProof = { auth_token: proof.auth_token }
       if (pwEl) pwEl.value = ''
       closeModal(document.getElementById('tfaStartModal'))
       var qr = document.getElementById('tfaQr'); if (qr && d.qr_code) qr.src = d.qr_code.indexOf('data:') === 0 ? d.qr_code : ('data:image/png;base64,' + d.qr_code)
@@ -151,8 +189,9 @@
 
   var tfaConfirm = document.getElementById('tfaConfirmBtn')
   if (tfaConfirm) tfaConfirm.addEventListener('click', async function () {
-    var code = (document.getElementById('tfaCode').value || '').trim()
-    if (!code) { toast('ENTER YOUR 6-DIGIT CODE', 'error'); return }
+    var codeEl = document.getElementById('tfaCode')
+    var code = (codeEl.value || '').trim()
+    if (!code) { need(codeEl, 'ENTER YOUR 6-DIGIT CODE'); return }
     if (!tfaPendingProof) { toast('SETUP EXPIRED. START AGAIN', 'error'); closeModal(tfaModal); return }
     tfaConfirm.disabled = true
     try {
@@ -179,8 +218,8 @@
   if (tfaDisableConfirm) tfaDisableConfirm.addEventListener('click', async function () {
     var pwEl = document.getElementById('tfaDisablePw'), codeEl = document.getElementById('tfaDisableCode')
     var pw = pwEl ? pwEl.value : '', code = codeEl ? (codeEl.value || '').trim() : ''
-    if (!pw) { toast('ENTER YOUR PASSWORD', 'error'); return }
-    if (!code) { toast('ENTER YOUR 6-DIGIT CODE', 'error'); return }
+    if (!pw) { need(pwEl, 'ENTER YOUR PASSWORD'); return }
+    if (!code) { need(codeEl, 'ENTER YOUR 6-DIGIT CODE'); return }
     tfaDisableConfirm.disabled = true
     try {
       var proof = await credentialProof(pw)
@@ -200,8 +239,7 @@
   // session_epoch rotation (the only "sign out other devices" mechanism)
   // unreachable. This performs the FULL client-side split-key re-derivation and
   // master-key re-wrap using crypto.js's existing primitives —
-  // deriveAuthAndWrappingKeys() + wrapMasterKey() — exactly as login.html's
-  // legacy-upgrade block does. No new crypto path is invented.
+  // deriveAuthAndWrappingKeys() + wrapMasterKey(). No new crypto path is invented.
   //
   // The server enforces the matching invariant (AUDIT FIX C3): if the account
   // has E2EE keys, encrypted_master_key + master_key_nonce + master_key_salt
@@ -219,31 +257,24 @@
     var curEl = document.getElementById('pwCurrent'), newEl = document.getElementById('pwNew'), confEl = document.getElementById('pwConfirm')
     var current = curEl ? curEl.value : '', next = newEl ? newEl.value : '', confirmPw = confEl ? confEl.value : ''
 
-    if (!current || !next || !confirmPw) { toast('ALL FIELDS ARE REQUIRED', 'error'); return }
-    if (next !== confirmPw) { toast('NEW PASSWORDS DO NOT MATCH', 'error'); return }
+    if (!current || !next || !confirmPw) { need(!current ? curEl : !next ? newEl : confEl, 'ALL FIELDS ARE REQUIRED'); return }
+    if (next !== confirmPw) { need(confEl, 'NEW PASSWORDS DO NOT MATCH'); return }
     // Client-side policy, kept identical to register + recovery. The server can
     // only sanity-check the asserted length (zero-knowledge: it never sees the
     // password), so this is the authoritative check for honest clients.
-    if (next.length < 6) { toast('PASSWORD MUST BE AT LEAST 6 CHARACTERS', 'error'); return }
-    if (next.length > 1024) { toast('PASSWORD MUST BE 1024 CHARACTERS OR LESS', 'error'); return }
-    if (next === current) { toast('NEW PASSWORD MUST BE DIFFERENT', 'error'); return }
+    if (next.length < 6) { need(newEl, 'PASSWORD MUST BE AT LEAST 6 CHARACTERS'); return }
+    if (next.length > 1024) { need(newEl, 'PASSWORD MUST BE 1024 CHARACTERS OR LESS'); return }
+    if (next === current) { need(newEl, 'NEW PASSWORD MUST BE DIFFERENT'); return }
     if (!hasCrypto || !window.OneGyCrypto) { toast('THIS BROWSER CANNOT CHANGE YOUR PASSWORD SECURELY', 'error'); return }
 
     pwSave.disabled = true
     try {
       var info = await keyInfo(true)
-      var ver = info.split_key_version
 
       // 1) Prove the CURRENT credentials, and get the current wrapping key.
       var payload = { new_password_length: next.length }
-      var currentWrappingKeyOrPassword = current
-      if (ver >= 1 && info.auth_token_salt) {
-        var currentSplit = await OneGyCrypto.deriveAuthAndWrappingKeys(current, info.auth_token_salt)
-        payload.current_auth_token = currentSplit.authToken
-        currentWrappingKeyOrPassword = currentSplit.wrappingKey
-      } else {
-        payload.current_password = current
-      }
+      var currentSplit = await OneGyCrypto.deriveAuthAndWrappingKeys(current, info.auth_token_salt)
+      payload.current_auth_token = currentSplit.authToken
 
       // 2) Derive the NEW split-key credentials (fresh salt, 600K PBKDF2 + HKDF).
       var newSplit = await OneGyCrypto.deriveAuthAndWrappingKeys(next)
@@ -261,7 +292,7 @@
         var masterKey = await OneGyCrypto.getMasterKeyFromSession()
         if (!masterKey) {
           // Session keys not loaded (e.g. fresh tab) — unlock from the server blobs.
-          var unlocked = await OneGyCrypto.unlockUserKeys(currentWrappingKeyOrPassword, {
+          var unlocked = await OneGyCrypto.unlockUserKeys(currentSplit.wrappingKey, {
             encryptedMasterKey: info.encrypted_master_key,
             masterKeyNonce: info.master_key_nonce,
             masterKeySalt: info.master_key_salt,
@@ -297,17 +328,19 @@
   var signOutAll = document.getElementById('signOutAllBtn')
   if (signOutAll) signOutAll.addEventListener('click', function () {
     var pw = document.getElementById('signOutAllPw'); if (pw) pw.value = ''
+    var dev = document.getElementById('signOutAllDevices'); if (dev) dev.checked = true
     openModal('signOutAllModal'); if (pw) setTimeout(function () { pw.focus() }, 60)
   })
   var signOutAllConfirm = document.getElementById('signOutAllConfirmBtn')
   if (signOutAllConfirm) signOutAllConfirm.addEventListener('click', async function () {
     var pwEl = document.getElementById('signOutAllPw')
     var pw = pwEl ? pwEl.value : ''
-    if (!pw) { toast('ENTER YOUR PASSWORD', 'error'); return }
+    if (!pw) { need(pwEl, 'ENTER YOUR PASSWORD'); return }
     signOutAllConfirm.disabled = true
     try {
       var proof = await credentialProof(pw)
-      await parse(await jpost('/account/sign-out-all', proofBody(proof)), succeeded)
+      var devEl = document.getElementById('signOutAllDevices')
+      await parse(await jpost('/account/sign-out-all', proofBody(proof, { revoke_devices: !devEl || devEl.checked })), succeeded)
       if (pwEl) pwEl.value = ''
       closeModal(document.getElementById('signOutAllModal'))
       toast('SIGNED OUT ON ALL OTHER DEVICES', 'success')
@@ -323,7 +356,19 @@
   // string id must still be URL/HTML-safe — anything else fails validation
   // (fail closed) instead of reaching markup or the request path.
   function validKeyId (id) { return Number.isInteger(id) || (typeof id === 'string' && /^[A-Za-z0-9._-]{1,62}$/.test(id)) }
-  function permStr (p) { if (!p) return 'NONE'; return Object.keys(p).filter(function (k) { return p[k] }).join(' · ').toUpperCase() || 'NONE' }
+  var PERM_LABELS = { read: 'Read', download: 'Download', write: 'Write', delete: 'Delete', restore: 'Restore', manage_keys: 'Manage keys' }
+  function permStr (p) {
+    if (!p) return 'No permissions'
+    return Object.keys(p).filter(function (k) { return p[k] }).map(function (k) { return PERM_LABELS[k] || k }).join(' · ') || 'No permissions'
+  }
+  function keyWhen (k) {
+    function day (s) {
+      var t = typeof s === 'string' ? new Date(s) : null
+      return t && !isNaN(t) ? t.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''
+    }
+    var made = day(k.created_at), used = day(k.last_used_at)
+    return (made ? 'Created ' + made + ' · ' : '') + (used ? 'Last used ' + used : 'Never used')
+  }
   async function loadKeys () {
     if (!keyList) return
     try {
@@ -335,18 +380,19 @@
       })
       var keys = d.keys
     } catch (e) {
-      keyList.innerHTML = '<div class="acc-empty">Could not load API keys.</div>'
+      keyList.innerHTML = '<div class="acc-empty">Could not load API keys</div>'
       toast(e && e.message ? e.message : 'COULD NOT LOAD API KEYS', 'error')
       return
     }
-    if (!keys.length) { keyList.innerHTML = '<div class="acc-empty">No API keys yet.</div>'; return }
+    if (!keys.length) { keyList.innerHTML = '<div class="acc-empty"><b>No API keys yet</b>Create one to script uploads and downloads.</div>'; return }
     // AUDIT FIX F11: the row template interpolates NOTHING from the API.
     // The id goes in via dataset (attribute assignment — never HTML-parsed)
     // and the label/permission text via textContent, so a malformed API
     // response (id with quotes, permission keys with markup) cannot inject.
     keyList.innerHTML = keys.map(function () {
-      return '<div class="acc-keyrow"><div><div class="k-label"></div><div class="k-meta"></div></div>' +
-        '<button type="button" class="rd-btn rd-btn-ghost acc-btn-danger k-revoke">Revoke</button></div>'
+      return '<div class="acc-keyrow"><span class="acc-keyicon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.7-8.7M16 7l3 3M14 9l2 2"/></svg></span>' +
+        '<div class="acc-keytext"><div class="k-label"></div><div class="k-meta"></div><div class="k-when"></div></div>' +
+        '<button type="button" class="rd-btn rd-btn-sm rd-btn-ghost k-revoke">Revoke</button></div>'
     }).join('')
     var rows = keyList.querySelectorAll('.acc-keyrow')
     keys.forEach(function (k, i) {
@@ -355,6 +401,7 @@
       row.dataset.id = String(k.id)
       row.querySelector('.k-label').textContent = k.label || 'API key'
       row.querySelector('.k-meta').textContent = permStr(k.permissions)
+      row.querySelector('.k-when').textContent = keyWhen(k)
     })
   }
   if (keyList) {
@@ -362,7 +409,7 @@
     keyList.addEventListener('click', async function (e) {
       var rev = e.target.closest('.k-revoke'); if (!rev) return
       var row = rev.closest('.acc-keyrow'), id = row.dataset.id
-      var ok = window.showConfirm ? await showConfirm('REVOKE KEY', 'THIS KEY WILL STOP WORKING IMMEDIATELY.', 'REVOKE') : confirm('Revoke key?')
+      var ok = window.showConfirm ? await showConfirm('Revoke key', 'Anything using this key stops working immediately.', 'Revoke') : confirm('Revoke key?')
       if (!ok) return
       try {
         // encodeURIComponent: even with validKeyId's charset check, keep the
@@ -373,17 +420,19 @@
     })
     var keyCreate = document.getElementById('keyCreateBtn'), keySave = document.getElementById('keySaveBtn')
     if (keyCreate) keyCreate.addEventListener('click', function () {
-      document.getElementById('keyLabel').value = ''
+      ;['keyLabel', 'keyPw', 'keyTotp'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = '' })
       document.querySelectorAll('#keyModal [data-perm]').forEach(function (c) { c.checked = c.dataset.perm === 'read' })
       var rev = document.getElementById('keyReveal'); if (rev) rev.hidden = true
+      var val = document.getElementById('keyValue'); if (val) val.textContent = ''
       openModal('keyModal')
+      var lab = document.getElementById('keyLabel'); if (lab) setTimeout(function () { lab.focus() }, 60)
     })
     if (keySave) keySave.addEventListener('click', async function () {
       var label = (document.getElementById('keyLabel').value || '').trim() || 'API key'
       var perms = {}; document.querySelectorAll('#keyModal [data-perm]').forEach(function (c) { perms[c.dataset.perm] = c.checked })
       var pwEl = document.getElementById('keyPw')
       var pw = pwEl ? pwEl.value : ''
-      if (!pw) { toast('ENTER YOUR PASSWORD', 'error'); return }
+      if (!pw) { need(pwEl, 'ENTER YOUR PASSWORD'); return }
       var totpEl = document.getElementById('keyTotp')
       var totp = totpEl && !totpEl.hidden ? (totpEl.value || '').trim() : ''
       keySave.disabled = true
@@ -401,6 +450,8 @@
       var rev = document.getElementById('keyReveal'), val = document.getElementById('keyValue')
       if (!full || !rev || !val) { toast('INVALID SERVER RESPONSE', 'error'); return }
       val.textContent = full; rev.hidden = false
+      if (pwEl) pwEl.value = ''
+      if (totpEl) totpEl.value = ''
       toast('KEY CREATED', 'success'); loadKeys()
     })
     var keyCopy = document.getElementById('keyCopy')
@@ -423,7 +474,7 @@
 
   var delAll = document.getElementById('delAllBtn')
   if (delAll) delAll.addEventListener('click', async function () {
-    var ok = window.showConfirm ? await showConfirm('DELETE ALL FILES', 'EVERY FILE AND FOLDER WILL BE PERMANENTLY DELETED. THIS CANNOT BE UNDONE.', 'CONTINUE') : confirm('Delete all files?')
+    var ok = window.showConfirm ? await showConfirm('Delete all files', 'Every file and folder will be permanently deleted. This cannot be undone.', 'Continue') : confirm('Delete all files?')
     if (!ok) return
     ;['delAllPw', 'delAllCaptcha'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = '' })
     reloadDelAllCaptcha()
@@ -435,8 +486,8 @@
   if (delAllConfirm) delAllConfirm.addEventListener('click', async function () {
     var pwEl = document.getElementById('delAllPw'), capEl = document.getElementById('delAllCaptcha')
     var pw = pwEl ? pwEl.value : '', cap = capEl ? (capEl.value || '').trim() : ''
-    if (!pw) { toast('ENTER YOUR PASSWORD', 'error'); return }
-    if (!cap) { toast('SOLVE THE CAPTCHA', 'error'); return }
+    if (!pw) { need(pwEl, 'ENTER YOUR PASSWORD'); return }
+    if (!cap) { need(capEl, 'SOLVE THE CAPTCHA'); return }
     delAllConfirm.disabled = true
     try {
       var proof = await credentialProof(pw)
@@ -465,7 +516,7 @@
 
   var delAcct = document.getElementById('delAcctBtn')
   if (delAcct) delAcct.addEventListener('click', async function () {
-    var ok = window.showConfirm ? await showConfirm('DELETE ACCOUNT', 'YOUR ACCOUNT AND ALL DATA WILL BE PERMANENTLY REMOVED.', 'CONTINUE') : confirm('Delete account?')
+    var ok = window.showConfirm ? await showConfirm('Delete account', 'Your account and all its data will be permanently removed.', 'Continue') : confirm('Delete account?')
     if (!ok) return
     ;['delAcctPw', 'delAcctCaptcha'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = '' })
     reloadDelAcctCaptcha()
@@ -477,8 +528,8 @@
   if (delAcctConfirm) delAcctConfirm.addEventListener('click', async function () {
     var pwEl = document.getElementById('delAcctPw'), capEl = document.getElementById('delAcctCaptcha')
     var pw = pwEl ? pwEl.value : '', cap = capEl ? (capEl.value || '').trim() : ''
-    if (!pw) { toast('ENTER YOUR PASSWORD', 'error'); return }
-    if (!cap) { toast('SOLVE THE CAPTCHA', 'error'); return }
+    if (!pw) { need(pwEl, 'ENTER YOUR PASSWORD'); return }
+    if (!cap) { need(capEl, 'SOLVE THE CAPTCHA'); return }
     delAcctConfirm.disabled = true
     try {
       var proof = await credentialProof(pw)

@@ -1,39 +1,50 @@
 {% extends 'base.html' %}
-{% block title %}REGISTER{% endblock %}
+{% set ui_v2 = true %}
+{% block title %}Create account{% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('auth.css') }}">{% endblock %}
 
 {% block content %}
 <div class="auth-container">
-  <div class="auth-box">
-    <h1>REGISTER</h1>
-    <p class="auth-subtitle">Your encryption keys are created in this browser.</p>
-    <form id="registerForm" class="auth-form" autocomplete="off"
+  <section class="auth-box" aria-labelledby="registerTitle">
+    <header class="auth-head">
+      <span class="auth-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M19 8v6"/><path d="M22 11h-6"/></svg></span>
+      <h1 class="auth-title" id="registerTitle">Create your account</h1>
+      <p class="auth-subtitle">Your encryption keys are created in this browser.</p>
+    </header>
+    <form id="registerForm" class="auth-form" autocomplete="off" novalidate
           action="{{ url_for('register') }}" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
-      <div class="form-group">
-        <label for="username">USERNAME</label>
-        <input type="text" id="username" name="username" class="form-input" required autofocus autocomplete="username">
+      <div class="rd-field">
+        <label class="rd-field-label" for="username">Username</label>
+        <input type="text" id="username" name="username" class="form-input" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false">
+        <p class="rd-field-error" id="usernameError"></p>
       </div>
-      <div class="form-group">
-        <label for="email">EMAIL (OPTIONAL)</label>
-        <input type="email" id="email" name="email" class="form-input">
+      <div class="rd-field">
+        <div class="auth-label-row">
+          <label class="rd-field-label" for="email">Email</label>
+          <span class="auth-optional">Optional</span>
+        </div>
+        <input type="email" id="email" name="email" class="form-input" autocomplete="email">
+        <p class="rd-field-error" id="emailError"></p>
       </div>
-      <div class="form-group">
-        <label for="password">PASSWORD</label>
-        <input type="password" id="password" class="form-input" required minlength="6" autocomplete="new-password">
-        <small class="auth-hint">MINIMUM 6 CHARACTERS</small>
+      <div class="rd-field">
+        <label class="rd-field-label" for="password">Password</label>
+        <input type="password" id="password" class="form-input" required minlength="6" autocomplete="new-password" aria-describedby="passwordHint">
+        <p class="rd-field-hint" id="passwordHint">At least 6 characters</p>
+        <p class="rd-field-error" id="passwordError"></p>
       </div>
-      <div class="form-group">
-        <label for="confirm_password">CONFIRM PASSWORD</label>
+      <div class="rd-field">
+        <label class="rd-field-label" for="confirm_password">Confirm password</label>
         <input type="password" id="confirm_password" class="form-input" required minlength="6" autocomplete="new-password">
+        <p class="rd-field-error" id="confirm_passwordError"></p>
       </div>
-      <button type="submit" id="registerBtn" class="btn-primary">REGISTER</button>
+      <button type="submit" id="registerBtn" class="rd-btn rd-btn-primary rd-btn-lg auth-submit">Create account</button>
     </form>
-    <p class="auth-link">ALREADY HAVE AN ACCOUNT? <a href="{{ url_for('login') }}">LOGIN HERE</a></p>
-    {% if allow_temp_uploads %}
-    <p class="auth-link">OR <a href="{{ url_for('share') }}">CONTINUE AS GUEST</a></p>
-    {% endif %}
-  </div>
+    <div class="auth-foot">
+      <p>Already have an account? <a class="auth-text-link" href="{{ url_for('login') }}">Sign in</a></p>
+      {% if allow_temp_uploads %}<p><a class="auth-text-link" href="{{ url_for('share') }}">Continue as guest</a></p>{% endif %}
+    </div>
+  </section>
 </div>
 
 {% if captcha_enabled %}
@@ -47,15 +58,15 @@
       </button>
     </div>
     <div class="rd-modal-body">
-      <p>Solve the puzzle to confirm you're human, then we'll create your account.</p>
+      <p>Solve the sum to confirm you're human, then we'll create your account.</p>
       <div class="captcha-container">
-        <button type="button" id="refreshCaptcha" class="captcha-refresh" title="LOAD NEW CAPTCHA" aria-label="Refresh captcha">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M13.65 2.35A7.96 7.96 0 008 0C3.58 0 .01 3.58.01 8S3.58 16 8 16c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 018 14 6 6 0 012 8a6 6 0 016-6c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z" fill="currentColor"/></svg>
+        <img id="captchaImg" alt="Captcha: solve the sum" class="captcha-image" draggable="false">
+        <button type="button" id="refreshCaptcha" class="captcha-refresh" title="New captcha" aria-label="Refresh captcha">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>
         </button>
-        <img id="captchaImg" alt="CAPTCHA" class="captcha-image" draggable="false">
-        <input type="text" id="captcha" class="form-input captcha-input" placeholder="ANSWER" autocomplete="off" inputmode="numeric">
+        <input type="text" id="captcha" class="form-input captcha-input" placeholder="Answer" autocomplete="off" inputmode="numeric" aria-label="Captcha answer">
       </div>
-      <button type="button" id="captchaVerifyBtn" class="btn-primary">Create account</button>
+      <button type="button" id="captchaVerifyBtn" class="rd-btn rd-btn-primary rd-btn-lg auth-submit">Create account</button>
     </div>
   </div>
 </div>
@@ -87,13 +98,17 @@ document.getElementById('registerForm').addEventListener('submit', async functio
   const password = document.getElementById('password').value
   const confirmPassword = document.getElementById('confirm_password').value
   
-  if (!username || !password) return
-  if (password !== confirmPassword) {
-    showFlash('PASSWORDS DO NOT MATCH', 'error')
+  // The form is novalidate: errors show in the v2 field slots, not browser bubbles.
+  if (!username) { setFieldError('username', 'Enter a username'); return }
+  if (email && document.getElementById('email').validity.typeMismatch) { setFieldError('email', 'Enter a valid email address'); return }
+  if (password.length < 6) {
+    setFieldError('password', 'Use at least 6 characters')
+    showFlash('PASSWORD MUST BE AT LEAST 6 CHARACTERS', 'error')
     return
   }
-  if (password.length < 6) {
-    showFlash('PASSWORD MUST BE AT LEAST 6 CHARACTERS', 'error')
+  if (password !== confirmPassword) {
+    setFieldError('confirm_password', 'Passwords do not match')
+    showFlash('PASSWORDS DO NOT MATCH', 'error')
     return
   }
   
@@ -112,9 +127,9 @@ document.getElementById('registerForm').addEventListener('submit', async functio
   {% endif %}
 
   btn.disabled = true
-  btn.textContent = 'CREATING ACCOUNT...'
+  btn.textContent = 'Creating account…'
   const vbtn = document.getElementById('captchaVerifyBtn')
-  if (vbtn) { vbtn.disabled = true; vbtn.textContent = 'CREATING ACCOUNT...' }
+  if (vbtn) { vbtn.disabled = true; vbtn.textContent = 'Creating account…' }
   let keys = null
   let accountCreated = false
   let redirectUrl = ''
@@ -186,7 +201,7 @@ document.getElementById('registerForm').addEventListener('submit', async functio
     }
     showFlash(err.message || 'REGISTRATION FAILED', 'error')
     btn.disabled = false
-    btn.textContent = 'REGISTER'
+    btn.textContent = 'Create account'
     const vbtn2 = document.getElementById('captchaVerifyBtn')
     if (vbtn2) { vbtn2.disabled = false; vbtn2.textContent = 'Create account' }
     // Refresh captcha so the user can retry in the modal
@@ -213,8 +228,8 @@ function showRegistrationRecoveryRetry(keys, redirectUrl) {
   if (!overlay) {
     overlay = document.createElement('div')
     overlay.id = 'registrationRecoveryRetry'
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,16,24,0.75);z-index:10000;display:flex;align-items:center;justify-content:center;padding:1.2rem;'
-    overlay.innerHTML = '<div style="background:var(--bg);border:2px solid var(--border);padding:2rem;max-width:520px;text-align:center;"><h2>Account created</h2><p>Your recovery key has not been presented yet. Do not close this page or register again.</p><button type="button" id="retryRegistrationRecovery" class="btn-primary">Retry recovery setup</button></div>'
+    overlay.className = 'auth-dialog'
+    overlay.innerHTML = '<div class="auth-dialog-panel" role="alertdialog" aria-modal="true" aria-labelledby="regRetryTitle" aria-describedby="regRetryText"><h2 class="auth-dialog-title" id="regRetryTitle">Account created</h2><p class="auth-dialog-text" id="regRetryText">Your recovery key has not been shown yet. Do not close this page or register again.</p><button type="button" id="retryRegistrationRecovery" class="rd-btn rd-btn-primary rd-btn-lg auth-submit">Retry recovery setup</button></div>'
     document.body.appendChild(overlay)
   }
   overlay.style.display = 'flex'
@@ -312,43 +327,30 @@ function detectAutomation() {
 
 function showRecoveryKeyModal(recoveryKey, redirectUrl) {
   const overlay = document.createElement('div')
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(10,16,24,0.55);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1.2rem;'
-
-  const modal = document.createElement('div')
-  modal.style.cssText = "background:var(--bg);border:2px solid var(--border);box-shadow:8px 8px 0 var(--accent);padding:clamp(1.6rem,4vw,2.2rem);max-width:520px;width:100%;text-align:center;"
-  modal.innerHTML = `
-    <div style="width:52px;height:52px;margin:0 auto 14px;display:grid;place-items:center;border:2px solid var(--border);color:var(--accent);">
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+  overlay.className = 'auth-dialog'
+  overlay.innerHTML = `
+    <div class="auth-dialog-panel" role="alertdialog" aria-modal="true" aria-labelledby="recKeyTitle" aria-describedby="recKeyText">
+      <span class="auth-mark is-accent" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg></span>
+      <h2 class="auth-dialog-title" id="recKeyTitle">Save your recovery key</h2>
+      <p class="auth-dialog-text" id="recKeyText">It is the only way to recover your encrypted files if you lose your password. The server cannot recover your data without it.</p>
+      <div class="auth-key" id="recoveryKeyDisplay"></div>
+      <div class="auth-dialog-row">
+        <button type="button" class="rd-btn rd-btn-ghost" id="copyRecoveryKey"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+        <button type="button" class="rd-btn rd-btn-ghost" id="downloadRecoveryKey"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span>Download</span></button>
+      </div>
+      <div class="rd-callout is-warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><div>This key will not be shown again.</div></div>
+      <button type="button" class="rd-btn rd-btn-primary rd-btn-lg auth-submit" id="continueBtn">I have saved my recovery key</button>
     </div>
-    <h2 style="font-family:var(--font-display);font-weight:800;text-transform:uppercase;letter-spacing:-.01em;color:var(--text);margin-bottom:8px;font-size:1.4em;">RECOVERY KEY</h2>
-    <p style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.72em;line-height:1.6;text-transform:uppercase;margin-bottom:16px;">
-      SAVE THIS KEY SECURELY. IT IS THE ONLY WAY TO RECOVER YOUR ENCRYPTED FILES IF YOU LOSE YOUR PASSWORD.
-      THE SERVER CANNOT RECOVER YOUR DATA WITHOUT THIS KEY.
-    </p>
-    <div id="recoveryKeyDisplay" style="background:var(--surface-2);border:2px solid var(--accent);padding:16px;margin-bottom:16px;word-break:break-all;font-family:'JetBrains Mono', monospace;font-size:0.85em;color:#7fd4ff;user-select:all;"></div>
-    <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
-      <button id="copyRecoveryKey" style="background:var(--surface);color:var(--text);border:2px solid var(--border);padding:10px 18px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:0.72em;">
-        COPY TO CLIPBOARD
-      </button>
-      <button id="downloadRecoveryKey" style="background:var(--surface);color:var(--text);border:2px solid var(--border);padding:10px 18px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:0.72em;">
-        DOWNLOAD AS FILE
-      </button>
-    </div>
-    <p style="color:#d8231b;font-family:var(--font-mono);font-size:0.7em;letter-spacing:.04em;margin-top:16px;font-weight:700;text-transform:uppercase;">
-      WARNING: THIS KEY WILL NOT BE SHOWN AGAIN
-    </p>
-    <button id="continueBtn" style="background:var(--text);color:var(--bg);border:2px solid var(--text);padding:12px 28px;cursor:pointer;font-family:var(--font-mono);font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-top:16px;font-size:0.78em;">
-      I HAVE SAVED MY RECOVERY KEY
-    </button>
   `
-  overlay.appendChild(modal)
   document.body.appendChild(overlay)
   document.getElementById('recoveryKeyDisplay').textContent = recoveryKey
+  document.getElementById('copyRecoveryKey').focus()
   
   document.getElementById('copyRecoveryKey').addEventListener('click', function() {
     navigator.clipboard.writeText(recoveryKey).then(() => {
-      this.textContent = 'COPIED!'
-      setTimeout(() => { this.textContent = 'COPY TO CLIPBOARD' }, 2000)
+      const label = this.querySelector('span')
+      label.textContent = 'Copied'
+      setTimeout(() => { label.textContent = 'Copy' }, 2000)
     })
   })
   
@@ -366,6 +368,17 @@ function showRecoveryKeyModal(recoveryKey, redirectUrl) {
     window.location.href = redirectUrl
   })
 }
+
+function setFieldError(id, msg) {
+  const input = document.getElementById(id)
+  const err = document.getElementById(id + 'Error')
+  if (msg) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid')
+  if (err) err.textContent = msg || ''
+}
+document.getElementById('password').addEventListener('input', function() { setFieldError('password', ''); setFieldError('confirm_password', '') })
+document.getElementById('confirm_password').addEventListener('input', function() { setFieldError('confirm_password', '') })
+document.getElementById('username').addEventListener('input', function() { setFieldError('username', '') })
+document.getElementById('email').addEventListener('input', function() { setFieldError('email', '') })
 
 // showFlash is inherited from base.html's unified toast system
 </script>

@@ -47,3 +47,48 @@
   color-scheme:dark;
 }
 
+/* ---- UI v2 — dark-first, hairline, no offset shadows ----------------------
+   On by default: base.html and _app_base.html render body.ui-v2 unless a
+   template sets `ui_v2 = false` (falls back to the editorial look). The base tokens
+   are re-declared so shared components (modals, menus, toasts) inherit the new
+   palette, and ui-v2.css replaces the editorial chrome. v2-only tokens:
+   --pane (sidebars) · --raise (menus, dialogs) · --panel (.rd-panel fill) · --line / --line-strong
+   (hairlines) · --hover / --press (row states) · --sel (selection fill) ·
+   --shadow-pop (floating layers) · --kind-* (file-type colours). */
+.ui-v2{
+  --font-display:'Inter',system-ui,sans-serif;
+  --radius:8px; --radius-lg:14px; --radius-pill:999px;
+  --nav-h:52px;
+  --bg:#ffffff; --pane:#f6f7f9; --surface:#f3f4f6; --surface-2:#eceef1; --raise:#ffffff; --panel:#ffffff;
+  --text:#111418; --text-dim:#5f6873; --text-faint:#636c77;
+  --border:rgba(15,23,32,.12); --line:rgba(15,23,32,.08); --line-strong:rgba(15,23,32,.14);
+  --hover:rgba(15,23,32,.045); --press:rgba(15,23,32,.08);
+  --accent:#0a6aa0; --accent-contrast:#ffffff; --accent-soft:rgba(10,106,160,.12); --accent-rgb:10,106,160;
+  --sel:rgba(10,106,160,.13); --bad-soft:rgba(196,30,23,.1);
+  /* Text-safe status colours: >= 4.5:1 on --bg/--surface (the :root trio is for fills) */
+  --good:#17804a; --warn:#9a5300; --bad:#c41e17; --on-bad:#ffffff;
+  --shadow-1:none;
+  --shadow-2:0 0 0 1px rgba(15,23,32,.06),0 18px 48px -12px rgba(15,23,32,.22);
+  --shadow-pop:0 0 0 1px rgba(15,23,32,.07),0 12px 32px -8px rgba(15,23,32,.2),0 3px 8px -3px rgba(15,23,32,.08);
+  --nav-bg:rgba(255,255,255,.82); --scrim:rgba(12,14,18,.32);
+  --on-media:#ffffff; --media-scrim:rgba(0,0,0,.6);
+  --glyph-shade:#000000; /* mixed into --kind-* behind white glyph labels (ZIP, PDF) for 4.5:1 */
+  --kind-folder:#4b9ef4; --kind-image:#12a594; --kind-pdf:#e5484d; --kind-archive:#e8a317;
+  --kind-sheet:#30a46c; --kind-doc:#3e8ef7; --kind-code:#8e7cf0; --kind-media:#e54d9a; --kind-file:#8b95a1;
+}
+[data-theme="frost-dark"] .ui-v2{
+  --bg:#08080a; --pane:#0e0e11; --surface:#141417; --surface-2:#1b1b1f; --raise:#1a1a1e; --panel:#0e0e11;
+  --text:#ececef; --text-dim:#96969e; --text-faint:#86868e;
+  --border:rgba(255,255,255,.1); --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.12);
+  --hover:rgba(255,255,255,.05); --press:rgba(255,255,255,.085);
+  --accent:#37b6ff; --accent-contrast:#04121c; --accent-soft:rgba(55,182,255,.14); --accent-rgb:55,182,255;
+  --sel:rgba(55,182,255,.15); --bad-soft:rgba(255,93,85,.12);
+  --good:#3fce7e; --warn:#f0b45a; --bad:#ff5d55; --on-bad:#1c0605; /* white on #ff5d55 is 3:1 */
+  --shadow-2:0 0 0 1px rgba(255,255,255,.07),0 24px 60px -12px rgba(0,0,0,.8);
+  --shadow-pop:0 0 0 1px rgba(255,255,255,.08),0 16px 40px -8px rgba(0,0,0,.75),0 4px 12px -4px rgba(0,0,0,.5);
+  --nav-bg:rgba(8,8,10,.78); --scrim:rgba(0,0,0,.62);
+  --code-bg:#0e0e11;
+  --kind-folder:#5aa9ff; --kind-image:#2ec4a9; --kind-pdf:#ff6369; --kind-archive:#ffb224;
+  --kind-sheet:#4cc38a; --kind-doc:#5b9dff; --kind-code:#a593ff; --kind-media:#f26bb0; --kind-file:#8e8e96;
+}
+

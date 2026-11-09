@@ -479,6 +479,118 @@ def api_permission_required(*perms):
         return decorated_function
     return decorator
 
+# ─── Desktop device tokens (desktop/docs/sync-api.md) ─────────────────────────
+DEVICE_TOKEN_PREFIX = 'dev_'
+# Devices get every API permission except key management.
+DEVICE_PERMISSIONS = frozenset({'read', 'download', 'write', 'delete', 'restore'})
+MIN_DESKTOP_CLIENT_VERSION = '0.1.0'
+
+
+def _generate_device_token():
+    return DEVICE_TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def _hash_device_token(raw_token):
+    return hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+
+
+def _request_has_device_token():
+    return request.headers.get('Authorization', '').startswith('Bearer ' + DEVICE_TOKEN_PREFIX)
+
+
+def _request_device_auth():
+    """Resolve this request's Bearer dev_ token once (cached on g; the rate
+    limiter and the decorator both ask). Returns (device, user, error_code) with
+    error_code None, 'invalid_token' or 'device_revoked'; (None, None, None) when
+    the request carries no device token."""
+    cached = getattr(g, '_device_auth', None)
+    if cached is not None:
+        return cached
+    result = (None, None, None)
+    if _request_has_device_token():
+        raw_token = request.headers['Authorization'][7:].strip()
+        device = Device.query.filter_by(token_hash=_hash_device_token(raw_token)).first()
+        if device is None:
+            result = (None, None, 'invalid_token')
+        elif not device.is_active:
+            result = (None, None, 'device_revoked')
+        else:
+            user = db.session.get(User, device.user_id)
+            result = (device, user, None) if user else (None, None, 'invalid_token')
+    g._device_auth = result
+    return result
+
+
+def _device_client_too_old():
+    """True when X-Onegy-Client names a desktop version below the minimum."""
+    match = re.match(r'onegy-desktop/(\d+)\.(\d+)\.(\d+)', request.headers.get('X-Onegy-Client', ''))
+    if not match:
+        return False
+    minimum = tuple(int(part) for part in MIN_DESKTOP_CLIENT_VERSION.split('.'))
+    return tuple(int(part) for part in match.groups()) < minimum
+
+
+def _touch_device_last_seen(device):
+    """Record liveness at most once per 60 s per device (same throttle as API keys)."""
+    now = datetime.now(timezone.utc)
+    last = device.last_seen_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last is not None and (now - last).total_seconds() < 60:
+        return
+    ip = (get_real_ip() or '').strip()
+    secret = app.config.get('SECRET_KEY') or ''
+    if isinstance(secret, bytes):
+        secret = secret.decode('utf-8', 'ignore')
+    try:
+        device.last_seen_at = now
+        if ip and ip != 'unknown':
+            device.last_ip_hash = hmac.new(secret.encode('utf-8'), ip.encode('utf-8'), hashlib.sha256).hexdigest()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
+def device_auth_required(f):
+    """Require an active device token. Sets g.api_user and g.device. JSON errors
+    in the sync API shape (never redirects)."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not get_setting('allow_desktop_sync'):
+            return _sync_error(403, 'sync_disabled', 'Desktop sync is disabled on this server')
+        device, user, error = _request_device_auth()
+        if error == 'device_revoked':
+            return _sync_error(401, 'device_revoked', 'This device was removed')
+        if device is None:
+            return _sync_error(401, 'invalid_token', 'Missing or invalid device token')
+        if _device_client_too_old():
+            return _sync_error(426, 'client_too_old', 'Please update ONE.GY Desktop',
+                               min_client_version=MIN_DESKTOP_CLIENT_VERSION)
+        _touch_device_last_seen(device)
+        g.api_user = user
+        g.device = device
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def api_or_device_auth(*perms):
+    """Accept an API key holding perms (api_key_required semantics) or a device
+    token (DEVICE_PERMISSIONS). Lets reused /apiv1 routes serve the desktop client."""
+    def decorator(f):
+        api_view = api_key_required(api_permission_required(*perms)(f))
+        device_view = device_auth_required(f)
+
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not _request_has_device_token():
+                return api_view(*args, **kwargs)
+            if not DEVICE_PERMISSIONS.issuperset(perms):
+                return _sync_error(403, 'forbidden', 'Device tokens cannot use this endpoint')
+            return device_view(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+
 def _file_payload_delete_keys(file):
     """Return logical storage keys that should be removed with a file record."""
     if not file:

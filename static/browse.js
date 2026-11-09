@@ -79,27 +79,36 @@
   } catch (e) {}
 
   // ═══ ICONS ═══════════════════════════════════════════════════════════════
+  // Same glyph language as the Files page: two-tone folder, kind-tinted page.
   var ICO = {
-    folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>',
-    file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
-    img: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>',
-    audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
-    video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m23 7-7 5 7 5z"/><rect x="1" y="5" width="15" height="14" rx="1"/></svg>',
-    zip: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6l2 2h6a2 2 0 0 1 2 2z"/><path d="M12 10v6M10 12h4"/></svg>',
-    dl: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>',
-    link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>'
+    folder: '<svg class="bw-fold" viewBox="0 0 24 24" aria-hidden="true"><path class="bw-fold-back" d="M2.5 6.2A2.2 2.2 0 0 1 4.7 4h4.1c.55 0 1.08.2 1.48.58L11.8 6h7.5a2.2 2.2 0 0 1 2.2 2.2v9.6a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z"/><path class="bw-fold-front" d="M2.5 9.4A1.4 1.4 0 0 1 3.9 8h16.2a1.4 1.4 0 0 1 1.4 1.4v8.4a2.2 2.2 0 0 1-2.2 2.2H4.7a2.2 2.2 0 0 1-2.2-2.2z"/></svg>',
+    folderLine: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>',
+    page: '<svg class="bw-page" viewBox="0 0 40 48" aria-hidden="true"><path class="bw-page-body" d="M7 1.5h18.5L37.5 13.5V42A4.5 4.5 0 0 1 33 46.5H7A4.5 4.5 0 0 1 2.5 42V6A4.5 4.5 0 0 1 7 1.5z"/><path class="bw-page-fold" d="M25.5 1.5v8.5a3.5 3.5 0 0 0 3.5 3.5h8.5z"/></svg>',
+    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+    alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4.5M12 16h.01"/></svg>',
+    lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+    chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg>',
+    tick: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>',
+    dl: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>',
+    link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>'
   }
-  var IMG_EXT = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'avif']
-  var AUD_EXT = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'opus']
-  var VID_EXT = ['mp4', 'webm', 'mov', 'm4v', 'mkv', 'avi']
-  var ZIP_EXT = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz']
-  function iconFor (ext) {
-    ext = (ext || '').toLowerCase()
-    if (IMG_EXT.indexOf(ext) >= 0) return ICO.img
-    if (AUD_EXT.indexOf(ext) >= 0) return ICO.audio
-    if (VID_EXT.indexOf(ext) >= 0) return ICO.video
-    if (ZIP_EXT.indexOf(ext) >= 0) return ICO.zip
-    return ICO.file
+  // File kinds drive the glyph tint (data-kind -> --k in browse.css)
+  var KIND = {}
+  ;[['image', 'jpg jpeg png gif webp bmp svg heic heif tif tiff avif ico'], ['pdf', 'pdf'],
+    ['archive', 'zip rar 7z tar gz tgz bz2 xz zst iso dmg'], ['sheet', 'csv tsv xls xlsx ods numbers'],
+    ['doc', 'doc docx odt rtf txt md pages ppt pptx odp key'],
+    ['code', 'js ts tsx jsx py go rs c cpp h hpp java rb php sh bash html css scss json xml yaml yml toml sql lua swift kt ini cfg conf env bat ps1 r pl diff makefile log'],
+    ['media', 'mp3 wav ogg m4a aac flac opus wma mp4 webm mov mkv avi wmv flv m4v 3gp']
+  ].forEach(function (g) { g[1].split(' ').forEach(function (e) { KIND[e] = g[0] }) })
+  var TEXT_KIND = { doc: 1, code: 1 }
+  function extOf (name) {
+    var n = String(name || ''), dot = n.lastIndexOf('.')
+    return dot > 0 ? n.slice(dot + 1).toLowerCase() : ''
+  }
+  function docIcon (name) {
+    var ext = extOf(name)
+    return '<span class="bw-doc" data-kind="' + (KIND[ext] || 'file') + '">' + ICO.page +
+      (ext ? '<span class="bw-doc-ext">' + esc(ext.slice(0, 4).toUpperCase()) + '</span>' : '') + '</span>'
   }
 
   // ═══ E2EE HELPERS ════════════════════════════════════════════════════════
@@ -165,7 +174,8 @@
   async function decryptFolderNames (folders, epoch) {
     if (typeof OneGyCrypto === 'undefined') return
     await Promise.all(folders.map(async function (fd) {
-      if (!fd.is_e2e || !fd.encrypted_name || !fd.name_nonce) return
+      // Breadcrumb entries carry the ciphertext but no is_e2e flag.
+      if (!fd.encrypted_name || !fd.name_nonce) return
       try {
         var k = await folderNameKeyFor(fd)
         if (epoch != null && !hasRequestAuthority(epoch)) return
@@ -230,8 +240,12 @@
     S.crumbs = crumbs
     S.totalFiles = d.total_file_count || 0
     S.sel = Object.create(null)
+    // Navigating away from search results leaves search mode and its query.
+    if (S.searching && !opts.noPush) el('bwSearch').value = ''
+    S.searching = false
     S.rootName = rootName
     S.e2e = !!(d.is_e2e_folder || d.root_folder_encrypted || tree.some(function (f) { return f.is_e2e }))
+    el('bwDownloadAll').disabled = false
 
     render()
     hydrateThumbs()
@@ -246,12 +260,19 @@
 
   // ═══ RENDER ══════════════════════════════════════════════════════════════
   function renderSkeleton () {
-    el('bwView').innerHTML = '<div class="bw-skel">' +
-      new Array(8).join('<div class="bw-skel-card"></div>') + '</div>'
+    el('bwView').innerHTML = '<div class="bw-skel" aria-hidden="true">' +
+      new Array(9).join('<div class="bw-skel-card"></div>') + '</div>'
+  }
+  function emptyState (icon, title, text) {
+    return '<div class="rd-empty bw-empty"><span class="rd-empty-icon">' + icon + '</span>' +
+      '<h3 class="rd-empty-title">' + esc(title) + '</h3><p class="rd-empty-text">' + esc(text) + '</p></div>'
   }
   function renderError (msg) {
-    el('bwView').innerHTML = '<div class="bw-empty">' + ICO.folder +
-      '<b>' + esc(msg) + '</b><span>This share may have expired or been revoked.</span></div>'
+    el('bwView').innerHTML = emptyState(ICO.alert, 'This share is unavailable',
+      'It may have expired or been revoked. (' + msg + ')')
+    el('bwTree').innerHTML = ''
+    el('bwStatFiles').textContent = el('bwStatHere').textContent = '\u2013'
+    el('bwDownloadAll').disabled = true
   }
 
   function render () {
@@ -265,16 +286,17 @@
   function renderStats () {
     el('bwStatFiles').textContent = S.totalFiles
     el('bwStatHere').textContent = (S.folders.length + S.files.length)
+    el('bwE2e').hidden = !S.e2e
   }
 
   function renderCrumbs () {
     var out = ['<button type="button" class="bw-bcrumb-item' + (S.folderId === S.rootId ? ' is-current' : '') +
-      '" data-folder-id="' + S.rootId + '">' + esc(S.rootName) + '</button>']
+      '" data-folder-id="' + S.rootId + '" title="' + esc(S.rootName) + '">' + esc(S.rootName) + '</button>']
     S.crumbs.forEach(function (c, i) {
       var last = i === S.crumbs.length - 1
-      out.push('<span class="bw-bcrumb-sep">/</span>')
+      out.push('<span class="bw-bcrumb-sep">' + ICO.chev + '</span>')
       out.push('<button type="button" class="bw-bcrumb-item' + (last ? ' is-current' : '') +
-        '" data-folder-id="' + c.id + '">' + esc(c.name) + '</button>')
+        '" data-folder-id="' + c.id + '" title="' + esc(c.name) + '">' + esc(c.name) + '</button>')
     })
     el('bwBcrumb').innerHTML = out.join('')
   }
@@ -283,34 +305,32 @@
     var kids = Object.create(null)
     S.tree.forEach(function (f) { (kids[f.parent_id] = kids[f.parent_id] || []).push(f) })
 
+    function row (f, depth, hasKids, isOpen, inner) {
+      var twist = hasKids
+        ? '<span class="bw-tree-twist" data-twist="' + f.id + '">' + ICO.chev + '</span>'
+        : '<span class="bw-tree-twist"></span>'
+      return '<div class="bw-tree-row' + (isOpen ? ' is-open' : '') + '" style="--d:' + depth + '">' +
+        '<button type="button" class="bw-tree-link folder-tree-link' + (String(f.id) === String(S.folderId) ? ' is-active' : '') +
+          '" data-folder-id="' + f.id + '" title="' + esc(f.name) + '">' +
+          twist + '<span class="bw-tree-ico">' + ICO.folderLine + '</span><span class="bw-tree-name">' + esc(f.name) + '</span>' +
+        '</button>' + inner +
+      '</div>'
+    }
     function branch (parentId, depth) {
       var list = kids[parentId] || []
       if (!list.length) return ''
       list.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)) })
       return list.map(function (f) {
         var hasKids = !!(kids[f.id] && kids[f.id].length)
-        var isOpen = !!S.open[f.id] || isAncestorOf(f.id, S.folderId, kids)
-        var twist = hasKids
-          ? '<span class="bw-tree-twist" data-twist="' + f.id + '"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></span>'
-          : '<span class="bw-tree-twist"></span>'
-        return '<div class="bw-tree-row' + (isOpen ? ' is-open' : '') + '">' +
-          '<button type="button" class="bw-tree-link folder-tree-link' + (f.id === S.folderId ? ' is-active' : '') +
-            '" data-folder-id="' + f.id + '" title="' + esc(f.name) + '">' +
-            twist + ICO.folder + '<span>' + esc(f.name) + '</span>' +
-          '</button>' +
-          (hasKids && isOpen ? '<div class="bw-tree-kids">' + branch(f.id, depth + 1) + '</div>' : '') +
-        '</div>'
+        // An explicit toggle wins; untouched branches auto-open down to the
+        // current folder (forcing that open made ancestors uncollapsible).
+        var isOpen = S.open[f.id] != null ? S.open[f.id] : isAncestorOf(f.id, S.folderId, kids)
+        return row(f, depth, hasKids, isOpen, hasKids && isOpen ? '<div class="bw-tree-kids">' + branch(f.id, depth + 1) + '</div>' : '')
       }).join('')
     }
 
-    el('bwTree').innerHTML =
-      '<div class="bw-tree-row">' +
-        '<button type="button" class="bw-tree-link folder-tree-link' + (S.folderId === S.rootId ? ' is-active' : '') +
-          '" data-folder-id="' + S.rootId + '" title="' + esc(S.rootName) + '">' +
-          '<span class="bw-tree-twist"></span>' + ICO.folder + '<span>' + esc(S.rootName) + '</span>' +
-        '</button>' +
-        '<div class="bw-tree-kids">' + branch(S.rootId, 1) + '</div>' +
-      '</div>'
+    el('bwTree').innerHTML = row({ id: S.rootId, name: S.rootName }, 0, false, true,
+      '<div class="bw-tree-kids">' + branch(S.rootId, 1) + '</div>')
   }
 
   function isAncestorOf (candidateId, folderId, kids) {
@@ -337,65 +357,73 @@
     return arr.slice().sort(by[s] || by.name)
   }
 
+  function check (kind, id) {
+    return '<input type="checkbox" class="bw-check ' + kind + '-checkbox" data-' + kind + '-id="' + esc(id) + '" aria-label="Select ' + kind + '">'
+  }
+  function act (cls, data, title, icon) {
+    return '<button type="button" class="bw-act ' + cls + '" ' + data + ' title="' + title + '" aria-label="' + title + '">' + icon + '</button>'
+  }
+  var E2E_BADGE = '<span class="bw-badge bw-badge-e2e" title="End-to-end encrypted">' + ICO.lock + '</span>'
+
   function folderCard (f) {
-    var badges = ''
-    if (f.is_e2e) badges += '<span class="bw-badge bw-badge-e2e">E2EE</span>'
-    else if (f.has_mixed_e2e) badges += '<span class="bw-badge bw-badge-mixed">Mixed</span>'
-    var dl = f.download_url
-      ? '<button type="button" class="bw-act action-btn action-download" data-dl-folder="' + f.id + '" title="Download ZIP" aria-label="Download">' + ICO.dl + '</button>'
-      : ''
-    return '<div class="bw-item folder-row folder-tile" data-folder-id="' + f.id + '" data-folder-name="' + esc(f.name) + '"' +
+    var badges = f.is_e2e ? E2E_BADGE : (f.has_mixed_e2e ? '<span class="bw-badge bw-badge-mixed" title="Some files are not end-to-end encrypted">Mixed</span>' : '')
+    var count = (f.file_count || 0) + (f.file_count === 1 ? ' file' : ' files')
+    return '<div class="bw-item is-folder folder-row folder-tile" data-folder-id="' + f.id + '" data-folder-name="' + esc(f.name) + '"' +
         (f.is_e2e ? ' data-is-e2e-folder="true"' : '') + '>' +
-      '<input type="checkbox" class="bw-check folder-checkbox" data-folder-id="' + f.id + '" aria-label="Select folder">' +
+      check('folder', f.id) +
       '<span class="bw-item-thumb">' + ICO.folder + '</span>' +
       '<span class="bw-item-name folder-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
-      '<span class="bw-item-size">' + (f.size_formatted || '') + '</span>' +
-      '<span class="bw-item-date">' + esc(f.updated_at || '') + '</span>' +
       '<span class="bw-item-meta">' + badges + '</span>' +
-      '<span class="bw-item-actions">' + dl +
-        '<button type="button" class="bw-act copy-link-btn" data-copy-folder="' + f.id + '" title="Copy link" aria-label="Copy link">' + ICO.link + '</button>' +
+      '<span class="bw-item-size">' + count + (f.size_formatted ? ' \u00b7 ' + esc(f.size_formatted) : '') + '</span>' +
+      '<span class="bw-item-date">' + esc(f.updated_at || '') + '</span>' +
+      '<span class="bw-item-actions">' +
+        (f.download_url ? act('action-btn action-download', 'data-dl-folder="' + f.id + '"', 'Download ZIP', ICO.dl) : '') +
+        act('copy-link-btn', 'data-copy-folder="' + f.id + '"', 'Copy link', ICO.link) +
       '</span>' +
     '</div>'
   }
 
   function fileCard (f) {
-    var badges = f.is_e2e ? '<span class="bw-badge bw-badge-e2e">E2EE</span>' : ''
-    var thumb = '<span class="bw-item-thumb" data-thumb-for="' + esc(f.id) + '">' + iconFor(f.extension) + '</span>'
-    var dlCls = f.is_e2e ? 'bw-act action-btn action-download e2e-download-btn' : 'bw-act action-btn action-download'
-    return '<div class="bw-item file-row file-tile" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '"' +
+    var kind = KIND[extOf(f.name)] || 'file'
+    return '<div class="bw-item is-file file-row file-tile" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '"' +
         ' data-e2e="' + (f.is_e2e ? 'true' : 'false') + '">' +
-      '<input type="checkbox" class="bw-check file-checkbox" data-file-id="' + esc(f.id) + '" aria-label="Select file">' +
-      thumb +
+      check('file', f.id) +
+      '<span class="bw-item-thumb" data-thumb-for="' + esc(f.id) + '"' + (TEXT_KIND[kind] ? ' data-text' : '') + '>' + docIcon(f.name) + '</span>' +
       '<span class="bw-item-name file-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
+      '<span class="bw-item-meta">' + (f.is_e2e ? E2E_BADGE : '') + '</span>' +
       '<span class="bw-item-size">' + esc(f.size_formatted || fmtBytes(f.size)) + '</span>' +
       '<span class="bw-item-date">' + esc(f.upload_date || '') + '</span>' +
-      '<span class="bw-item-meta">' + badges + '</span>' +
       '<span class="bw-item-actions">' +
-        '<button type="button" class="' + dlCls + '" data-dl-file="' + esc(f.id) + '" title="Download" aria-label="Download">' + ICO.dl + '</button>' +
-        '<button type="button" class="bw-act copy-link-btn" data-copy-file="' + esc(f.id) + '" title="Copy link" aria-label="Copy link">' + ICO.link + '</button>' +
+        act('action-btn action-download' + (f.is_e2e ? ' e2e-download-btn' : ''), 'data-dl-file="' + esc(f.id) + '" data-file-id="' + esc(f.id) + '"', 'Download', ICO.dl) +
+        act('copy-link-btn', 'data-copy-file="' + esc(f.id) + '"', 'Copy link', ICO.link) +
       '</span>' +
     '</div>'
   }
+
+  function section (label, count, items, cls) {
+    return '<section class="bw-sec"><h2 class="bw-sec-head">' + label + ' <span class="bw-sec-count">' + count + '</span></h2>' +
+      '<div class="bw-items' + (cls ? ' ' + cls : '') + '">' + items + '</div></section>'
+  }
+  // Column labels for the list view (one sticky head above every section)
+  var LIST_HEAD = '<div class="bw-list-head" aria-hidden="true"><span></span><span>Name</span><span></span><span class="is-num">Size</span><span>Modified</span><span></span></div>'
 
   function renderItems () {
     var view = el('bwView')
     view.dataset.view = S.view
 
     if (!S.folders.length && !S.files.length) {
-      view.innerHTML = '<div class="bw-empty">' + ICO.folder +
-        '<b>This folder is empty</b><span>Nothing has been shared here.</span></div>'
+      view.innerHTML = emptyState(ICO.folderLine, 'This folder is empty', 'Nothing has been shared here yet.')
       return
     }
 
-    var html = ''
-    if (S.folders.length) {
-      html += '<div class="bw-sec"><div class="bw-sec-head">Folders · ' + S.folders.length + '</div>' +
-        '<div class="bw-items">' + sortItems(S.folders, false).map(folderCard).join('') + '</div></div>'
+    var html = S.view === 'list' ? LIST_HEAD : ''
+    // Zero-knowledge failure mode: without the link secret names stay placeholders
+    if (S.files.concat(S.folders).some(function (o) { return o.encrypted_name && !o._dec })) {
+      html += '<div class="rd-callout is-warn bw-locked">' + ICO.lock + '<div>Some names could not be decrypted. ' +
+        'Open the full share link, including the part after #, to see them.</div></div>'
     }
-    if (S.files.length) {
-      html += '<div class="bw-sec"><div class="bw-sec-head">Files · ' + S.files.length + '</div>' +
-        '<div class="bw-items">' + sortItems(S.files, true).map(fileCard).join('') + '</div></div>'
-    }
+    if (S.folders.length) html += section('Folders', S.folders.length, sortItems(S.folders, false).map(folderCard).join(''), 'has-folders')
+    if (S.files.length) html += section('Files', S.files.length, sortItems(S.files, true).map(fileCard).join(''))
     view.innerHTML = html
   }
 
@@ -945,10 +973,17 @@
     }
     return [S.rootName].concat(parts).join(' / ')
   }
-  async function runSearch (q, epoch) {
-    epoch = epoch == null ? nextRequestEpoch() : epoch
-    if (!hasRequestAuthority(epoch)) return
-    if (!q || q.trim().length < 2) { load(S.folderId, { noPush: true, epoch: epoch }); return }
+  // The request token is taken only when a search actually runs: taking it on
+  // every keystroke cancelled an in-flight folder load, and a short query
+  // refetched the folder (wiping the selection) even when no results were up.
+  var searchEpoch = null
+  async function runSearch (q) {
+    if (!q || q.trim().length < 2) {
+      // Results on screen, or a search still in flight that would land them.
+      if (S.searching || hasRequestAuthority(searchEpoch)) load(S.folderId, { noPush: true })
+      return
+    }
+    var epoch = searchEpoch = nextRequestEpoch()
     try {
       var files, folders
       if (S.e2e) {
@@ -971,31 +1006,35 @@
         files.forEach(function (f) { if (!f.download_url) f.download_url = '/f/' + encodeURIComponent(TOKEN) + '/file/' + encodeURIComponent(f.id) })
       }
       searchResults = files
+      // The selection belongs to the folder listing, which is no longer shown.
+      S.searching = true
+      S.sel = Object.create(null)
+      syncSelbar()
 
+      // Results are always rows: the location column says where each hit lives.
       var view = el('bwView')
-      view.dataset.view = S.view
+      view.dataset.view = 'list'
       if (!files.length && !folders.length) {
-        view.innerHTML = '<div class="bw-empty">' + ICO.file + '<b>No matches</b><span>Nothing in this share matches “' + esc(q) + '”.</span></div>'
+        view.innerHTML = emptyState(ICO.search, 'No matches', 'Nothing in this share matches \u201c' + q.trim() + '\u201d.')
         return
       }
-      var html = '<div class="bw-sec"><div class="bw-sec-head">Search results · ' + (files.length + folders.length) + '</div><div class="bw-items">'
-      html += folders.map(function (fd) {
-        return '<div class="bw-item folder-row" data-folder-id="' + fd.id + '" data-folder-name="' + esc(fd.name) + '">' +
-          '<span class="bw-check"></span><span class="bw-item-thumb">' + ICO.folder + '</span>' +
-          '<span class="bw-item-name folder-name">' + esc(fd.name) + '</span>' +
-          '<span class="bw-item-size"></span><span class="bw-item-date">' + esc(fd.path != null ? fd.path : searchFolderPath(fd)) + '</span>' +
-          '<span class="bw-item-meta"></span><span class="bw-item-actions"></span></div>'
-      }).join('')
-      html += files.map(function (f) {
-        return '<div class="bw-item file-row" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '" data-search-file="' + esc(f.id) + '">' +
-          '<span class="bw-check"></span><span class="bw-item-thumb">' + iconFor((f.name.split('.').pop() || '')) + '</span>' +
-          '<span class="bw-item-name file-name">' + esc(f.name) + '</span>' +
+      var rows = folders.map(function (fd) {
+        return '<div class="bw-item is-folder folder-row" data-folder-id="' + fd.id + '" data-folder-name="' + esc(fd.name) + '">' +
+          '<span class="bw-item-thumb">' + ICO.folder + '</span>' +
+          '<span class="bw-item-name folder-name" title="' + esc(fd.name) + '">' + esc(fd.name) + '</span>' +
+          '<span class="bw-item-meta"></span><span class="bw-item-size"></span>' +
+          '<span class="bw-item-date">' + esc(fd.path != null ? fd.path : searchFolderPath(fd)) + '</span>' +
+          '<span class="bw-item-actions"></span></div>'
+      }).join('') + files.map(function (f) {
+        return '<div class="bw-item is-file file-row" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '" data-search-file="' + esc(f.id) + '">' +
+          '<span class="bw-item-thumb">' + docIcon(f.name) + '</span>' +
+          '<span class="bw-item-name file-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
+          '<span class="bw-item-meta">' + (f.is_e2e ? E2E_BADGE : '') + '</span>' +
           '<span class="bw-item-size">' + esc(typeof f.size === 'number' ? fmtBytes(f.size) : (f.size || '')) + '</span>' +
           '<span class="bw-item-date">' + esc(f._dirs ? searchFilePath(f) : (f.folder_path || '')) + '</span>' +
-          '<span class="bw-item-meta">' + (f.is_e2e ? '<span class="bw-badge bw-badge-e2e">E2EE</span>' : '') + '</span>' +
           '<span class="bw-item-actions"></span></div>'
       }).join('')
-      view.innerHTML = html + '</div></div>'
+      view.innerHTML = LIST_HEAD.replace('Modified', 'Location') + section('Results', files.length + folders.length, rows)
     } catch (e) {
       if (!hasRequestAuthority(epoch)) return
       toast('SEARCH FAILED', 'error')
@@ -1009,7 +1048,7 @@
     if (twist) {
       e.stopPropagation()
       var tid = twist.dataset.twist
-      S.open[tid] = !S.open[tid]
+      S.open[tid] = !twist.closest('.bw-tree-row').classList.contains('is-open')
       renderTree()
       return
     }
@@ -1100,13 +1139,13 @@
   // Search box
   el('bwSearch').addEventListener('input', function () {
     var q = this.value
-    var epoch = nextRequestEpoch()
     clearTimeout(searchTimer)
-    searchTimer = setTimeout(function () { runSearch(q, epoch) }, 300)
+    searchTimer = setTimeout(function () { runSearch(q) }, 300)
   })
   el('bwSearchClear').addEventListener('click', function () {
     el('bwSearch').value = ''
-    load(S.folderId, { noPush: true })
+    clearTimeout(searchTimer)
+    runSearch('')
   })
 
   // Bulk bar

@@ -1,0 +1,114 @@
+{% extends 'base.html' %}
+{% set ui_v2 = true %}
+{% set nav_active = 'desktop' %}
+{% block title %}Desktop app · ONE.GY{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('desktop.css') }}">{% endblock %}
+
+{% macro dl_icon() -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg>
+{%- endmacro %}
+
+{% block content %}
+<div class="rd-page dk-page">
+  <section class="dk-hero">
+    <div class="dk-hero-copy">
+      <h1 class="dk-title">ONE.GY on your desktop</h1>
+      <p class="dk-lead">Your account in its own window, plus folders on your computer that stay in sync with your drive. Files are encrypted on your machine before they leave it.</p>
+      <div class="dk-actions">
+        {% if platform == 'linux' %}
+          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ downloads.appimage }}">{{ dl_icon() }}Download for Linux</a>
+          <a class="rd-btn rd-btn-ghost rd-btn-lg" href="#downloads">Other downloads</a>
+        {% elif platform == 'windows' %}
+          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ downloads.windows }}">{{ dl_icon() }}Download for Windows</a>
+          <a class="rd-btn rd-btn-ghost rd-btn-lg" href="#downloads">Other downloads</a>
+        {% else %}
+          <a class="rd-btn rd-btn-primary rd-btn-lg" href="{{ downloads.windows }}">{{ dl_icon() }}Windows</a>
+          <a class="rd-btn rd-btn-ghost rd-btn-lg" href="{{ downloads.appimage }}">{{ dl_icon() }}Linux</a>
+        {% endif %}
+      </div>
+      <p class="dk-meta">
+        {% if platform == 'linux' %}AppImage for x64. Also for Windows 10 and 11.
+        {% elif platform == 'windows' %}Installer for Windows 10 and 11, x64. Also for Linux.
+        {% else %}For Windows 10 and 11 and for Linux, x64 only.{% endif %}
+        <a href="{{ repo_url }}" rel="noopener">Source on GitHub</a>
+      </p>
+    </div>
+
+    <svg class="dk-art" viewBox="0 0 360 236" role="img" aria-label="A desktop window syncing a folder on this computer with a folder in your drive">
+      <rect class="dk-win" x="1" y="1" width="358" height="234" rx="12"/>
+      <path class="dk-rule" d="M1 31h358M88 31v204"/>
+      <circle class="dk-dot" cx="18" cy="16" r="4"/><circle class="dk-dot" cx="32" cy="16" r="4"/><circle class="dk-dot" cx="46" cy="16" r="4"/>
+      <rect class="dk-row is-on" x="12" y="46" width="64" height="16" rx="5"/>
+      <rect class="dk-row" x="12" y="70" width="52" height="8" rx="4"/>
+      <rect class="dk-row" x="12" y="88" width="58" height="8" rx="4"/>
+      <rect class="dk-row" x="12" y="106" width="44" height="8" rx="4"/>
+      <g transform="translate(118 80)">
+        <path class="dk-folder" d="M0 8a6 6 0 0 1 6-6h14l6 6h22a6 6 0 0 1 6 6v28a6 6 0 0 1-6 6H6a6 6 0 0 1-6-6z"/>
+        <text class="dk-label" x="27" y="72" text-anchor="middle">This computer</text>
+      </g>
+      <g transform="translate(266 80)">
+        <path class="dk-folder" d="M0 8a6 6 0 0 1 6-6h14l6 6h22a6 6 0 0 1 6 6v28a6 6 0 0 1-6 6H6a6 6 0 0 1-6-6z"/>
+        <rect class="dk-lock" x="19" y="22" width="16" height="12" rx="2"/>
+        <path class="dk-lock-arc" d="M22 22v-3a5 5 0 0 1 10 0v3"/>
+        <text class="dk-label" x="27" y="72" text-anchor="middle">Your drive</text>
+      </g>
+      <path class="dk-sync" d="M186 96h66M246 90l6 6-6 6M252 112h-66M192 106l-6 6 6 6"/>
+      <rect class="dk-status" x="118" y="182" width="202" height="28" rx="8"/>
+      <circle class="dk-status-dot" cx="134" cy="196" r="4"/>
+      <text class="dk-status-text" x="146" y="200">Up to date</text>
+    </svg>
+  </section>
+
+  <section class="dk-section" aria-labelledby="dkWhat">
+    <h2 class="dk-h2" id="dkWhat">What it does</h2>
+    <ul class="dk-feats">
+      <li><h3>Your account in a native window</h3><p>Files, Notes{% if allow_music %} and Music{% endif %} open in their own window, unlocked with this computer's key so you don't retype your password.</p></li>
+      <li><h3>Live folder sync</h3><p>Pick a folder on your computer and one in your drive. Changes on either side reach the other as they happen.</p></li>
+      <li><h3>End-to-end encrypted</h3><p>Files and their names are encrypted on your computer with the same keys as the website. The server only stores ciphertext.</p></li>
+      <li><h3>As many syncs as you need</h3><p>Run several folder pairs at once, each with its own settings.</p></li>
+      <li><h3>Two-way, backup or mirror</h3><p>Two-way keeps both sides the same. Backup only uploads, and the copy in your drive is read-only. Mirror keeps this computer matching a folder in your drive.</p></li>
+      <li><h3>Works with self-hosted servers</h3><p>Sign in to this server or any other one.gy server by entering its address.</p></li>
+    </ul>
+  </section>
+
+  <section class="dk-section" id="downloads" aria-labelledby="dkDownloads">
+    <div class="rd-panel">
+      <header class="rd-panel-head">
+        <div><h2 class="rd-panel-title" id="dkDownloads">Downloads</h2><p class="rd-panel-sub">Links always point at the latest release.</p></div>
+      </header>
+      <div class="rd-panel-body">
+        <div class="rd-field-row">
+          <div class="rd-field-text">
+            <span class="rd-field-label">Windows installer</span>
+            <p class="rd-field-hint">Windows 10 or 11, 64-bit (x64).</p>
+          </div>
+          <a class="rd-btn {{ 'rd-btn-primary' if platform == 'windows' else 'rd-btn-ghost' }}" href="{{ downloads.windows }}">{{ dl_icon() }}Setup .exe</a>
+        </div>
+        <div class="rd-field-row">
+          <div class="rd-field-text">
+            <span class="rd-field-label">Linux AppImage</span>
+            <p class="rd-field-hint">Most 64-bit (x64) distributions. Make the file executable, then run it.</p>
+          </div>
+          <a class="rd-btn {{ 'rd-btn-primary' if platform == 'linux' else 'rd-btn-ghost' }}" href="{{ downloads.appimage }}">{{ dl_icon() }}AppImage</a>
+        </div>
+        <div class="rd-field-row">
+          <div class="rd-field-text">
+            <span class="rd-field-label">Debian and Ubuntu</span>
+            <p class="rd-field-hint">A .deb package for x64. Install it with <code>sudo apt install ./onegy-desktop_amd64.deb</code>.</p>
+          </div>
+          <a class="rd-btn rd-btn-ghost" href="{{ downloads.deb }}">{{ dl_icon() }}.deb</a>
+        </div>
+      </div>
+      <footer class="rd-panel-foot dk-links">
+        <a href="{{ releases_url }}" rel="noopener">All releases</a>
+        <a href="{{ repo_url }}" rel="noopener">Source on GitHub</a>
+      </footer>
+    </div>
+
+    <div class="rd-callout is-warn dk-note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20.5h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <div>Builds are not code-signed yet, so Windows SmartScreen may say "Windows protected your PC". Choose <b>More info</b>, then <b>Run anyway</b>.</div>
+    </div>
+  </section>
+</div>
+{% endblock %}

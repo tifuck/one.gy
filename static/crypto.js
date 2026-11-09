@@ -1490,6 +1490,33 @@ const OneGyCrypto = (function() {
   // never outlive the tab session.
   _purgeLegacyKeyDb()
 
+  // ONE.GY Desktop: its preload exposes window.onegyDesktop.unlock(), which
+  // hands this tab the device's master key so the lock bar never appears.
+  // Pages decide locked/unlocked synchronously via hasSessionKeys() at
+  // startup, so once the key is stored the page reloads once and starts
+  // unlocked. Browsers without the bridge return immediately.
+  async function _desktopAutoUnlock() {
+    const bridge = typeof window !== 'undefined' ? window.onegyDesktop : null
+    if (!bridge || typeof bridge.unlock !== 'function' || hasSessionKeys()) return
+    const gen = _sessionKeyGen
+    try {
+      const buf = await bridge.unlock()
+      if (Object.prototype.toString.call(buf) !== '[object ArrayBuffer]' || buf.byteLength !== KEY_SIZE) return
+      const raw = new Uint8Array(buf)
+      const masterKey = await crypto.subtle.importKey(
+        'raw', raw, { name: 'AES-GCM', length: 256 }, true,
+        ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
+      )
+      raw.fill(0)
+      if (gen !== _sessionKeyGen || hasSessionKeys()) return
+      await storeMasterKeyInSession(masterKey)
+      if (gen === _sessionKeyGen && hasSessionKeys()) location.reload()
+    } catch (e) {
+      console.warn('[CRYPTO] Desktop auto-unlock failed:', e)
+    }
+  }
+  _desktopAutoUnlock()
+
   // ─── Full Key Setup (Registration) ───────────────────────────────
 
   /**
@@ -1806,6 +1833,51 @@ const OneGyCrypto = (function() {
     return /^[a-z0-9]{1,10}$/.test(ext) ? '.' + ext : ''
   }
 
+  // ─── Syntax highlighting (loaded on demand) ──────────────────────
+
+  // highlight.js is vendored but no page loads it up front: text thumbnails
+  // (every upload path goes through generateThumbnail) and the text editor in
+  // preview.js pull it in here. Languages missing from the vendored build
+  // (dos, powershell) fall back to plain text.
+  const HLJS_LANG_BY_EXT = {
+    py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+    ts: 'typescript', tsx: 'typescript', json: 'json', xml: 'xml', html: 'xml', htm: 'xml',
+    css: 'css', scss: 'scss', less: 'less', yaml: 'yaml', yml: 'yaml',
+    sh: 'bash', bash: 'bash', zsh: 'bash', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', cs: 'csharp',
+    lua: 'lua', rb: 'ruby', rs: 'rust', go: 'go', java: 'java',
+    kt: 'kotlin', swift: 'swift', php: 'php', pl: 'perl', r: 'r',
+    sql: 'sql', md: 'markdown', diff: 'diff', patch: 'diff', makefile: 'makefile',
+    toml: 'ini', ini: 'ini', cfg: 'ini', conf: 'ini', env: 'ini',
+    bat: 'dos', ps1: 'powershell'
+  }
+
+  function highlightLanguage (ext) {
+    return HLJS_LANG_BY_EXT[String(ext || '').toLowerCase()] || null
+  }
+
+  let _hljsReady = null
+  function _addScript (src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script')
+      s.src = src
+      s.onload = resolve
+      s.onerror = reject
+      document.head.appendChild(s)
+    })
+  }
+
+  /** Resolves to window.hljs, or null when it cannot be loaded. */
+  function loadHighlighter () {
+    if (typeof hljs !== 'undefined') return Promise.resolve(hljs)
+    if (!_hljsReady) {
+      const base = '/static/vendor/highlight/'
+      _hljsReady = _addScript(base + 'highlight.min.js')
+        .then(() => _addScript(base + 'hljs-enhance.js').catch(() => {}))
+        .then(() => (typeof hljs !== 'undefined' ? hljs : null), () => { _hljsReady = null; return null })
+    }
+    return _hljsReady
+  }
+
   // ─── Thumbnail Encryption (simple, non-chunked) ──────────────────
 
   /**
@@ -1846,7 +1918,7 @@ const OneGyCrypto = (function() {
   function generateThumbnail(file, maxDim = 200) {
     return new Promise((resolve) => {
       const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg']
-      const textExts = ['txt', 'md', 'log', 'csv', 'json', 'xml', 'yaml', 'yml', 'py', 'js', 'html', 'css', 'sh', 'ini', 'cfg', 'conf', 'c', 'cpp', 'h', 'hpp', 'lua', 'rb', 'rs', 'go', 'java', 'ts', 'tsx', 'jsx', 'toml', 'bat', 'ps1', 'sql', 'r', 'swift', 'kt', 'php', 'pl', 'diff', 'makefile', 'env']
+      const textExts = ['txt', 'md', 'log', 'csv', 'tsv', 'json', 'xml', 'yaml', 'yml', 'py', 'js', 'mjs', 'cjs', 'html', 'htm', 'css', 'scss', 'less', 'sh', 'bash', 'zsh', 'ini', 'cfg', 'conf', 'c', 'cpp', 'h', 'hpp', 'cs', 'lua', 'rb', 'rs', 'go', 'java', 'ts', 'tsx', 'jsx', 'toml', 'bat', 'ps1', 'sql', 'r', 'swift', 'kt', 'php', 'pl', 'diff', 'patch', 'makefile', 'env']
       const _cParts = file.name.split('.')
       const _cCompoundPrefixes = ['tar']
       let ext
@@ -1977,18 +2049,6 @@ const OneGyCrypto = (function() {
             ctx.font = '10px "JetBrains Mono", monospace'
             ctx.textBaseline = 'top'
 
-            // Extension to highlight.js language map (mirrors getHighlightLanguage in dashboard.js)
-            const _extLangMap = {
-              py: 'python', js: 'javascript', ts: 'typescript', tsx: 'typescript', jsx: 'javascript',
-              json: 'json', xml: 'xml', html: 'xml', css: 'css', yaml: 'yaml', yml: 'yaml',
-              sh: 'bash', bash: 'bash', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
-              lua: 'lua', rb: 'ruby', rs: 'rust', go: 'go', java: 'java',
-              kt: 'kotlin', swift: 'swift', php: 'php', pl: 'perl', r: 'r',
-              sql: 'sql', md: 'markdown', diff: 'diff', makefile: 'makefile',
-              toml: 'ini', ini: 'ini', cfg: 'ini', conf: 'ini',
-              bat: 'dos', ps1: 'powershell', env: 'ini'
-            }
-
             // GitHub Dark colors — matching github-dark.min.css rules (enhanced)
             const _hljsColors = {
               'hljs-keyword':    '#ff7b72',
@@ -2033,8 +2093,8 @@ const OneGyCrypto = (function() {
             }
             const _defaultColor = '#c9d1d9'
 
-            const lang = isDotenv ? 'ini' : _extLangMap[ext]
-            const hasHljs = typeof hljs !== 'undefined' && lang
+            const lang = isDotenv ? 'ini' : highlightLanguage(ext)
+            const hasHljs = typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)
 
             // Parse hljs HTML output into [{text, color}] segments
             function _parseHljsHtml(html) {
@@ -2161,8 +2221,9 @@ const OneGyCrypto = (function() {
           }
         }
         reader.onerror = () => resolve(null)
-        // Read only first 2KB for thumbnail
-        reader.readAsText(file.slice(0, 2048))
+        // Read only first 2KB for thumbnail, once highlight.js is available
+        // (or known to be unavailable, which renders monochrome).
+        loadHighlighter().then(() => reader.readAsText(file.slice(0, 2048)))
 
       } else {
         resolve(null)
@@ -2233,6 +2294,10 @@ const OneGyCrypto = (function() {
     decryptFileForDownload,
     decryptFileForGuestDownload,
     decryptFileFromLink,
+
+    // Syntax highlighting
+    loadHighlighter,
+    highlightLanguage,
 
     // Thumbnail
     encryptThumbnail,

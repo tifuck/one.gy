@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token() }}">
-  <script nonce="{{ csp_nonce }}">/* pre-paint theme (no FOUC) */(function(){try{var t=localStorage.getItem('onegy_theme');var ok=['frost','frost-dark'];document.documentElement.setAttribute('data-theme',ok.indexOf(t)>=0?t:'frost')}catch(e){document.documentElement.setAttribute('data-theme','frost')}})();</script>
+  <script nonce="{{ csp_nonce }}">/* pre-paint theme (no FOUC) */(function(){try{var t=localStorage.getItem('onegy_theme');var ok=['frost','frost-dark'];document.documentElement.setAttribute('data-theme',ok.indexOf(t)>=0?t:'frost-dark')}catch(e){document.documentElement.setAttribute('data-theme','frost-dark')}})();</script>
   <script nonce="{{ csp_nonce }}">/* pre-paint rail widths (no layout shift) — see static/panel-resize.js */
 (function(){try{var r=document.documentElement,W=window.innerWidth,C=340;
 /* Defaults are viewport-proportional. Keep 0.17/280/460 and 0.19/320/520 in
@@ -39,9 +39,10 @@ if(localStorage.getItem('onegy_rd_list_collapsed')==='1')r.setAttribute('data-rd
   <link rel="stylesheet" href="{{ versioned_static('editorial-base.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('app-shell.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('context-menu.css') }}">
+  {% if ui_v2|default(true) %}<link rel="stylesheet" href="{{ versioned_static('ui-v2.css') }}">{% endif %}
   {% block head_extra %}{% endblock %}
 </head>
-<body class="rd-body rd-theme-editorial rd-app{% if nav_ghost|default(false) %} rd-nav-ghost{% endif %}">
+<body class="rd-body {{ 'ui-v2' if ui_v2|default(true) else 'rd-theme-editorial' }} rd-app{% if nav_ghost|default(false) %} rd-nav-ghost{% endif %}">
 {% include '_nav.html' %}
 
 <main class="rd-app-main" id="main">
