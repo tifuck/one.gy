@@ -20,7 +20,6 @@
 .fx-side-scrim{ display:none; }
 
 /* ---- Sidebar tree ---------------------------------------------------------- */
-.fx-side .rd-side-head{ display:none; }
 .fx-side .rd-side-inner{ padding-top:8px; }
 .fx-tree .rd-side-row{ min-height:30px; padding-right:2px; }
 .fx-tree-row.is-active .fx-tree-ico{ color:var(--accent); }
@@ -496,7 +495,7 @@
 /* ---- Mobile ---------------------------------------------------------------- */
 @media (max-width:920px){
   .fx-shell{ grid-template-columns:1fr; }
-  .fx-shell .rd-resizer, .fx-shell .rd-rail-label{ display:none !important; }
+  .fx-shell .rd-resizer, .fx-shell .rd-rail-label, .fx-side .rd-side-head{ display:none !important; }
   :root[data-rd-side="collapsed"] .fx-side > .rd-side-inner{ display:flex; }
   .fx-side{
     position:fixed; top:var(--nav-h); left:0; bottom:0; width:272px; z-index:50;

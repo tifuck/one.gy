@@ -12,7 +12,8 @@ import (
 // allowed locally"). Characters the local file system rejects become %XX
 // (uppercase hex): on Windows rules <>:"/\|?*, control characters, a trailing
 // dot or space and the first character of a reserved name (CON, NUL.txt,
-// ...); otherwise / and NUL. A literal % is escaped only where it would
+// ...); otherwise / and NUL. Everywhere the first dot of "." and "..", which
+// would otherwise name a folder and its parent. A literal % is escaped only where it would
 // otherwise read as one of those escapes, so ordinary names such as
 // "100% done" or "my%20file.pdf" stay as they are. ToRemote(ToLocal(r)) == r
 // for every r.
@@ -83,6 +84,8 @@ func (n Names) special(b byte, start bool, rest string) bool {
 		return true
 	case start && n.reserved(string(b)+rest):
 		return true
+	case start && b == '.' && (rest == "" || rest == "."):
+		return true
 	case b == '%':
 		h, ok := hexPair(rest)
 		return ok && n.special(h, start, rest[2:])
@@ -97,7 +100,8 @@ func (n Names) ToLocal(remote string) string {
 	var b strings.Builder
 	for i := 0; i < len(remote); i++ {
 		c, rest := remote[i], remote[i+1:]
-		esc := n.invalid(c) || (n.Windows && (c == '.' || c == ' ') && rest == "") || (i == 0 && n.reserved(remote))
+		esc := n.invalid(c) || (n.Windows && (c == '.' || c == ' ') && rest == "") || (i == 0 && n.reserved(remote)) ||
+			(i == 0 && c == '.' && (rest == "" || rest == "."))
 		if !esc && c == '%' {
 			h, ok := hexPair(rest)
 			esc = ok && n.special(h, i == 0, rest[2:])

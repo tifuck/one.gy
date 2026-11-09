@@ -93,9 +93,13 @@ if (origin && window.location.origin === origin && window.top === window) {
   contextBridge.exposeInMainWorld('onegyDesktop', Object.freeze({
     version,
     bridge: BRIDGE_VERSION,
-    // Resolves to the account master key (ArrayBuffer) or null.
+    // Resolves to the account master key (ArrayBuffer) or null. Only for a
+    // page signed in as this computer's account (the nav's data-username).
     unlock: async () => {
-      const b64 = await ipcRenderer.invoke('site:unlock');
+      if (document.readyState === 'loading') {
+        await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
+      }
+      const b64 = await ipcRenderer.invoke('site:unlock', pageUsername());
       if (typeof b64 !== 'string' || !b64) return null;
       try {
         const bin = atob(b64);

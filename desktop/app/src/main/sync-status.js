@@ -25,6 +25,11 @@ function bridgeStatus({ engineState, account, status, issueCount }, username) {
   return out(PASS_THROUGH.has(s) ? s : 'syncing');
 }
 
+// Whether a website page signed in as `username` may get this computer's
+// master key: only a page of the account this computer is authorized for, so
+// another account's page never stores (and encrypts with) the wrong key.
+const mayUnlock = (account, username) => Boolean(account && account.signed_in && sameUser(account.username, username));
+
 // Calls fn at most once per `ms`, always with the latest state (trailing).
 function throttle(fn, ms) {
   let timer = null;
@@ -109,4 +114,4 @@ class SyncStatus extends EventEmitter {
   }
 }
 
-module.exports = { SyncStatus, bridgeStatus, sameUser, throttle };
+module.exports = { SyncStatus, bridgeStatus, sameUser, mayUnlock, throttle };

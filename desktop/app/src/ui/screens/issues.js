@@ -9,7 +9,7 @@ import {
   bytes, dateTime, shortHash, basename, ISSUE_KINDS, ISSUE_ACTIONS,
 } from '../components/format.js';
 import {
-  rpc, bridge, store, on, loadIssues,
+  rpc, bridge, store, on, navigate, loadIssues,
 } from '../store.js';
 
 const PRIMARY = new Set(['keep_both', 'retry', 'restore_remote_root']);
@@ -57,7 +57,7 @@ async function resolve(issue, action) {
 async function viewVersions(issue) {
   try {
     const v = await rpc('versions.list', { sync_id: issue.sync_id, path: issue.path });
-    await bridge('openSite', v.folder_id ? `/files/folder/${v.folder_id}` : '/files');
+    navigate('close', { path: v.folder_id ? `/files/folder/${v.folder_id}` : '/files' });
   } catch (err) {
     toastError(err);
   }

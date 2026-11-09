@@ -37,3 +37,14 @@ func TestNonCanonicalLocalName(t *testing.T) {
 	eq(t, "non-canonical", summary(p))
 	eq(t, "issue", issueKinds(p), "invalid_name trailing ")
 }
+
+// one.gy names "." and ".." must never become path components that leave
+// the folder (or the sync root); an empty name is skipped.
+func TestDotAndEmptyRemoteNames(t *testing.T) {
+	w := newWorld().rd("10", "root", "..", 1).rd("11", "10", ".config", 2).rf("f1", "11", "evil.desktop", "abc", 1, 3).
+		rd("20", "root", ".", 4).rf("f2", "20", "x", "def", 1, 5).rf("f3", "root", "", "ghi", 1, 6)
+	p := w.plan(t)
+	eq(t, "dot names", summary(p), "create_local_dir %2E", "create_local_dir %2E.", "create_local_dir %2E./.config",
+		"download %2E./.config/evil.desktop", "download %2E/x")
+	eq(t, "empty name", issueKinds(p), "invalid_name ")
+}

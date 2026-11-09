@@ -3,10 +3,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('events');
-const { SyncStatus, bridgeStatus, sameUser, throttle } = require('../src/main/sync-status');
+const { SyncStatus, bridgeStatus, sameUser, mayUnlock, throttle } = require('../src/main/sync-status');
 
 const alice = { signed_in: true, locked: false, username: 'alice' };
 const base = { engineState: 'connected', account: alice, status: { state: 'up_to_date', pending: 0 }, issueCount: 0 };
+
+test('only a page of this computer\'s account gets the key', () => {
+  assert.equal(mayUnlock(alice, 'alice'), true);
+  assert.equal(mayUnlock(alice, 'ALICE'), true);
+  assert.equal(mayUnlock(alice, 'bob'), false);
+  assert.equal(mayUnlock(alice, null), false); // anonymous page
+  assert.equal(mayUnlock({ signed_in: false, username: 'alice' }, 'alice'), false);
+  assert.equal(mayUnlock(null, 'alice'), false);
+});
 
 test('bridge states follow the contract', () => {
   assert.deepEqual(bridgeStatus(base, 'alice'), { state: 'up_to_date', pending: 0, issues: 0 });

@@ -44,7 +44,6 @@
 /* ---- Rail (notebooks) ----------------------------------------------------
    Container, head, scroll body and pinned foot are .rd-side* (ui-v2.css),
    shared with the Files sidebar; only the row internals live here. */
-.nt-rail .rd-side-head{ display:none; }
 .nt-rail .rd-side-inner{ padding-top:8px; }
 .nt-rail-item{
   gap:10px; padding:0 8px 0 10px; border:0; background:none; cursor:pointer;
@@ -294,7 +293,7 @@
 @media (max-width:1024px){
   /* Only the notes list stays resizable; its seam sits at the list width. */
   .nt-shell{ grid-template-columns:var(--rd-list-eff) minmax(0,1fr); }
-  .nt-shell .rd-resizer[data-rd-resize="side"], .nt-shell .rd-rail-label[data-rd-label="side"]{ display:none !important; }
+  .nt-shell .rd-resizer[data-rd-resize="side"], .nt-shell .rd-rail-label[data-rd-label="side"], .nt-rail .rd-side-head{ display:none !important; }
   .nt-shell .rd-resizer[data-rd-resize="list"]{ left:var(--rd-list-eff); }
   .nt-shell .rd-rail-label[data-rd-label="list"]{ left:0; }
   :root[data-rd-side="collapsed"] .nt-rail > .rd-side-inner{ display:flex; }
@@ -362,7 +361,7 @@
 /* Touch: comfortable targets */
 @media (pointer:coarse){
   .nt-rail .nt-rail-item{ min-height:40px; }
-  .nt-rail .rd-side-trash{ height:40px; }
+  .nt-rail .rd-side-trash{ width:40px; height:40px; }
   .nt-rail .rd-side-subhead button{ width:32px; height:32px; }
   .nt-rail-toggle{ width:38px; height:38px; }
   .nt-tb-btn, .nt-tb-color{ min-width:36px; height:36px; }

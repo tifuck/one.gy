@@ -46,6 +46,11 @@ func (r *run) walkRemote(parentID, ppath string, ro bool) {
 			r.stallRemote(n)
 			continue
 		}
+		if n.Name == "" {
+			r.issue("invalid_name", ppath, fmt.Sprintf("A one.gy item (id %s) has an empty name; it is skipped.", n.ID), "ignore")
+			r.stallRemote(n)
+			continue
+		}
 		var name string
 		if b := r.baseByID[n.ID]; b != nil && b.RemoteName == n.Name {
 			name = path.Base(b.RelPath) // keep the mapping chosen when it was synced

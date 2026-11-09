@@ -385,14 +385,16 @@ def admin_revoke_user_access(user_id):
 
         user.session_epoch = db.func.coalesce(User.session_epoch, 0) + 1  # atomic in SQL: concurrent rotations must not collapse into one
         revoked_keys = _deactivate_user_api_keys(user.id)
+        revoked_devices = _deactivate_user_devices(user.id)
         db.session.commit()
-        print(f'[ADMIN] Admin {session["logged_in_user_id"]} revoked sessions and '
-              f'{revoked_keys} API key(s) for user {user.id} ({user.username})')
+        print(f'[ADMIN] Admin {session["logged_in_user_id"]} revoked sessions, '
+              f'{revoked_keys} API key(s) and {revoked_devices} desktop device(s) for user {user.id} ({user.username})')
         return jsonify({
             'success': True,
             'username': user.username,
             'sessions_revoked': True,
             'api_keys_revoked': revoked_keys,
+            'devices_revoked': revoked_devices,
         })
     except Exception as e:
         db.session.rollback()

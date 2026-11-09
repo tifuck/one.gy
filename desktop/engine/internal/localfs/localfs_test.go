@@ -35,6 +35,12 @@ func TestNamesKnownMappings(t *testing.T) {
 		{lin, "a:b?", "a:b?"},
 		{lin, "a%2Fb", "a%252Fb"},
 		{lin, "x.", "x."},
+		{lin, ".", "%2E"},
+		{lin, "..", "%2E."},
+		{lin, "...", "..."},
+		{lin, ".bashrc", ".bashrc"},
+		{win, ".", "%2E"},
+		{win, "..", "%2E%2E"},
 	}
 	for _, c := range cases {
 		if got := c.n.ToLocal(c.remote); got != c.local {
@@ -66,6 +72,9 @@ func TestNamesRoundTripRandom(t *testing.T) {
 			l := n.ToLocal(r)
 			if back, ok := n.ToRemote(l); !ok || back != r {
 				t.Fatalf("win=%v %q -> %q -> %q (%v)", n.Windows, r, l, back, ok)
+			}
+			if l == "." || l == ".." {
+				t.Fatalf("win=%v %q -> %q names a folder or its parent", n.Windows, r, l)
 			}
 			for k := 0; k < len(l); k++ {
 				if n.invalid(l[k]) {

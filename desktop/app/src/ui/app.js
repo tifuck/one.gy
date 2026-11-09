@@ -31,8 +31,29 @@ const SECTIONS = [
   { id: 'settings', label: 'Settings', icon: 'sliders' },
 ];
 
+// The site's page switch (core.css ::view-transition-old/new(root)): the page
+// going away fades out, the one coming in fades in, the nav stays. Played
+// across the site and panel views by fading the panel over the live site, and
+// inside the panel by document.startViewTransition (go).
+const VT_OUT = { duration: 140, easing: 'cubic-bezier(.4,0,1,1)' };
+const VT_IN = { duration: 220, easing: 'cubic-bezier(0,0,.2,1)' };
+const stillMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+function fade(el, from, to, timing) {
+  el.style.opacity = String(to);
+  return el.animate({ opacity: [from, to] }, { ...timing, duration: stillMotion.matches ? 0 : timing.duration })
+    .finished.catch(() => {});
+}
+
+// The canvas paints the scrollbar gutter (core.css scrollbar-gutter:stable):
+// opaque while the panel rests on screen, else the site's scrollbar shows through.
+function paintGutter(on) {
+  document.documentElement.style.backgroundColor = on ? getComputedStyle(els.panel).backgroundColor : '';
+}
+
 const els = {
   panel: document.getElementById('panel'),
+  main: document.getElementById('main'),
   side: document.getElementById('side'),
   content: document.getElementById('admPanel'),
   notice: document.getElementById('notice'),
@@ -42,6 +63,8 @@ let current = null; // mounted screen
 let mountedGate = null;
 let unmount = null;
 let wanted = 'syncs'; // the section to show once the panel may show sections
+let shown = false; // the panel is on screen (faded in)
+let showing = 0; // bumped by every open and close, so a stale one stops
 
 // ready (sections) | setup (authorize this computer) | other (another account) | starting | missing
 function gate() {
@@ -54,7 +77,13 @@ function gate() {
 }
 
 // ---- Router ----------------------------------------------------------------
+// On screen, switches crossfade like the site's pages (nav and sidebar stay).
 function go(screen, params = {}) {
+  if (shown && document.startViewTransition) document.startViewTransition(() => mountScreen(screen, params));
+  else mountScreen(screen, params);
+}
+
+function mountScreen(screen, params) {
   const g = gate();
   let target = screen;
   if (g === 'setup') target = 'wizard';
@@ -84,9 +113,19 @@ function regate() {
   go(wanted);
 }
 
-// Back to the site page the user came from.
-function close() {
+// Back to the site: the panel fades out over the site page under it.
+// siteReady: the bridge call loading another site page (openSite, logout);
+// the panel's content fades out meanwhile, the rest once the page is there.
+async function close(siteReady) {
   nav.closeAll();
+  const n = ++showing;
+  const was = shown;
+  shown = false;
+  paintGutter(false);
+  if (was) fade(els.main, 1, 0, VT_OUT);
+  if (siteReady) await siteReady.catch(toastError);
+  if (was) await fade(els.panel, 1, 0, VT_IN);
+  if (n !== showing) return;
   els.panel.hidden = true;
   api.closePanel();
 }
@@ -129,9 +168,9 @@ const MESSAGES = {
 
 // ---- Nav and sidebar -------------------------------------------------------------
 const nav = createNav(document.getElementById('nav'), {
-  open: (path) => bridge('openSite', path).catch(toastError),
+  open: (path) => close(bridge('openSite', path)),
   theme: (id) => bridge('siteTheme', id).catch(toastError),
-  logout: () => bridge('siteLogout').catch(toastError),
+  logout: () => close(bridge('siteLogout')),
 });
 
 // The admin console's sidebar (admin.html .adm-side), built once and updated
@@ -195,6 +234,7 @@ function applyTheme(theme) {
   const t = theme === 'frost' ? 'frost' : 'frost-dark';
   document.documentElement.dataset.theme = t;
   nav.setTheme(t);
+  if (shown) paintGutter(true);
 }
 
 // ---- Boot ----------------------------------------------------------------------------
@@ -211,15 +251,28 @@ on('engine', regate);
 on('app', () => applyTheme(store.app && store.app.theme));
 on('app:nav', (d) => nav.render(d));
 on('app:siteStatus', (d) => nav.setStatus(d));
-on('app:navigate', (d) => (d.screen === 'close' ? close() : go(d.screen, d)));
-on('app:panel', (d) => {
+// screen 'close' with a path: open that site page and leave the panel.
+on('app:navigate', (d) => (d.screen === 'close' ? close(d.path ? bridge('openSite', d.path) : null) : go(d.screen, d)));
+on('app:panel', async (d) => {
   store.panelUser = typeof d.username === 'string' ? d.username : null;
   if (d.theme) applyTheme(d.theme);
   if (d.nav !== undefined) nav.render(d.nav);
   if (d.status) nav.setStatus(d.status);
+  if (shown) {
+    go(d.screen || 'syncs');
+    api.panelReady();
+    return;
+  }
+  // Rendered while transparent; main shows the view on panelReady, then it fades in.
+  const n = ++showing;
+  els.panel.style.opacity = '0';
   els.panel.hidden = false;
   go(d.screen || 'syncs');
-  api.panelReady();
+  await api.panelReady();
+  if (n !== showing) return;
+  shown = true;
+  await Promise.all([fade(els.panel, 0, 1, VT_OUT), fade(els.main, 0, 1, VT_IN)]);
+  if (n === showing) paintGutter(true);
 });
 on('app:action', (d) => {
   if (d.action === 'upload' && gate() === 'ready') manualUpload(d.paths, { useDefault: true });

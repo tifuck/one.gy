@@ -444,6 +444,7 @@ def change_password():
     # logged in. Mirrors the recovery flow which already rotates session_epoch.
     user.session_epoch = db.func.coalesce(User.session_epoch, 0) + 1  # atomic in SQL: concurrent rotations must not collapse into one
     _deactivate_user_api_keys(user.id)
+    _deactivate_user_devices(user.id)
 
     try:
         db.session.commit()

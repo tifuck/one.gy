@@ -74,7 +74,8 @@ func TestWatcherSmoke(t *testing.T) {
 }
 
 func TestOverflowAndWatchLimitBecomeRescan(t *testing.T) {
-	w, err := New(t.TempDir(), Options{Debounce: 20 * time.Millisecond})
+	// The flood below must land in one debounce window (slow under -race).
+	w, err := New(t.TempDir(), Options{Debounce: 500 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

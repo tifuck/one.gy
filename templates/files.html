@@ -15,7 +15,7 @@
   <!-- Sidebar -->
   <aside class="fx-side rd-side" id="fxSide" aria-label="Folder tree">
     <div class="rd-side-inner">
-      <div class="rd-side-head">Library</div>
+      <div class="rd-side-head"><span>Library</span><button type="button" class="rd-side-collapse" data-rd-collapse="side" title="Collapse library" aria-label="Collapse library"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15M16 9.5 13.5 12l2.5 2.5"/></svg></button></div>
       <nav class="fx-tree rd-side-scroll" id="fxTree" aria-label="Folders">
         <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
         <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
@@ -23,9 +23,9 @@
         <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
       </nav>
       <div class="rd-side-foot">
-        <button type="button" class="rd-side-trash" id="fxTrashBtn">
+        <button type="button" class="rd-side-trash" id="fxTrashBtn" title="Trash" aria-label="Trash">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2"/></svg>
-          Trash<span class="rd-side-trash-count" id="fxTrashCount" hidden>0</span>
+          <span class="rd-side-trash-count" id="fxTrashCount" hidden>0</span>
         </button>
         <div class="rd-side-storage"><span>Storage</span><b id="fxStorageTxt">…</b></div>
         <div class="rd-meter"><div class="rd-meter-fill" id="fxMeter" style="width:0%"></div></div>

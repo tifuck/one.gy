@@ -89,7 +89,7 @@ function rowMenu(s) {
     { label: 'Verify now', icon: 'shield', run: () => verify(s) },
     'sep',
     { label: 'Open folder', icon: 'folder', run: () => run(bridge('openPath', s.local_path)) },
-    { label: 'Open on one.gy', icon: 'external', run: () => run(bridge('openSite', s.remote_folder_id ? `/files/folder/${s.remote_folder_id}` : '/files')) },
+    { label: 'Open on one.gy', icon: 'external', run: () => navigate('close', { path: s.remote_folder_id ? `/files/folder/${s.remote_folder_id}` : '/files' }) },
     'sep',
     { label: 'Settings', icon: 'settings', run: () => settingsDialog(s) },
     { label: 'Manage exclusions', icon: 'eye', run: () => exclusionsDialog(s) },

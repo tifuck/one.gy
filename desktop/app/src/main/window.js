@@ -27,6 +27,10 @@ const PANEL_TITLE = 'Sync · ONE.GY';
 // The panel says when it has rendered what it was opened with (panelReady);
 // show it anyway after this long.
 const PANEL_SHOW_FALLBACK_MS = 400;
+// The panel fades out over the site's next page once its DOM is there
+// (siteReady); fade anyway after this long.
+const SITE_READY_MAX_MS = 2000;
+const TRANSPARENT = '#00000000';
 
 function isMainFrameOf(frame, wc) {
   const main = wc && !wc.isDestroyed() ? wc.mainFrame : null;
@@ -82,7 +86,9 @@ class MainWindow {
     this.panel = new WebContentsView({
       webPreferences: webPreferences({ preload: path.join(__dirname, '..', 'preload', 'app-preload.js') }),
     });
-    this.panel.setBackgroundColor(this.background);
+    // The panel paints its own background (ui/styles/app.css .dk-panel), so
+    // it can fade in and out over the live site like the site's page switches.
+    this.panel.setBackgroundColor(TRANSPARENT);
     this.panel.setVisible(false);
     lockChromeView(this.panel.webContents);
     this.listenForShortcuts(this.panel.webContents, true);
@@ -195,7 +201,7 @@ class MainWindow {
       case 'zoomIn': this.zoom(1); break;
       case 'zoomOut': this.zoom(-1); break;
       case 'zoomReset': this.zoom(0); break;
-      case 'sync': if (this.panelOpen) this.closePanel(); else this.opts.onSyncShortcut(); break;
+      case 'sync': if (this.panelOpen) this.send({ type: 'app:navigate', data: { screen: 'close' } }); else this.opts.onSyncShortcut(); break;
       case 'devtools': (panelWc || wc).toggleDevTools(); break;
       default:
     }
@@ -242,6 +248,7 @@ class MainWindow {
     this.panel.webContents.focus();
   }
 
+  // Hides the panel at once; the panel UI calls it when it has faded out.
   closePanel() {
     this.panelWanted = false;
     clearTimeout(this.showTimer);
@@ -275,17 +282,35 @@ class MainWindow {
     else this.opts.settings.set({ theme });
   }
 
-  // Submits the site's own logout form, then shows the site.
+  // Submits the site's own logout form; resolves once the page it lands on
+  // is there for the panel to fade out over.
   siteLogout() {
+    const ready = this.siteReady();
     this.site.webContents.send('onegy:site-logout');
-    this.closePanel();
+    return ready;
   }
 
-  // Load a path on the server in the site view (e.g. /account, /files/folder/12).
+  // Load a path on the server in the site view (e.g. /account, /files/folder/12)
+  // under the panel; resolves once the page is there for the panel to fade out over.
   openSitePath(pathname) {
-    this.closePanel();
+    const ready = this.siteReady();
     this.site.webContents.loadURL(this.opts.serverOrigin() + pathname);
     this.show();
+    return ready;
+  }
+
+  // Resolves on the site's next dom-ready, or after SITE_READY_MAX_MS.
+  siteReady() {
+    const wc = this.site.webContents;
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        wc.off('dom-ready', done);
+        resolve();
+      };
+      const timer = setTimeout(done, SITE_READY_MAX_MS);
+      wc.on('dom-ready', done);
+    });
   }
 
   isSiteFrame(frame) {
@@ -311,7 +336,6 @@ class MainWindow {
     const bg = this.background;
     this.win.setBackgroundColor(bg);
     this.site.setBackgroundColor(bg);
-    this.panel.setBackgroundColor(bg);
   }
 
   show() {

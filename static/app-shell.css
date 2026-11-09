@@ -109,7 +109,7 @@
   --rd-list-w:clamp(320px, 19vw, 520px);   /* notes "all notes" list pane          */
   --rd-side-min:150px;  --rd-side-max:560px;
   --rd-list-min:200px;  --rd-list-max:620px;
-  --rd-rail-collapsed-w:44px;
+  --rd-rail-collapsed-w:32px;
   /* Effective track widths — what the page grids actually consume. */
   --rd-side-eff:var(--rd-side-w);
   --rd-list-eff:var(--rd-list-w);

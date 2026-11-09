@@ -24,6 +24,10 @@ window.onegyDesktop = {
 }
 ```
 
+- `unlock()`: resolves to the master key only on a page signed in as the
+  account this computer is authorized for (the page's `data-username`, see
+  below, compared case-insensitively) and while the app's *Unlock the website*
+  setting is on; otherwise `null` (anonymous pages, other accounts, not set up).
 - `openSync({ username, screen })`
   - `username` (required): the signed-in website user (`current_user.username`).
     The app refuses to show sync screens for a different account than the one

@@ -43,7 +43,7 @@
   }
   var PANES = { side: SIDE, list: LIST }
 
-  var COLLAPSED_W = 44
+  var COLLAPSED_W = 32
   var SNAP = 110          // drag narrower than this -> snap collapsed
   var MIN_CONTENT = 340   // px the main content area must always keep
   var STEP = 16, STEP_BIG = 48

@@ -6,9 +6,14 @@
    ========================================================================== */
 
 /* ---- Panel ------------------------------------------------------------------ */
-/* The wrapper only hides the page until the site opens it; its children are
-   laid out as direct children of body, as on the site. */
-.dk-panel{ display:contents; }
+/* The wrapper hides the page until the site opens it and paints the page
+   background instead of body: the panel view is transparent and app.js fades
+   this box over the live site (opacity on the root would not fade the canvas).
+   It stands in for body's flex column, so the site layout is unchanged. */
+body.rd-app{ background:transparent; }
+.dk-panel{ display:flex; flex-direction:column; flex:1 0 auto; background:var(--bg); }
+/* Section switches crossfade the content only, like the site's pinned nav. */
+.adm-side{ view-transition-name:dk-side; }
 .dk-notice > .rd-callout{ margin-bottom:16px; }
 #admPanel:focus-visible, .ui-v2 .dk-step-title:focus-visible{ outline:none; }
 .adm-nav-link .rd-badge{ margin-left:auto; }

@@ -120,7 +120,7 @@ function account() {
         h('dt', null, 'Storage'), h('dd', null, a.storage_limit > 0 ? `${bytes(a.storage_used)} of ${bytes(a.storage_limit)}` : bytes(a.storage_used))),
       a.storage_limit > 0 ? h('div', { class: 'rd-meter', role: 'progressbar', 'aria-valuenow': Math.round(used), 'aria-valuemin': 0, 'aria-valuemax': 100 }, fill) : null,
       h('div', { class: 'dk-btn-row' },
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => bridge('openSite', '/account').catch(toastError) }, icon('external'), 'Open account page'))),
+        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('close', { path: '/account' }) }, icon('external'), 'Open account page'))),
     panel('Sign out of sync on this computer', 'Syncing stops and the keys are removed from this computer. Your files stay where they are. The website stays signed in.',
       h('button', {
         type: 'button', class: 'rd-btn rd-btn-danger',
@@ -258,7 +258,7 @@ function network() {
 
 function security() {
   const s = store.settings;
-  const openSite = (p) => () => bridge('openSite', p).catch(toastError);
+  const openSite = (p) => () => navigate('close', { path: p });
   return [
     panel('This computer', null,
       row('Ask for my password when the app starts', 'The key is then kept in memory only, never in the system key store.', switchInput(s.require_password_on_start, (v) => saveEngine({ require_password_on_start: v }))),

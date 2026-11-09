@@ -16,6 +16,7 @@ const { isUiUrl } = require('./protocol');
 const { removeSync } = require('./remove-sync');
 const { cleanNav, isSitePath } = require('./site-nav');
 const { UI_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS } = require('./ui-methods');
+const { mayUnlock } = require('./sync-status');
 
 const MAX_PARAMS_BYTES = 1024 * 1024;
 const PANEL_SCREENS = new Set(['syncs', 'transfers', 'issues', 'settings']);
@@ -119,9 +120,10 @@ function registerIpc({ window, engine, settings, sync }) {
     openExternal(url);
     return true;
   });
-  handle('app:openSite', (pathname) => {
+  // Resolves once the page is there (the panel then fades out over it).
+  handle('app:openSite', async (pathname) => {
     if (!isSitePath(pathname)) throw Object.assign(new Error('Invalid path'), { code: 'validation_failed' });
-    window.openSitePath(pathname);
+    await window.openSitePath(pathname);
     return true;
   });
   handle('app:closePanel', () => {
@@ -137,8 +139,8 @@ function registerIpc({ window, engine, settings, sync }) {
     window.setSiteTheme(theme);
     return true;
   });
-  handle('app:siteLogout', () => {
-    window.siteLogout();
+  handle('app:siteLogout', async () => {
+    await window.siteLogout();
     return true;
   });
   handle('app:exportDiagnostics', async () => {
@@ -181,9 +183,10 @@ function registerIpc({ window, engine, settings, sync }) {
     const nav = cleanNav(raw);
     if (nav) window.setSiteNav(nav).catch((err) => console.error(`[IPC] site nav: ${err.message}`));
   });
-  ipcMain.handle('site:unlock', async (event) => {
-    if (!window.isSiteFrame(event.senderFrame)) return null;
+  ipcMain.handle('site:unlock', async (event, username) => {
+    if (!window.isSiteFrame(event.senderFrame) || !isUsername(username)) return null;
     try {
+      if (!mayUnlock(await engine.call('account.status'), username)) return null;
       const res = await engine.call('account.webUnlockKey');
       return res && typeof res.master_key_b64 === 'string' ? res.master_key_b64 : null;
     } catch {
