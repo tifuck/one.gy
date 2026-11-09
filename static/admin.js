@@ -952,6 +952,8 @@
     var nav = $('admNav')
     if (nav && activeTab && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = activeTab.offsetLeft - (nav.clientWidth - activeTab.offsetWidth) / 2
     if (window.scrollY) window.scrollTo(0, 0)
+    var main = document.querySelector('.adm-main')
+    if (main) main.scrollTop = 0
     panel.removeAttribute('data-shown')
     TABS[t](epoch)
   }

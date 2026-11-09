@@ -97,6 +97,7 @@ function mountScreen(screen, params) {
   const mount = SCREENS[target] ? SCREENS[target].mount : MESSAGES[target];
   unmount = mount(els.screen, { ...params, username: store.panelUser }) || null;
   window.scrollTo(0, 0);
+  els.content.parentElement.scrollTop = 0;
   els.content.focus({ preventScroll: true });
   renderSide();
 }

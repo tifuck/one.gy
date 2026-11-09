@@ -7,7 +7,10 @@
 .sr-only{ position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
 
 /* ---- Layout ---------------------------------------------------------------- */
-.adm-layout{ --adm-side-w:224px; display:grid; grid-template-columns:var(--adm-side-w) minmax(0,1fr); min-height:calc(100dvh - var(--nav-h)); }
+/* Full-height shell like Files/Notes: the content column scrolls, never the page,
+   so core.css's stable gutter would only leave a dead strip down the right. */
+.adm-layout{ --adm-side-w:224px; display:grid; grid-template-columns:var(--adm-side-w) minmax(0,1fr); height:calc(100dvh - var(--nav-h)); }
+@media (min-width:901px){ :root:has(.adm-layout){ scrollbar-gutter:auto; } }
 .adm-side{ position:sticky; top:var(--nav-h); align-self:start; height:calc(100dvh - var(--nav-h)); overflow-y:auto;
   padding:10px 8px 16px; background:var(--pane); border-right:1px solid var(--line); }
 .adm-side-head{ padding:6px 10px 10px; font-size:.72rem; font-weight:600; color:var(--text-faint); }
@@ -21,7 +24,7 @@
 .adm-nav-link.is-active svg{ color:var(--accent); }
 .adm-nav-link:focus-visible{ outline-offset:-2px; }
 
-.adm-main{ min-width:0; padding:clamp(20px,3.5vw,36px) clamp(16px,3vw,40px) 72px; } /* top matches .rd-page so titles line up with Account/Prompts */
+.adm-main{ min-width:0; overflow-y:auto; padding:clamp(20px,3.5vw,36px) clamp(16px,3vw,40px) 72px; } /* top matches .rd-page so titles line up with Account/Prompts */
 #admPanel{ max-width:1120px; margin-inline:auto; }
 #admPanel:focus{ outline:none; }
 /* Refresh in place: old content stays (dimmed after a beat) and is inert */
@@ -277,7 +280,7 @@
   .adm-main{ padding-inline:24px; }
 }
 @media (max-width:900px){
-  .adm-layout{ display:block; min-height:0; }
+  .adm-layout{ display:block; height:auto; }
   .adm-side{ z-index:30; height:auto; overflow:visible; padding:8px 12px; background:var(--bg); border-right:0; border-bottom:1px solid var(--line); }
   .adm-side-head{ display:none; }
   .adm-nav{ flex-direction:row; gap:2px; padding:3px; border-radius:9px; background:var(--surface); overflow-x:auto; scrollbar-width:none; }
@@ -289,7 +292,7 @@
   .adm-nav-link svg{ display:none; }
   .adm-nav-link:hover{ background:none; color:var(--text); }
   .adm-nav-link.is-active{ background:var(--raise); color:var(--text); box-shadow:0 1px 2px rgba(0,0,0,.18), 0 0 0 1px var(--line); }
-  .adm-main{ padding:20px 16px 56px; }
+  .adm-main{ overflow-y:visible; padding:20px 16px 56px; }
   .adm-st-fields{ grid-template-columns:repeat(2,minmax(0,1fr)); }
   .adm-st-primary{ grid-column:1 / -1; min-height:0; }
 }
