@@ -6,7 +6,7 @@ name: Desktop release
 on:
   push:
     branches: [main]
-    paths: ["desktop/**"]
+    paths: ["desktop/**", "cli_E2EE_binary/e2ee/**", ".github/workflows/desktop-release.yml"]
   workflow_dispatch:
 
 permissions:
@@ -49,7 +49,7 @@ jobs:
     needs: check
     if: needs.check.outputs.build == 'true'
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -79,7 +79,7 @@ jobs:
 
       - name: Test the shared crypto package
         working-directory: cli_E2EE_binary
-        run: go test ./...
+        run: go test ./e2ee/...
 
       - name: Test the engine
         working-directory: desktop/engine
