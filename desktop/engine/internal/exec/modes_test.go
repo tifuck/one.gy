@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 
@@ -60,7 +61,8 @@ func TestModeOnlyOps(t *testing.T) {
 	if err := x.Execute(context.Background(), op); err != nil {
 		t.Fatal(err)
 	}
-	if fi, _ := os.Stat(filepath.Join(f.root, "run.sh")); fi.Mode().Perm() != 0o644 {
+	// Windows has no POSIX permission bits (Go reports rw-rw-rw-); only the row matters there.
+	if fi, _ := os.Stat(filepath.Join(f.root, "run.sh")); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 		t.Fatalf("mode %v", fi.Mode())
 	}
 	if r := f.row("run.sh"); r.Mode != 0o644 {

@@ -115,9 +115,13 @@ func SameMtime(a, b int64, fsKind string) bool {
 	return d < MtimePrecision(fsKind)
 }
 
-// SyncFile fsyncs a file by path.
+// SyncFile fsyncs a file by path. Windows FlushFileBuffers needs a writable
+// handle; a read-only file falls back to a read-only handle (enough on Linux).
 func SyncFile(p string) error {
-	f, err := os.Open(p)
+	f, err := os.OpenFile(p, os.O_RDWR, 0)
+	if err != nil {
+		f, err = os.Open(p)
+	}
 	if err != nil {
 		return err
 	}
