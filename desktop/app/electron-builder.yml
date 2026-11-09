@@ -65,13 +65,24 @@ linux:
   synopsis: one.gy in a native window, with end-to-end encrypted folder sync
   maintainer: tifuck <173309113+tifuck@users.noreply.github.com>
   vendor: ONE.GY
+  # Root updater for the deb / rpm installs (see build/linux/after-install.sh).
+  extraResources:
+    - from: build/linux/update-system.sh
+      to: update-system.sh
 appImage:
   artifactName: ONE.GY-Desktop-x86_64.${ext}
 # deb and rpm install to /opt/ONE.GY Desktop with a desktop entry and icons;
-# the builder's default dependencies apply.
+# the builder's default dependencies apply, plus curl for update-system.sh.
+# The install scripts are the builder's defaults plus the root update timer.
 deb:
   artifactName: onegy-desktop_amd64.${ext}
   packageName: onegy-desktop
+  afterInstall: build/linux/after-install.sh
+  afterRemove: build/linux/after-remove.sh
+  fpm: ["--depends", "curl"]
 rpm:
   artifactName: onegy-desktop.x86_64.${ext}
   packageName: onegy-desktop
+  afterInstall: build/linux/after-install.sh
+  afterRemove: build/linux/after-remove.sh
+  fpm: ["--depends", "curl"]

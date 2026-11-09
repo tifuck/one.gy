@@ -1,17 +1,21 @@
-// Auto-update via electron-updater, generic provider on this repository's
-// latest GitHub release (latest.yml / latest-linux.yml, or beta*.yml on the
-// beta channel). Packaged builds only: Windows NSIS, Linux AppImage, and the
-// Linux .deb / .rpm installs, which electron-updater recognises by the
-// resources/package-type file electron-builder writes and installs with the
-// system package manager through pkexec (it asks for the system password).
+// Fully automatic updates, no prompts.
+// Windows NSIS and Linux AppImage: electron-updater (generic provider on this
+// repository's latest GitHub release: latest.yml / latest-linux.yml, or
+// beta*.yml on the beta channel) downloads in the background, then installs
+// silently and relaunches once the app is idle (canRestart).
+// Linux .deb / .rpm: the root timer from build/linux/after-install.sh runs
+// resources/update-system.sh, which installs new releases with the system
+// package manager. The app only notices its files were replaced and relaunches
+// itself once idle.
 'use strict';
 
-const fs = require('fs');
+const fs = require('original-fs');
 const path = require('path');
-const { app, dialog } = require('electron');
+const { app, powerMonitor } = require('electron');
 
 const FEED_URL = 'https://github.com/tifuck/one.gy/releases/latest/download';
-const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+const CHECK_EVERY_MS = 30 * 60 * 1000;
+const RESTART_POLL_MS = 60 * 1000;
 
 // 'nsis' | 'appimage' | 'deb' | 'rpm', or null when this build cannot update itself.
 function installKind() {
@@ -27,16 +31,41 @@ function installKind() {
   }
 }
 
-// opts: { settings, beforeInstall(): Promise, notify({title, body}), parentWindow() }
-function startUpdater({ settings, beforeInstall, notify, parentWindow }) {
+// opts: { settings, canRestart(): bool, beforeRestart(): Promise, relaunch() }
+function startUpdater({ settings, canRestart, beforeRestart, relaunch }) {
   const kind = installKind();
   if (!kind) return { checkNow: async () => ({ supported: false }) };
-  const packaged = kind === 'deb' || kind === 'rpm';
+
+  let pending = null; // () => void that restarts into the new version
+  setInterval(async () => {
+    if (!pending || !settings.get().auto_update || !canRestart()) return;
+    const restart = pending;
+    pending = null;
+    await beforeRestart();
+    restart();
+  }, RESTART_POLL_MS);
+
+  if (kind === 'deb' || kind === 'rpm') {
+    // The package manager replaces app.asar by rename: a new inode means a new install.
+    const asar = path.join(process.resourcesPath, 'app.asar');
+    const inode = () => { try { return fs.statSync(asar).ino; } catch { return null; } };
+    const started = inode();
+    const check = async () => {
+      const now = inode();
+      if (now !== null && now !== started && !pending) {
+        console.log('[UPDATE] new version installed, relaunching when idle');
+        pending = relaunch;
+      }
+      return { supported: true, checked: true };
+    };
+    setInterval(check, RESTART_POLL_MS);
+    return { checkNow: check };
+  }
+
   const { autoUpdater } = require('electron-updater');
   autoUpdater.setFeedURL({ provider: 'generic', url: FEED_URL });
   autoUpdater.autoDownload = true;
-  // A package install needs the system password: only when the user says so.
-  autoUpdater.autoInstallOnAppQuit = !packaged;
+  autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowDowngrade = false;
   autoUpdater.logger = {
     info: (m) => console.log(`[UPDATE] ${m}`),
@@ -44,32 +73,10 @@ function startUpdater({ settings, beforeInstall, notify, parentWindow }) {
     error: (m) => console.error(`[UPDATE] ${m}`),
     debug: () => {},
   };
-
-  let prompted = false;
   autoUpdater.on('error', (err) => console.error(`[UPDATE] ${err.message}`));
-  autoUpdater.on('update-downloaded', async (info) => {
-    if (prompted) return;
-    prompted = true;
-    notify({ title: 'Update ready', body: `ONE.GY Desktop ${info.version} installs when you restart.` });
-    const { response } = await dialog.showMessageBox(parentWindow(), {
-      type: 'info',
-      buttons: ['Restart now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Update ready',
-      message: `ONE.GY Desktop ${info.version} is ready to install.`,
-      detail: packaged
-        ? 'Your system asks for your password to install the package. Syncing pauses for a moment while the app restarts.'
-        : 'Syncing pauses for a moment while the app restarts.',
-    });
-    if (response !== 0) {
-      prompted = false;
-      return;
-    }
-    // The package manager installs before the app quits (and may be
-    // cancelled), so the engine keeps running until the normal quit.
-    if (!packaged) await beforeInstall();
-    autoUpdater.quitAndInstall();
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log(`[UPDATE] ${info.version} downloaded, installing when idle`);
+    pending = () => autoUpdater.quitAndInstall(true, true);
   });
 
   const check = async () => {
@@ -86,6 +93,7 @@ function startUpdater({ settings, beforeInstall, notify, parentWindow }) {
   };
   setTimeout(check, 15000);
   setInterval(check, CHECK_EVERY_MS);
+  powerMonitor.on('resume', () => setTimeout(check, 15000));
   return { checkNow: check };
 }
 

@@ -185,8 +185,7 @@ jobs:
           - Fedora, openSUSE, RHEL (x86_64 installer): onegy-desktop.x86_64.rpm
           - Portable Linux AppImage (x86_64, no install): ONE.GY-Desktop-x86_64.AppImage
 
-          All of them update themselves. The .deb and .rpm installs ask for
-          your system password to install an update.
+          All of them update themselves in the background, with no prompts.
 
           These builds are not code-signed yet. Windows SmartScreen may warn
           before the installer runs: choose "More info", then "Run anyway".

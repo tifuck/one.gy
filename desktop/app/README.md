@@ -107,12 +107,19 @@ test/           node --test, plus the env-gated e2e_bridge.py
 
 ## Notes
 
-- Auto-update (electron-updater, generic provider on this repo's latest GitHub
-  release) runs in packaged NSIS, AppImage, deb and rpm builds. electron-updater
-  tells deb and rpm installs apart by `resources/package-type` and installs
-  them with the system package manager through pkexec, so those ask for the
-  system password and only install when the user picks "Restart now". The beta
-  channel reads `beta*.yml`, which every release also carries.
+- Auto-update is fully automatic, no prompts (`updater.js`). NSIS and AppImage:
+  electron-updater (generic provider on this repo's latest GitHub release)
+  checks every 30 minutes, on resume and on relaunch, downloads, then installs
+  silently and relaunches once the app is idle (window hidden or minimized, or
+  5 minutes of user idle time, and not mid-sync). The beta channel reads
+  `beta*.yml`, which every release also carries. deb and rpm (told apart by
+  `resources/package-type`): the package's post-install script
+  (`build/linux/after-install.sh`, the builder's default plus our block)
+  installs a root systemd timer `onegy-desktop-update.timer` that runs
+  `resources/update-system.sh` every 30 minutes: it installs the latest stable
+  release after checking its sha512 from `latest-linux.yml`. The app notices
+  `app.asar` was replaced and relaunches itself under the same idle rule. The
+  timer follows the stable channel only.
 - The website bridge (`window.onegyDesktop`: `unlock`, `openSync`, `onStatus`)
   exists only on top-level frames of the configured server; the main process
   re-checks the frame for every call and the engine's `web_unlock` setting

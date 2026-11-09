@@ -67,7 +67,7 @@ function general() {
       row('Keep running when the window is closed', 'Syncing continues in the tray. Quit from the tray menu.', switchInput(a.close_to_tray, (v) => saveApp({ close_to_tray: v }))),
       row('Prevent sleep while syncing', null, switchInput(a.prevent_sleep, (v) => saveApp({ prevent_sleep: v })))),
     panel('Updates', store.version ? `Version ${store.version.app}` : null,
-      row('Install updates automatically', 'Downloads in the background and asks before restarting. The .deb and .rpm installs ask for your system password to install.', switchInput(a.auto_update, (v) => saveApp({ auto_update: v }))),
+      row('Install updates automatically', 'Downloads and installs in the background, then restarts the app while you are away from it. The .deb and .rpm installs are updated by the system every 30 minutes either way; this only restarts the app.', switchInput(a.auto_update, (v) => saveApp({ auto_update: v }))),
       row('Update channel', 'Beta gets new versions first.', select([['stable', 'Stable'], ['beta', 'Beta']], a.update_channel, (v) => saveApp({ update_channel: v })))),
     panel('Notifications', null,
       ...NOTIFY.map(([k, label]) => row(label, null, switchInput(a.notify[k], (v) => saveApp({ notify: { [k]: v } }))))),

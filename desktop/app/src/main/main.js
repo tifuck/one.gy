@@ -19,6 +19,7 @@ const { watchEnvironment } = require('./environment');
 const { SyncStatus, throttle } = require('./sync-status');
 
 const SITE_STATUS_EVERY_MS = 500; // site-bridge.md: at most 2 updates per second
+const UPDATE_IDLE_S = 300; // an update restarts a visible window only after this much user idle time
 
 const APP_ID = 'gy.one.desktop';
 const ENGINE_EXE = process.platform === 'win32' ? 'onegy-engine.exe' : 'onegy-engine';
@@ -84,6 +85,10 @@ function applyAutostart(enabled) {
 
 function start() {
   const settings = new SettingsStore(app.getPath('userData'));
+  // Written before an update restart so a window hidden in the tray stays hidden.
+  const hiddenMarker = path.join(app.getPath('userData'), 'relaunch-hidden');
+  const relaunchHidden = fs.existsSync(hiddenMarker);
+  fs.rmSync(hiddenMarker, { force: true });
   const devServer = DEV ? argValue('server') : null;
   if (devServer) settings.set({ server_url: devServer });
 
@@ -98,6 +103,7 @@ function start() {
   };
   let window = null;
   let tray = null;
+  let updater = null;
 
   // The sync panel for the account of the site page (else this computer's).
   // From the tray, the keyboard and notifications only once this computer is
@@ -163,7 +169,10 @@ function start() {
 
   const quit = () => app.quit();
 
-  app.on('second-instance', () => window && window.show());
+  app.on('second-instance', () => {
+    if (window) window.show();
+    if (updater) updater.checkNow();
+  });
   app.on('window-all-closed', () => { /* tray keeps the app alive */ });
   app.on('before-quit', (e) => {
     state.quitting = true;
@@ -186,7 +195,7 @@ function start() {
       onSiteMutation: () => engine.call('engine.nudge').catch(() => {}),
       onSyncShortcut: () => { if (sync.authorized()) openPanel('syncs'); },
     });
-    const startHidden = process.argv.includes('--hidden') || settings.get().start_minimized;
+    const startHidden = process.argv.includes('--hidden') || settings.get().start_minimized || relaunchHidden;
     const win = window.create({ show: !startHidden });
     win.on('close', (e) => {
       if (state.quitting) return;
@@ -225,14 +234,21 @@ function start() {
     });
     applyAutostart(settings.get().launch_at_login);
 
-    startUpdater({
+    updater = startUpdater({
       settings,
-      notify: ({ title, body }) => showNotification({ title, body, kind: 'info' }),
-      parentWindow: () => window.win,
-      beforeInstall: async () => {
+      canRestart: () => {
+        if (sync.status && sync.status.state === 'syncing') return false;
+        return !win.isVisible() || win.isMinimized() || powerMonitor.getSystemIdleTime() >= UPDATE_IDLE_S;
+      },
+      beforeRestart: async () => {
+        if (!win.isVisible()) fs.writeFileSync(hiddenMarker, '');
         state.quitting = true;
         await engine.stop();
         state.engineStopped = true;
+      },
+      relaunch: () => {
+        app.relaunch({ args: [] });
+        app.quit();
       },
     });
 
