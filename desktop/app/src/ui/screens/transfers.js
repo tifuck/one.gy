@@ -1,6 +1,8 @@
 // Transfers (plan 10.4): tabs Active / Queued / Completed / Failed, per-item
 // pause/resume and cancel (manual transfers only), global pause and clear.
-import { h, icon, clear, append, fill } from '../components/dom.js';
+import {
+  h, icon, clear, append, fill, pageHead,
+} from '../components/dom.js';
 import { toastError } from '../components/toast.js';
 import { manualUpload, manualDownload } from '../components/manual.js';
 import {
@@ -59,9 +61,9 @@ export function mount(container, params = {}) {
     h('span', { class: 'rd-empty-icon' }, icon('transfers')),
     h('h2', { class: 'rd-empty-title' }, 'Nothing here'),
     h('p', { class: 'rd-empty-text' }, 'Uploads and downloads show up here while they run.'));
-  const table = h('div', { class: 'rd-table-wrap' }, h('table', { class: 'rd-table' },
-    h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Progress'), h('th', { class: 'is-actions' }, h('span', { class: 'dk-sr' }, 'Actions')))),
-    body));
+  const table = h('section', { class: 'rd-panel' }, h('div', { class: 'rd-table-wrap' }, h('table', { class: 'rd-table' },
+    h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Progress'), h('th', { class: 'is-actions' }, h('span', { class: 'sr-only' }, 'Actions')))),
+    body)));
   const allPaused = () => [...store.transfers.values()].some((t) => t.state === 'paused');
 
   const toolbar = h('div', { class: 'dk-toolbar' },
@@ -107,13 +109,11 @@ export function mount(container, params = {}) {
     renderGlobal();
   }
 
-  append(container, h('div', { class: 'rd-page rd-page-wide' },
-    h('header', { class: 'rd-page-head' },
-      h('p', { class: 'rd-page-sub' }, 'Sync transfers can be paused. Uploads and downloads you start yourself can also be cancelled.'),
-      h('div', { class: 'rd-page-actions' },
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => manualDownload() }, icon('download'), 'Download…'),
-        h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => manualUpload() }, icon('upload'), 'Upload…'))),
-    toolbar, globalBar, table, empty));
+  append(container,
+    pageHead('Transfers', 'Sync transfers can be paused. Uploads and downloads you start yourself can also be cancelled.',
+      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => manualDownload() }, icon('download'), 'Download…'),
+      h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => manualUpload() }, icon('upload'), 'Upload…')),
+    toolbar, globalBar, table, empty);
 
   render();
   loadTransfers().catch(toastError);

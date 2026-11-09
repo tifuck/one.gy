@@ -5,6 +5,9 @@
 //           hidden until the site's Sync entry, the tray or Ctrl+Shift+S opens it.
 // No visible browser controls: back/forward, reload and zoom are keyboard and
 // mouse-button only. A failed page load shows app://ui/offline.html.
+// The panel draws its own copy of the site's nav from the values the site
+// preload reports (setSiteNav), follows the site's theme and zoom, and asks
+// the site to switch theme or log out with the site's own controls.
 'use strict';
 
 const path = require('path');
@@ -12,6 +15,7 @@ const { app, BaseWindow, WebContentsView, nativeImage, session } = require('elec
 const { webPreferences, lockChromeView, lockSiteView, configureSiteSession, originOf } = require('./security');
 const { UI_URL, OFFLINE_URL, handleScheme } = require('./protocol');
 const { shortcutFor, nextZoom } = require('./shortcuts');
+const { avatarDataUrl } = require('./site-nav');
 
 const SITE_PARTITION = 'persist:onegy';
 const START_PATH = '/files';
@@ -19,6 +23,10 @@ const BACKGROUND = { 'frost-dark': '#08080a', frost: '#ffffff' };
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const NUDGE_DEBOUNCE_MS = 1500;
 const PANEL_ONLY = new Set(['sync', 'devtools']);
+const PANEL_TITLE = 'Sync · ONE.GY';
+// The panel says when it has rendered what it was opened with (panelReady);
+// show it anyway after this long.
+const PANEL_SHOW_FALLBACK_MS = 400;
 
 function isMainFrameOf(frame, wc) {
   const main = wc && !wc.isDestroyed() ? wc.mainFrame : null;
@@ -27,14 +35,22 @@ function isMainFrameOf(frame, wc) {
 }
 
 class MainWindow {
-  // opts: { settings (SettingsStore), serverOrigin(): string, onSiteMutation(), onSyncShortcut() }
+  // opts: { settings (SettingsStore), serverOrigin(): string, siteStatus(): object,
+  //         onSiteMutation(), onSyncShortcut() }
   constructor(opts) {
     this.opts = opts;
     this.win = null;
     this.site = null;
     this.panel = null;
     this.siteUser = null; // username the current site page reported via the bridge
+    this.siteNav = null; // the site's nav as values (site-nav.js), avatar as a data: URL
+    this.navKey = '';
+    this.avatar = { path: null, data: null };
     this.nudgeTimer = null;
+    this.panelLoaded = false;
+    this.panelWanted = false;
+    this.pendingPanel = null;
+    this.showTimer = null;
   }
 
   get background() {
@@ -71,6 +87,12 @@ class MainWindow {
     lockChromeView(this.panel.webContents);
     this.listenForShortcuts(this.panel.webContents, true);
     this.win.contentView.addChildView(this.panel);
+    this.panel.webContents.on('did-finish-load', () => {
+      this.panelLoaded = true;
+      this.panel.webContents.setZoomFactor(this.opts.settings.get().site_zoom);
+      if (this.pendingPanel) this.send({ type: 'app:panel', data: this.pendingPanel });
+      this.pendingPanel = null;
+    });
     this.panel.webContents.loadURL(UI_URL);
 
     this.layout();
@@ -103,7 +125,7 @@ class MainWindow {
     lockSiteView(wc, () => this.opts.serverOrigin());
     this.listenForShortcuts(wc, false);
     this.win.contentView.addChildView(this.site, 0);
-    wc.on('page-title-updated', (_e, title) => this.win.setTitle(title || 'ONE.GY'));
+    wc.on('page-title-updated', (_e, title) => { if (!this.panelOpen) this.win.setTitle(title || 'ONE.GY'); });
     wc.on('did-navigate', () => {
       this.siteUser = null;
       wc.setZoomFactor(this.opts.settings.get().site_zoom);
@@ -134,6 +156,8 @@ class MainWindow {
       this.site = null;
     }
     this.siteUser = null;
+    this.siteNav = null;
+    this.navKey = '';
     this.createSite();
     this.layout();
   }
@@ -181,6 +205,7 @@ class MainWindow {
     const factor = nextZoom(this.opts.settings.get().site_zoom, dir);
     this.opts.settings.set({ site_zoom: factor });
     this.site.webContents.setZoomFactor(factor);
+    this.panel.webContents.setZoomFactor(factor);
   }
 
   get panelOpen() {
@@ -189,17 +214,71 @@ class MainWindow {
 
   // Opens the sync panel over the site. username: the account the panel is
   // for (the site page's, else this computer's); the panel UI does the gating.
+  // It becomes visible once it has rendered (showPanel), so it never flashes
+  // a stale screen or theme.
   openPanel({ username, screen }) {
-    this.send({ type: 'app:panel', data: { username: username || null, screen: screen || 'syncs' } });
-    this.panel.setVisible(true);
+    const data = {
+      username: username || null,
+      screen: screen || 'syncs',
+      theme: this.opts.settings.get().theme,
+      nav: this.siteNav,
+      status: this.opts.siteStatus(),
+    };
+    this.panelWanted = true;
+    if (this.panelLoaded) this.send({ type: 'app:panel', data });
+    else this.pendingPanel = data;
+    clearTimeout(this.showTimer);
+    this.showTimer = setTimeout(() => this.showPanel(), PANEL_SHOW_FALLBACK_MS);
     this.show();
+  }
+
+  showPanel() {
+    clearTimeout(this.showTimer);
+    if (!this.panelWanted) return;
+    if (!this.panelOpen) {
+      this.panel.setVisible(true);
+      this.win.setTitle(PANEL_TITLE);
+    }
     this.panel.webContents.focus();
   }
 
   closePanel() {
+    this.panelWanted = false;
+    clearTimeout(this.showTimer);
     if (!this.panelOpen) return;
     this.panel.setVisible(false);
+    this.win.setTitle(this.site.webContents.getTitle() || 'ONE.GY');
     this.site.webContents.focus();
+  }
+
+  // nav: cleaned by site-nav.js. The avatar path is fetched with the site's
+  // session once per path and handed to the panel as a data: URL.
+  async setSiteNav(nav) {
+    const key = JSON.stringify(nav);
+    if (key === this.navKey) return;
+    this.navKey = key;
+    if (nav.avatar !== this.avatar.path) {
+      const data = nav.avatar
+        ? await avatarDataUrl((url, init) => this.site.webContents.session.fetch(url, init), this.opts.serverOrigin() + nav.avatar).catch(() => null)
+        : null;
+      this.avatar = { path: nav.avatar, data };
+    }
+    if (key !== this.navKey) return; // a newer nav arrived meanwhile
+    this.siteNav = { ...nav, avatar: this.avatar.data };
+    this.send({ type: 'app:nav', data: this.siteNav });
+  }
+
+  // The site's own theme option (theme-switch.js persists it); the panel then
+  // follows the theme the site reports. No site page to ask: set it directly.
+  setSiteTheme(theme) {
+    if (originOf(this.site.webContents.getURL()) === this.opts.serverOrigin()) this.site.webContents.send('onegy:site-theme', theme);
+    else this.opts.settings.set({ theme });
+  }
+
+  // Submits the site's own logout form, then shows the site.
+  siteLogout() {
+    this.site.webContents.send('onegy:site-logout');
+    this.closePanel();
   }
 
   // Load a path on the server in the site view (e.g. /account, /files/folder/12).

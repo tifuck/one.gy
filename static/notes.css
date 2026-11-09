@@ -70,7 +70,7 @@
   background:var(--bg); border-right:1px solid var(--line); container-type:inline-size;
 }
 .nt-list-head{
-  flex:none; display:flex; align-items:center; gap:6px; height:52px; box-sizing:border-box;
+  flex:none; display:flex; align-items:center; gap:6px; height:40px; box-sizing:border-box;
   padding:0 10px 0 16px; border-bottom:1px solid var(--line);
 }
 .nt-list-title{
@@ -153,7 +153,7 @@
 
 /* ---- Skeletons + entrances ------------------------------------------------ */
 .nt-skel-row{ height:24px; margin:3px 6px; }
-.nt-skel-list{ padding:52px 12px 0; display:flex; flex-direction:column; gap:10px; }
+.nt-skel-list{ padding:40px 12px 0; display:flex; flex-direction:column; gap:10px; }
 .nt-items .nt-skel-list{ padding:8px 6px 0; }
 .nt-skel-title{ display:block; width:96px; height:14px; }
 .nt-skel-item{ height:40px; }
@@ -169,7 +169,7 @@
 .nt-editor > *{ animation:rdFade .16s ease backwards; }
 .nt-ed-loading{ display:flex; flex:1 1 auto; align-items:center; justify-content:center; padding:3rem; animation:rdFade .18s .05s backwards; }
 .nt-ed-head{
-  flex:none; display:flex; align-items:center; gap:8px; height:52px; box-sizing:border-box;
+  flex:none; display:flex; align-items:center; gap:8px; height:40px; box-sizing:border-box;
   padding:0 10px 0 16px; border-bottom:1px solid var(--line); overflow:hidden;
 }
 .nt-ed-title{

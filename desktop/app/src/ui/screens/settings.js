@@ -3,7 +3,7 @@
 // everything else is the engine's settings.get / settings.set. Changes save
 // as soon as they are made. The theme follows the website's own switch.
 import {
-  h, icon, clear, append, fill, field, row, select, switchInput,
+  h, icon, clear, append, fill, field, row, select, switchInput, pageHead,
 } from '../components/dom.js';
 import { confirmDialog } from '../components/dialog.js';
 import { pickRemote } from '../components/tree-picker.js';
@@ -336,7 +336,8 @@ export function mount(container, params = {}) {
     fill(body, ...RENDER[tab](render));
   }
 
-  append(container, h('div', { class: 'rd-page rd-page-narrow' }, tabs, body));
+  append(container, h('div', { class: 'adm-narrow' },
+    pageHead('Settings', 'How ONE.GY Desktop and its syncs behave on this computer.'), tabs, body));
   render();
   return on('engine', (state) => { if (state === 'connected' && NEEDS_ENGINE.has(tab)) render(); });
 }

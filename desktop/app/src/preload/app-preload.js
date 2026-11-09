@@ -34,6 +34,11 @@ contextBridge.exposeInMainWorld('onegy', {
   openExternal: (url) => invoke('app:openExternal', url),
   openSite: (pathname) => invoke('app:openSite', pathname),
   closePanel: () => invoke('app:closePanel'),
+  // The panel has rendered what app:panel opened it with: show it now.
+  panelReady: () => invoke('app:panelReady'),
+  // The panel's nav menus act through the website's own controls.
+  siteTheme: (theme) => invoke('app:siteTheme', theme),
+  siteLogout: () => invoke('app:siteLogout'),
   exportDiagnostics: () => invoke('app:exportDiagnostics'),
   openDataFolder: () => invoke('app:openDataFolder'),
   // opts: { deleteLocal, releaseBackup }; deleteLocal moves the folder to the system trash.

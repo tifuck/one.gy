@@ -1,6 +1,8 @@
 // Syncs tab (plan 10.3): one row per sync with state, progress and a row
 // menu. Dropping a folder onto the screen starts the wizard with it.
-import { h, icon, clear, append, field } from '../components/dom.js';
+import {
+  h, icon, clear, append, field, pageHead,
+} from '../components/dom.js';
 import { openMenu } from '../components/menu.js';
 import { openDialog, confirmDialog } from '../components/dialog.js';
 import { toast, toastError } from '../components/toast.js';
@@ -216,13 +218,11 @@ async function removeSync(s) {
 }
 
 export function mount(container) {
-  const list = h('ul', { class: 'dk-sync-list' });
-  const page = h('div', { class: 'rd-page dk-drop' },
-    h('header', { class: 'rd-page-head' },
-      h('p', { class: 'rd-page-sub' }, 'Folders on this computer that stay in step with one.gy.'),
-      h('div', { class: 'rd-page-actions' },
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('wizard', { type: 'backup' }) }, icon('backup'), 'Add backup'),
-        h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard', {}) }, icon('plus'), 'Add sync'))),
+  const list = h('div');
+  const page = h('div', { class: 'dk-drop' },
+    pageHead('Syncs', 'Folders on this computer that stay in step with one.gy.',
+      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('wizard', { type: 'backup' }) }, icon('backup'), 'Add backup'),
+      h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard', {}) }, icon('plus'), 'Add sync')),
     list,
     h('p', { class: 'dk-drop-hint' }, 'Tip: drop a folder here to sync it.'));
 
@@ -230,14 +230,14 @@ export function mount(container) {
     clear(list);
     const syncs = [...store.syncs.values()].sort((x, y) => String(x.name).localeCompare(String(y.name)));
     if (!syncs.length) {
-      append(list, h('li', { class: 'rd-empty' },
+      append(list, h('div', { class: 'rd-empty' },
         h('span', { class: 'rd-empty-icon' }, icon('sync')),
         h('h2', { class: 'rd-empty-title' }, 'No syncs yet'),
         h('p', { class: 'rd-empty-text' }, 'Pick a folder on this computer and a folder on one.gy. Changes on either side show up on the other.'),
         h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard', {}) }, icon('plus'), 'Add sync')));
       return;
     }
-    for (const s of syncs) append(list, syncRow(s));
+    append(list, h('section', { class: 'rd-panel' }, h('ul', { class: 'dk-sync-list' }, syncs.map(syncRow))));
   }
 
   page.addEventListener('dragover', (e) => { e.preventDefault(); page.classList.add('is-dragover'); });

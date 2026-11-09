@@ -13,9 +13,13 @@
   "private": true,
   "main": "src/main/main.js",
   "scripts": {
+    "vendor": "node scripts/vendor-site.js",
+    "prestart": "node scripts/vendor-site.js",
     "start": "electron .",
+    "predev:mock": "node scripts/vendor-site.js",
     "dev:mock": "electron . --mock-engine",
     "build:engine": "node scripts/build-engine.js",
+    "predist": "node scripts/vendor-site.js",
     "dist": "node scripts/build-engine.js && node scripts/dist.js",
     "icons": "node scripts/make-icons.js",
     "test": "node --test \"test/*.test.js\""

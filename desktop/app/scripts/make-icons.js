@@ -1,7 +1,10 @@
-// Renders the app and tray icons from one geometry (the one.gy padlock, as in
-// static/logos/icon-512.png): build/icon.svg (source), build/icons/*.png and
-// build/icon.ico for electron-builder, src/assets/icon.png for the window,
-// src/assets/tray/*.png for the tray states. No dependencies:
+// Renders every icon from one geometry, the one.gy key mark ("Keycut": a 1
+// cut like a key; the bitting reads 0011 0001 = 0x31, ASCII "1"): build/icon.svg
+// (source), build/icons/*.png and build/icon.ico for electron-builder,
+// src/assets/icon.png for the window, src/assets/tray/*.png for the tray
+// states, and the site favicons in static/logos/. The inline marks in
+// templates/_nav.html, templates/landing_frost_hybrid.html and src/ui/nav.js
+// use the 24-unit outline this script prints. No dependencies:
 //   node scripts/make-icons.js
 'use strict';
 
@@ -10,30 +13,83 @@ const path = require('path');
 const zlib = require('zlib');
 
 const ROOT = path.join(__dirname, '..');
-const BLUE = [14, 143, 214];
+const DARK = [11, 11, 14];
+const CYAN = [55, 182, 255];
 const WHITE = [255, 255, 255];
 
+// The mark in a 100 x 100 box. Outline corners are [x, y, cut]: cut > 0 rounds
+// the corner with a quadratic that starts `cut` units before it.
+const DX = 1.26; const DY = -1.5; // centres the mark's bounding box
+const OUTLINE = (() => {
+  const L = 43; const R = 59; const T = 12; const Y0 = 26; const ST = 4.8;
+  const a = (36 * Math.PI) / 180; const len = 13; const t = 11; const cut = 2.2; const bit = 0.8;
+  const C = [L - len * Math.cos(a), T + len * Math.sin(a)]; // flag tip, top
+  const D = [C[0] + t * Math.sin(a), C[1] + t * Math.cos(a)]; // flag tip, bottom
+  const E = [L, D[1] - (L - D[0]) * Math.tan(a)]; // flag meets the stem
+  const pts = [[R, T, cut], [R, Y0, 0]];
+  [0, 0, 1, 1, 0, 0, 0, 1].forEach((b, i) => {
+    const y = Y0 + i * ST;
+    pts.push([R - (b ? 6.5 : 2.5), y + ST / 2, bit], [R, y + ST, i < 7 ? bit : 0]);
+  });
+  pts.push([R, 70, 0], [L, 70, 0], [...E, cut * 0.6], [...D, cut], [...C, cut], [L, T, cut]);
+  return pts.map(([x, y, c]) => [x + DX, y + DY, c]);
+})();
+const RING = { cx: 51 + DX, cy: 77 + DY, r: 10, w: 8, dot: 3 };
+
+// Outline as segments: ['L', p] for corners and straight runs, ['Q', ctrl, end] for rounded corners.
+const SEGS = [];
+OUTLINE.forEach(([x, y, c], i) => {
+  if (!c) { SEGS.push(['L', [x, y]]); return; }
+  const toward = ([ox, oy]) => {
+    const k = Math.min(c, Math.hypot(ox - x, oy - y) / 2) / Math.hypot(ox - x, oy - y);
+    return [x + (ox - x) * k, y + (oy - y) * k];
+  };
+  SEGS.push(['L', toward(OUTLINE[(i + OUTLINE.length - 1) % OUTLINE.length])], ['Q', [x, y], toward(OUTLINE[(i + 1) % OUTLINE.length])]);
+});
+const num = (v) => String(+v.toFixed(2));
+const pathD = (s, o) => SEGS.map(([cmd, ...ps], i) => (i ? cmd : 'M') + ps.map(([x, y]) => `${num(x * s + o)} ${num(y * s + o)}`).join(' ')).join('') + 'Z';
+
+const POLY = [];
+for (const [cmd, a, b] of SEGS) {
+  if (cmd === 'L') { POLY.push(a); continue; }
+  const [x0, y0] = POLY[POLY.length - 1];
+  for (let k = 1; k <= 6; k++) {
+    const t = k / 6; const u = 1 - t;
+    POLY.push([u * u * x0 + 2 * u * t * a[0] + t * t * b[0], u * u * y0 + 2 * u * t * a[1] + t * t * b[1]]);
+  }
+}
+function inPoly(x, y) {
+  let inside = false;
+  for (let i = 0, j = POLY.length - 1; i < POLY.length; j = i++) {
+    const [xi, yi] = POLY[i]; const [xj, yj] = POLY[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+const inKey = (x, y) => {
+  const d = Math.hypot(x - RING.cx, y - RING.cy);
+  return (d >= RING.r - RING.w / 2 && d <= RING.r + RING.w / 2) || (x > 30 && x < 62 && y > 8 && y < 70 && inPoly(x, y));
+};
+const inDot = (x, y) => Math.hypot(x - RING.cx, y - RING.cy) <= RING.dot;
+
 // Shapes in a 512 x 512 box. Each returns true when (x, y) is inside.
-const inRect = (x, y, x0, y0, x1, y1) => x >= x0 && x < x1 && y >= y0 && y < y1;
 const inRoundRect = (x, y, r) => {
   const cx = Math.min(Math.max(x, r), 512 - r);
   const cy = Math.min(Math.max(y, r), 512 - r);
   return (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
 };
-const inShackle = (x, y) => {
-  const d = Math.hypot(x - 256, y - 168);
-  if (y <= 168) return d <= 110 && d >= 67;
-  return y < 240 && (inRect(x, y, 146, 168, 189, 240) || inRect(x, y, 323, 168, 366, 240));
-};
-const inBody = (x, y) => inRect(x, y, 97, 240, 415, 447);
-const inKeyhole = (x, y) => inRect(x, y, 233, 281, 279, 396);
 const inCircle = (x, y, cx, cy, r) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
 
-// Paint list for one icon: [[test(x, y), [r, g, b]], ...], later wins.
-function padlock({ bg = BLUE, radius = 80, badge = null }) {
+// Paint list for one icon: [[test(x, y), [r, g, b]], ...], later wins. The
+// mark spans `scale` of the box, moved `shift` px left; radius 0 is a
+// full-bleed square.
+const APP_SCALE = 0.72;
+function keycut({ bg = DARK, radius = 80, scale = APP_SCALE, shift = 0, dot = CYAN, badge = null }) {
+  const k = (512 * scale) / 100; const o = 256 - 50 * k; const ox = o - shift;
   const layers = [
     [(x, y) => inRoundRect(x, y, radius), bg],
-    [(x, y) => inShackle(x, y) || (inBody(x, y) && !inKeyhole(x, y)), WHITE],
+    [(x, y) => inKey((x - ox) / k, (y - o) / k), WHITE],
+    [(x, y) => inDot((x - ox) / k, (y - o) / k), dot],
   ];
   if (badge) {
     layers.push([(x, y) => inCircle(x, y, 404, 404, 120), null]); // cut-out ring
@@ -140,10 +196,13 @@ function ico(layers, sizes) {
   return Buffer.concat([head, ...images]);
 }
 
+const rgb = (c) => `rgb(${c.join(',')})`;
+const K = (512 * APP_SCALE) / 100; const O = 256 - 50 * K;
 const SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="80" fill="rgb(${BLUE.join(',')})"/>
-  <path d="M146 240V168a110 110 0 0 1 220 0v72h-43v-72a67 67 0 0 0-134 0v72z" fill="#fff"/>
-  <path fill="#fff" fill-rule="evenodd" d="M97 240h318v207H97zM233 281v115h46V281z"/>
+  <rect width="512" height="512" rx="80" fill="${rgb(DARK)}"/>
+  <path d="${pathD(K, O)}" fill="#fff"/>
+  <circle cx="${num(RING.cx * K + O)}" cy="${num(RING.cy * K + O)}" r="${num(RING.r * K)}" fill="none" stroke="#fff" stroke-width="${num(RING.w * K)}"/>
+  <circle cx="${num(RING.cx * K + O)}" cy="${num(RING.cy * K + O)}" r="${num(RING.dot * K)}" fill="${rgb(CYAN)}"/>
 </svg>
 `;
 
@@ -154,7 +213,7 @@ function write(rel, data) {
   console.log(`${rel} (${data.length} bytes)`);
 }
 
-const app = padlock({});
+const app = keycut({});
 write('build/icon.svg', SVG);
 write('build/icons/512x512.png', png(rasterize(app, 512, 3), 512));
 write('build/icons/256x256.png', png(rasterize(app, 256), 256));
@@ -163,14 +222,27 @@ write('src/assets/icon.png', png(rasterize(app, 256), 256));
 
 const GREY = [142, 142, 150];
 const DIM = [92, 92, 100];
+// The mark sits left of centre in every state so the badge never cuts the ring.
+const tray = (o) => keycut({ radius: 96, scale: 0.76, shift: 46, ...o });
 const TRAY = {
-  synced: padlock({ radius: 96 }),
-  syncing: padlock({ radius: 96, badge: { outer: WHITE, inner: BLUE } }),
-  paused: padlock({ radius: 96, bg: GREY, badge: { outer: WHITE, inner: GREY } }),
-  issue: padlock({ radius: 96, badge: { outer: [240, 180, 90] } }),
-  offline: padlock({ radius: 96, bg: DIM }),
+  synced: tray({}),
+  syncing: tray({ badge: { outer: WHITE, inner: CYAN } }),
+  paused: tray({ bg: GREY, dot: GREY, badge: { outer: WHITE, inner: GREY } }),
+  issue: tray({ badge: { outer: [240, 180, 90] } }),
+  offline: tray({ bg: DIM, dot: DIM }),
 };
 for (const [name, layers] of Object.entries(TRAY)) {
   write(`src/assets/tray/tray-${name}.png`, png(rasterize(layers, 16, 8), 16));
   write(`src/assets/tray/tray-${name}@2x.png`, png(rasterize(layers, 32, 8), 32));
 }
+
+const SITE = '../../static/logos';
+const favicon = keycut({ radius: 96, scale: 0.9 });
+const square = keycut({ radius: 0, scale: 0.7 }); // iOS masks its own corners
+write(`${SITE}/favicon.ico`, ico(favicon, [16, 32, 48]));
+write(`${SITE}/favicon-32x32.png`, png(rasterize(favicon, 32, 8), 32));
+write(`${SITE}/apple-touch-icon.png`, png(rasterize(square, 180), 180));
+write(`${SITE}/icon-512.png`, png(rasterize(square, 512, 3), 512));
+
+const s = 0.24;
+console.log(`\n24-unit mark for the inline SVGs:\n  path d="${pathD(s, 0)}"\n  ring cx="${num(RING.cx * s)}" cy="${num(RING.cy * s)}" r="${num(RING.r * s)}" stroke-width="${num(RING.w * s)}", dot r="${num(RING.dot * s)}"`);

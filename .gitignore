@@ -85,4 +85,5 @@ screenshots/
 node_modules/
 desktop/app/dist/
 desktop/app/resources/engine/
+desktop/app/src/ui/site/
 desktop/engine/bin/

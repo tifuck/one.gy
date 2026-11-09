@@ -1,4 +1,5 @@
-// Modal dialogs on the native <dialog> element (focus trap + Escape for free).
+// Modal dialogs on the native <dialog> element (focus trap + Escape for free),
+// drawn with the site's modal classes (.rd-modal-panel, .rd-modal-foot).
 import { h, icon, field } from './dom.js';
 
 // actions: [{label, kind: 'primary'|'danger'|'ghost', run: async () => keepOpen?}]
@@ -21,11 +22,13 @@ export function openDialog({ title, body, actions = [], wide = false, onClose })
       }
     },
   }, a.label));
-  const closeBtn = h('button', { type: 'button', class: 'rd-icon-btn', 'aria-label': 'Close', onclick: () => close() }, icon('x'));
-  const el = h('dialog', { class: `rd-dialog${wide ? ' is-wide' : ''}`, 'aria-label': title },
-    h('header', { class: 'rd-dialog-head' }, h('h2', { class: 'rd-dialog-title' }, title), closeBtn),
-    h('div', { class: 'rd-dialog-body' }, body, error),
-    buttons.length ? h('footer', { class: 'rd-dialog-foot' }, buttons) : null);
+  const closeBtn = h('button', { type: 'button', class: 'rd-modal-close', 'aria-label': 'Close', onclick: () => close() }, icon('x'));
+  const el = h('dialog', { class: `rd-modal rd-open dk-dialog${wide ? ' is-wide' : ''}`, 'aria-label': title },
+    h('div', { class: 'rd-modal-overlay', onclick: () => close() }),
+    h('div', { class: 'rd-modal-panel' },
+      h('div', { class: 'rd-modal-head' }, h('h2', { class: 'rd-h3' }, title), closeBtn),
+      h('div', { class: 'rd-modal-body' }, body, error),
+      buttons.length ? h('div', { class: 'rd-modal-foot' }, buttons) : null));
 
   function setBusy(busy) {
     for (const b of buttons) b.disabled = busy;

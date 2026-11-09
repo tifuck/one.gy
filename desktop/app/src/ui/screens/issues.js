@@ -1,6 +1,8 @@
 // Issues (plan 10.5): grouped by sync and kind, one sentence each, both sides
 // side by side, one-click actions. Smart-mode syncs get "Resolve all".
-import { h, icon, clear, append } from '../components/dom.js';
+import {
+  h, icon, clear, append, pageHead,
+} from '../components/dom.js';
 import { promptDialog } from '../components/dialog.js';
 import { toast, toastError } from '../components/toast.js';
 import {
@@ -91,10 +93,9 @@ let render = () => {};
 export function mount(container) {
   const banner = h('div');
   const groups = h('div', { class: 'dk-issue-groups' });
-  append(container, h('div', { class: 'rd-page' },
-    h('header', { class: 'rd-page-head' },
-      h('p', { class: 'rd-page-sub' }, 'Things the sync engine will not decide on its own. Nothing is deleted while an issue is open.')),
-    banner, groups));
+  append(container,
+    pageHead('Issues', 'Things the sync engine will not decide on its own. Nothing is deleted while an issue is open.'),
+    banner, groups);
 
   render = () => {
     const issues = [...store.issues.values()];

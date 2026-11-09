@@ -1,12 +1,17 @@
 // Native sync panel shell. The panel opens over the website
 // (desktop/docs/site-bridge.md) for the account the site page is signed in
-// as, and shows only what fits this computer's state: the setup when it is
-// not authorized, a switch-account guard when it syncs someone else, else the
-// tabs. Screens are modules exporting mount(container, params) -> unmount().
-import { h, icon, clear, fill, field } from './components/dom.js';
+// as, and looks like a page of the site: the site's nav (nav.js) on top and
+// the admin console layout below (sidebar Syncs / Transfers / Issues /
+// Settings, page head, panels), all with the vendored site CSS. It shows only
+// what fits this computer's state: the setup when it is not authorized, a
+// switch-account guard when it syncs someone else, else the sections.
+// Screens are modules exporting mount(container, params) -> unmount().
+import { h, icon, svg, clear, field } from './components/dom.js';
+import { ICONS } from './components/icons.js';
 import { openDialog, confirmDialog } from './components/dialog.js';
 import { toast, toastError } from './components/toast.js';
 import { manualUpload } from './components/manual.js';
+import { createNav } from './nav.js';
 import {
   api, rpc, bridge, appSettings, store, on, handleEvent, refreshAll, loadAccount, issueCount, activeTransferCount, sameUser,
 } from './store.js';
@@ -19,27 +24,26 @@ import * as wizardScreen from './screens/wizard.js';
 const SCREENS = {
   syncs: syncsScreen, transfers: transfersScreen, issues: issuesScreen, settings: settingsScreen, wizard: wizardScreen,
 };
-const TABS = [
-  { id: 'syncs', label: 'Syncs' },
-  { id: 'transfers', label: 'Transfers', count: activeTransferCount },
-  { id: 'issues', label: 'Issues', count: issueCount },
-  { id: 'settings', label: 'Settings' },
+const SECTIONS = [
+  { id: 'syncs', label: 'Syncs', icon: 'sync' },
+  { id: 'transfers', label: 'Transfers', icon: 'transfers', count: activeTransferCount },
+  { id: 'issues', label: 'Issues', icon: 'alert', count: issueCount },
+  { id: 'settings', label: 'Settings', icon: 'sliders' },
 ];
 
 const els = {
   panel: document.getElementById('panel'),
-  tabs: document.getElementById('tabs'),
-  status: document.getElementById('status'),
-  close: document.getElementById('close'),
+  side: document.getElementById('side'),
+  content: document.getElementById('admPanel'),
   notice: document.getElementById('notice'),
   screen: document.getElementById('screen'),
 };
 let current = null; // mounted screen
 let mountedGate = null;
 let unmount = null;
-let wanted = 'syncs'; // the tab to show once the panel may show tabs
+let wanted = 'syncs'; // the section to show once the panel may show sections
 
-// ready (tabs) | setup (authorize this computer) | other (another account) | starting | missing
+// ready (sections) | setup (authorize this computer) | other (another account) | starting | missing
 function gate() {
   if (store.engine === 'missing') return 'missing';
   const a = store.account;
@@ -56,16 +60,16 @@ function go(screen, params = {}) {
   if (g === 'setup') target = 'wizard';
   else if (g !== 'ready') target = g;
   else if (!SCREENS[target]) target = 'syncs';
-  if (TABS.some((t) => t.id === target)) wanted = target;
+  if (SECTIONS.some((s) => s.id === target)) wanted = target;
   if (unmount) { unmount(); unmount = null; }
   current = target;
   mountedGate = g;
   clear(els.screen);
   const mount = SCREENS[target] ? SCREENS[target].mount : MESSAGES[target];
   unmount = mount(els.screen, { ...params, username: store.panelUser }) || null;
-  els.screen.scrollTop = 0;
-  els.screen.focus({ preventScroll: true });
-  renderHead();
+  window.scrollTo(0, 0);
+  els.content.focus({ preventScroll: true });
+  renderSide();
 }
 
 // Account or engine changed: leave screens that no longer apply.
@@ -74,24 +78,25 @@ function regate() {
   // Authorizing in the setup wizard: it goes on to the first sync.
   if (g === mountedGate || (mountedGate === 'setup' && g === 'ready' && current === 'wizard')) {
     mountedGate = g;
-    renderHead();
+    renderSide();
     return;
   }
   go(wanted);
 }
 
+// Back to the site page the user came from.
 function close() {
+  nav.closeAll();
   els.panel.hidden = true;
   api.closePanel();
 }
 
 // ---- Screens that are only a message -------------------------------------------
-const message = (iconName, title, text, ...actions) => h('div', { class: 'rd-page' },
-  h('div', { class: 'rd-empty' },
-    h('span', { class: 'rd-empty-icon' }, icon(iconName)),
-    h('h2', { class: 'rd-empty-title' }, title),
-    h('p', { class: 'rd-empty-text' }, text),
-    actions.length ? h('div', { class: 'dk-btn-row dk-empty-actions' }, actions) : null));
+const message = (iconName, title, text, ...actions) => h('div', { class: 'rd-empty' },
+  h('span', { class: 'rd-empty-icon' }, icon(iconName)),
+  h('h2', { class: 'rd-empty-title' }, title),
+  h('p', { class: 'rd-empty-text' }, text),
+  actions.length ? h('div', { class: 'dk-btn-row dk-empty-actions' }, actions) : null);
 
 const MESSAGES = {
   starting: (el) => el.append(message('sync', 'Starting the sync engine…', 'This takes a moment after the app starts.')),
@@ -122,44 +127,39 @@ const MESSAGES = {
   },
 };
 
-// ---- Header ------------------------------------------------------------------
-function statusPill() {
-  const s = store.status;
-  if (!s) return null;
-  const n = issueCount();
-  const [text, tone] = {
-    up_to_date: ['Up to date', 'good'],
-    syncing: [s.pending ? `Syncing ${s.pending.toLocaleString('en-US')} item${s.pending === 1 ? '' : 's'}` : 'Syncing', 'accent'],
-    paused: ['Paused', ''],
-    offline: ['Offline', 'warn'],
-    issues: [n === 1 ? '1 issue' : `${n || 'Some'} issues`, 'bad'],
-    locked: ['Locked', 'warn'],
-  }[s.state] || [];
-  return text ? h('span', { class: `rd-pill is-dot${tone ? ` is-${tone}` : ''}` }, text) : null;
-}
+// ---- Nav and sidebar -------------------------------------------------------------
+const nav = createNav(document.getElementById('nav'), {
+  open: (path) => bridge('openSite', path).catch(toastError),
+  theme: (id) => bridge('siteTheme', id).catch(toastError),
+  logout: () => bridge('siteLogout').catch(toastError),
+});
 
-// Built once and updated in place: status events arrive up to once a second.
-const tabs = TABS.map((t) => {
-  const count = h('span', { class: 'rd-count', hidden: true });
-  const button = h('button', { type: 'button', role: 'tab', class: 'rd-tab', onclick: () => go(t.id) }, t.label, count);
-  els.tabs.append(button);
-  return { t, button, count };
+// The admin console's sidebar (admin.html .adm-side), built once and updated
+// in place: status events arrive up to once a second.
+const sections = SECTIONS.map((s) => {
+  const badge = h('span', { class: 'rd-badge', hidden: true });
+  const button = h('button', {
+    type: 'button', role: 'tab', class: 'adm-nav-link', 'aria-controls': 'admPanel', onclick: () => go(s.id),
+  }, svg(ICONS[s.icon]), s.label, badge);
+  els.side.append(button);
+  return { s, button, badge };
 });
 els.notice.append(h('div', { class: 'rd-callout is-warn dk-banner' }, icon('lock'),
   h('div', null, 'Sync is locked. Enter your password to start syncing.'),
   h('button', { type: 'button', class: 'rd-btn rd-btn-primary rd-btn-sm', onclick: () => unlockDialog() }, 'Unlock')));
 
-function renderHead() {
+function renderSide() {
   const ready = mountedGate === 'ready';
-  els.tabs.hidden = !ready;
   const active = current === 'wizard' ? 'syncs' : current;
-  for (const { t, button, count } of tabs) {
-    const n = t.count ? t.count() : 0;
-    button.setAttribute('aria-selected', String(active === t.id));
-    count.hidden = !n;
-    count.textContent = n > 99 ? '99+' : String(n);
+  for (const { s, button, badge } of sections) {
+    const selected = ready && active === s.id;
+    const n = ready && s.count ? s.count() : 0;
+    button.classList.toggle('is-active', selected);
+    button.setAttribute('aria-selected', String(selected));
+    button.disabled = !ready;
+    badge.hidden = !n;
+    badge.textContent = n > 99 ? '99+' : String(n);
   }
-  fill(els.status, ready ? statusPill() : null);
   els.notice.hidden = !(ready && ((store.account && store.account.locked) || (store.status && store.status.state === 'locked')));
 }
 
@@ -181,7 +181,7 @@ function unlockDialog() {
           } finally {
             input.value = '';
           }
-          renderHead();
+          renderSide();
         },
       },
     ],
@@ -190,29 +190,36 @@ function unlockDialog() {
   input.focus();
 }
 
-function applyTheme() {
-  document.documentElement.dataset.theme = (store.app && store.app.theme) || 'frost-dark';
+// The site's theme (site preload -> app settings), set before the panel shows.
+function applyTheme(theme) {
+  const t = theme === 'frost' ? 'frost' : 'frost-dark';
+  document.documentElement.dataset.theme = t;
+  nav.setTheme(t);
 }
 
 // ---- Boot ----------------------------------------------------------------------------
-els.close.append(icon('x'));
-els.close.addEventListener('click', close);
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || e.defaultPrevented || els.panel.hidden || document.querySelector('dialog[open], .rd-cmenu')) return;
-  close();
+  if (!nav.closeAll()) close();
 });
 
-on('status', renderHead);
-on('issues', renderHead);
-on('transfers', renderHead);
+on('status', renderSide);
+on('issues', renderSide);
+on('transfers', renderSide);
 on('account', regate);
 on('engine', regate);
-on('app', applyTheme);
+on('app', () => applyTheme(store.app && store.app.theme));
+on('app:nav', (d) => nav.render(d));
+on('app:siteStatus', (d) => nav.setStatus(d));
 on('app:navigate', (d) => (d.screen === 'close' ? close() : go(d.screen, d)));
 on('app:panel', (d) => {
   store.panelUser = typeof d.username === 'string' ? d.username : null;
+  if (d.theme) applyTheme(d.theme);
+  if (d.nav !== undefined) nav.render(d.nav);
+  if (d.status) nav.setStatus(d.status);
   els.panel.hidden = false;
   go(d.screen || 'syncs');
+  api.panelReady();
 });
 on('app:action', (d) => {
   if (d.action === 'upload' && gate() === 'ready') manualUpload(d.paths, { useDefault: true });
@@ -229,7 +236,7 @@ async function boot() {
   } catch (err) {
     toastError(err);
   }
-  applyTheme();
+  applyTheme(store.app && store.app.theme);
   if (store.engine === 'connected') await refreshAll();
   go(wanted);
 }

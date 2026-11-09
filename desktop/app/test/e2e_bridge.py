@@ -280,15 +280,28 @@ def shot(page, bridge, name):
 
 
 def tab(page, label):
-    page.locator('#tabs').get_by_role('tab', name=label, exact=True).click()
+    page.locator('#side .adm-nav-link', has_text=label).click()
+
+
+def open_panel(bridge, username):
+    """What the site's Sync entry does: openSync() plus the nav data its preload reports."""
+    nav = {'links': [{'label': label, 'href': href, 'active': False, 'badge': 0}
+                     for label, href in (('Files', '/files'), ('Notes', '/notes'), ('Prompts', '/prompts'))],
+           'username': username, 'role': 'User', 'account': {'label': 'Account & settings', 'short': 'Account', 'href': '/account'}}
+    bridge.call('/panel', {'username': username, 'nav': nav})
 
 
 def site_state(bridge, username):
     return bridge.call(f'/site-status?username={urllib.parse.quote(username)}')['state']
 
 
-def status_pill(text):
-    return f'#status .rd-pill:text-matches("{text}")'
+def sync_state(*states):
+    """The panel nav's Sync entry (the site's status dot) in one of these onStatus states."""
+    return '.rd-nav-mid [data-desktop-sync]:is(' + ','.join(f'[data-sync-state="{s}"]' for s in states) + ')'
+
+
+def sections_enabled(page):
+    return page.locator('#side .adm-nav-link:disabled').count() == 0
 
 
 def write(path, data):
@@ -365,9 +378,9 @@ def run(page, bridge, other, local, backup_src, username, password):
     wait('engine', lambda: site_state(bridge, username) != 'offline', timeout=30)
     assert site_state(bridge, username) == 'not_set_up'
     assert page.locator('#panel').is_hidden()
-    bridge.call('/panel', {'username': username})
+    open_panel(bridge, username)
     page.wait_for_selector('h1:text("Set up sync on this computer")')
-    assert page.locator('#tabs').is_hidden()
+    assert not sections_enabled(page)
     assert page.get_by_label('Username').input_value() == username
     assert page.get_by_label('Username').get_attribute('readonly') is not None
     page.get_by_label('Password').fill(password)
@@ -375,7 +388,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     shot(page, bridge, 'setup-authorize')
     page.get_by_role('button', name='Authorize').click()
     page.wait_for_selector('text=What do you want to do?', timeout=60000)
-    assert page.locator('#tabs').is_visible()
+    assert sections_enabled(page)
     shot(page, bridge, 'wizard-action')
     page.get_by_role('button', name='Continue').click()
 
@@ -414,7 +427,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     for rel, data in files.items():
         assert other.content(tree[rel]) == data, rel
     log('local -> one.gy: names and content verified with the second device')
-    page.wait_for_selector(status_pill('Up to date'), timeout=60000)
+    page.wait_for_selector(sync_state('up_to_date'), timeout=60000)
     assert site_state(bridge, username) == 'up_to_date'
     assert site_state(bridge, username.upper()) == 'up_to_date'
     shot(page, bridge, 'sync-up-to-date')
@@ -441,15 +454,15 @@ def run(page, bridge, other, local, backup_src, username, password):
     os.kill(old_pid, 9)
     tab(page, 'Syncs')
     wait('engine restarted', lambda: bridge.engine_pid() != old_pid, timeout=60)
-    page.wait_for_selector(status_pill('Up to date|Locked'), timeout=90000)
-    if page.locator(status_pill('Locked')).count():
+    page.wait_for_selector(sync_state('up_to_date', 'locked'), timeout=90000)
+    if page.locator(sync_state('locked')).count():
         # No OS key store (headless Linux): the key was memory-only, so unlock.
         assert site_state(bridge, username) == 'locked'
         shot(page, bridge, 'locked-after-restart')
         page.locator('#notice').get_by_role('button', name='Unlock').click()
         page.locator('dialog').get_by_label('Password').fill(password)
         page.locator('dialog').get_by_role('button', name='Unlock').click()
-    page.wait_for_selector(status_pill('Up to date'), timeout=90000)
+    page.wait_for_selector(sync_state('up_to_date'), timeout=90000)
     log('engine killed and restarted; UI reconnected')
 
     # 4. Conflict with "Ask me", resolved in Issues.
@@ -510,7 +523,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     assert other.upload(bid, 'intruder.txt', b'x').status == 403
     assert other.rename(other.tree(bid)['IMG_0001.jpg'], 'renamed.jpg').status == 403
     log('backup: marked for this device, read-only for the other device')
-    page.wait_for_selector(status_pill('Up to date'), timeout=60000)
+    page.wait_for_selector(sync_state('up_to_date'), timeout=60000)
     shot(page, bridge, 'sync-with-backup')
 
     # 6. Pause/resume holds back an upload.
@@ -554,13 +567,13 @@ def run(page, bridge, other, local, backup_src, username, password):
     # 8. The website signed in as someone else: guard, then switch.
     other_user = f'{username}_other'
     assert site_state(bridge, other_user) == 'other_account'
-    bridge.call('/panel', {'username': other_user})
+    open_panel(bridge, other_user)
     page.wait_for_selector(f"text=This computer syncs {username}'s files")
-    assert page.locator('#tabs').is_hidden()
+    assert not sections_enabled(page)
     shot(page, bridge, 'other-account')
     page.get_by_role('button', name='Cancel').click()
     page.wait_for_selector('#panel', state='hidden')
-    bridge.call('/panel', {'username': other_user})
+    open_panel(bridge, other_user)
     page.get_by_role('button', name='Sign out of sync on this computer').click()
     page.locator('dialog').get_by_role('button', name='Sign out of sync').click()
     page.wait_for_selector('h1:text("Set up sync on this computer")', timeout=30000)

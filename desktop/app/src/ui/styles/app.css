@@ -1,25 +1,23 @@
 /* ============================================================================
-   ONE.GY Desktop native UI: the sync panel over the website (header, tabs,
-   notice), its screens, and the offline page. Class prefix .dk-. Tokens only
-   (tokens.css); shared primitives come from primitives.css.
+   ONE.GY Desktop native UI: only what the sync panel and the offline page
+   need beyond the website's own CSS (src/ui/site/, vendored from static/ by
+   scripts/vendor-site.js). Nav, admin console layout and the shared v2
+   primitives come from there. Class prefix .dk-; site tokens only.
    ========================================================================== */
 
 /* ---- Panel ------------------------------------------------------------------ */
-.dk-panel{ display:flex; flex-direction:column; height:100vh; background:var(--bg); }
-.dk-panel-head{ display:flex; align-items:center; gap:16px; height:56px; flex:none; padding:0 12px 0 20px; border-bottom:1px solid var(--line); background:var(--pane); }
-.dk-panel-title{ font-size:1rem; font-weight:600; letter-spacing:-.01em; }
-.dk-panel-status{ display:flex; margin-left:auto; min-width:0; }
-.dk-notice{ flex:none; padding:12px clamp(16px,4vw,32px) 0; }
-.dk-notice > .rd-callout{ max-width:calc(1040px - 2 * clamp(16px,4vw,32px)); margin:0 auto; }
-.dk-screen{ flex:1 1 auto; min-height:0; overflow:auto; }
-.ui-v2 .dk-screen:focus-visible, .ui-v2 .dk-step-title:focus-visible{ outline:none; }
+/* The wrapper only hides the page until the site opens it; its children are
+   laid out as direct children of body, as on the site. */
+.dk-panel{ display:contents; }
+.dk-notice > .rd-callout{ margin-bottom:16px; }
+#admPanel:focus-visible, .ui-v2 .dk-step-title:focus-visible{ outline:none; }
+.adm-nav-link .rd-badge{ margin-left:auto; }
+.adm-nav-link svg{ stroke-width:2; }
+.adm-nav-link:disabled{ opacity:.45; cursor:default; background:none; }
 .dk-empty-actions{ justify-content:center; margin-top:10px; }
 .ui-v2 .dk-empty-actions .rd-btn{ margin-top:0; }
-.ui-v2 .toast-container{ bottom:16px; }
 .dk-icon{ display:inline-grid; place-items:center; flex:none; }
 .dk-icon svg{ width:18px; height:18px; }
-.dk-sr{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
-.ui-v2 .rd-page-wide{ max-width:1280px; }
 .dk-spacer{ flex:1 1 auto; }
 .dk-path{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .dk-mono{ font-family:var(--font-mono); font-size:.78rem; }
@@ -28,6 +26,7 @@
 .ui-v2 .dk-num{ width:8.5rem; }
 .ui-v2 .rd-field-row > select.form-input{ width:auto; min-width:11rem; max-width:100%; }
 .ui-v2 code{ font-family:var(--font-mono); font-size:.8em; padding:1px 5px; border-radius:5px; background:var(--press); }
+/* dom.js icon() wraps the svg in a span; the site styles a bare svg */
 .ui-v2 .rd-callout > .dk-icon{ margin-top:1px; color:var(--text-dim); }
 .ui-v2 .rd-callout > .dk-icon svg{ width:16px; height:16px; }
 .ui-v2 .rd-callout.is-accent > .dk-icon{ color:var(--accent); }
@@ -36,13 +35,22 @@
 .ui-v2 .rd-callout.is-good > .dk-icon{ color:var(--good); }
 .ui-v2 .rd-callout > div{ min-width:0; }
 .ui-v2 .rd-empty-icon .dk-icon svg{ width:24px; height:24px; }
+.ui-v2 .rd-panel > .rd-table-wrap{ border-radius:11px; } /* clips the sticky head to the panel's corners */
+.ui-v2 .rd-panel-body > .rd-meter{ margin:0; } /* ui-v2.css gives .rd-meter the sidebar's storage-meter margin */
+.ui-v2 .rd-tab .rd-count{ min-width:18px; height:16px; padding:0 5px; border-radius:8px; background:var(--press); font-size:.7rem; line-height:16px; text-align:center; }
+
+/* ---- Dialogs: the site's .rd-modal look on a native <dialog> (dialog.js) ------ */
+.dk-dialog{ width:auto; height:auto; max-width:none; max-height:none; margin:0; padding:1.2rem; border:0; background:none; color:var(--text); overflow:visible; }
+.dk-dialog::backdrop{ background:transparent; }
+.dk-dialog.is-wide .rd-modal-panel{ max-width:45rem; }
+.dk-dialog .rd-modal-body{ display:flex; flex-direction:column; gap:12px; font-size:.86rem; line-height:1.5; }
+.dk-dialog .rd-modal-body p{ margin:0; }
+.dk-dialog .rd-modal-close .dk-icon svg{ width:16px; height:16px; }
 
 /* ---- Offline page (site view, app://ui/offline.html) ------------------------------ */
 .dk-offline{ display:grid; place-items:center; min-height:100vh; padding:24px; }
 
-/* ---- Sync screen ------------------------------------------------------------------------------- */
-.dk-sync-list{ display:flex; flex-direction:column; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
-.dk-sync-list:has(> .rd-empty){ border:0; background:none; }
+/* ---- Syncs ----------------------------------------------------------------------------------- */
 .dk-sync{ display:flex; align-items:flex-start; gap:14px; padding:14px 12px 14px 16px; }
 .dk-sync + .dk-sync{ border-top:1px solid var(--line); }
 .dk-sync-icon{ display:grid; place-items:center; width:36px; height:36px; flex:none; border-radius:9px; background:var(--surface-2); color:var(--text-dim); }
@@ -55,13 +63,13 @@
 .dk-sync-paths .dk-path{ flex:0 1 auto; }
 .dk-sync-arrow svg{ width:14px; height:14px; color:var(--text-faint); }
 .dk-sync-meta{ display:flex; gap:12px; font-size:.76rem; color:var(--text-faint); }
-.dk-sync-meter{ max-width:360px; margin:2px 0; }
+.ui-v2 .dk-sync-meter{ max-width:360px; margin:2px 0; }
 .dk-sync-actions{ display:flex; gap:2px; flex:none; }
-.rd-meter.is-busy .rd-meter-fill{ width:30%; animation:dkbusy 1.4s ease-in-out infinite; }
+.ui-v2 .rd-meter.is-busy .rd-meter-fill{ width:30%; animation:dkbusy 1.4s ease-in-out infinite; }
 @keyframes dkbusy{ from{ transform:translateX(-100%); } to{ transform:translateX(340%); } }
 .dk-drop{ position:relative; min-height:100%; }
 .dk-drop-hint{ margin-top:14px; font-size:.78rem; color:var(--text-faint); text-align:center; }
-.dk-drop.is-dragover::after{ content:"Drop to sync this folder"; position:absolute; inset:12px; display:grid; place-items:center; border:2px dashed var(--accent);
+.dk-drop.is-dragover::after{ content:"Drop to sync this folder"; position:absolute; inset:-12px; display:grid; place-items:center; border:2px dashed var(--accent);
   border-radius:14px; background:var(--accent-soft); color:var(--accent); font-weight:600; pointer-events:none; }
 
 /* ---- Transfers ------------------------------------------------------------------------------------ */
@@ -76,7 +84,7 @@
 .dk-tr-dir.is-up{ color:var(--accent); }
 .dk-tr-dir.is-down{ color:var(--good); }
 .dk-tr-sub{ margin:2px 0 0 23px; overflow:hidden; text-overflow:ellipsis; font-size:.76rem; color:var(--text-faint); }
-.dk-tr-meter{ margin:6px 0 2px 23px; max-width:420px; }
+.ui-v2 .dk-tr-meter{ margin:6px 0 2px 23px; max-width:420px; }
 .dk-tr-detail{ white-space:nowrap; color:var(--text-dim); font-size:.8rem; }
 .dk-tr-error{ color:var(--bad); white-space:normal; }
 
@@ -108,22 +116,8 @@
 .dk-mini-list li{ display:flex; gap:12px; justify-content:space-between; min-width:0; }
 .dk-mini-list .dk-path{ color:var(--text-dim); }
 
-/* ---- Wizard ------------------------------------------------------------------------------------------- */
-.dk-wizard{ display:grid; grid-template-columns:240px minmax(0,1fr); min-height:100%; }
-.dk-wizard-side{ padding:32px 20px; border-right:1px solid var(--line); background:var(--pane); }
-.dk-wizard-kicker{ margin:0 0 16px 4px; font-size:.78rem; font-weight:600; color:var(--text-faint); }
-.dk-stepper{ display:flex; flex-direction:column; gap:2px; }
-.dk-stepper-item{ display:flex; align-items:center; gap:10px; min-height:34px; padding:0 8px; border-radius:8px; font-size:.84rem; color:var(--text-faint); }
-.dk-stepper-item.is-current{ background:var(--press); color:var(--text); font-weight:500; }
-.dk-stepper-item.is-done{ color:var(--text-dim); }
-.dk-stepper-dot{ display:grid; place-items:center; width:22px; height:22px; flex:none; border-radius:50%; border:1px solid var(--line-strong); font-size:.72rem; font-variant-numeric:tabular-nums; }
-.dk-stepper-item.is-current .dk-stepper-dot{ border-color:var(--accent); background:var(--accent); color:var(--accent-contrast); }
-.dk-stepper-item.is-done .dk-stepper-dot{ border-color:transparent; background:var(--accent-soft); color:var(--accent); }
-.dk-stepper-dot svg{ width:12px; height:12px; stroke-width:2.5; }
-.dk-wizard-main{ display:flex; flex-direction:column; gap:16px; width:100%; max-width:760px; padding:32px clamp(20px,4vw,48px) 24px; }
-.dk-step-title{ font-size:1.4rem; font-weight:600; letter-spacing:-.02em; outline:none; }
+/* ---- Wizard (a .rd-panel per step) ---------------------------------------------------------------------- */
 .dk-step-body{ display:flex; flex-direction:column; gap:16px; }
-.dk-step-foot{ display:flex; align-items:center; gap:8px; margin-top:8px; padding-top:16px; border-top:1px solid var(--line); }
 .dk-lead{ max-width:62ch; font-size:.92rem; line-height:1.55; color:var(--text-dim); }
 .dk-form{ display:flex; flex-direction:column; gap:14px; max-width:420px; }
 .dk-inline{ display:flex; align-items:flex-end; gap:8px; }
@@ -196,16 +190,9 @@
 .dk-tree + .rd-field-hint:empty{ display:none; }
 
 /* ---- Narrow windows -------------------------------------------------------------------------------------- */
-@media (max-width:940px){
-  .dk-wizard{ grid-template-columns:minmax(0,1fr); grid-template-rows:auto 1fr; }
-  .dk-wizard-side{ padding:14px 20px; border-right:0; border-bottom:1px solid var(--line); }
-  .dk-wizard-kicker{ margin-bottom:8px; }
-  .dk-stepper{ flex-direction:row; flex-wrap:wrap; gap:4px; }
-  .dk-stepper-item{ min-height:28px; padding:0 8px 0 4px; font-size:.78rem; }
-  .dk-stepper-item:not(.is-current) > span:last-child{ display:none; }
-  .dk-wizard-main{ padding-top:20px; }
+@media (max-width:620px){
   .dk-toolbar-right{ margin-left:0; }
 }
 @media (prefers-reduced-motion:reduce){
-  .rd-meter.is-busy .rd-meter-fill{ animation:none; width:100%; opacity:.5; }
+  .ui-v2 .rd-meter.is-busy .rd-meter-fill{ animation:none; width:100%; opacity:.5; }
 }

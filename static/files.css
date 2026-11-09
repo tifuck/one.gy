@@ -7,7 +7,7 @@
    page objects — restyle freely, rename only together with both.
    ========================================================================== */
 
-:root{ --fx-bar-h:52px; }
+:root{ --fx-bar-h:40px; }
 .fx-shell{
   display:grid; grid-template-columns:var(--rd-side-eff) minmax(0,1fr);
   height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h));
@@ -215,11 +215,11 @@
 .fx-check svg{ width:10px; height:10px; color:var(--accent-contrast); opacity:0; }
 .fx-item:hover .fx-check, .fx-row:hover .fx-check, .fx-gal-item:hover .fx-check,
 .fx-item.is-checked .fx-check, .fx-row.is-checked .fx-check, .fx-gal-item.is-checked .fx-check{ display:flex; }
-.fx-item.is-checked .fx-check, .fx-row.is-checked .fx-check, .fx-gal-item.is-checked .fx-check{ background:var(--accent); border-color:var(--accent); }
 .fx-item.is-checked .fx-check svg, .fx-row.is-checked .fx-check svg, .fx-gal-item.is-checked .fx-check svg{ opacity:1; }
 /* On flat rows the tick replaces the leading icon */
 .fx-row .fx-check, .fx-item.is-folder .fx-check{ top:50%; left:14px; margin-top:-9px; border-color:var(--text-faint); background:var(--bg); box-shadow:none; }
 .fx-item.is-folder .fx-check{ left:16px; }
+.fx-item.is-checked .fx-check, .fx-row.is-checked .fx-check, .fx-gal-item.is-checked .fx-check{ background:var(--accent); border-color:var(--accent); }
 .fx-row:hover .fx-row-ico, .fx-row.is-checked .fx-row-ico, .fx-row:hover .fx-row-thumb, .fx-row.is-checked .fx-row-thumb,
 .fx-item.is-folder:hover .fx-thumb, .fx-item.is-folder.is-checked .fx-thumb{ opacity:0; }
 

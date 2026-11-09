@@ -17,7 +17,7 @@ function closeMenu() {
 export function openMenu(anchor, items) {
   closeMenu();
   const buttons = [];
-  const el = h('div', { class: 'rd-cmenu', role: 'menu' },
+  const el = h('div', { class: 'rd-cmenu is-open', role: 'menu' },
     items.map((item) => {
       if (item === 'sep') return h('div', { class: 'rd-cmenu-sep', role: 'separator' });
       const b = h('button', {

@@ -4,7 +4,7 @@
 // the setup also run from "Add sync" / "Add backup" / dropping a folder on
 // the Syncs screen.
 import {
-  h, icon, clear, append, fill, field, row, switchInput, callout,
+  h, icon, clear, append, fill, field, row, switchInput, callout, pageHead,
 } from '../components/dom.js';
 import { treePicker } from '../components/tree-picker.js';
 import { syncOptionsForm, newSyncConfig, DEFAULT_IGNORE_RULES } from '../components/sync-options.js';
@@ -64,20 +64,20 @@ export function mount(container, params = {}) {
 
   const signedIn = () => Boolean(store.account && store.account.signed_in && !store.account.locked);
   const STEPS = [
-    { id: 'authorize', label: 'Authorize this computer', setup: true, render: stepAuthorize },
-    { id: 'action', label: 'What to do', render: stepAction },
-    { id: 'local', label: 'Folder on this computer', render: stepLocal },
-    { id: 'remote', label: 'Folder on one.gy', render: stepRemote },
-    { id: 'options', label: 'Options', render: stepOptions },
-    { id: 'preview', label: 'Review and start', render: stepPreview },
+    { id: 'authorize', setup: true, render: stepAuthorize },
+    { id: 'action', render: stepAction },
+    { id: 'local', render: stepLocal },
+    { id: 'remote', render: stepRemote },
+    { id: 'options', render: stepOptions },
+    { id: 'preview', render: stepPreview },
   ];
   const visible = () => STEPS.filter((s) => !(s.setup && fromSyncScreen));
   const fromSyncScreen = signedIn();
   let index = 0;
   if (fromSyncScreen) index = visible().findIndex((s) => s.id === (params.type ? 'local' : 'action'));
 
-  const stepper = h('ol', { class: 'dk-stepper', 'aria-label': 'Setup steps' });
-  const title = h('h1', { class: 'dk-step-title', tabindex: '-1' });
+  const title = h('h2', { class: 'rd-panel-title dk-step-title', tabindex: '-1' });
+  const stepOf = h('p', { class: 'rd-panel-sub' });
   const content = h('div', { class: 'dk-step-body' });
   const error = h('p', { class: 'rd-field-error', role: 'alert' });
   const backBtn = h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => go(index - 1) }, 'Back');
@@ -88,24 +88,19 @@ export function mount(container, params = {}) {
   }, 'Cancel');
   let onNext = async () => true;
 
-  append(container, h('div', { class: 'dk-wizard' },
-    h('aside', { class: 'dk-wizard-side' }, h('p', { class: 'dk-wizard-kicker' }, fromSyncScreen ? 'New sync' : 'Set up sync on this computer'), stepper),
-    h('section', { class: 'dk-wizard-main' },
-      title, content, error,
-      h('footer', { class: 'dk-step-foot' }, cancelBtn, h('span', { class: 'dk-spacer' }), backBtn, nextBtn))));
+  append(container, h('div', { class: 'adm-narrow' },
+    fromSyncScreen
+      ? pageHead(params.type === 'backup' ? 'New backup' : 'New sync', 'Pick the folders, then check what will happen before anything moves.')
+      : pageHead('Set up sync on this computer', 'Authorize this computer once, then choose what to sync.'),
+    h('section', { class: 'rd-panel' },
+      h('header', { class: 'rd-panel-head' }, h('div', null, title, stepOf)),
+      h('div', { class: 'rd-panel-body' }, content, error),
+      h('footer', { class: 'rd-panel-foot' }, cancelBtn, h('span', { class: 'dk-spacer' }), backBtn, nextBtn))));
 
   const setReady = (ready, label) => {
     nextBtn.disabled = !ready;
     if (label) nextBtn.textContent = label;
   };
-
-  function renderStepper() {
-    clear(stepper);
-    visible().forEach((s, i) => append(stepper, h('li', {
-      class: `dk-stepper-item${i === index ? ' is-current' : ''}${i < index ? ' is-done' : ''}`,
-      'aria-current': i === index ? 'step' : null,
-    }, h('span', { class: 'dk-stepper-dot' }, i < index ? icon('check') : String(i + 1)), h('span', null, s.label))));
-  }
 
   function go(i) {
     const steps = visible();
@@ -116,7 +111,7 @@ export function mount(container, params = {}) {
     backBtn.hidden = index === 0;
     setReady(true, 'Continue');
     onNext = async () => true;
-    renderStepper();
+    stepOf.textContent = `Step ${index + 1} of ${steps.length}`;
     step.render();
     title.focus({ preventScroll: true });
   }
@@ -142,7 +137,7 @@ export function mount(container, params = {}) {
       append(content, callout('good', 'check', `Signed in as ${a.username} on ${a.server}.`));
       return;
     }
-    title.textContent = 'Set up sync on this computer';
+    title.textContent = 'Authorize this computer';
     // The website's account; another one is never authorized from here.
     const lockedUser = params.username || null;
     const username = h('input', {

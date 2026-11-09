@@ -122,6 +122,11 @@ jobs:
         working-directory: desktop/app
         run: npm ci
 
+      # The sync panel uses the website's own CSS and fonts from static/.
+      - name: Vendor the website CSS
+        working-directory: desktop/app
+        run: npm run vendor
+
       - name: Test the app
         working-directory: desktop/app
         run: npm test

@@ -1,5 +1,5 @@
 // Tiny DOM helpers. Text always goes in as text nodes; only trusted constant
-// SVG markup (icons.js) is ever parsed as HTML.
+// SVG markup (icons.js, nav.js) is ever parsed as HTML.
 import { ICONS } from './icons.js';
 
 // h('button', {class: 'x', onclick: fn, disabled: true}, 'text', node, [nodes])
@@ -40,6 +40,21 @@ export function icon(name, cls) {
   span.setAttribute('aria-hidden', 'true');
   span.innerHTML = ICONS[name] || ICONS.dot;
   return span;
+}
+
+// Constant SVG markup as an element (no wrapper), for site markup that styles the svg itself.
+export function svg(markup) {
+  const t = document.createElement('template');
+  t.innerHTML = markup;
+  return t.content.firstElementChild;
+}
+
+// The site's page title row (admin console: .rd-page-head.adm-head).
+export function pageHead(title, sub, ...actions) {
+  return h('header', { class: 'rd-page-head adm-head' },
+    h('h1', { class: 'rd-page-title' }, title),
+    sub ? h('p', { class: 'rd-page-sub' }, sub) : null,
+    actions.length ? h('div', { class: 'rd-page-actions' }, actions) : null);
 }
 
 let uid = 0;

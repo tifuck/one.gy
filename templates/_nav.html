@@ -5,17 +5,18 @@
   <div class="rd-nav-inner">
     <a class="rd-nav-logo" href="{{ url_for('files') if _cu else url_for('index') }}" aria-label="ONE.GY home">
       <svg class="rd-nav-mark" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <defs><path id="rdMarkKey" d="M13.93 2.52Q14.46 2.52 14.46 3.05L14.46 5.88L14 6.32Q13.86 6.46 14 6.59L14.32 6.9Q14.46 7.03 14.32 7.16L14 7.48Q13.86 7.61 14 7.74L14.32 8.05Q14.46 8.18 14.28 8.25L13.08 8.69Q12.9 8.76 13.08 8.83L14.28 9.27Q14.46 9.34 14.28 9.4L13.08 9.85Q12.9 9.91 13.08 9.98L14.28 10.42Q14.46 10.49 14.32 10.62L14 10.93Q13.86 11.06 14 11.2L14.32 11.51Q14.46 11.64 14.32 11.77L14 12.08Q13.86 12.22 14 12.35L14.32 12.66Q14.46 12.79 14.32 12.92L14 13.24Q13.86 13.37 14 13.5L14.32 13.81Q14.46 13.94 14.28 14.01L13.08 14.45Q12.9 14.52 13.08 14.59L14.46 15.1L14.46 16.44L10.62 16.44L10.62 6.1Q10.62 5.78 10.37 5.97L10.08 6.18Q9.65 6.49 9.34 6.06L8.41 4.78Q8.1 4.35 8.53 4.04L10.2 2.83Q10.62 2.52 11.15 2.52Z"/></defs>
         <g class="rd-mark-shadow">
-          <rect x="4" y="10" width="16" height="10" fill="var(--accent)"/>
-          <path d="M8 10V7.5a4 4 0 0 1 8 0V10" stroke="var(--accent)" stroke-width="2" fill="none"/>
+          <use href="#rdMarkKey" fill="var(--accent)"/>
+          <circle cx="12.54" cy="18.12" r="2.4" stroke="var(--accent)" stroke-width="1.92"/>
         </g>
         <g class="rd-mark-grp">
-          <rect class="rd-mark-body" x="4" y="10" width="16" height="10" fill="currentColor"/>
-          <path class="rd-mark-shackle" d="M8 10V7.5a4 4 0 0 1 8 0V10" stroke="currentColor" stroke-width="2" fill="none"/>
-          <rect class="rd-mark-hole" x="11" y="13" width="2" height="4" fill="var(--bg)"/>
-          <g clip-path="url(#rdMarkClip)"><rect class="rd-mark-sheen" x="2" y="9" width="4" height="12" fill="#ffffff"/></g>
+          <use class="rd-mark-body" href="#rdMarkKey" fill="currentColor"/>
+          <circle cx="12.54" cy="18.12" r="2.4" stroke="currentColor" stroke-width="1.92"/>
+          <circle class="rd-mark-hole" cx="12.54" cy="18.12" r=".72" fill="var(--accent)"/>
+          <g clip-path="url(#rdMarkClip)"><rect class="rd-mark-sheen" x="2" y="2" width="4" height="20" fill="#ffffff"/></g>
         </g>
-        <clipPath id="rdMarkClip"><rect x="4" y="10" width="16" height="10"/></clipPath>
+        <clipPath id="rdMarkClip"><use href="#rdMarkKey"/><circle cx="12.54" cy="18.12" r="3.36"/></clipPath>
       </svg>
       <span class="rd-nav-word">ONE<span class="rd-accent">.GY</span></span>
     </a>

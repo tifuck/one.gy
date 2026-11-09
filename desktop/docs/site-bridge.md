@@ -66,17 +66,62 @@ window.onegyDesktop = {
   (hard: Ctrl+Shift+R); zoom: Ctrl+= / Ctrl+- / Ctrl+0 (remembered); no visible
   browser controls. A page that fails to load is replaced by a local
   "Can't reach <server>" page with Retry.
-- `openSync` opens the native panel (a second view over the site, with its own
-  close button and Esc; tabs Syncs / Transfers / Issues / Settings). It
+- `openSync` opens the native panel (a second view over the site). It
   verifies the sender frame's origin in the main process before acting. The
-  panel shows "Set up sync on this computer" (username locked to the page's)
+  panel looks like a page of the site: the site's nav on top (see "Nav data")
+  with Sync active, then the admin console layout (sidebar Syncs / Transfers /
+  Issues / Settings, page head, panels), drawn with the site's own CSS that
+  the app vendors from `static/` at build time (`desktop/app/scripts/vendor-site.js`).
+  It shows "Set up sync on this computer" (username locked to the page's)
   when not authorized, a "This computer syncs <other>'s files" guard with
-  "Sign out of sync on this computer" for `other_account`, else the tabs.
+  "Sign out of sync on this computer" for `other_account`, else the sections.
+  Clicking any other nav link (or Esc) closes it; the window title is
+  "Sync · ONE.GY" while it is open. It becomes visible only after it has
+  rendered the requested screen in the site's current theme (no flash).
 - Once this computer is authorized, Ctrl+Shift+S and the tray's "Sync…" also
   open the panel.
 - The tray offers "Open ONE.GY" and "Quit" always, and the status line,
   "Sync…", Pause / Resume and "Upload…" only once this computer is authorized.
 - The panel follows the site's theme: the preload reports `html[data-theme]`
-  (`frost` | `frost-dark`) to the app.
+  (`frost` | `frost-dark`) on load and on every change (MutationObserver), and
+  the panel's `<html data-theme>` follows it live. The panel's theme menu does
+  not set the theme itself: the app asks the preload to click the site's own
+  `[data-set-theme="<id>"]` option (so `theme-switch.js` persists it as on the
+  website) and the panel then follows the reported theme. With no site page
+  loaded (offline page) the app sets it directly.
+- The panel's "Log out" asks the preload to submit the site's own
+  `form.js-logout-form` (`requestSubmit`, so the site's submit hooks run),
+  then closes the panel.
+
+## Nav data (site preload -> app, no website change needed)
+
+The panel never renders site markup. On every page load, and whenever the
+site nav changes afterwards (notes badge, sync status), the preload reads
+`header.rd-nav` from the live DOM and sends plain values (`site:nav`); the
+main process validates them (`desktop/app/src/main/site-nav.js`) before the
+panel gets them, and the panel renders them with text nodes and attribute
+setters into the same markup as `templates/_nav.html`:
+
+```js
+{
+  links: [{ label, href, active, badge }],   // .rd-nav-mid a.rd-nav-link; badge = visible .rd-badge count
+  username, role,                            // .rd-menu-user b / span
+  account: { label, short, href },           // avatar menu link; short = the drawer's label for it
+  avatar,                                    // .rd-avatar-btn img src
+}
+```
+
+- `href` and `avatar` are same-origin paths only (`/x`, never `//host`,
+  no spaces or backslashes); labels are short plain text without control
+  characters. Anything else is dropped.
+- The app fetches the avatar with the site's session and hands the panel a
+  `data:` URL (images only, at most 256 KB); the panel's CSP loads no remote
+  content.
+- The panel's Sync entry shows the same status dot and note as the site's
+  (the app sends it the same `onStatus` value). The panel ignores `active`
+  (Sync is the active entry there); the logo opens `/files`.
+- The selectors above, `[data-set-theme]` and `form.js-logout-form` are part of
+  this contract: renaming them in `_nav.html` needs the same change in the
+  site preload (and `desktop/app/src/ui/nav.js` mirrors `_nav.html`'s markup).
 - Syncs keep running when the user signs out of the website (the device stays
   authorized until removed in Settings or on `/account/devices`).

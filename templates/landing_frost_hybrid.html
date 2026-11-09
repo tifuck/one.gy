@@ -31,13 +31,14 @@
         {{ primary_cta() }}
         {% if allow_temp_uploads %}<a class="rd-btn rd-btn-ghost rd-btn-lg" href="#share">Share a file</a>
         {% else %}<a class="rd-btn rd-btn-ghost rd-btn-lg" href="#security">How it works</a>{% endif %}
+        <a class="rd-btn rd-btn-ghost rd-btn-lg" href="{{ url_for('desktop_page') }}" data-hide-in-desktop>Desktop app</a>
       </div>
     </div>
 
     <div class="fh-shot" aria-hidden="true">
       <div class="fh-app">
         <div class="fh-app-nav">
-          <span class="fh-app-logo"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" fill="currentColor"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10" stroke="currentColor" stroke-width="2" fill="none"/></svg><span>ONE<span class="rd-accent">.GY</span></span></span>
+          <span class="fh-app-logo"><svg viewBox="0 0 24 24"><path d="M13.93 2.52Q14.46 2.52 14.46 3.05L14.46 5.88L14 6.32Q13.86 6.46 14 6.59L14.32 6.9Q14.46 7.03 14.32 7.16L14 7.48Q13.86 7.61 14 7.74L14.32 8.05Q14.46 8.18 14.28 8.25L13.08 8.69Q12.9 8.76 13.08 8.83L14.28 9.27Q14.46 9.34 14.28 9.4L13.08 9.85Q12.9 9.91 13.08 9.98L14.28 10.42Q14.46 10.49 14.32 10.62L14 10.93Q13.86 11.06 14 11.2L14.32 11.51Q14.46 11.64 14.32 11.77L14 12.08Q13.86 12.22 14 12.35L14.32 12.66Q14.46 12.79 14.32 12.92L14 13.24Q13.86 13.37 14 13.5L14.32 13.81Q14.46 13.94 14.28 14.01L13.08 14.45Q12.9 14.52 13.08 14.59L14.46 15.1L14.46 16.44L10.62 16.44L10.62 6.1Q10.62 5.78 10.37 5.97L10.08 6.18Q9.65 6.49 9.34 6.06L8.41 4.78Q8.1 4.35 8.53 4.04L10.2 2.83Q10.62 2.52 11.15 2.52Z" fill="currentColor"/><circle cx="12.54" cy="18.12" r="2.4" stroke="currentColor" stroke-width="1.92" fill="none"/><circle cx="12.54" cy="18.12" r=".72" fill="var(--accent)"/></svg><span>ONE<span class="rd-accent">.GY</span></span></span>
           <span class="fh-app-links"><span class="is-on">Files</span><span>Notes</span>{% if allow_music %}<span>Music</span>{% endif %}<span>Prompts</span></span>
           <span class="fh-app-me"></span>
         </div>

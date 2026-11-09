@@ -133,6 +133,7 @@ function start() {
     if (key === lastSiteStatus) return;
     lastSiteStatus = key;
     window.sendSiteStatus(st);
+    window.send({ type: 'app:siteStatus', data: st }); // the panel's copy of the site nav
   }, SITE_STATUS_EVERY_MS);
 
   sync.on('change', () => {
@@ -181,6 +182,7 @@ function start() {
     window = new MainWindow({
       settings,
       serverOrigin: () => settings.get().server_url,
+      siteStatus: () => sync.forUser(window.siteUser),
       onSiteMutation: () => engine.call('engine.nudge').catch(() => {}),
       onSyncShortcut: () => { if (sync.authorized()) openPanel('syncs'); },
     });

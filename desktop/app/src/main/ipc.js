@@ -1,7 +1,8 @@
 // ipcMain handlers. The native panel may call a fixed list of engine methods
 // plus a few app-owned actions; the website gets the site bridge
 // (desktop/docs/site-bridge.md): unlock key, open the sync panel, sync status,
-// and its theme. Every handler checks who is asking and validates what it gets.
+// its theme and its nav. Every handler checks who is asking and validates
+// what it gets.
 'use strict';
 
 const fs = require('fs/promises');
@@ -13,6 +14,7 @@ const { isMainFrameOf } = require('./window');
 const { normalizeServerUrl } = require('./settings-store');
 const { isUiUrl } = require('./protocol');
 const { removeSync } = require('./remove-sync');
+const { cleanNav, isSitePath } = require('./site-nav');
 const { UI_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS } = require('./ui-methods');
 
 const MAX_PARAMS_BYTES = 1024 * 1024;
@@ -118,14 +120,25 @@ function registerIpc({ window, engine, settings, sync }) {
     return true;
   });
   handle('app:openSite', (pathname) => {
-    if (typeof pathname !== 'string' || !/^\/(?!\/)[^\s\\]*$/.test(pathname) || pathname.length > 2048) {
-      throw Object.assign(new Error('Invalid path'), { code: 'validation_failed' });
-    }
+    if (!isSitePath(pathname)) throw Object.assign(new Error('Invalid path'), { code: 'validation_failed' });
     window.openSitePath(pathname);
     return true;
   });
   handle('app:closePanel', () => {
     window.closePanel();
+    return true;
+  });
+  handle('app:panelReady', () => {
+    window.showPanel();
+    return true;
+  });
+  handle('app:siteTheme', (theme) => {
+    if (!THEMES.has(theme)) throw Object.assign(new Error('Unknown theme'), { code: 'validation_failed' });
+    window.setSiteTheme(theme);
+    return true;
+  });
+  handle('app:siteLogout', () => {
+    window.siteLogout();
     return true;
   });
   handle('app:exportDiagnostics', async () => {
@@ -162,6 +175,11 @@ function registerIpc({ window, engine, settings, sync }) {
   });
   ipcMain.on('site:theme', (event, theme) => {
     if (window.isSiteFrame(event.senderFrame) && THEMES.has(theme) && settings.get().theme !== theme) settings.set({ theme });
+  });
+  ipcMain.on('site:nav', (event, raw) => {
+    if (!window.isSiteFrame(event.senderFrame)) return;
+    const nav = cleanNav(raw);
+    if (nav) window.setSiteNav(nav).catch((err) => console.error(`[IPC] site nav: ${err.message}`));
   });
   ipcMain.handle('site:unlock', async (event) => {
     if (!window.isSiteFrame(event.senderFrame)) return null;
