@@ -21,6 +21,7 @@ const DEFAULTS = Object.freeze({
   update_channel: 'stable',
   auto_update: true,
   prevent_sleep: true,
+  linux_x11: true, // GNOME on Wayland: run through XWayland so the tray popover can sit under the tray icon (main.js)
   lock_after_minutes: 30, // app lock after this much system idle time (0 = only on start, sleep and screen lock)
   default_upload_folder: null, // {id, path}: one.gy folder for tray Upload…
   default_download_dir: '', // local folder for manual downloads ('' = ask)
@@ -49,6 +50,7 @@ const VALIDATORS = {
   update_channel: oneOf('stable', 'beta'),
   auto_update: bool,
   prevent_sleep: bool,
+  linux_x11: bool,
   lock_after_minutes: oneOf(0, 5, 15, 30, 60, 240),
   default_upload_folder: (v) => {
     if (v === null) return null;

@@ -20,7 +20,7 @@
   const fail = (err) => Promise.resolve({ ok: false, error: { code: err.code || 'internal', message: err.message, data: err.data || null } });
   let settings = {
     server_url: 'https://one.gy', launch_at_login: true, start_minimized: false, close_to_tray: true,
-    theme: flags.has('light') ? 'frost' : 'frost-dark', site_zoom: 1, update_channel: 'stable', auto_update: true, prevent_sleep: true,
+    theme: flags.has('light') ? 'frost' : 'frost-dark', site_zoom: 1, update_channel: 'stable', auto_update: true, prevent_sleep: true, linux_x11: true,
     notify: { conflict: true, issue: true, mass_delete: true, transfer: true, revoked: true, info: true },
   };
   const setSettings = (patch) => {

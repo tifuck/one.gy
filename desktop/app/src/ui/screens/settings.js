@@ -117,7 +117,11 @@ function general() {
       row('Open at login', 'Start ONE.GY in the tray when you sign in to this computer.', switchInput(a.launch_at_login, (v) => saveApp({ launch_at_login: v }))),
       row('Start minimized', 'Open in the tray instead of showing the window.', switchInput(a.start_minimized, (v) => saveApp({ start_minimized: v }))),
       row('Keep running when the window is closed', 'Syncing continues in the tray. Quit from the tray menu.', switchInput(a.close_to_tray, (v) => saveApp({ close_to_tray: v }))),
-      row('Prevent sleep while syncing', null, switchInput(a.prevent_sleep, (v) => saveApp({ prevent_sleep: v })))),
+      row('Prevent sleep while syncing', null, switchInput(a.prevent_sleep, (v) => saveApp({ prevent_sleep: v }))),
+      store.version && store.version.platform === 'linux'
+        ? row('Open the status popover under the tray icon', 'GNOME on Wayland lets no app place its windows, so ONE.GY runs through XWayland there. Turn this off if text looks blurry with fractional scaling. Applies the next time ONE.GY starts.',
+          switchInput(a.linux_x11, (v) => saveApp({ linux_x11: v })))
+        : null),
     panel('Updates', null,
       updateRow(),
       row('Check for updates automatically', system

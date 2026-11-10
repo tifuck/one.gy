@@ -39,20 +39,32 @@
 .ui-v2 .rd-avatar{ border-radius:50%; }
 .ui-v2 .rd-nav-toggle{ width:32px; height:32px; border:0; border-radius:8px; gap:4px; }
 .ui-v2 .rd-nav-toggle span{ width:16px; height:1.5px; }
-.ui-v2 .rd-nav-open .rd-nav-toggle span:nth-child(1){ transform:translateY(5.5px) rotate(45deg); }
-.ui-v2 .rd-nav-open .rd-nav-toggle span:nth-child(3){ transform:translateY(-5.5px) rotate(-45deg); }
+.rd-nav-open .ui-v2 .rd-nav-toggle{ background:var(--press); }
+.rd-nav-open .ui-v2 .rd-nav-toggle span:nth-child(1){ transform:translateY(5.5px) rotate(45deg); }
+.rd-nav-open .ui-v2 .rd-nav-toggle span:nth-child(3){ transform:translateY(-5.5px) rotate(-45deg); }
 /* Logged-out actions: Sign in (link) + Get started (primary) */
 .ui-v2 .rd-nav-actions .rd-btn{ height:30px; padding:0 .8rem; font-size:.82rem; }
 
-/* Mobile drawer (<=900px, core.css shows it): full-width rows; a row-wrap
-   flow lets logged-out Sign in + Get started share the last row as buttons
-   without extra markup. */
-.ui-v2 .rd-nav-drawer{ flex-flow:row wrap; gap:2px 8px; padding:8px 12px 14px; background:var(--raise); border-bottom:0; box-shadow:var(--shadow-pop); }
+/* Mobile drawer (<=900px, core.css shows it): a floating sheet under the bar
+   over a scrim (body::after, below the bar so it stays crisp; a tap on it
+   lands outside the drawer and closes it). Icon rows; a row-wrap flow lets
+   logged-out Sign in + Get started share the last row as buttons. */
+.ui-v2 .rd-nav-drawer{ inset:calc(var(--nav-h) + 6px) 8px auto; max-height:calc(100dvh - var(--nav-h) - 14px); overflow-y:auto;
+  flex-flow:row wrap; gap:2px 8px; padding:6px; background:var(--raise); border:0; border-radius:14px; box-shadow:var(--shadow-pop); }
 .rd-nav-open .ui-v2 .rd-nav-drawer{ animation:v2drawer .18s cubic-bezier(.2,.9,.3,1); }
 @keyframes v2drawer{ from{ opacity:0; transform:translateY(-6px); } }
+@media (max-width:900px){
+  .rd-nav-open .ui-v2::after{ content:""; position:fixed; inset:var(--nav-h) 0 0; z-index:58; background:var(--scrim); animation:v2fade .18s ease-out; }
+}
+@keyframes v2fade{ from{ opacity:0; } }
 .ui-v2 .rd-nav-drawer > *{ flex:1 0 100%; }
-.ui-v2 .rd-nav-drawer .rd-nav-link{ display:flex; align-items:center; width:100%; min-height:44px; padding:0 12px; font-size:.95rem; color:var(--text); text-align:left; }
-.ui-v2 .rd-nav-drawer .js-logout-form{ margin-top:6px; padding-top:6px; border-top:1px solid var(--line); }
+.ui-v2 .rd-nav-drawer .rd-nav-link{ display:flex; align-items:center; gap:12px; width:100%; min-height:46px; padding:0 12px; border-radius:9px; font-size:.95rem; color:var(--text); text-align:left; }
+.ui-v2 .rd-nav-drawer .rd-nav-link svg{ flex:none; width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; color:var(--text-dim); }
+.ui-v2 .rd-nav-drawer .rd-nav-link.is-active{ background:var(--press); }
+.ui-v2 .rd-nav-drawer .rd-nav-link.is-active svg{ color:var(--accent); }
+.ui-v2 .rd-nav-drawer .js-logout-form{ margin-top:4px; padding-top:4px; border-top:1px solid var(--line); }
+.ui-v2 .rd-nav-drawer .rd-menu-danger, .ui-v2 .rd-nav-drawer .rd-menu-danger svg{ color:var(--bad); }
+.ui-v2 .rd-nav-drawer .rd-menu-danger:hover{ background:var(--bad-soft); }
 .ui-v2 .rd-nav-drawer > .rd-btn, .ui-v2 .rd-nav-drawer > .rd-nav-link:has(+ .rd-btn){ flex:1 1 0; height:44px; margin-top:10px; justify-content:center; align-self:auto; font-size:.92rem; font-weight:500; }
 .ui-v2 .rd-nav-drawer > .rd-nav-link:has(+ .rd-btn){ background:var(--hover); }
 
@@ -605,6 +617,6 @@
   .ui-v2 .manage-modal-scroll{ padding-bottom:max(20px,env(safe-area-inset-bottom)); }
 }
 @media (prefers-reduced-motion:reduce){
-  .ui-v2 .toast-message, .ui-v2 .rd-cmenu.is-open, .rd-nav-open .ui-v2 .rd-nav-drawer, .ui-v2 .rd-skel{ animation:none; }
+  .ui-v2 .toast-message, .ui-v2 .rd-cmenu.is-open, .rd-nav-open .ui-v2 .rd-nav-drawer, .rd-nav-open .ui-v2::after, .ui-v2 .rd-skel{ animation:none; }
   .ui-v2 .rd-switch, .ui-v2 .rd-switch::before{ transition:none; }
 }

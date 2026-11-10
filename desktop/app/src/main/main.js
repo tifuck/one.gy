@@ -15,7 +15,7 @@ const { EngineSupervisor } = require('./engine');
 const { MainWindow, BACKGROUND } = require('./window');
 const { registerIpc } = require('./ipc');
 const { AppTray } = require('./tray');
-const { TrayPopover } = require('./tray-popover');
+const { TrayPopover, isGnomeWayland } = require('./tray-popover');
 const { createNotifier } = require('./notify');
 const { startUpdater } = require('./updater');
 const { watchEnvironment } = require('./environment');
@@ -43,11 +43,25 @@ const argValue = (name) => {
 const cleanBounds = (b) => (b && ['x', 'y', 'width', 'height'].every((k) => Number.isSafeInteger(b[k])) && b.width >= 760 && b.height >= 520
   ? { x: b.x, y: b.y, width: b.width, height: b.height } : null);
 
+// GNOME on Wayland places every window itself, so the tray popover would open
+// mid-screen; under XWayland it sits under the tray icon. The display backend
+// is chosen before this script runs, so start once more with the switch
+// (an explicit --ozone-platform, or the linux_x11 setting off, keeps Wayland).
+function relaunchUnderX11() {
+  if (!isGnomeWayland(process.env) || process.argv.some((a) => a.startsWith('--ozone-platform'))) return false;
+  if (!new SettingsStore(app.getPath('userData')).get().linux_x11) return false;
+  app.relaunch({ execPath: process.env.APPIMAGE || process.execPath, args: [...process.argv.slice(1), '--ozone-platform=x11'] });
+  app.exit(0);
+  return true;
+}
+
 registerScheme();
 hardenApp();
 app.setAppUserModelId(APP_ID);
 
-if (!app.requestSingleInstanceLock()) {
+if (relaunchUnderX11()) {
+  // the next process takes over
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   start();

@@ -541,7 +541,7 @@
   .fx-seg-btn[data-view="gallery"], .fx-seg-btn[data-view="columns"]{ display:none; }
   .fx-seg-btn.is-active{ background:var(--press); box-shadow:none; }
   .fx-toolbar #fxNewFolder{ width:var(--fx-ctl-h); padding:0; justify-content:center; background:none; color:var(--text-dim); }
-  .fx-toolbar #fxUploadBtn{ width:var(--fx-ctl-h); padding:0; justify-content:center; border-radius:50%; }
+  .fx-toolbar #fxUploadBtn{ width:var(--fx-ctl-h); padding:0; justify-content:center; }
   .fx-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
   .fx-grid:has(> .fx-item.is-folder){ grid-template-columns:1fr; gap:4px; }
   .fx-gallery{ columns:2 140px; column-gap:6px; }

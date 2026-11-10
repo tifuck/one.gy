@@ -5,7 +5,9 @@
 // hosts); the tray menu's "Status and activity…" opens it everywhere (GNOME's
 // AppIndicator shows the menu on left click). It hides when it loses focus,
 // on Esc and on its close button. Linux reports no tray bounds, so it opens
-// by the pointer; Wayland compositors place windows themselves.
+// by the pointer, and on GNOME under the top bar's right end (XWayland does
+// not see the pointer over the top bar). Wayland compositors place windows
+// themselves, so on GNOME the app runs through XWayland (main.js).
 'use strict';
 
 const path = require('path');
@@ -19,6 +21,11 @@ const GAP = 8;
 const REOPEN_GUARD_MS = 300;
 // Actions that leave the popover; pause and resume keep it open.
 const STAYS_OPEN = new Set(['pause', 'resume']);
+
+// GNOME on Wayland: no app may place its own windows (main.js then restarts
+// under XWayland, unless the linux_x11 setting is off).
+const isGnome = (env) => /gnome/i.test(env.XDG_CURRENT_DESKTOP || '');
+const isGnomeWayland = (env) => isGnome(env) && (env.XDG_SESSION_TYPE === 'wayland' || Boolean(env.WAYLAND_DISPLAY));
 
 // Top-left corner for a popover of `size` by `anchor` (the tray icon's centre
 // or the pointer), inside the work area `area`: centred on the anchor
@@ -79,9 +86,12 @@ class TrayPopover {
 
   async show(bounds) {
     if (!this.win) this.create();
+    // GNOME's tray sits at the top bar's right end by default (the
+    // AppIndicator extension's tray-pos); read that setting if users move it.
+    const top = isGnome(process.env) && screen.getPrimaryDisplay().workArea;
     const anchor = bounds && bounds.width > 0
       ? { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
-      : screen.getCursorScreenPoint();
+      : top ? { x: top.x + top.width, y: top.y } : screen.getCursorScreenPoint();
     const area = screen.getDisplayNearestPoint(anchor).workArea;
     const size = { width: Math.min(SIZE.width, area.width - 2 * GAP), height: Math.min(SIZE.height, area.height - 2 * GAP) };
     this.win.setBounds({ ...placePopover(size, anchor, area), ...size });
@@ -111,4 +121,6 @@ class TrayPopover {
   }
 }
 
-module.exports = { TrayPopover, placePopover, SIZE };
+module.exports = {
+  TrayPopover, placePopover, isGnomeWayland, SIZE,
+};

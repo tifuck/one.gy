@@ -398,7 +398,7 @@
   function renderEditor (title, html, readonly) {
     S.currentType = 'document'
     var tools = readonly ? '' :
-      '<div class="nt-toolbar" role="toolbar" aria-label="Note formatting">' +
+      '<div class="nt-toolbar" role="toolbar" aria-label="Note formatting">' + BACK_BTN +
       tbtn('undo', ico(TB.undo), 'Undo') + tbtn('redo', ico(TB.redo), 'Redo') + '<span class="nt-tb-sep"></span>' +
       '<select class="nt-tb-select nt-tb-font" data-cmd="fontName" title="Font" aria-label="Font"><option value="inherit">Default</option>' + FONT_FACES.map(function (face) { return '<option>' + face + '</option>' }).join('') + '</select>' +
       '<select class="nt-tb-select nt-tb-size" data-cmd="fontSize" title="Font size" aria-label="Font size">' + FONT_SIZES.map(function (size, i) { return '<option value="' + (i + 1) + '"' + (i === 2 ? ' selected' : '') + '>' + size + '</option>' }).join('') + '</select>' +
@@ -419,6 +419,7 @@
       '<span class="nt-tb-zoom"><button type="button" class="nt-tb-btn" data-zoom="-1" title="Zoom out" aria-label="Zoom out">' + ico(TB.zoomOut) + '</button>' +
       '<button type="button" class="nt-tb-btn nt-tb-zoomlevel" id="ntZoomLevel" data-zoom="0" title="Reset zoom" aria-label="Reset zoom">100%</button>' +
       '<button type="button" class="nt-tb-btn" data-zoom="1" title="Zoom in" aria-label="Zoom in">' + ico(TB.zoomIn) + '</button></span>' +
+      SAVE_STATE +
       '<input type="file" id="ntImageInput" accept="image/*" hidden>' +
       '</div>'
     editorEl.innerHTML = editorHead(title, 'Untitled note', readonly) + tools +
@@ -442,8 +443,8 @@
     if (typeof FxCanvas !== 'undefined') {
       try { S.canvas = FxCanvas.mount($('ntCanvas'), { data: data, readonly: readonly, zoom: canvasZoom, onZoom: function (z) { canvasZoom = z }, onDirty: function () { if (!readonly) markDirty() }, validate: function (d) { return !!validateCanvasData(d, NOTES_INLINE_BUDGET_BYTES) } }) } catch (e) { S.canvas = null }
     }
-    var pin = editorEl.querySelector('[data-pin]'); if (pin) pin.onclick = togglePin
-    var del = editorEl.querySelector('[data-delete]'); if (del) del.onclick = function () { deleteNote(false) }
+    var bar = $('ntCanvas').querySelector('.fxc-bar')
+    if (bar && !readonly) { bar.insertAdjacentHTML('afterbegin', BACK_BTN); bar.insertAdjacentHTML('beforeend', SAVE_STATE) } else if (!readonly) editorEl.insertAdjacentHTML('afterbegin', '<div class="nt-ed-head nt-ed-head-bare">' + BACK_BTN + '</div>')
     var rb = editorEl.querySelector('[data-restore]'); if (rb) rb.onclick = restoreNote
     var dp = editorEl.querySelector('[data-delete-perm]'); if (dp) dp.onclick = function () { deleteNote(true) }
     // If the canvas engine never mounted there is no #ntBody either, so a save
@@ -475,19 +476,20 @@
     // OneNote: Enter (or Down) in the title moves into the page.
     title.addEventListener('keydown', function (e) { if ((e.key === 'Enter' || e.key === 'ArrowDown') && !e.isComposing) { e.preventDefault(); focusEditorBody() } })
   }
-  // Shared by both note types: back (phones) · title · save state · actions.
+  // An editable note has no head row: its toolbar carries back (phones) and the
+  // save state, and the title stays as a hidden input because saveNote() writes
+  // it (rename and pin live in the list's context menu). The trash keeps the row.
   function editorHead (title, placeholder, readonly) {
-    var pinned = !!(S.meta && S.meta.is_pinned)
-    return '<div class="nt-ed-head">' + BACK_BTN +
-        '<input class="nt-ed-title" id="ntTitle" value="' + esc(title === placeholder ? '' : title) + '" placeholder="' + placeholder + '" maxlength="200" enterkeyhint="next" aria-label="Note title" autocomplete="off"' + (readonly ? ' readonly' : '') + '>' +
-        '<div class="nt-ed-actions"><span class="nt-savestate" id="ntSaveState" aria-live="polite"></span>' +
-        (readonly ? '<button type="button" class="rd-btn rd-btn-ghost rd-btn-sm" data-restore>Restore</button><button type="button" class="rd-btn rd-btn-danger rd-btn-sm" data-delete-perm title="Delete forever">' + ico('<path d="' + TRASH_PATH + '"/>') + '<span class="nt-btn-label">Delete forever</span></button>' :
-          '<button type="button" class="rd-icon-btn" data-pin title="' + (pinned ? 'Unpin' : 'Pin to top') + '" aria-label="Pin to top" aria-pressed="' + pinned + '"><svg viewBox="0 0 24 24" width="17" height="17" fill="' + (pinned ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/><path d="M12 15v5" stroke-linecap="round"/></svg></button>' +
-          '<button type="button" class="rd-icon-btn" data-delete title="Move to trash" aria-label="Move to trash"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + TRASH_PATH + '"/></svg></button>') +
+    var input = '<input class="nt-ed-title" id="ntTitle" value="' + esc(title === placeholder ? '' : title) + '" placeholder="' + placeholder + '" maxlength="200" aria-label="Note title" autocomplete="off"' + (readonly ? ' readonly' : ' hidden') + '>'
+    if (!readonly) return input
+    return '<div class="nt-ed-head">' + BACK_BTN + input +
+        '<div class="nt-ed-actions">' + SAVE_STATE +
+          '<button type="button" class="rd-btn rd-btn-ghost rd-btn-sm" data-restore>Restore</button><button type="button" class="rd-btn rd-btn-danger rd-btn-sm" data-delete-perm title="Delete forever">' + ico('<path d="' + TRASH_PATH + '"/>') + '<span class="nt-btn-label">Delete forever</span></button>' +
         '</div>' +
       '</div>' +
-      (readonly ? '<div class="nt-ro">' + ico('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>') + 'This note is in the trash. Restore it to edit.</div>' : '')
+      '<div class="nt-ro">' + ico('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>') + 'This note is in the trash. Restore it to edit.</div>'
   }
+  var SAVE_STATE = '<span class="nt-savestate" id="ntSaveState" aria-live="polite"></span>'
   var BACK_BTN = '<button type="button" class="nt-back" id="ntBackBtn" aria-label="Back to notes" title="Back to notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>'
   var TB = {
     undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/>',
@@ -570,8 +572,6 @@
     $('ntBody').addEventListener('dragover', function (event) { event.preventDefault() })
     $('ntBody').addEventListener('drop', documentDrop)
     $('ntImageInput').onchange = function () { var file = firstImageFile(this.files); if (file) insertDocumentImage(file); this.value = '' }
-    var pin = editorEl.querySelector('[data-pin]'); if (pin) pin.onclick = togglePin
-    var del = editorEl.querySelector('[data-delete]'); if (del) del.onclick = function () { deleteNote(false) }
     S.editorReady = true
   }
   // ---- Document editing behaviour ------------------------------------------
@@ -1088,8 +1088,7 @@
       }
       var resp = await apiSend('POST', '/notes/api/notes', payload)
       await loadAll(); await openNote(resp.id)
-      // OneNote: a new page starts with the caret in its title; Enter moves into the page.
-      if (S.noteId === resp.id && S.editorReady && $('ntTitle')) $('ntTitle').focus()
+      if (S.noteId === resp.id && S.editorReady) focusEditorBody()
     } catch (e) { toast('COULD NOT CREATE NOTE', 'error'); if (!S.noteId) hideEditorMobile() }
   }
 
@@ -1108,11 +1107,6 @@
     } catch (e) { toast('COULD NOT CREATE NOTEBOOK', 'error') }
   }
 
-  async function togglePin () {
-    // By id, captured now: the reply must update THIS note even if another
-    // note was opened while the request was in flight.
-    if (S.noteId) return togglePinById(S.noteId)
-  }
   async function deleteNote (perm) {
     if (!S.noteId) return
     if (perm && !(await confirmForever())) return
@@ -1197,8 +1191,6 @@
       n.is_pinned = np
       if (S.meta && S.meta.id === id) S.meta.is_pinned = np
       renderList()
-      var pb = S.noteId === id && editorEl.querySelector('[data-pin]')
-      if (pb) { pb.querySelector('svg').setAttribute('fill', np ? 'currentColor' : 'none'); pb.setAttribute('aria-pressed', String(np)); pb.title = np ? 'Unpin' : 'Pin to top' }
     } catch (e) { toast('COULD NOT UPDATE PIN', 'error') }
   }
 

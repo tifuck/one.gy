@@ -158,4 +158,9 @@ window.onegyDesktop = {
   sync, transfers running and recently finished, open issues, with Pause /
   Resume, Upload, Open ONE.GY and links into the panel. It reads only
   `account.status`, `syncs.list`, `transfers.list` and `issues.list` and hides
-  when it loses focus, on Esc, and when the app locks or signs out.
+  when it loses focus, on Esc, and when the app locks or signs out. GNOME's
+  AppIndicator opens the menu on a single click and activates (the popover)
+  on a double click. GNOME on Wayland lets no app place its windows, so the
+  app restarts itself under XWayland there (`--ozone-platform=x11`; app
+  setting `linux_x11`, an explicit `--ozone-platform` wins) and opens the
+  popover under the top bar's right end.

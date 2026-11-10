@@ -32,7 +32,7 @@
 /* Phones show one pane at a time, so the collapse never applies there. */
 @media (min-width:721px){
   :root[data-rd-side="collapsed"] .nt-list{ visibility:hidden; border-right-width:0; }
-  :root[data-rd-side="collapsed"] .nt-ed-head{ padding-left:50px; }
+  :root[data-rd-side="collapsed"] .nt-ed-head, :root[data-rd-side="collapsed"] .nt-toolbar, :root[data-rd-side="collapsed"] .fxc-bar{ padding-left:50px; }
 }
 
 /* ---- Lock overlay (E2EE unlock) ------------------------------------------ */
@@ -190,7 +190,8 @@
   font:inherit; font-size:.76rem; font-weight:500; cursor:pointer; transition:background .12s, color .12s;
 }
 .nt-conflict-btn:hover{ background:var(--bad); color:var(--on-bad); }
-.nt-ed-actions [data-pin][aria-pressed="true"]{ color:var(--accent); }
+/* Save state docked at the right end of either note type's toolbar */
+.nt-toolbar > .nt-savestate, .fxc-bar > .nt-savestate{ margin:0 0 0 8px; }
 .nt-ed-actions .rd-btn + .rd-btn{ margin-left:6px; }
 .nt-ro{
   flex:none; display:flex; align-items:center; gap:8px; padding:8px 16px;
@@ -368,6 +369,13 @@
   .nt-toolbar .nt-tb-font{ flex:0 0 40%; width:auto; min-width:0; }
   .nt-toolbar .nt-tb-size{ flex:0 0 20%; width:auto; min-width:0; }
   .nt-tb-sep, .nt-tb-zoom{ display:none; }
+  /* Back takes a cell from the font picker so the bar stays three rows; the canvas tools share back's row */
+  .nt-toolbar .nt-back{ flex:0 0 10%; width:auto; margin-left:0; }
+  .nt-toolbar .nt-back ~ .nt-tb-font{ flex-basis:30%; }
+  .fxc-bar > .nt-back + .fxc-tools{ flex:1 1 0; }
+  /* No room for "Saved" in a full bar: only the conflict / export button shows */
+  .nt-toolbar > .nt-savestate, .fxc-bar > .nt-savestate{ display:none; }
+  .nt-toolbar > .nt-savestate:has(button), .fxc-bar > .nt-savestate:has(button){ display:inline-flex; max-width:none; margin-left:auto; }
   .nt-ed-body{ padding:16px 16px 120px; font-size:16px; }
 }
 @media (max-width:420px){
