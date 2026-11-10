@@ -87,7 +87,9 @@
     if (spyLocked || !secs.length) return
     var cur = secs[0]
     secs.forEach(function (s) { if (s.getBoundingClientRect().top <= 180) cur = s })
-    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) cur = secs[secs.length - 1]
+    var sc = document.querySelector('.rd-scroll')
+    var el = sc && sc.scrollHeight > sc.clientHeight ? sc : document.documentElement
+    if (el.clientHeight + el.scrollTop >= el.scrollHeight - 4) cur = secs[secs.length - 1]
     markSec(cur.id)
   }
   links.forEach(function (l) { l.addEventListener('click', function (e) {
@@ -98,7 +100,7 @@
     t.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' })
   }) })
   ;['wheel', 'touchmove', 'keydown'].forEach(function (t) { window.addEventListener(t, function () { spyLocked = false }, { passive: true }) })
-  window.addEventListener('scroll', function () { if (!spyFrame) spyFrame = requestAnimationFrame(spy) }, { passive: true })
+  document.addEventListener('scroll', function () { if (!spyFrame) spyFrame = requestAnimationFrame(spy) }, { passive: true, capture: true })
   spy()
 
   // ---- Default Files layout preference (localStorage) --------------------

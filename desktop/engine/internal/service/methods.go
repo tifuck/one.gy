@@ -51,14 +51,27 @@ func (s *Service) register() {
 		return s.acct.Status(ctx), nil
 	})
 	h("account.unlock", func(ctx context.Context, p json.RawMessage) (any, error) {
+		// new_pin (opt-in): from now on the PIN unlocks the app instead of the password.
 		var in struct {
-			Password string `json:"password"`
+			Password  string `json:"password"`
+			NewPin    string `json:"new_pin"`
+			PinStrict bool   `json:"pin_strict"`
 		}
 		if err := ipc.Params(p, &in); err != nil {
 			return nil, err
 		}
+		if in.NewPin != "" {
+			if err := account.ValidPin(in.NewPin); err != nil {
+				return nil, err
+			}
+		}
 		if err := s.acct.Unlock(ctx, in.Password); err != nil {
 			return nil, err
+		}
+		if in.NewPin != "" {
+			if err := s.acct.SetPin(ctx, in.NewPin, in.PinStrict); err != nil {
+				return nil, err
+			}
 		}
 		s.poller.Nudge()
 		return s.acct.Status(ctx), nil
@@ -77,9 +90,56 @@ func (s *Service) register() {
 		s.tree.ResetKeys()
 		return struct{}{}, err
 	})
+	h("account.appUnlock", func(ctx context.Context, p json.RawMessage) (any, error) {
+		var in struct {
+			Pin string `json:"pin"`
+		}
+		if err := ipc.Params(p, &in); err != nil {
+			return nil, err
+		}
+		if err := s.acct.AppUnlock(ctx, in.Pin); err != nil {
+			return nil, err
+		}
+		s.poller.Nudge()
+		return s.acct.Status(ctx), nil
+	})
+	h("account.appLock", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		s.appLock(ctx)
+		return s.acct.Status(ctx), nil
+	})
+	h("account.setPin", func(ctx context.Context, p json.RawMessage) (any, error) {
+		var in struct {
+			Pin    string `json:"pin"`
+			Strict bool   `json:"strict"`
+		}
+		if err := ipc.Params(p, &in); err != nil {
+			return nil, err
+		}
+		if err := s.acct.SetPin(ctx, in.Pin, in.Strict); err != nil {
+			return nil, err
+		}
+		s.pushScope(ctx)
+		return s.acct.Status(ctx), nil
+	})
+	h("account.removePin", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		if err := s.acct.RemovePin(ctx); err != nil {
+			return nil, err
+		}
+		return s.acct.Status(ctx), nil
+	})
+	h("account.webSession", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		ticket, err := s.acct.WebSession(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"ticket": ticket, "url": s.acct.Account().ServerURL + "/desktop/session"}, nil
+	})
 	h("account.webUnlockKey", func(context.Context, json.RawMessage) (any, error) {
 		if !s.settings().WebUnlock {
 			return nil, ipc.Errorf("locked", "website unlock with this device's key is turned off")
+		}
+		if !s.acct.AppUnlocked() {
+			return nil, account.ErrAppLocked
 		}
 		key, err := s.acct.MasterKey()
 		if err != nil {
@@ -118,9 +178,19 @@ func (s *Service) register() {
 
 	h("syncs.list", s.syncsList)
 	h("syncs.validate", s.syncsValidate)
-	h("syncs.create", s.syncsCreate)
-	h("syncs.update", s.syncsUpdate)
-	h("syncs.remove", s.syncsRemove)
+	// Sync roots changed: the server's scope for a locked app follows.
+	withScope := func(fn ipc.Handler) ipc.Handler {
+		return func(ctx context.Context, p json.RawMessage) (any, error) {
+			res, err := fn(ctx, p)
+			if err == nil {
+				s.pushScope(ctx)
+			}
+			return res, err
+		}
+	}
+	h("syncs.create", withScope(s.syncsCreate))
+	h("syncs.update", withScope(s.syncsUpdate))
+	h("syncs.remove", withScope(s.syncsRemove))
 	h("syncs.pause", func(ctx context.Context, p json.RawMessage) (any, error) { return s.pauseResume(ctx, p, true) })
 	h("syncs.resume", func(ctx context.Context, p json.RawMessage) (any, error) { return s.pauseResume(ctx, p, false) })
 

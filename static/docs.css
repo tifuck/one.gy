@@ -20,7 +20,7 @@
 
 /* ---- Table of contents (desktop rail) ----------------------------------- */
 .docs-sidebar{ position:sticky; top:calc(var(--nav-h) + 28px); align-self:start; display:flex; flex-direction:column;
-  max-height:calc(100vh - var(--nav-h) - 52px); }
+  max-height:calc(100vh - var(--nav-real) - 52px); }
 .docs-toc-toggle{ display:none; }
 .docs-nav{ position:relative; display:flex; flex-direction:column; gap:1px; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
 .docs-sidebar-heading{ margin:18px 0 4px; padding:0 10px; font-size:.72rem; font-weight:600; line-height:1.4; color:var(--text-faint); }
@@ -130,7 +130,7 @@
   .docs-toc-chev{ transition:transform .18s; }
   .docs-sidebar.is-open .docs-toc-chev{ transform:rotate(180deg); }
   .docs-nav{ display:none; position:absolute; top:calc(100% - 2px); left:var(--docs-pad); right:var(--docs-pad);
-    max-height:calc(100dvh - var(--nav-h) - 80px); padding:6px; border-radius:12px; background:var(--raise); box-shadow:var(--shadow-pop); }
+    max-height:calc(100dvh - var(--nav-real) - 80px); padding:6px; border-radius:12px; background:var(--raise); box-shadow:var(--shadow-pop); }
   .docs-sidebar.is-open .docs-nav{ display:flex; animation:v2drawer .18s cubic-bezier(.2,.9,.3,1); }
   .docs-sidebar-heading{ margin-top:12px; }
   .docs-nav-link{ min-height:40px; font-size:.92rem; }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,13 +54,26 @@ func TestAuthorizeRestartUnlockSignOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Restart with the key store intact: unlocked straight away.
+	// Restart with the key store intact: unlocked as soon as the server's
+	// share opens the at-rest key; the key store never holds the master key.
 	m2 := New(db, keystore.New(dir, false), api.Options{Version: "0.1.0", Transport: srv.Client().Transport})
 	if err := m2.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := m2.Client(); !errors.Is(err, ErrLocked) {
+		t.Fatalf("before auto-unlock: %v", err)
+	}
+	if err := m2.AutoUnlock(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := m2.Client(); err != nil {
 		t.Fatalf("restart with key store: %v", err)
+	}
+	if raw, _ := keystore.New(dir, false).Get(secretsName); strings.Contains(raw, "master_key") {
+		t.Fatal("master key in the key store")
+	}
+	if srv.SignedDevices() != 1 || !m2.Status(ctx).SignedRequests {
+		t.Fatal("device does not sign its requests")
 	}
 
 	// Restart in memory-only mode: locked until the password is given.

@@ -12,10 +12,8 @@
 //   GET  /bridge.js      dev/bridge-client.js: maps window.onegy onto this server
 //   POST /rpc            {method, params} -> engine (same whitelist as the app)
 //   POST /app/<name>     {args} -> app-owned actions (preload names)
-//   GET  /events         server-sent events: engine events + app:engine/app:settings/app:panel/
-//                        app:siteStatus
-//   POST /panel          {username, screen, nav}: what the site's openSync() does (opens the
-//                        panel); nav is the site nav data (main/site-nav.js shape)
+//   GET  /events         server-sent events: engine events + app:engine/app:settings/app:panel
+//   POST /panel          {username, screen}: what the site's openSync() does (opens the panel)
 //   GET  /site-status?username=  what the site's onStatus() gets (main/sync-status.js)
 //   GET|POST /stub       read the action log / set {pickFolder, pickFiles} answers
 'use strict';
@@ -29,7 +27,6 @@ const { SettingsStore } = require('../src/main/settings-store');
 const { removeSync } = require('../src/main/remove-sync');
 const { UI_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS } = require('../src/main/ui-methods');
 const { SyncStatus } = require('../src/main/sync-status');
-const { cleanNav } = require('../src/main/site-nav');
 
 const UI_DIR = path.join(__dirname, '..', 'src', 'ui');
 const TYPES = {
@@ -67,7 +64,6 @@ const engine = new EngineSupervisor({
 });
 const sync = new SyncStatus(engine);
 let siteUser = null; // the last /panel username, like window.siteUser in the app
-sync.on('change', () => broadcast({ type: 'app:siteStatus', data: sync.forUser(siteUser) }));
 engine.on('state', (state) => broadcast({ type: 'app:engine', data: { state } }));
 engine.on('event', broadcast);
 settings.onChange((next) => broadcast({ type: 'app:settings', data: next }));
@@ -90,9 +86,7 @@ const APP = {
   openSite: (p) => { log.push(['openSite', p]); return true; },
   closePanel: () => { log.push(['closePanel']); return true; },
   panelReady: () => true,
-  // The site would click its own theme option and report the theme back.
-  siteTheme: (theme) => { log.push(['siteTheme', theme]); settings.set({ theme }); return true; },
-  siteLogout: () => { log.push(['siteLogout']); return true; },
+  lockNow: () => engine.call('account.appLock'),
   exportDiagnostics: () => engine.call('diagnostics.export', { path: path.join(path.dirname(opt.stateDir), 'diagnostics.zip') }, { timeoutMs: SLOW_TIMEOUT_MS }),
   openDataFolder: () => true,
   removeSync: (id, o) => removeSync({
@@ -159,12 +153,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/panel') {
-      const { username, screen, nav } = await readBody(req);
+      const { username, screen } = await readBody(req);
       siteUser = username || null;
       broadcast({
         type: 'app:panel',
         data: {
-          username: siteUser, screen: screen || 'syncs', theme: settings.get().theme, nav: cleanNav(nav), status: sync.forUser(siteUser),
+          username: siteUser, screen: screen || 'syncs', theme: settings.get().theme, status: sync.forUser(siteUser),
         },
       });
       return json(res, 200, { ok: true });

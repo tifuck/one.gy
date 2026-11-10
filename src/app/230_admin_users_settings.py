@@ -681,6 +681,7 @@ def admin_api_settings():
         'temp_max_gb': get_float_setting('temp_max_gb'),
         'allow_desktop_sync': get_setting('allow_desktop_sync'),
         'max_devices_per_user': get_numeric_setting('max_devices_per_user'),
+        'desktop_pin_max_age_days': get_numeric_setting('desktop_pin_max_age_days'),
         'sync_tombstone_retention_days': get_numeric_setting('sync_tombstone_retention_days'),
         'sync_upload_session_ttl': get_numeric_setting('sync_upload_session_ttl'),
         'file_version_retention_count': get_numeric_setting('file_version_retention_count'),
@@ -713,7 +714,7 @@ def admin_api_settings_update():
 
     boolean_keys = {'allow_registration', 'captcha_enabled', 'allow_temp_uploads', 'allow_api_keys', 'welcome_folder_enabled', 'allow_music',
                     'allow_desktop_sync'}
-    numeric_keys = {'storage_cache_ttl_minutes', 'trash_retention_hours', 'max_devices_per_user',
+    numeric_keys = {'storage_cache_ttl_minutes', 'trash_retention_hours', 'max_devices_per_user', 'desktop_pin_max_age_days',
                     'sync_tombstone_retention_days', 'sync_upload_session_ttl',
                     'file_version_retention_count', 'file_version_retention_days'}
     float_keys = {'temp_max_gb'}
@@ -726,6 +727,7 @@ def admin_api_settings_update():
         'storage_cache_ttl_minutes': (1, 10080),
         'trash_retention_hours': (1, 8760),
         'max_devices_per_user': (1, 100),
+        'desktop_pin_max_age_days': (1, 90),
         'sync_tombstone_retention_days': (1, 3650),
         'sync_upload_session_ttl': (3600, 2592000),
         'file_version_retention_count': (0, 100),

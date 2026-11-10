@@ -70,7 +70,7 @@
 .pr-seed-text span{font-size:.8rem;color:var(--text-dim)}
 .pr-form-foot{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
 
-.pr-preview{position:sticky;top:calc(var(--nav-h) + 20px);display:flex;flex-direction:column;min-height:18rem;max-height:calc(100vh - var(--nav-h) - 40px)}
+.pr-preview{position:sticky;top:calc(var(--nav-h) + 20px);display:flex;flex-direction:column;min-height:18rem;max-height:calc(100vh - var(--nav-real) - 40px)}
 .pr-preview-actions{display:flex;gap:6px}
 .ui-v2 .pr-preview .pr-status:empty{display:none}
 .pr-fb-foot .pr-status{font-size:.78rem;color:var(--text-dim)}

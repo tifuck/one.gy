@@ -102,12 +102,14 @@
     var blocks = Array.isArray(source.blocks) ? source.blocks.map(normalize) : []
     var maxZ = Math.max(+source.maxZ || 0, blocks.reduce(function (m, b) { return Math.max(m, +b.zIndex || 0) }, 0))
     var nextId = source.nextId || 1
-    var zoom = +source.zoom || 1
+    // Zoom is a view setting, like OneNote's: it comes from the session (opts.zoom), not the note. A stored zoom was only
+    // ever whatever level the last content save happened to catch, so a canvas could reopen tiny on another device.
+    var zoom = Math.max(.2, Math.min(4, +opts.zoom || 1))
     var tool = 'select', color = '#0e8fd6', stroke = 3
     var selected = null, selectedIds = [], gesture = null, draw = null, spaceHeld = false
     var pointers = {}, pinch = null, undo = [], redo = [], changeTimer = null, editSnapshotTimer = null, destroyed = false, gestureFrame = 0
     var popover = null, savedRange = null, imageInsertPoint = null, longPress = null
-    var provisionalText = {}, blockClipboard = SHARED_BLOCK_CLIPBOARD, imageReplaceId = null, dirtyPending = false
+    var provisionalText = {}, growingText = {}, blockClipboard = SHARED_BLOCK_CLIPBOARD, imageReplaceId = null, dirtyPending = false
     var ac = new AbortController(), signal = ac.signal
 
     function normalize (block) {
@@ -138,7 +140,8 @@
     var imageInput = document.createElement('input'); imageInput.type = 'file'; imageInput.accept = 'image/*'; imageInput.hidden = true
     vp.tabIndex = 0; vp.setAttribute('role', 'application'); vp.setAttribute('aria-label', 'Note page'); page.appendChild(world); page.appendChild(overlay); vp.appendChild(page)
     if (!readonly) { bar.appendChild(toolGroup()); bar.appendChild(colorGroup()); bar.appendChild(actionGroup()) }
-    var hint = el('div', 'fxc-hint', 'Click anywhere to start typing')
+    var coarse = !!(window.matchMedia && window.matchMedia('(pointer:coarse)').matches)
+    var hint = el('div', 'fxc-hint', (coarse ? 'Tap' : 'Click') + ' anywhere to start typing')
     imageInput.onchange = addSelectedImage
     vp.appendChild(hint); if (!readonly) root.appendChild(bar); root.appendChild(vp); root.appendChild(imageInput); container.appendChild(root)
 
@@ -241,7 +244,15 @@
       syncAutoHeights(); renderOverlay(); hint.hidden = readonly || blocks.length > 0
       syncZoomLabel()
     }
-    function syncZoomLabel () { var level = document.getElementById('fxcZoom'); if (level) level.textContent = Math.round(zoom * 100) + '%' }
+    function syncZoomLabel () { var level = document.getElementById('fxcZoom'); if (level) level.textContent = Math.round(zoom * 100) + '%'; if (opts.onZoom) opts.onZoom(zoom) }
+    // OneNote: a container made by clicking widens as you type until it reaches the window edge, then wraps at that width.
+    function growTextWidth (block, node) {
+      if (!growingText[block.id]) return
+      var limit = Math.max(260, Math.floor((vp.clientWidth + vp.scrollLeft) / zoom) - block.x - 40)
+      node.style.width = 'max-content'; var natural = Math.ceil(node.offsetWidth) + 2
+      block.w = Math.max(260, Math.min(limit, natural)); node.style.width = block.w + 'px'
+      if (natural >= limit) delete growingText[block.id]
+    }
     // Pointer moves only reposition the blocks a gesture touches, once per frame;
     // the full rebuild (images, sanitising) waits for pointerup.
     function scheduleGesturePaint () { if (!gestureFrame) gestureFrame = requestAnimationFrame(paintGesture) }
@@ -311,7 +322,7 @@
       if (block.style && block.style.bgColor && block.style.bgColor !== 'transparent') node.style.background = block.style.bgColor
       content.addEventListener('pointerdown', function (event) { if (readonly) return; if (event.ctrlKey || event.metaKey) { event.preventDefault(); event.stopPropagation(); selectBlock(block.id, true); vp.focus() } else selectBlock(block.id) })
       content.addEventListener('beforeinput', snapshotTyping)
-      content.addEventListener('input', function () { block.content = content.innerHTML; var empty = !content.textContent.replace(/\u00a0/g, ' ').trim(); provisionalText[block.id] = empty; node.classList.toggle('is-empty', empty); syncBlockHeight(block, node); renderOverlay(); scheduleCommit() })
+      content.addEventListener('input', function () { block.content = content.innerHTML; var empty = !content.textContent.replace(/\u00a0/g, ' ').trim(); provisionalText[block.id] = empty; node.classList.toggle('is-empty', empty); growTextWidth(block, node); syncBlockHeight(block, node); renderOverlay(); scheduleCommit() })
       content.addEventListener('paste', pasteEditable)
       bindRichDrop(content)
       content.addEventListener('keydown', function (event) {
@@ -464,10 +475,14 @@
       if (block && !fitsLimits(blocks.map(function (b) { return b === block ? Object.assign({}, b, { content: String(b.content || '') + (clean || text || '') }) : b }))) return
       insertSanitizedAtCaret(clean, text)
     }
+    // Dragging text that is already on the page is the browser's own move; only outside content is sanitised and inserted here.
+    var ownDrag = false
+    root.addEventListener('dragstart', function () { ownDrag = true }); root.addEventListener('dragend', function () { ownDrag = false })
     function bindRichDrop (el) {
       if (readonly) return
       el.addEventListener('dragover', function (event) { event.preventDefault() })
       el.addEventListener('drop', function (event) {
+        if (ownDrag) return
         event.preventDefault()
         event.stopPropagation()
         pasteEditable(event)
@@ -548,7 +563,12 @@
       paintSelection()
     }
     function paintSelection () { renderOverlay(); world.querySelectorAll('.fxc-block').forEach(function (node) { var active = isSelected(node.dataset.id); node.classList.toggle('is-sel', active); node.setAttribute('aria-selected', active ? 'true' : 'false') }) }
-    function focusBlock (blockId) { setTimeout(function () { var node = blockNode(blockId); if (!node) return; var target = node.querySelector('[contenteditable="true"],input[type="text"],textarea,td') || node; target.focus() }, 20) }
+    // Focus at once, so typing straight after a click lands in the block instead of firing tool shortcuts; and again after
+    // the tap's trailing mouse events, which can move focus back to the page.
+    function focusBlock (blockId) {
+      var go = function () { var node = blockNode(blockId); if (!node || node.contains(document.activeElement)) return; var target = node.querySelector('[contenteditable="true"],input[type="text"],textarea,td') || node; target.focus() }
+      go(); setTimeout(go, 20)
+    }
     // A text block is positioned by its top-left corner, but the caret sits inside the border +
     // content padding and spans a whole line box. Placing the corner on the click point therefore
     // renders the caret down-right of the pointer. Measure that inset from live CSS (so it tracks
@@ -573,7 +593,8 @@
     }
     function createAt (kind, point, alignCaret) {
       var spec
-      var fit = function (width) { return Math.max(0, Math.min(point.x, pageWidth() - width - 12)) }
+      // 40 = the margin pageWidth() keeps right of the content: a block made at the right edge must not widen the page into a sideways scroll
+      var fit = function (width) { return Math.max(0, Math.min(point.x, pageWidth() - width - 40)) }
       if (kind === 'todo') spec = { type: 'todo', x: fit(240), y: point.y, w: 240, h: 40, items: [{ id: id(), text: '', checked: false }], style: { bgColor: 'transparent' } }
       else if (kind === 'table') spec = { type: 'table', x: fit(360), y: point.y, w: 360, h: 150, rows: 3, cols: 3, cells: [['', '', ''], ['', '', ''], ['', '', '']], style: { bgColor: 'transparent' } }
       else if (kind === 'code') spec = { type: 'code', x: fit(320), y: point.y, w: 320, h: 160, code: '', lang: 'text', style: { bgColor: '#0f1720' } }
@@ -585,7 +606,7 @@
       spec.id = id()
       if (!fitsLimits(blocks.concat([spec]))) return
       snapshot(); var block = addBlock(spec)
-      if (kind === 'text') provisionalText[block.id] = true
+      if (kind === 'text') { provisionalText[block.id] = true; growingText[block.id] = true }
       render(); selectBlock(block.id); if (kind !== 'text') commit(); setTool('select'); focusBlock(block.id)
     }
     function addSelectedImage () {
@@ -823,7 +844,7 @@
         savedRange = range.cloneRange(); var rect = range.getBoundingClientRect(); showTextTools(block, content, rect.left + rect.width / 2, rect.top - 8)
       }, 0)
     }
-    function showTextTools (block, content, x, y) {
+    function showTextTools (block, content, x, y, below) {
       var range = savedRange
       function command (cmd, value) {
         snapshot(); var selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); document.execCommand(cmd, false, value || null); inkHighlights(content)
@@ -854,7 +875,7 @@
       var clear = controlButton('Clear', function () { command('removeFormat') }); clear.title = 'Clear formatting'; clear.addEventListener('pointerdown', function (event) { event.preventDefault() }); popover.appendChild(clear)
       document.body.appendChild(popover)
       // Prefer above the selection; flip below it when it would cover the toolbar / leave the window.
-      var top = y - popover.offsetHeight
+      var top = below ? y : y - popover.offsetHeight
       var vpTop = vp.getBoundingClientRect().top
       if (top < Math.max(8, vpTop + 4)) { var rect = range && range.getBoundingClientRect ? range.getBoundingClientRect() : null; top = (rect ? rect.bottom : y) + 10 }
       positionPopover(popover, x - popover.offsetWidth / 2, top)
@@ -876,6 +897,7 @@
     }
     function startResize (event, block, handle) {
       vp.setPointerCapture(event.pointerId); var point = toWorld(event.clientX, event.clientY), v = visibleRect(block)
+      delete growingText[block.id]
       gesture = { type: 'resize', pointerId: event.pointerId, id: block.id, handle: handle, sx: point.x, sy: point.y, before: false, x: v.x, y: v.y, w: v.w, h: v.h }
     }
     function startScrollDrag (event) { vp.setPointerCapture(event.pointerId); gesture = { type: 'scrollpan', pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, scrollLeft: vp.scrollLeft, scrollTop: vp.scrollTop } }
@@ -978,11 +1000,13 @@
     vp.addEventListener('pointerup', endPointer)
     vp.addEventListener('pointercancel', function (event) {
       if (longPress) { clearTimeout(longPress.timer); longPress = null }
-      delete pointers[event.pointerId]; pinch = null
+      // Rebuild only when something has to be put back. The browser also cancels the pointer for every touch scroll and
+      // every native text drag, and a full re-render there dropped the caret, the selection and the keyboard.
+      delete pointers[event.pointerId]; var stale = !!pinch || !!(gesture && gesture.type === 'marquee'); pinch = null
       // The gesture's own snapshot is the top of the undo stack.
-      if (gesture && gesture.pointerId === event.pointerId && gesture.before && undo.length) blocks = unpackBlocks(undo.pop())
-      if (draw && draw.pointerId === event.pointerId && undo.length) undo.pop()
-      gesture = null; draw = null; render()
+      if (gesture && gesture.pointerId === event.pointerId && gesture.before && undo.length) { blocks = unpackBlocks(undo.pop()); stale = true }
+      if (draw && draw.pointerId === event.pointerId) { if (undo.length) undo.pop(); stale = true }
+      gesture = null; draw = null; if (stale) render()
     })
     vp.addEventListener('wheel', function (event) {
       // Plain wheel = native page scroll (OneNote-style). Ctrl/Cmd+wheel = zoom.
@@ -998,6 +1022,20 @@
     vp.addEventListener('drop', function (event) { var file = firstImageFile(event.dataTransfer && event.dataTransfer.files); if (!file || readonly) return; event.preventDefault(); insertImageFile(file, toWorld(event.clientX, event.clientY)) })
     vp.addEventListener('paste', function (event) { var file = firstImageFile(event.clipboardData && event.clipboardData.files); if (!file || readonly || event.target.closest('input,textarea,[contenteditable="true"]')) return; event.preventDefault(); var rect = vp.getBoundingClientRect(); insertImageFile(file, toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)) })
     function firstImageFile (files) { return Array.prototype.slice.call(files || []).filter(function (file) { return file && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type || '') })[0] || null }
+    // Touch has no mouseup: the formatting bar follows the selection once it settles, and sits below it,
+    // clear of the system copy/paste bubble.
+    var touchSeen = false, selectionTimer = null
+    vp.addEventListener('pointerdown', function (event) { if (event.pointerType !== 'mouse') touchSeen = true }, { capture: true })
+    document.addEventListener('selectionchange', function () {
+      if (readonly || !touchSeen) return
+      clearTimeout(selectionTimer); selectionTimer = setTimeout(function () {
+        var selection = window.getSelection(), node = selection && !selection.isCollapsed ? selection.anchorNode : null
+        if (node && node.nodeType !== 1) node = node.parentNode
+        var content = node && node.closest('.fxc-text-content,td'), holder = content && content.closest('.fxc-block'), block = holder && root.contains(holder) && byId(holder.dataset.id), range = block && selectedRangeIn(content)
+        if (!range) return
+        savedRange = range.cloneRange(); var rect = range.getBoundingClientRect(); showTextTools(block, content, rect.left + rect.width / 2, rect.bottom + 28, true)
+      }, 350)
+    }, { signal: signal })
 
     function resizeBlock (block, state, dx, dy) {
       var minW = 60, minH = 36, image = block.type === 'image'
@@ -1100,8 +1138,15 @@
     document.addEventListener('pointerdown', function (event) { if (popover && !popover.contains(event.target) && !vp.contains(event.target)) closePopover() }, { signal: signal })
     window.addEventListener('blur', closePopover, { signal: signal }); window.addEventListener('resize', function () { closePopover(); updatePageSize() }, { signal: signal })
 
+    // OneNote: Enter in the page title starts typing on the page - in its first text container, or a new one.
+    function focusStart () {
+      if (readonly) return
+      var first = blocks.filter(function (block) { return block.type === 'text' }).sort(function (a, b) { return a.y - b.y || a.x - b.x })[0]
+      if (first) { selectBlock(first.id); focusBlock(first.id) } else createAt('text', { x: 24, y: 20 })
+    }
+
     setTool('select'); render()
-    return { getData: getData, flush: flush, destroy: function () { flush(false); destroyed = true; closePopover(); if (longPress) clearTimeout(longPress.timer); ac.abort(); clearTimeout(changeTimer); clearTimeout(editSnapshotTimer); container.innerHTML = '' } }
+    return { getData: getData, flush: flush, focusStart: focusStart, destroy: function () { flush(false); destroyed = true; closePopover(); if (longPress) clearTimeout(longPress.timer); ac.abort(); clearTimeout(changeTimer); clearTimeout(editSnapshotTimer); clearTimeout(selectionTimer); container.innerHTML = '' } }
   }
 
   window.FxCanvas = { mount: mount, inkHighlights: inkHighlights }

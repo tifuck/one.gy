@@ -108,3 +108,48 @@ func TestServer(t *testing.T) {
 		t.Fatal("unsubscribed connection got an event")
 	}
 }
+
+func TestSecretGate(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "run", "engine.sock")
+	s := NewServer()
+	s.Secret = strings.Repeat("s", 64)
+	s.Handle("account.webUnlockKey", func(context.Context, json.RawMessage) (any, error) { return "key", nil })
+	s.Handle("engine.info", func(context.Context, json.RawMessage) (any, error) { return "info", nil })
+	ln, err := Listen(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Serve(ctx, ln)
+	defer s.Close()
+	c, err := Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	r := bufio.NewReader(c)
+	call := func(line string) string {
+		t.Helper()
+		c.Write([]byte(line + "\n"))
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		b, err := r.ReadBytes('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if got := call(`{"jsonrpc":"2.0","id":1,"method":"account.webUnlockKey"}`); !strings.Contains(got, `"forbidden"`) {
+		t.Fatalf("before hello: %s", got)
+	}
+	if got := call(`{"jsonrpc":"2.0","id":2,"method":"engine.info"}`); !strings.Contains(got, `"info"`) {
+		t.Fatalf("engine.info: %s", got)
+	}
+	if got := call(`{"jsonrpc":"2.0","id":3,"method":"ipc.hello","params":{"secret":"wrong"}}`); !strings.Contains(got, `"forbidden"`) {
+		t.Fatalf("wrong secret: %s", got)
+	}
+	call(`{"jsonrpc":"2.0","id":4,"method":"ipc.hello","params":{"secret":"` + s.Secret + `"}}`)
+	if got := call(`{"jsonrpc":"2.0","id":5,"method":"account.webUnlockKey"}`); !strings.Contains(got, `"key"`) {
+		t.Fatalf("after hello: %s", got)
+	}
+}

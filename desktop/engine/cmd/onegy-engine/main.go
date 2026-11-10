@@ -3,12 +3,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/tifuck/one.gy/desktop/engine/internal/api"
@@ -31,11 +33,21 @@ func run() error {
 	socket := flag.String("socket", "", "IPC socket or pipe path (default: per-OS location)")
 	logLevel := flag.String("log-level", "", "debug|info|warn|error (default: the log_level setting)")
 	insecure := flag.Bool("insecure-tls", false, "skip TLS certificate checks (devtls builds only)")
+	secretStdin := flag.Bool("ipc-secret-stdin", false, "read the IPC secret (first line of stdin); clients must present it with ipc.hello")
 	version := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *version {
 		fmt.Println(config.Version)
 		return nil
+	}
+
+	var secret string
+	if *secretStdin {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		secret = strings.TrimSpace(line)
+		if len(secret) < 32 {
+			return fmt.Errorf("--ipc-secret-stdin: no secret on stdin (%v)", err)
+		}
 	}
 
 	if *stateDir == "" {
@@ -83,6 +95,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	svc.SetIPCSecret(secret)
 	ln, err := ipc.Listen(*socket)
 	if err != nil {
 		return err

@@ -454,6 +454,7 @@
         card('Desktop sync',
           tog('allow_desktop_sync', 'Desktop sync', 'Let ONE.GY Desktop sign in and sync. Turning it off stops every device.') +
           numRow('max_devices_per_user', 'Devices per account', 'Maximum desktop devices one account can sign in.', 1, 100, 1, 'devices') +
+          numRow('desktop_pin_max_age_days', 'PIN lifetime', 'A desktop PIN works this long after the password was last entered on that computer. Then the password is needed once.', 1, 90, 1, 'days') +
           numRow('sync_tombstone_retention_days', 'Deletion history', 'How long deletions are kept for devices to catch up. A device offline longer re-scans its folders.', 1, 3650, 1, 'days') +
           numRow('sync_upload_session_ttl', 'Unfinished upload lifetime', 'How long an interrupted large upload can resume before its parts are deleted.', 1, 720, 1, 'hours', 3600),
           { sub: 'Applies to the desktop app’s connection to this server.' }) +

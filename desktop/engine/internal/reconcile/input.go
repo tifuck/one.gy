@@ -43,6 +43,7 @@ type RemoteNode struct {
 	ParentID        string
 	Name            string
 	NameOK          bool // false: the name could not be decrypted
+	NeedsUnlock     bool // with !NameOK: the key is out of reach while the app is locked (waits, no issue)
 	Seq             int64
 	ContentVersion  int64
 	PayloadChecksum string

@@ -20,3 +20,11 @@ test('after authorization: status, sync panel, pause, upload', () => {
   const paused = menuTemplate({ authorized: true, status: { state: 'paused' }, engineState: 'connected' }, noop);
   assert.ok(labels(paused).includes('Resume syncing'));
 });
+
+test('locked: the tray only unlocks or quits; unlocked with a lock: Lock ONE.GY', () => {
+  const status = { state: 'up_to_date' };
+  const locked = labels(menuTemplate({ authorized: true, status, engineState: 'connected', appLocked: true, canLock: true }, noop));
+  assert.deepEqual(locked, ['Up to date', 'Unlock ONE.GY…', 'Quit ONE.GY']);
+  const open = labels(menuTemplate({ authorized: true, status, engineState: 'connected', appLocked: false, canLock: true }, noop));
+  assert.ok(open.includes('Lock ONE.GY') && open.includes('Sync…'));
+});

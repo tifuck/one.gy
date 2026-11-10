@@ -82,3 +82,12 @@ test('throttle runs at most once per window, with the last state', async () => {
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(calls, 2);
 });
+
+test('appLocked needs a signed-in device with the lock on and no grant', () => {
+  const { appLocked } = require('../src/main/sync-status');
+  assert.equal(appLocked({ signed_in: true, lock_enabled: true, app_locked: true }), true);
+  assert.equal(appLocked({ signed_in: true, lock_enabled: false, app_locked: true }), false); // device from before the lock
+  assert.equal(appLocked({ signed_in: true, lock_enabled: true, app_locked: false }), false);
+  assert.equal(appLocked({ signed_in: false, app_locked: true }), false);
+  assert.equal(appLocked(null), false);
+});

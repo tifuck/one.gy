@@ -41,6 +41,20 @@ body{min-height:100vh;min-height:100dvh;line-height:1.5;-webkit-font-smoothing:a
 /* Sticky footer: main fills the viewport so the footer sits at the bottom
    regardless of content length (short pages don't leave it floating). */
 main{flex:1 0 auto;min-width:0}
+/* Page scroller (.rd-scroll: base.html's main+footer wrapper, _app_base's main).
+   On pointer devices the page scrolls in it, under the fixed nav, so the
+   scrollbar starts below the bar and the bar spans the window. Inside it
+   --nav-h is 0 (page offsets, sticky tops and anchors measure from its top);
+   --nav-real keeps the bar's height. Full-height app shells scroll their own
+   panes; touch devices keep document scroll (overlay scrollbars). */
+body{--nav-real:var(--nav-h)}
+div.rd-scroll{display:flex;flex-direction:column;flex:1 0 auto}
+@media (hover:hover) and (pointer:fine){
+  :root:has(.rd-scroll):not(:has(.fx-shell,.nt-shell,.mu-shell,.bw-shell,.adm-layout)){overflow:hidden;scrollbar-gutter:auto}
+  :root:not(:has(.fx-shell,.nt-shell,.mu-shell,.bw-shell,.adm-layout)) .rd-scroll{--nav-h:0px;flex:none;
+    height:calc(100dvh - var(--nav-real));margin-top:var(--nav-real);overflow-y:auto}
+}
+.rd-scroll:focus{outline:none}
 img,picture,svg,canvas{display:block;max-width:100%}
 input,button,textarea,select{font:inherit;color:inherit}
 button{cursor:pointer;background:none;border:none}

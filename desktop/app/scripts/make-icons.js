@@ -235,6 +235,14 @@ for (const [name, layers] of Object.entries(TRAY)) {
   write(`src/assets/tray/tray-${name}.png`, png(rasterize(layers, 16, 8), 16));
   write(`src/assets/tray/tray-${name}@2x.png`, png(rasterize(layers, 32, 8), 32));
 }
+// Linux panels show the bare square, so badge-free states centre the mark
+// there; badged ones keep the shift. Windows keeps the set above.
+for (const [name, o] of Object.entries({ synced: {}, offline: { bg: DIM, dot: DIM } })) {
+  write(`src/assets/tray/tray-${name}-linux.png`, png(rasterize(tray({ ...o, shift: 0 }), 32, 8), 32));
+}
+for (const name of ['syncing', 'paused', 'issue']) {
+  write(`src/assets/tray/tray-${name}-linux.png`, png(rasterize(TRAY[name], 32, 8), 32));
+}
 
 const SITE = '../../static/logos';
 const favicon = keycut({ radius: 96, scale: 0.9 });

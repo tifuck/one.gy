@@ -29,7 +29,7 @@ def login_required(f):
                 return jsonify({'error': 'SESSION_EXPIRED', 'redirect': url_for('login')}), 401
             flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
             return redirect(url_for('login'))
-        if int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0):
+        if int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0) or not _session_device_ok():
             session.clear()
             if is_ajax:
                 return jsonify({'error': 'SESSION_EXPIRED', 'redirect': url_for('login')}), 401
@@ -275,7 +275,8 @@ def _current_session_user():
         user = None
     else:
         user = db.session.get(User, user_id)
-        if user and int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0):
+        if user and (int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0)
+                     or not _session_device_ok()):
             user = None
     if _request_g is not None and revoked is not _REVOCATION_CHECK_FAILED:
         try:
@@ -307,7 +308,7 @@ def admin_required(f):
             session.clear()
             flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
             return redirect(url_for('login'))
-        if int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0):
+        if int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0) or not _session_device_ok():
             session.clear()
             flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
             return redirect(url_for('login'))
@@ -514,11 +515,136 @@ def _request_device_auth():
             result = (None, None, 'invalid_token')
         elif not device.is_active:
             result = (None, None, 'device_revoked')
+        elif device.pop_public_key and not _device_pop_signature_ok(device):
+            result = (None, None, 'invalid_signature')
         else:
             user = db.session.get(User, device.user_id)
             result = (device, user, None) if user else (None, None, 'invalid_token')
     g._device_auth = result
     return result
+
+
+DEVICE_POP_MAX_SKEW_SECONDS = 300
+
+
+def _device_pop_message():
+    """What a device signs: '<unix ts>\\n<METHOD>\\n<path>[?<raw query>]' (decoded path)."""
+    path = request.path
+    if request.query_string:
+        path += '?' + request.query_string.decode('latin-1')
+    return f"{request.headers.get('X-Onegy-Pop-Ts', '')}\n{request.method}\n{path}".encode('utf-8')
+
+
+def _device_pop_signature_ok(device):
+    """Verify X-Onegy-Pop-Sig (base64 DER ECDSA P-256/SHA-256 over _device_pop_message)
+    with the device's key, and that X-Onegy-Pop-Ts is within the allowed skew.
+    A device token copied off the computer is useless without the private key.
+    ponytail: no nonce cache; a signature replays for the same method+path within
+    the skew window, which needs a TLS break to capture."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    try:
+        ts = int(request.headers.get('X-Onegy-Pop-Ts', ''))
+        if abs(time.time() - ts) > DEVICE_POP_MAX_SKEW_SECONDS:
+            return False
+        signature = base64.b64decode(request.headers.get('X-Onegy-Pop-Sig', ''), validate=True)
+        key = serialization.load_der_public_key(base64.b64decode(device.pop_public_key))
+        key.verify(signature, _device_pop_message(), ec.ECDSA(hashes.SHA256()))
+        return True
+    except (InvalidSignature, ValueError, TypeError):
+        return False
+
+
+def _aware_utc(dt):
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _device_grant_live(device):
+    """True while the desktop app holding this device is unlocked (a grant exists and has not expired)."""
+    expires = _aware_utc(device.grant_expires_at)
+    return bool(device.grant_hash and expires and expires > datetime.now(timezone.utc))
+
+
+def _request_has_device_grant(device):
+    raw = request.headers.get('X-Onegy-Grant', '')
+    if not raw or not _device_grant_live(device):
+        return False
+    return hmac.compare_digest(hashlib.sha256(raw.encode('utf-8')).hexdigest(), device.grant_hash)
+
+
+def _session_device_ok():
+    """A website session minted by a desktop device (/desktop/session) lives only
+    while that device is active and its app is unlocked."""
+    device_id = session.get('device_id')
+    if not device_id:
+        return True
+    device = db.session.get(Device, device_id)
+    return bool(device and device.is_active and _device_grant_live(device))
+
+
+def _scope_folder_value(value):
+    """A folder id from a request field; None = drive root. Anything that is
+    not a positive id counts as the root, so it is denied unless the scope has it."""
+    if isinstance(value, bool):
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _device_request_folder_targets():
+    """Folder ids (None = drive root) this device request reads content from or writes to."""
+    targets = []
+    view_args = request.view_args or {}
+
+    def file_folder(file_id):
+        file = db.session.get(File, file_id) if file_id else None
+        if file is not None and file.registered_user_id == g.api_user.id:
+            targets.append(file.folder_id)
+
+    file_folder(view_args.get('file_id'))
+    if 'folder_id' in view_args:
+        targets.append(_scope_folder_value(view_args['folder_id']))
+    if request.mimetype == 'application/json':
+        body = request.get_json(silent=True)
+    elif request.mimetype in ('multipart/form-data', 'application/x-www-form-urlencoded'):
+        body = request.form
+    else:
+        body = None
+    if hasattr(body, 'get'):
+        for key in ('folder_id', 'parent_id'):
+            if key in body:
+                targets.append(_scope_folder_value(body.get(key)))
+        file_folder(body.get('replace_file_id'))
+    return targets
+
+
+def _device_scope_error():
+    """403 locked when a device whose app is locked (no grant) reads file content
+    or writes outside its sync scope (sync-api.md "Device security"). Metadata
+    reads (feed, tree, listings) stay open: names are E2EE and the engine needs
+    them to sync. ponytail: scope is server-enforced, not cryptographic; the
+    engine still holds the master key while running (key tree = later layer)."""
+    if request.method == 'GET' and not (request.url_rule and request.url_rule.rule.endswith('/content')):
+        return None
+    try:
+        scope = json.loads(g.device.sync_scope or '{}')
+    except ValueError:
+        scope = {}
+    if not isinstance(scope, dict):
+        scope = {}
+    if scope.get('root') is True:
+        return None
+    roots = {f for f in (scope.get('folders') or []) if isinstance(f, int) and not isinstance(f, bool)}
+    for folder_id in _device_request_folder_targets():
+        if folder_id is None or not roots.intersection(_folder_ancestor_ids(folder_id)):
+            return _sync_error(403, 'locked', 'ONE.GY Desktop is locked; unlock it to reach files outside your synced folders')
+    return None
 
 
 def _device_client_too_old():
@@ -561,6 +687,8 @@ def device_auth_required(f):
         device, user, error = _request_device_auth()
         if error == 'device_revoked':
             return _sync_error(401, 'device_revoked', 'This device was removed')
+        if error == 'invalid_signature':
+            return _sync_error(401, 'invalid_signature', 'Request signature missing, stale or invalid')
         if device is None:
             return _sync_error(401, 'invalid_token', 'Missing or invalid device token')
         if _device_client_too_old():
@@ -569,6 +697,11 @@ def device_auth_required(f):
         _touch_device_last_seen(device)
         g.api_user = user
         g.device = device
+        g.device_unlocked = not device.lock_enabled or _request_has_device_grant(device)
+        if not g.device_unlocked:
+            scope_error = _device_scope_error()
+            if scope_error:
+                return scope_error
         return f(*args, **kwargs)
     return decorated_function
 

@@ -23,7 +23,7 @@ function createNotifier({ show, isEnabled, windowMs = WINDOW_MS, now = Date.now,
     if (!b) return;
     buckets.delete(kind);
     if (b.suppressed > 0 && isEnabled(kind)) {
-      show({ title: 'ONE.GY Desktop', body: (SUMMARY[kind] || SUMMARY.info)(b.suppressed), kind });
+      show({ title: 'ONE.GY', body: (SUMMARY[kind] || SUMMARY.info)(b.suppressed), kind });
     }
   }
 

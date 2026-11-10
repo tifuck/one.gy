@@ -1,17 +1,18 @@
-// Native sync panel shell. The panel opens over the website
-// (desktop/docs/site-bridge.md) for the account the site page is signed in
-// as, and looks like a page of the site: the site's nav (nav.js) on top and
-// the admin console layout below (sidebar Syncs / Transfers / Issues /
-// Settings, page head, panels), all with the vendored site CSS. It shows only
-// what fits this computer's state: the setup when it is not authorized, a
-// switch-account guard when it syncs someone else, else the sections.
+// Native sync panel shell. The panel opens over the website's content area,
+// right of the site's rail (desktop/docs/site-bridge.md), for the account the
+// site page is signed in as, and looks like a page of the site: the admin
+// console layout (sidebar Syncs / Transfers / Issues / Settings, page head,
+// panels) with the vendored site CSS. It shows only what fits this computer's
+// state: the app's sign-in when it is signed out, the setup for a website
+// user, a switch-account guard when it syncs someone else, else the sections.
+// Sign-in, lock and message screens are "solo": centred, no sidebar, over
+// the whole window below the title bar.
 // Screens are modules exporting mount(container, params) -> unmount().
 import { h, icon, svg, clear, field } from './components/dom.js';
 import { ICONS } from './components/icons.js';
 import { openDialog, confirmDialog } from './components/dialog.js';
 import { toast, toastError } from './components/toast.js';
 import { manualUpload } from './components/manual.js';
-import { createNav } from './nav.js';
 import {
   api, rpc, bridge, appSettings, store, on, handleEvent, refreshAll, loadAccount, issueCount, activeTransferCount, sameUser,
 } from './store.js';
@@ -20,10 +21,15 @@ import * as transfersScreen from './screens/transfers.js';
 import * as issuesScreen from './screens/issues.js';
 import * as settingsScreen from './screens/settings.js';
 import * as wizardScreen from './screens/wizard.js';
+import * as lockScreen from './screens/lock.js';
+import * as signinScreen from './screens/signin.js';
 
 const SCREENS = {
-  syncs: syncsScreen, transfers: transfersScreen, issues: issuesScreen, settings: settingsScreen, wizard: wizardScreen,
+  syncs: syncsScreen, transfers: transfersScreen, issues: issuesScreen, settings: settingsScreen, wizard: wizardScreen, lock: lockScreen,
+  signin: signinScreen,
 };
+// The window title per screen (main/window.js shows it in the title bar).
+const TITLES = { signin: 'Sign in', lock: 'Locked', starting: 'Starting', missing: 'Sync' };
 const SECTIONS = [
   { id: 'syncs', label: 'Syncs', icon: 'sync' },
   { id: 'transfers', label: 'Transfers', icon: 'transfers', count: activeTransferCount },
@@ -66,12 +72,13 @@ let wanted = 'syncs'; // the section to show once the panel may show sections
 let shown = false; // the panel is on screen (faded in)
 let showing = 0; // bumped by every open and close, so a stale one stops
 
-// ready (sections) | setup (authorize this computer) | other (another account) | starting | missing
+// ready (sections) | setup (sign in / authorize this computer) | lock (app locked) | other (another account) | starting | missing
 function gate() {
   if (store.engine === 'missing') return 'missing';
   const a = store.account;
   if (store.engine !== 'connected' || !a) return 'starting';
   if (!a.signed_in) return 'setup';
+  if (a.lock_enabled && a.app_locked) return 'lock';
   if (store.panelUser && !sameUser(a.username, store.panelUser)) return 'other';
   return 'ready';
 }
@@ -86,13 +93,17 @@ function go(screen, params = {}) {
 function mountScreen(screen, params) {
   const g = gate();
   let target = screen;
-  if (g === 'setup') target = 'wizard';
+  // Opened by the app (no website user): its own sign-in; from the site's Sync entry: the setup for that user.
+  if (g === 'setup') target = store.panelUser ? 'wizard' : 'signin';
+  else if (g === 'lock') target = 'lock';
   else if (g !== 'ready') target = g;
   else if (!SCREENS[target]) target = 'syncs';
   if (SECTIONS.some((s) => s.id === target)) wanted = target;
   if (unmount) { unmount(); unmount = null; }
   current = target;
   mountedGate = g;
+  els.panel.classList.toggle('dk-solo', g !== 'ready' || Boolean(params.onboarding));
+  document.title = params.onboarding ? 'Welcome' : TITLES[target] || 'Sync';
   clear(els.screen);
   const mount = SCREENS[target] ? SCREENS[target].mount : MESSAGES[target];
   unmount = mount(els.screen, { ...params, username: store.panelUser }) || null;
@@ -105,6 +116,11 @@ function mountScreen(screen, params) {
 // Account or engine changed: leave screens that no longer apply.
 function regate() {
   const g = gate();
+  // The sign-in moves on by itself once this computer is signed in (signin.js).
+  if (current === 'signin' && g !== 'setup') {
+    renderSide();
+    return;
+  }
   // Authorizing in the setup wizard: it goes on to the first sync.
   if (g === mountedGate || (mountedGate === 'setup' && g === 'ready' && current === 'wizard')) {
     mountedGate = g;
@@ -115,10 +131,12 @@ function regate() {
 }
 
 // Back to the site: the panel fades out over the site page under it.
-// siteReady: the bridge call loading another site page (openSite, logout);
-// the panel's content fades out meanwhile, the rest once the page is there.
-async function close(siteReady) {
-  nav.closeAll();
+// siteReady: the bridge call loading another site page (openSite); the
+// panel's content fades out meanwhile, the rest once the page is there.
+// Only unlocking leaves the lock screen and only signing in the sign-in
+// (force: the sign-in's way to the website without sync).
+async function close(siteReady, force) {
+  if (gate() === 'lock' || (current === 'signin' && !force)) return;
   const n = ++showing;
   const was = shown;
   shown = false;
@@ -140,12 +158,12 @@ const message = (iconName, title, text, ...actions) => h('div', { class: 'rd-emp
 
 const MESSAGES = {
   starting: (el) => el.append(message('sync', 'Starting the sync engine…', 'This takes a moment after the app starts.')),
-  missing: (el) => el.append(message('alert', 'Sync engine not found', 'Reinstall ONE.GY Desktop to fix this.')),
+  missing: (el) => el.append(message('alert', 'Sync engine not found', 'Reinstall ONE.GY to fix this.')),
   other: (el) => {
     const mine = store.account.username;
     el.append(message('lock', `This computer syncs ${mine}'s files`,
       `You are signed in on the website as ${store.panelUser}. A computer syncs one account at a time. To sync ${store.panelUser}'s files here, sign out of sync on this computer first. Files on this computer stay where they are.`,
-      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: close }, 'Cancel'),
+      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => close() }, 'Cancel'),
       h('button', {
         type: 'button', class: 'rd-btn rd-btn-danger',
         onclick: async () => {
@@ -167,13 +185,7 @@ const MESSAGES = {
   },
 };
 
-// ---- Nav and sidebar -------------------------------------------------------------
-const nav = createNav(document.getElementById('nav'), {
-  open: (path) => close(bridge('openSite', path)),
-  theme: (id) => bridge('siteTheme', id).catch(toastError),
-  logout: () => close(bridge('siteLogout')),
-});
-
+// ---- Sidebar -------------------------------------------------------------------
 // The admin console's sidebar (admin.html .adm-side), built once and updated
 // in place: status events arrive up to once a second.
 const sections = SECTIONS.map((s) => {
@@ -234,14 +246,13 @@ function unlockDialog() {
 function applyTheme(theme) {
   const t = theme === 'frost' ? 'frost' : 'frost-dark';
   document.documentElement.dataset.theme = t;
-  nav.setTheme(t);
   if (shown) paintGutter(true);
 }
 
 // ---- Boot ----------------------------------------------------------------------------
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || e.defaultPrevented || els.panel.hidden || document.querySelector('dialog[open], .rd-cmenu')) return;
-  if (!nav.closeAll()) close();
+  close();
 });
 
 on('status', renderSide);
@@ -250,15 +261,11 @@ on('transfers', renderSide);
 on('account', regate);
 on('engine', regate);
 on('app', () => applyTheme(store.app && store.app.theme));
-on('app:nav', (d) => nav.render(d));
-on('app:siteStatus', (d) => nav.setStatus(d));
 // screen 'close' with a path: open that site page and leave the panel.
-on('app:navigate', (d) => (d.screen === 'close' ? close(d.path ? bridge('openSite', d.path) : null) : go(d.screen, d)));
+on('app:navigate', (d) => (d.screen === 'close' ? close(d.path ? bridge('openSite', d.path) : null, d.force) : go(d.screen, d)));
 on('app:panel', async (d) => {
   store.panelUser = typeof d.username === 'string' ? d.username : null;
   if (d.theme) applyTheme(d.theme);
-  if (d.nav !== undefined) nav.render(d.nav);
-  if (d.status) nav.setStatus(d.status);
   if (shown) {
     go(d.screen || 'syncs');
     api.panelReady();

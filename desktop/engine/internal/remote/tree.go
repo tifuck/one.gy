@@ -18,6 +18,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/tifuck/one.gy/desktop/engine/internal/account"
 	"github.com/tifuck/one.gy/desktop/engine/internal/api"
 	"github.com/tifuck/one.gy/desktop/engine/internal/state"
 	"onegy/e2ee"
@@ -29,7 +30,13 @@ var ErrNotFound = errors.New("remote folder not found")
 // Keys is the slice of the account the tree needs (account.Manager).
 type Keys interface {
 	Client() (*api.Client, error)
+	// MasterKey fails with account.ErrNeedsUnlock while the app is locked;
+	// keys then come from the key tree (keytree.go).
 	MasterKey() ([]byte, error)
+	// TreeKey is a folder key this device holds while locked (0 = root).
+	TreeKey(folderID int64) ([]byte, bool)
+	// NewKey is a fresh key wrapped with the master key (from the pool while locked).
+	NewKey(ctx context.Context) (*account.NewKey, error)
 }
 
 // Tree is safe for concurrent use; Sync calls are serialised.
@@ -181,8 +188,11 @@ func toState(n *api.Node) *state.RemoteNode {
 	}
 	if n.Type == "folder" {
 		s.EncryptedKey, s.KeyNonce, s.UpdatedAt = n.EncryptedNameKey, n.NameKeyNonce, n.UpdatedAt
+		s.TreeWrap, s.TreeNonce, s.TreeParent = n.TreeKeyWrap, n.TreeKeyNonce, n.TreeKeyParentID
+		s.TreeNameWrap, s.TreeNameNonce = n.TreeNameKeyWrap, n.TreeNameKeyNonce
 		return s
 	}
+	s.TreeWrap, s.TreeNonce, s.TreeParent = n.TreeFileKeyWrap, n.TreeFileKeyNonce, n.TreeKeyFolderID
 	s.EncryptedKey, s.KeyNonce, s.StoredExtension = n.EncryptedFileKey, n.FileKeyNonce, n.StoredExtension
 	s.CipherSize, s.PlainSize, s.PayloadChecksum, s.ContentVersion, s.UpdatedAt = n.Size, n.Size, n.PayloadChecksum, n.ContentVersion, n.UploadedAt
 	if n.IsE2E {
@@ -194,17 +204,22 @@ func toState(n *api.Node) *state.RemoteNode {
 	return s
 }
 
-// Key returns the unwrapped name key (folder) or file key (file) of n.
+// Key returns the unwrapped name key (folder) or file key (file) of n: with
+// the master key when it is in memory, else through the key tree, which fails
+// with account.ErrNeedsUnlock for nodes outside this device's reach.
 func (t *Tree) Key(n *state.RemoteNode) ([]byte, error) {
 	if k, ok := t.keys.get(n.EncryptedKey); ok {
 		return k, nil
 	}
 	mk, err := t.acct.MasterKey()
-	if err != nil {
-		return nil, err
+	var k []byte
+	switch {
+	case err == nil:
+		k, err = e2ee.UnwrapKeyB64(n.EncryptedKey, n.KeyNonce, mk)
+		clear(mk)
+	case errors.Is(err, account.ErrNeedsUnlock):
+		k, err = t.treeNodeKey(n)
 	}
-	k, err := e2ee.UnwrapKeyB64(n.EncryptedKey, n.KeyNonce, mk)
-	clear(mk)
 	if err != nil {
 		return nil, err
 	}
@@ -214,15 +229,21 @@ func (t *Tree) Key(n *state.RemoteNode) ([]byte, error) {
 
 // DisplayName returns the plaintext name; ok is false when it cannot be decrypted.
 func (t *Tree) DisplayName(n *state.RemoteNode) (name string, ok bool) {
+	name, err := t.Name(n)
+	return name, err == nil
+}
+
+// Name is DisplayName with the reason: account.ErrNeedsUnlock means the key
+// is out of reach until the app is unlocked (not a broken name).
+func (t *Tree) Name(n *state.RemoteNode) (string, error) {
 	if !n.IsE2E || n.EncryptedName == "" {
-		return n.Name, true
+		return n.Name, nil
 	}
 	k, err := t.Key(n)
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	name, err = e2ee.DecryptName(n.EncryptedName, n.NameNonce, k)
-	return name, err == nil
+	return e2ee.DecryptName(n.EncryptedName, n.NameNonce, k)
 }
 
 // View is the IPC shape of a node: sync-api fields minus key material, with
@@ -422,35 +443,36 @@ func (t *Tree) createFolder(ctx context.Context, parent *int64, name string, enc
 	if _, err := t.FolderFresh(ctx, parent); err != nil {
 		return nil, err
 	}
-	req := api.CreateFolderRequest{Name: name, ParentID: parent, ClientDedupeToken: token}
-	if encrypted {
-		mk, err := t.acct.MasterKey()
-		if err != nil {
-			return nil, err
-		}
-		nameKey, err := e2ee.RandomBytes(e2ee.KeySize)
-		if err != nil {
-			return nil, err
-		}
-		encName, nameNonce, err := e2ee.EncryptName(name, nameKey)
-		if err != nil {
-			return nil, err
-		}
-		wrapped, wrapNonce, err := e2ee.WrapKey(nameKey, mk)
-		clear(mk)
-		if err != nil {
-			return nil, err
-		}
-		req.Name = "encrypted" // placeholder, as the website sends
-		req.EncryptedName, req.NameNonce = e2ee.EncodeBase64(encName), e2ee.EncodeBase64(nameNonce)
-		req.EncryptedNameKey, req.NameKeyNonce = e2ee.EncodeBase64(wrapped), e2ee.EncodeBase64(wrapNonce)
-		t.keys.put(req.EncryptedNameKey, nameKey)
-	}
-	n, err := c.CreateFolder(ctx, req)
+	req, nameKey, err := t.FolderRequest(ctx, parent, name, encrypted, token)
 	if err != nil {
 		return nil, err
 	}
-	return t.Store(ctx, n)
+	n, err := c.CreateFolder(ctx, *req)
+	if err != nil {
+		return nil, err
+	}
+	return t.Store(ctx, t.WrapNew(ctx, n, nameKey))
+}
+
+// FolderRequest builds a folder create; E2EE folders get a fresh name key
+// wrapped with the master key (a pooled one while locked), returned too.
+func (t *Tree) FolderRequest(ctx context.Context, parent *int64, name string, encrypted bool, token string) (*api.CreateFolderRequest, []byte, error) {
+	req := &api.CreateFolderRequest{Name: name, ParentID: parent, ClientDedupeToken: token}
+	if !encrypted {
+		return req, nil, nil
+	}
+	nk, err := t.NewKey(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	encName, nameNonce, err := e2ee.EncryptName(name, nk.Key)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Name = "encrypted" // placeholder, as the website sends
+	req.EncryptedName, req.NameNonce = e2ee.EncodeBase64(encName), e2ee.EncodeBase64(nameNonce)
+	req.EncryptedNameKey, req.NameKeyNonce = nk.Wrap, nk.Nonce
+	return req, nk.Key, nil
 }
 
 // Store writes a node the server just returned into the cache.

@@ -6,12 +6,11 @@
 .fxc-root{ display:flex; flex-direction:column; height:100%; min-height:0; flex:1 1 auto; min-width:0; width:100%; }
 
 /* ---- Toolbar -------------------------------------------------------------- */
+/* Wraps onto a second row when the pane is narrow: nothing is ever clipped or hidden behind a scroll */
 .fxc-bar{
-  flex:none; display:flex; align-items:center; gap:10px; height:44px; box-sizing:border-box;
-  padding:0 10px; border-bottom:1px solid var(--line); background:var(--bg);
-  overflow-x:auto; overflow-y:hidden; scrollbar-width:none;
+  flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; min-height:44px; box-sizing:border-box;
+  padding:6px 10px; border-bottom:1px solid var(--line); background:var(--bg);
 }
-.fxc-bar::-webkit-scrollbar{ display:none; }
 .fxc-tools, .fxc-colors, .fxc-actions{ display:flex; align-items:center; gap:2px; flex:none; }
 /* Tools: a segmented control, same look as the Files view switcher */
 .fxc-tools{ height:32px; padding:2px; box-sizing:border-box; border-radius:8px; background:var(--surface); }
@@ -31,7 +30,7 @@
 }
 .fxc-swatch:hover{ transform:scale(1.12); }
 .fxc-swatch.is-active{ box-shadow:inset 0 0 0 1px var(--line-strong), 0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent); }
-.fxc-actions{ margin-left:auto; position:sticky; right:0; padding-left:8px; background:var(--bg); box-shadow:-10px 0 10px var(--bg); }
+.fxc-actions{ margin-left:auto; }
 .fxc-abtn{
   width:30px; height:30px; display:inline-flex; align-items:center; justify-content:center;
   border:0; border-radius:7px; background:none; color:var(--text-dim); cursor:pointer; transition:background .12s, color .12s;
@@ -221,19 +220,30 @@
   font-size:.8rem; pointer-events:none;
 }
 
-/* Phones: all 8 tools + undo/redo/delete fit without scrolling (tools flex 26-40px); zoom is a pinch there. */
+/* Phones: the 8 tools fill the first row, colours + undo/redo/delete the second; zoom is a pinch there. */
 @media (max-width:720px){
-  .fxc-bar{ height:48px; padding:0 6px; gap:6px; }
-  .fxc-tools{ flex:0 1 auto; height:36px; gap:0; }
-  .fxc-tool{ flex:1 1 40px; width:auto; min-width:26px; }
-  .fxc-actions{ padding-left:0; gap:0; box-shadow:none; }
-  .fxc-abtn{ width:34px; height:34px; }
-  .fxc-sep, .fxc-zoomctl, .fxc-zoom, .fxc-colors, .fxc-hint{ display:none !important; }
-  .fxc-handle{ width:16px; height:16px; border-radius:5px; }
+  .fxc-bar{ padding:6px; }
+  .fxc-tools{ flex:1 1 100%; height:38px; gap:0; }
+  .fxc-tool{ flex:1 1 0; width:auto; }
+  .fxc-colors{ gap:10px; padding:0 6px; }
+  .fxc-swatch{ width:22px; height:22px; }
+  .fxc-actions{ gap:0; }
+  .fxc-abtn{ width:38px; height:36px; }
+  .fxc-sep, .fxc-zoomctl, .fxc-zoom{ display:none !important; }
   .fxc-popover{ min-width:min(250px,calc(100vw - 16px)); max-width:calc(100vw - 16px); }
   .fxc-pop-controls{ min-width:0; }
-  .fxc-text-tools{ scrollbar-width:none; }
-  .fxc-text-tools::-webkit-scrollbar{ display:none; }
+  /* The formatting bar wraps too, rather than scrolling sideways with no scrollbar */
+  .fxc-text-tools{ flex-wrap:wrap; overflow:visible; }
+  .fxc-tt-sep{ display:none; }
+}
+/* Touch: a move grip and resize handles a finger can actually hit */
+@media (pointer:coarse){
+  .fxc-grip{ top:-24px; width:48px; height:24px; border-radius:12px; }
+  .fxc-handle{ width:18px; height:18px; border-radius:6px; }
+  .fxc-h-nw, .fxc-h-n, .fxc-h-ne{ top:-10px; } .fxc-h-sw, .fxc-h-s, .fxc-h-se{ bottom:-10px; }
+  .fxc-h-nw, .fxc-h-w, .fxc-h-sw{ left:-10px; } .fxc-h-ne, .fxc-h-e, .fxc-h-se{ right:-10px; }
+  .fxc-text-tools .fxc-mini{ min-width:36px; height:36px; line-height:36px; }
+  .fxc-popover .rd-cmenu-item{ min-height:40px; }
 }
 @media (prefers-reduced-motion:reduce){
   .fxc-text-tools{ animation:none; }

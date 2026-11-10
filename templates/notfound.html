@@ -41,13 +41,13 @@
     {% endif %}
 
     <div class="gw-actions">
-      {% if allow_temp_uploads %}
+      {% if allow_temp_uploads and not desktop_app %}
       <a href="{{ url_for('share') }}" class="rd-btn rd-btn-primary rd-btn-lg">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
         Upload a file
       </a>
       {% endif %}
-      <a href="{{ url_for('index') }}" class="rd-btn rd-btn-ghost rd-btn-lg">Go home</a>
+      {% if desktop_app %}<a href="{{ url_for('files') }}" class="rd-btn rd-btn-ghost rd-btn-lg">Back to files</a>{% else %}<a href="{{ url_for('index') }}" class="rd-btn rd-btn-ghost rd-btn-lg">Go home</a>{% endif %}
     </div>
   </div>
 </section>

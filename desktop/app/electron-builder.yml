@@ -47,8 +47,8 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: ONE.GY Desktop
-  uninstallDisplayName: ONE.GY Desktop
+  shortcutName: ONE.GY
+  uninstallDisplayName: ONE.GY
 
 linux:
   target:
@@ -62,6 +62,10 @@ linux:
   category: Network
   syncDesktopName: true
   executableName: onegy-desktop
+  # Display name only; productName stays so install/config paths don't move.
+  desktop:
+    entry:
+      Name: ONE.GY
   synopsis: one.gy in a native window, with end-to-end encrypted folder sync
   maintainer: tifuck <173309113+tifuck@users.noreply.github.com>
   vendor: ONE.GY

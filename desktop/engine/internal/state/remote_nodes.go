@@ -32,23 +32,35 @@ type RemoteNode struct {
 	IsBackup        bool
 	BackupDeviceID  string
 	UpdatedAt       string
+	// Key tree (sync-api.md "Key tree"): folders: the folder key wrapped under
+	// TreeParent's folder key and the name key under its own; files: the file
+	// key under TreeParent's folder key. TreeParent 0 = the root key.
+	TreeWrap      string
+	TreeNonce     string
+	TreeParent    *int64
+	TreeNameWrap  string
+	TreeNameNonce string
 }
 
 const nodeCols = `kind, id, parent_id, seq, is_trashed, is_e2e, name, encrypted_name, name_nonce, encrypted_key, key_nonce,
 	stored_extension, cipher_size, plain_size, payload_checksum, content_version, encrypted_meta, meta_nonce,
-	is_backup, backup_device_id, updated_at`
+	is_backup, backup_device_id, updated_at, tree_wrap, tree_nonce, tree_parent, tree_name_wrap, tree_name_nonce`
 
 func scanNode(row interface{ Scan(...any) error }) (*RemoteNode, error) {
 	var n RemoteNode
-	var parent sql.NullInt64
+	var parent, treeParent sql.NullInt64
 	err := row.Scan(&n.Kind, &n.ID, &parent, &n.Seq, &n.IsTrashed, &n.IsE2E, &n.Name, &n.EncryptedName, &n.NameNonce,
 		&n.EncryptedKey, &n.KeyNonce, &n.StoredExtension, &n.CipherSize, &n.PlainSize, &n.PayloadChecksum,
-		&n.ContentVersion, &n.EncryptedMeta, &n.MetaNonce, &n.IsBackup, &n.BackupDeviceID, &n.UpdatedAt)
+		&n.ContentVersion, &n.EncryptedMeta, &n.MetaNonce, &n.IsBackup, &n.BackupDeviceID, &n.UpdatedAt,
+		&n.TreeWrap, &n.TreeNonce, &treeParent, &n.TreeNameWrap, &n.TreeNameNonce)
 	if err != nil {
 		return nil, err
 	}
 	if parent.Valid {
 		n.ParentID = &parent.Int64
+	}
+	if treeParent.Valid {
+		n.TreeParent = &treeParent.Int64
 	}
 	return &n, nil
 }
@@ -72,10 +84,11 @@ func UpsertNode(tx *sql.Tx, table string, n *RemoteNode) error {
 	if table != "remote_node" && table != "remote_node_snapshot" {
 		return errors.New("bad node table")
 	}
-	_, err := tx.Exec(`INSERT INTO `+table+` (`+nodeCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`+nodeUpdate,
+	_, err := tx.Exec(`INSERT INTO `+table+` (`+nodeCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`+nodeUpdate,
 		n.Kind, n.ID, n.ParentID, n.Seq, n.IsTrashed, n.IsE2E, n.Name, n.EncryptedName, n.NameNonce, n.EncryptedKey,
 		n.KeyNonce, n.StoredExtension, n.CipherSize, n.PlainSize, n.PayloadChecksum, n.ContentVersion,
-		n.EncryptedMeta, n.MetaNonce, n.IsBackup, n.BackupDeviceID, n.UpdatedAt)
+		n.EncryptedMeta, n.MetaNonce, n.IsBackup, n.BackupDeviceID, n.UpdatedAt,
+		n.TreeWrap, n.TreeNonce, n.TreeParent, n.TreeNameWrap, n.TreeNameNonce)
 	return err
 }
 
@@ -99,6 +112,38 @@ func (s *DB) GetNode(ctx context.Context, kind, id string) (*RemoteNode, error) 
 func (s *DB) Children(ctx context.Context, parent *int64) ([]*RemoteNode, error) {
 	q := `SELECT ` + nodeCols + ` FROM remote_node WHERE is_trashed = 0 AND parent_id IS ? ORDER BY kind DESC, id`
 	rows, err := s.QueryContext(ctx, q, parent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*RemoteNode
+	for rows.Next() {
+		n, err := scanNode(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// Subtree returns the non-trashed folders and files below root (nil = the
+// whole drive), folders parents-first (by depth), then files.
+func (s *DB) Subtree(ctx context.Context, root *int64) (folders, files []*RemoteNode, err error) {
+	const tree = `WITH RECURSIVE f(fid, depth) AS (
+		SELECT CAST(id AS INTEGER), 1 FROM remote_node WHERE kind = 'folder' AND is_trashed = 0 AND parent_id IS ?
+		UNION SELECT CAST(n.id AS INTEGER), f.depth + 1 FROM remote_node n JOIN f ON n.parent_id = f.fid
+			WHERE n.kind = 'folder' AND n.is_trashed = 0 AND f.depth < 1000) `
+	if folders, err = s.nodes(ctx, tree+`SELECT `+nodeCols+` FROM remote_node JOIN f ON kind = 'folder' AND CAST(id AS INTEGER) = fid ORDER BY depth, id`, root); err != nil {
+		return nil, nil, err
+	}
+	files, err = s.nodes(ctx, tree+`SELECT `+nodeCols+` FROM remote_node WHERE kind = 'file' AND is_trashed = 0
+		AND (parent_id IS ? OR parent_id IN (SELECT fid FROM f))`, root, root)
+	return folders, files, err
+}
+
+func (s *DB) nodes(ctx context.Context, q string, args ...any) ([]*RemoteNode, error) {
+	rows, err := s.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

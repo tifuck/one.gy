@@ -42,7 +42,7 @@
     </form>
     <div class="auth-foot">
       <p>Already have an account? <a class="auth-text-link" href="{{ url_for('login') }}">Sign in</a></p>
-      {% if allow_temp_uploads %}<p><a class="auth-text-link" href="{{ url_for('share') }}">Continue as guest</a></p>{% endif %}
+      {% if allow_temp_uploads and not desktop_app %}<p><a class="auth-text-link" href="{{ url_for('share') }}">Continue as guest</a></p>{% endif %}
     </div>
   </section>
 </div>

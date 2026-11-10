@@ -68,6 +68,81 @@ func (c *Client) DeleteDevice(ctx context.Context) error {
 	return err
 }
 
+// --- device security (sync-api.md "Device security") ---
+
+// EnrollPopKey registers a signing key for a device authorized without one.
+func (c *Client) EnrollPopKey(ctx context.Context, publicKey string) error {
+	_, err := c.jsonCall(ctx, request{method: "POST", path: "/apiv1/devices/self/pop-key"}, map[string]string{"public_key": publicKey}, nil)
+	return err
+}
+
+// Unlock fetches the at-rest unlock share; with a PIN proof or password auth
+// token it also returns a grant.
+func (c *Client) Unlock(ctx context.Context, in UnlockRequest) (*UnlockResponse, error) {
+	var out UnlockResponse
+	_, err := c.jsonCall(ctx, request{method: "POST", path: "/apiv1/devices/self/unlock"}, in, &out)
+	return &out, err
+}
+
+// RefreshGrant slides the grant's expiry.
+func (c *Client) RefreshGrant(ctx context.Context) error {
+	_, err := c.jsonCall(ctx, request{method: "POST", path: "/apiv1/devices/self/grant", idempotent: true}, struct{}{}, nil)
+	return err
+}
+
+// DropGrant locks the app server-side (grant and device website sessions end).
+func (c *Client) DropGrant(ctx context.Context) error {
+	_, err := c.jsonCall(ctx, request{method: "DELETE", path: "/apiv1/devices/self/grant", idempotent: true}, nil, nil)
+	return err
+}
+
+// SetPin sets the app lock PIN (needs a grant).
+func (c *Client) SetPin(ctx context.Context, pinProof string, strict bool) (*Security, error) {
+	var out Security
+	_, err := c.jsonCall(ctx, request{method: "PUT", path: "/apiv1/devices/self/pin", idempotent: true},
+		map[string]any{"pin_proof": pinProof, "strict": strict}, &out)
+	return &out, err
+}
+
+// RemovePin stops using a PIN (needs a grant); the app lock asks for the password.
+func (c *Client) RemovePin(ctx context.Context) (*Security, error) {
+	var out Security
+	_, err := c.jsonCall(ctx, request{method: "DELETE", path: "/apiv1/devices/self/pin", idempotent: true}, nil, &out)
+	return &out, err
+}
+
+// SetScope stores what a locked device may reach (needs a grant).
+func (c *Client) SetScope(ctx context.Context, s Scope) error {
+	if s.Folders == nil {
+		s.Folders = []int64{}
+	}
+	_, err := c.jsonCall(ctx, request{method: "PUT", path: "/apiv1/devices/self/scope", idempotent: true}, s, nil)
+	return err
+}
+
+// SetTreeKeys stores key-tree wraps (≤500 items; a locked app only inside its scope).
+func (c *Client) SetTreeKeys(ctx context.Context, folders []TreeFolderKeys, files []TreeFileKeys) (*TreeKeysResponse, error) {
+	if folders == nil {
+		folders = []TreeFolderKeys{}
+	}
+	if files == nil {
+		files = []TreeFileKeys{}
+	}
+	var out TreeKeysResponse
+	_, err := c.jsonCall(ctx, request{method: "POST", path: "/apiv1/sync/tree-keys", idempotent: true},
+		map[string]any{"folders": folders, "files": files}, &out)
+	return &out, err
+}
+
+// WebSession returns a one-use ticket for GET /desktop/session (needs a grant).
+func (c *Client) WebSession(ctx context.Context) (string, error) {
+	var out struct {
+		Ticket string `json:"ticket"`
+	}
+	_, err := c.jsonCall(ctx, request{method: "POST", path: "/apiv1/devices/self/web-session"}, struct{}{}, &out)
+	return out.Ticket, err
+}
+
 // --- change feed ---
 
 func (c *Client) Capabilities(ctx context.Context) (*Capabilities, error) {

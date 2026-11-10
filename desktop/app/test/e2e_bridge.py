@@ -66,6 +66,7 @@ NODE = os.environ.get('NODE', shutil.which('node') or 'node')
 ENGINE = os.path.join(REPO, 'desktop', 'engine', 'bin', 'onegy-engine')
 SHOTS = os.path.join(WORK, 'shots')
 DEVICE = 'E2E-PC'
+PIN = '482916'
 
 
 def log(msg):
@@ -284,20 +285,17 @@ def tab(page, label):
 
 
 def open_panel(bridge, username):
-    """What the site's Sync entry does: openSync() plus the nav data its preload reports."""
-    nav = {'links': [{'label': label, 'href': href, 'active': False, 'badge': 0}
-                     for label, href in (('Files', '/files'), ('Notes', '/notes'), ('Prompts', '/prompts'))],
-           'username': username, 'role': 'User', 'account': {'label': 'Account & settings', 'short': 'Account', 'href': '/account'}}
-    bridge.call('/panel', {'username': username, 'nav': nav})
+    """What the site's Sync entry does: openSync()."""
+    bridge.call('/panel', {'username': username})
 
 
 def site_state(bridge, username):
     return bridge.call(f'/site-status?username={urllib.parse.quote(username)}')['state']
 
 
-def sync_state(*states):
-    """The panel nav's Sync entry (the site's status dot) in one of these onStatus states."""
-    return '.rd-nav-mid [data-desktop-sync]:is(' + ','.join(f'[data-sync-state="{s}"]' for s in states) + ')'
+def wait_up_to_date(bridge, username, timeout):
+    """What the site's Sync entry shows (onStatus) settles on up_to_date."""
+    wait('up to date', lambda: site_state(bridge, username) == 'up_to_date', timeout=timeout)
 
 
 def sections_enabled(page):
@@ -387,7 +385,16 @@ def run(page, bridge, other, local, backup_src, username, password):
     page.get_by_label('Device name').fill(DEVICE)
     shot(page, bridge, 'setup-authorize')
     page.get_by_role('button', name='Authorize').click()
+    # Opt-in PIN step: turn it on, so later unlocks can use it.
+    page.wait_for_selector('text=Unlock with a PIN?', timeout=60000)
+    shot(page, bridge, 'setup-pin')
+    page.get_by_label('Use a PIN on this computer').check()
+    page.get_by_label('New PIN').fill(PIN)
+    page.get_by_label('Repeat the PIN').fill(PIN)
+    page.get_by_role('button', name='Save PIN').click()
     page.wait_for_selector('text=What do you want to do?', timeout=60000)
+    acct = bridge.rpc('account.status')
+    assert acct['pin_set'] and acct['lock_enabled'] and not acct['app_locked'] and acct['signed_requests'], acct
     assert sections_enabled(page)
     shot(page, bridge, 'wizard-action')
     page.get_by_role('button', name='Continue').click()
@@ -427,8 +434,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     for rel, data in files.items():
         assert other.content(tree[rel]) == data, rel
     log('local -> one.gy: names and content verified with the second device')
-    page.wait_for_selector(sync_state('up_to_date'), timeout=60000)
-    assert site_state(bridge, username) == 'up_to_date'
+    wait_up_to_date(bridge, username, 60)
     assert site_state(bridge, username.upper()) == 'up_to_date'
     shot(page, bridge, 'sync-up-to-date')
     tab(page, 'Transfers')
@@ -452,17 +458,22 @@ def run(page, bridge, other, local, backup_src, username, password):
     # Engine restart: the supervisor brings it back and the UI recovers.
     old_pid = bridge.engine_pid()
     os.kill(old_pid, 9)
-    tab(page, 'Syncs')
     wait('engine restarted', lambda: bridge.engine_pid() != old_pid, timeout=60)
-    page.wait_for_selector(sync_state('up_to_date', 'locked'), timeout=90000)
-    if page.locator(sync_state('locked')).count():
-        # No OS key store (headless Linux): the key was memory-only, so unlock.
-        assert site_state(bridge, username) == 'locked'
-        shot(page, bridge, 'locked-after-restart')
-        page.locator('#notice').get_by_role('button', name='Unlock').click()
-        page.locator('dialog').get_by_label('Password').fill(password)
-        page.locator('dialog').get_by_role('button', name='Unlock').click()
-    page.wait_for_selector(sync_state('up_to_date'), timeout=90000)
+    # After a restart the app is locked: the lock screen asks for the PIN, or
+    # for the password when the engine kept nothing (no OS key store, headless).
+    page.wait_for_selector('text=ONE.GY is locked', timeout=90000)
+    shot(page, bridge, 'locked-after-restart')
+    if page.get_by_label('PIN', exact=True).count():
+        page.get_by_label('PIN', exact=True).fill('000000')
+        page.get_by_role('button', name='Unlock', exact=True).click()
+        page.wait_for_selector('text=Wrong PIN. 4 tries left')
+        page.get_by_label('PIN', exact=True).fill(PIN)
+    else:
+        page.get_by_label('Password', exact=True).fill(password)
+    page.get_by_role('button', name='Unlock', exact=True).click()
+    wait('app unlocked', lambda: not bridge.rpc('account.status')['app_locked'], timeout=60)
+    tab(page, 'Syncs')
+    wait_up_to_date(bridge, username, 90)
     log('engine killed and restarted; UI reconnected')
 
     # 4. Conflict with "Ask me", resolved in Issues.
@@ -486,6 +497,9 @@ def run(page, bridge, other, local, backup_src, username, password):
         page.wait_for_selector('text=Previous versions are kept on one.gy.')
         page.get_by_role('button', name='View versions on one.gy').click()
         wait('versions opened on the site', lambda: ['openSite', f'/files/folder/{root_id}'] in bridge.stub()['log'], timeout=10)
+        # That leaves the panel for the site page; come back like the site's Sync entry does.
+        bridge.call('/panel', {'username': username, 'screen': 'issues'})
+        page.wait_for_selector('.dk-issue-path:text("a-renamed.txt")', timeout=30000)
     shot(page, bridge, 'issues-conflict')
     page.get_by_role('button', name='Keep this computer').click()
     wait('local copy kept', lambda: other.content(other.tree(root_id)['a-renamed.txt']) == b'local edit', timeout=90)
@@ -523,7 +537,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     assert other.upload(bid, 'intruder.txt', b'x').status == 403
     assert other.rename(other.tree(bid)['IMG_0001.jpg'], 'renamed.jpg').status == 403
     log('backup: marked for this device, read-only for the other device')
-    page.wait_for_selector(sync_state('up_to_date'), timeout=60000)
+    wait_up_to_date(bridge, username, 60)
     shot(page, bridge, 'sync-with-backup')
 
     # 6. Pause/resume holds back an upload.

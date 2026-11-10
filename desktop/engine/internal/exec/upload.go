@@ -97,7 +97,7 @@ func (x *Executor) uploadSteps(ctx context.Context, j *job, t *Transfer) error {
 		}
 		break
 	}
-	linked, err := x.linkNode(ctx, j.rec.Node)
+	linked, err := x.linkNode(ctx, x.treeWrap(ctx, j.rec.Node))
 	if err != nil {
 		return err
 	}
@@ -183,7 +183,7 @@ func (x *Executor) prepareUpload(ctx context.Context, rec *record, src sourceFil
 		}
 		up.Fields["file_id"] = fileID
 		if up.Mode == "e2ee" {
-			if key, err = x.newFileFields(up.Fields, o.RemoteName); err != nil {
+			if key, err = x.newFileFields(ctx, up.Fields, o.RemoteName); err != nil {
 				return nil, err
 			}
 		} else {
@@ -217,25 +217,17 @@ func (x *Executor) prepareUpload(ctx context.Context, rec *record, src sourceFil
 
 // newFileFields adds the key and name fields of a new E2EE file and returns
 // its fresh file key.
-func (x *Executor) newFileFields(f map[string]string, name string) ([]byte, error) {
-	mk, err := x.env.Acct.MasterKey()
+func (x *Executor) newFileFields(ctx context.Context, f map[string]string, name string) ([]byte, error) {
+	nk, err := x.env.Tree.NewKey(ctx) // a pooled key while the app is locked
 	if err != nil {
 		return nil, err
 	}
-	defer clear(mk)
-	key, err := e2ee.RandomBytes(e2ee.KeySize)
-	if err != nil {
-		return nil, err
-	}
-	wrapped, wnonce, err := e2ee.WrapKey(key, mk)
-	if err != nil {
-		return nil, err
-	}
+	key := nk.Key
 	encName, nnonce, err := e2ee.EncryptName(name, key)
 	if err != nil {
 		return nil, err
 	}
-	f["encrypted_file_key"], f["file_key_nonce"] = e2ee.EncodeBase64(wrapped), e2ee.EncodeBase64(wnonce)
+	f["encrypted_file_key"], f["file_key_nonce"] = nk.Wrap, nk.Nonce
 	f["encrypted_name"], f["name_nonce"] = e2ee.EncodeBase64(encName), e2ee.EncodeBase64(nnonce)
 	f["stored_extension"] = ""
 	if !x.s.HideExtensions {

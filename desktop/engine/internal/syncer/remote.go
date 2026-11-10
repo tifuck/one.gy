@@ -2,7 +2,10 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"strconv"
+
+	"github.com/tifuck/one.gy/desktop/engine/internal/account"
 
 	"github.com/tifuck/one.gy/desktop/engine/internal/exec"
 	"github.com/tifuck/one.gy/desktop/engine/internal/localfs"
@@ -44,7 +47,10 @@ func RemoteInput(ctx context.Context, env *exec.Env, deviceID string, rootID *in
 		if n.ParentID != nil {
 			rn.ParentID = strconv.FormatInt(*n.ParentID, 10)
 		}
-		rn.Name, rn.NameOK = env.Tree.DisplayName(n)
+		var nameErr error
+		rn.Name, nameErr = env.Tree.Name(n)
+		rn.NameOK = nameErr == nil
+		rn.NeedsUnlock = errors.Is(nameErr, account.ErrNeedsUnlock)
 		if n.Kind == "folder" {
 			rn.Kind, rn.Size = localfs.KindDir, 0
 			rn.ReadOnly = n.IsBackup && n.BackupDeviceID != deviceID
@@ -57,6 +63,7 @@ func RemoteInput(ctx context.Context, env *exec.Env, deviceID string, rootID *in
 				}
 			}
 			rn.NameOK = err == nil
+			rn.NeedsUnlock = errors.Is(err, account.ErrNeedsUnlock)
 		}
 		if rn.Kind == localfs.KindFile && rn.SHA256 == "" {
 			rn.SHA256 = hashes[[2]string{n.ID, n.PayloadChecksum}]

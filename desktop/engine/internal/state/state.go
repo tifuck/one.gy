@@ -179,6 +179,34 @@ var migrations = []string{
 		plain_sha256 TEXT NOT NULL
 	);
 	CREATE INDEX issue_open ON issue (sync_id, resolved_at);`,
+	// 4: the master key sealed under the server share + a local key (+ the
+	// PIN key when at_rest_pin), see account.atRestKey.
+	`ALTER TABLE account ADD COLUMN at_rest_sealed TEXT NOT NULL DEFAULT '';
+	ALTER TABLE account ADD COLUMN at_rest_nonce TEXT NOT NULL DEFAULT '';
+	ALTER TABLE account ADD COLUMN at_rest_pin INTEGER NOT NULL DEFAULT 0;`,
+	// 5: the key tree (sync-api.md "Key tree"): wraps on cached nodes (same
+	// column order in both node tables: SwapSnapshot copies with SELECT *),
+	// the master key sealed under the second server share, and the pool of
+	// pre-wrapped keys a locked engine uses for new files and folders.
+	`ALTER TABLE remote_node ADD COLUMN tree_wrap TEXT NOT NULL DEFAULT '';
+	ALTER TABLE remote_node ADD COLUMN tree_nonce TEXT NOT NULL DEFAULT '';
+	ALTER TABLE remote_node ADD COLUMN tree_parent INTEGER;
+	ALTER TABLE remote_node ADD COLUMN tree_name_wrap TEXT NOT NULL DEFAULT '';
+	ALTER TABLE remote_node ADD COLUMN tree_name_nonce TEXT NOT NULL DEFAULT '';
+	ALTER TABLE remote_node_snapshot ADD COLUMN tree_wrap TEXT NOT NULL DEFAULT '';
+	ALTER TABLE remote_node_snapshot ADD COLUMN tree_nonce TEXT NOT NULL DEFAULT '';
+	ALTER TABLE remote_node_snapshot ADD COLUMN tree_parent INTEGER;
+	ALTER TABLE remote_node_snapshot ADD COLUMN tree_name_wrap TEXT NOT NULL DEFAULT '';
+	ALTER TABLE remote_node_snapshot ADD COLUMN tree_name_nonce TEXT NOT NULL DEFAULT '';
+	ALTER TABLE account ADD COLUMN at_rest_master TEXT NOT NULL DEFAULT '';
+	ALTER TABLE account ADD COLUMN at_rest_master_nonce TEXT NOT NULL DEFAULT '';
+	CREATE TABLE key_pool (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		sealed_key TEXT NOT NULL,
+		sealed_nonce TEXT NOT NULL,
+		master_wrap TEXT NOT NULL,
+		master_nonce TEXT NOT NULL
+	);`,
 }
 
 // remoteNodeDDL is part of migration 1 (live table + snapshot staging table).

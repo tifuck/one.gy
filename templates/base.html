@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{% if desktop_app %} class="is-desktop-app"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,13 +17,16 @@
   <link rel="stylesheet" href="{{ versioned_static('editorial-base.css') }}">
   {% if ui_v2|default(true) %}<link rel="stylesheet" href="{{ versioned_static('ui-v2.css') }}">{% endif %}
   {% block head_extra %}{% endblock %}
+  {% if desktop_app %}<link rel="stylesheet" href="{{ versioned_static('desktop-shell.css') }}">{% endif %}
 </head>
 <body class="rd-body {{ 'ui-v2' if ui_v2|default(true) else 'rd-theme-editorial' }}">
   {% include '_nav.html' %}
-  <main id="main">
-    {% block content %}{% endblock %}
-  </main>
-  {% include '_footer.html' %}
+  <div class="rd-scroll">
+    <main id="main">
+      {% block content %}{% endblock %}
+    </main>
+    {% if not desktop_app %}{% include '_footer.html' %}{% endif %}
+  </div>
 
   <div class="toast-container" id="toastContainer"></div>
   <script nonce="{{ csp_nonce }}">

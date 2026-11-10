@@ -30,6 +30,10 @@ function bridgeStatus({ engineState, account, status, issueCount }, username) {
 // another account's page never stores (and encrypts with) the wrong key.
 const mayUnlock = (account, username) => Boolean(account && account.signed_in && sameUser(account.username, username));
 
+// The app lock (engine-ipc.md account.status): the site view stays closed and
+// the lock screen shows until the PIN or password unlocks the app.
+const appLocked = (account) => Boolean(account && account.signed_in && account.lock_enabled && account.app_locked);
+
 // Calls fn at most once per `ms`, always with the latest state (trailing).
 function throttle(fn, ms) {
   let timer = null;
@@ -106,6 +110,9 @@ class SyncStatus extends EventEmitter {
       // Sign-in, sign-out, lock and issue changes all show up as state changes.
       if (was !== d.state) this.refresh();
       this.emit('change');
+    } else if (ev.type === 'account') {
+      this.account = d;
+      this.emit('change');
     } else if (ev.type === 'issue' && d.id !== undefined) {
       if (d.resolved) this.issues.delete(d.id);
       else this.issues.add(d.id);
@@ -114,4 +121,4 @@ class SyncStatus extends EventEmitter {
   }
 }
 
-module.exports = { SyncStatus, bridgeStatus, sameUser, mayUnlock, throttle };
+module.exports = { SyncStatus, bridgeStatus, sameUser, mayUnlock, appLocked, throttle };

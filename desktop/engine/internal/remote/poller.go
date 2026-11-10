@@ -24,6 +24,10 @@ type Poller struct {
 	OnApplied func()
 	// OnOnline runs when reachability changes.
 	OnOnline func(online bool)
+	// Unlock runs before each poll (account.AutoUnlock: opens the keys with
+	// the server's share, finishes migrations); its errors are expected while
+	// offline or when a PIN is needed.
+	Unlock func(context.Context) error
 
 	nudge chan struct{}
 
@@ -104,6 +108,11 @@ func (p *Poller) Run(ctx context.Context) {
 }
 
 func (p *Poller) poll(ctx context.Context) {
+	if p.Unlock != nil {
+		if err := p.Unlock(ctx); err != nil && !errors.Is(err, account.ErrLocked) && !errors.Is(err, account.ErrNotSignedIn) {
+			slog.Debug("auto-unlock not done", "err", err)
+		}
+	}
 	c, err := p.tree.acct.Client()
 	if err != nil {
 		return // signed out or locked: nothing to poll

@@ -29,8 +29,6 @@
     openSite: app('openSite'),
     closePanel: app('closePanel'),
     panelReady: app('panelReady'),
-    siteTheme: app('siteTheme'),
-    siteLogout: app('siteLogout'),
     exportDiagnostics: app('exportDiagnostics'),
     openDataFolder: app('openDataFolder'),
     removeSync: app('removeSync'),

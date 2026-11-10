@@ -112,6 +112,109 @@ versions on replace (server enabled and the user's *Keep previous versions* on).
 
 ### `DELETE /apiv1/devices/self` (device) → `204`. Token stops working.
 
+## Device security
+
+Server: `src/app/378_apiv1_device_security.py` (routes) and
+`110_auth_decorators_download_limits.py` (request checks). Engine:
+`internal/account`, `internal/devkey`.
+
+**Signed requests.** `authorize` takes an optional `pop_public_key` (base64 DER
+SubjectPublicKeyInfo, ECDSA P-256). Devices authorized before this enroll one
+once with `POST /apiv1/devices/self/pop-key {"public_key"}` (`409` when one
+exists). From then on every device-token request must carry
+`X-Onegy-Pop-Ts: <unix seconds>` (±300 s) and `X-Onegy-Pop-Sig: <base64 DER
+ECDSA/SHA-256>` over `"<ts>\n<METHOD>\n<path>"` + `"?<raw query>"` when there
+is one (decoded path, raw query); else `401 invalid_signature` (not a
+revocation). The engine keeps the key in the TPM on Windows when it can (it
+self-checks a signature first), else as a software key in the OS key store.
+A token copied off the computer is then useless.
+
+**At rest.** Nothing on the computer opens on its own. `local_key` is in the OS
+key store; two 32-byte shares live only on the server:
+- the scope set (folder keys of the sync roots, see "Key tree", and the key
+  pool's key) under `HKDF-SHA256(unlock_share ‖ local_key, "onegy-device-scope-v1")`;
+  `unlock_share` comes with `{}` (not with `pin_strict`), so syncing resumes
+  after a restart without the master key;
+- the master key under `HKDF-SHA256(master_share ‖ local_key, "onegy-device-master-v1")`;
+  `master_share` comes only with the PIN or the password.
+
+A removed device never gets a share again, so its disk copies are dead.
+
+**App lock and grants.** A grant (`X-Onegy-Grant: dgr_…`, 15 min TTL) means the
+app is unlocked. A device with `lock_enabled` and no valid grant may read
+metadata (feed, tree, listings, `/me`, keys) but gets `403 locked` for file
+content (`…/content`) and for any write whose source or target folder is
+outside its scope (drive root included unless `root`). The first password
+unlock turns `lock_enabled` on for good.
+
+| Route (device) | Body | Result |
+|---|---|---|
+| `POST /apiv1/devices/self/unlock` | `{}` | `{"unlock_share", …security}`; `401 pin_required` when `pin_strict` |
+| same | `{"pin_proof"}` | `+ "master_share", "grant", "grant_expires_at"`; `401 invalid_pin` (`attempts_left`), `409 pin_locked` (5 wrong in a row: PIN erased), `409 pin_expired`, `409 pin_not_set` |
+| same | `{"auth_token"}` (password, split-key) | `+ "grant"`; resets the PIN's lifetime and failures; login lockout applies |
+| `POST /apiv1/devices/self/grant` | — | grant: slide its expiry → `{"grant_expires_at"}` |
+| `DELETE /apiv1/devices/self/grant` | — | `204`; the grant and its website sessions end |
+| `PUT /apiv1/devices/self/pin` | `{"pin_proof", "strict"}` | grant; `409 password_required` before any password unlock |
+| `DELETE /apiv1/devices/self/pin` | — | grant; back to password unlock |
+| `PUT /apiv1/devices/self/scope` | `{"root": bool, "folders": [ids ≤500]}` | grant; owned folders only |
+| `POST /apiv1/devices/self/web-session` | — | grant → `{"ticket": "wst_…", "expires_in": 60}` |
+
+security = `{"lock_enabled", "pin_set", "pin_expires_at", "pin_strict",
+"pin_attempts_left", "signed_requests"}` (also in `/apiv1/me` `device`).
+`pin_proof` = base64 `HMAC-SHA256(pin_key, "onegy-pin-proof-v1")` with
+`pin_key = PBKDF2-SHA256(pin, "onegy-pin-v1:<device id>", 200000, 32)`; the
+server keeps `SHA-256(pin_proof)`. The PIN works until the last password
+unlock + `desktop_pin_max_age_days` (admin setting, default 14); a PIN unlock
+never extends that.
+
+**Website sign-in.** `GET /desktop/session?next=<path>` with header
+`X-Onegy-Desktop-Ticket: <ticket>` (one use, 60 s, needs a live grant) signs
+the browser in and redirects to `next` (same-site path) or `/files`. The
+session carries `device_id` and ends when the device is removed or its grant
+ends (app locked). A header, so a link or cross-site form cannot log anyone
+in. `GET /desktop/whoami` (website session) → `{"user_id", "device_id"}`.
+
+## Key tree
+
+Lets a locked app keep syncing its folders without the master key. Written
+and read only by ONE.GY Desktop; the website and the CLI keep using the
+master-key wraps, which stay the source of truth, so the tree is an index any
+unlocked engine can rebuild.
+
+- Every folder has a random 32-byte **folder key**, stored as `tree_key_wrap` /
+  `tree_key_nonce` (AES-256-GCM, like every key wrap) under the folder key of
+  `tree_key_parent_id` (`0` = the **root key** = `HKDF-SHA256(master key,
+  info "onegy-tree-root-v1")`). An E2EE folder's name key is also wrapped
+  under its own folder key (`tree_name_key_wrap` / `_nonce`); an E2EE file's
+  key under the folder key of `tree_key_folder_id` (`tree_file_key_wrap` /
+  `_nonce`). All on the folder and file nodes (`null` when absent).
+- A wrap names the folder it is wrapped under, so it stays readable after a
+  move until a client rewraps it. The server drops `tree_file_key_wrap` when a
+  file's key changes and `tree_name_key_wrap` when a folder's name key
+  changes, unless the same change writes a new one; folder keys never change.
+- A locked engine holds only the folder keys of its sync roots (the root key
+  for a whole-drive sync) and derives everything below them. Nodes it cannot
+  reach (no or stale wrap: e.g. files the website just added) wait for the
+  next unlock, quietly. New files and folders take keys from a pool of
+  pre-made keys (made while unlocked, already wrapped with the master key, so
+  the website reads them as usual) and get their tree wraps at once. Folder
+  link keys need the master key: a locked engine leaves them to the website
+  (`needs_folder_link_key`).
+
+### `POST /apiv1/sync/tree-keys` (device)
+```json
+{"folders": [{"id": 12, "tree_key_wrap": "b64", "tree_key_nonce": "b64", "tree_key_parent_id": 0,
+              "if_tree_key_wrap": null, "tree_name_key_wrap": "b64", "tree_name_key_nonce": "b64"}],
+ "files": [{"id": "uuid", "tree_file_key_wrap": "b64", "tree_file_key_nonce": "b64", "tree_key_folder_id": 12}]}
+```
+→ `{"folders": [node], "files": [node], "conflicts": [folder ids]}`, ≤ 500 items.
+A folder key is compare-and-set: `if_tree_key_wrap` is the wrap the client
+read (`null` = none); on a mismatch the folder is left alone, listed in
+`conflicts` and returned as it is, so every device wraps children under the
+same key. Omit `tree_key_wrap` to set only the name-key wrap. Wraps are 48
+bytes, nonces 12 (`400`). Without a grant only items inside the scope
+(`403 locked`). Writes bump `seq`. Key material only: backups do not restrict it.
+
 ## Change feed
 
 ### `GET /apiv1/sync/capabilities` (device)

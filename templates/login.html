@@ -61,10 +61,10 @@ try {
       </div>
       <button type="submit" id="loginBtn" class="rd-btn rd-btn-primary rd-btn-lg auth-submit">Sign in</button>
     </form>
-    {% if allow_registration or allow_temp_uploads %}
+    {% if allow_registration or (allow_temp_uploads and not desktop_app) %}
     <div class="auth-foot">
       {% if allow_registration %}<p>New to ONE.GY? <a class="auth-text-link" href="{{ url_for('register') }}">Create an account</a></p>{% endif %}
-      {% if allow_temp_uploads %}<p><a class="auth-text-link" href="{{ url_for('share') }}">Continue as guest</a></p>{% endif %}
+      {% if allow_temp_uploads and not desktop_app %}<p><a class="auth-text-link" href="{{ url_for('share') }}">Continue as guest</a></p>{% endif %}
     </div>
     {% endif %}
   </section>

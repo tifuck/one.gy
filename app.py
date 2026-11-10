@@ -58,6 +58,7 @@ def _load_parts():
         '375_apiv1_sync.py',
         '376_apiv1_sync_uploads.py',
         '377_file_versions.py',
+        '378_apiv1_device_security.py',
         '380_cli_crypt_routes.py',
         '390_music_library_helpers.py',
         '400_music_browse_routes.py',

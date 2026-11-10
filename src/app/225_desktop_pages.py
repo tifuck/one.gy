@@ -12,6 +12,31 @@ DESKTOP_DOWNLOADS = {
     'appimage': DESKTOP_RELEASES_URL + '/download/ONE.GY-Desktop-x86_64.AppImage',
 }
 DEVICE_NAME_MAX = 80
+# ONE.GY Desktop appends this to its site view's User-Agent (desktop/docs/
+# site-bridge.md "Desktop shell"). It only picks the layout, never access:
+# anyone can send it.
+DESKTOP_APP_UA_TOKEN = 'ONEGY-Desktop/'
+# Public website pages with no place in the app window.
+_DESKTOP_WEB_ONLY_ENDPOINTS = frozenset({
+    'index', 'docs', 'desktop_page', 'share', 'temp_upload_redirect', 'prompts_page', 'guest_files',
+})
+
+
+def _is_desktop_app_request():
+    return DESKTOP_APP_UA_TOKEN in (request.headers.get('User-Agent') or '')
+
+
+@app.before_request
+def _desktop_app_web_only_redirect():
+    """In the app the public pages lead to the files (signed in) or the sign-in page."""
+    if request.method != 'GET' or request.endpoint not in _DESKTOP_WEB_ONLY_ENDPOINTS or not _is_desktop_app_request():
+        return None
+    return redirect(url_for('files') if session.get('logged_in_user_id') else url_for('login'))
+
+
+@app.context_processor
+def _inject_desktop_app():
+    return {'desktop_app': _is_desktop_app_request()}
 
 
 def _desktop_platform_from_ua(user_agent):

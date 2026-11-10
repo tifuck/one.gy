@@ -37,6 +37,43 @@ type Node struct {
 
 	FolderLinkShareToken *string `json:"folder_link_share_token,omitempty"` // links.go
 	NeedsFolderLinkKey   bool    `json:"needs_folder_link_key,omitempty"`
+
+	// Key tree (sync-api.md "Key tree").
+	TreeKeyWrap      string `json:"tree_key_wrap,omitempty"`
+	TreeKeyNonce     string `json:"tree_key_nonce,omitempty"`
+	TreeKeyParentID  *int64 `json:"tree_key_parent_id,omitempty"`
+	TreeNameKeyWrap  string `json:"tree_name_key_wrap,omitempty"`
+	TreeNameKeyNonce string `json:"tree_name_key_nonce,omitempty"`
+	TreeFileKeyWrap  string `json:"tree_file_key_wrap,omitempty"`
+	TreeFileKeyNonce string `json:"tree_file_key_nonce,omitempty"`
+	TreeKeyFolderID  *int64 `json:"tree_key_folder_id,omitempty"`
+}
+
+// TreeFolderKeys sets a folder's key-tree wraps (POST /apiv1/sync/tree-keys).
+// IfTreeKeyWrap is the compare-and-set guard for the folder key: the wrap the
+// client read ("" = none); nil Wrap leaves the folder key alone.
+type TreeFolderKeys struct {
+	ID            int64   `json:"id"`
+	Wrap          string  `json:"tree_key_wrap,omitempty"`
+	Nonce         string  `json:"tree_key_nonce,omitempty"`
+	Parent        *int64  `json:"tree_key_parent_id,omitempty"`
+	IfTreeKeyWrap *string `json:"if_tree_key_wrap"`
+	NameWrap      string  `json:"tree_name_key_wrap,omitempty"`
+	NameNonce     string  `json:"tree_name_key_nonce,omitempty"`
+}
+
+// TreeFileKeys sets a file's key-tree wrap.
+type TreeFileKeys struct {
+	ID     string `json:"id"`
+	Wrap   string `json:"tree_file_key_wrap"`
+	Nonce  string `json:"tree_file_key_nonce"`
+	Folder int64  `json:"tree_key_folder_id"`
+}
+
+type TreeKeysResponse struct {
+	Folders   []Node  `json:"folders"`
+	Files     []Node  `json:"files"`
+	Conflicts []int64 `json:"conflicts"`
 }
 
 // IDString returns the id as text: decimal for folders, the UUID for files.
@@ -68,6 +105,7 @@ type AuthorizeRequest struct {
 	DeviceName    string `json:"device_name"`
 	Platform      string `json:"platform"`
 	ClientVersion string `json:"client_version"`
+	PopPublicKey  string `json:"pop_public_key,omitempty"`
 }
 
 type User struct {
@@ -100,6 +138,37 @@ type Device struct {
 	Platform      string `json:"platform"`
 	ClientVersion string `json:"client_version"`
 	CreatedAt     string `json:"created_at"`
+	Security
+}
+
+// Security is the device's lock state (/apiv1/me device, unlock answers).
+type Security struct {
+	LockEnabled     bool    `json:"lock_enabled"`
+	PinSet          bool    `json:"pin_set"`
+	PinExpiresAt    *string `json:"pin_expires_at"` // the PIN stops working then (password once more)
+	PinStrict       bool    `json:"pin_strict"`
+	PinAttemptsLeft int     `json:"pin_attempts_left"`
+	SignedRequests  bool    `json:"signed_requests"`
+}
+
+// UnlockRequest: none (share only), PinProof or AuthToken (share + grant).
+type UnlockRequest struct {
+	PinProof  string `json:"pin_proof,omitempty"`
+	AuthToken string `json:"auth_token,omitempty"`
+}
+
+type UnlockResponse struct {
+	UnlockShare    string `json:"unlock_share"`
+	MasterShare    string `json:"master_share"` // only with a PIN or password
+	Grant          string `json:"grant"`
+	GrantExpiresAt string `json:"grant_expires_at"`
+	Security
+}
+
+// Scope is what a locked device may reach (its sync and backup roots).
+type Scope struct {
+	Root    bool    `json:"root"`
+	Folders []int64 `json:"folders"`
 }
 
 type Me struct {

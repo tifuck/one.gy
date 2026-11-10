@@ -42,8 +42,10 @@ func (r *run) walkRemote(parentID, ppath string, ro bool) {
 	var order []string
 	for _, n := range r.kids[parentID] {
 		if !n.NameOK {
-			r.issue("integrity", ppath, fmt.Sprintf("A one.gy item (id %s) has a name that cannot be decrypted; it is skipped.", n.ID), "ignore")
-			r.stallRemote(n)
+			if !n.NeedsUnlock {
+				r.issue("integrity", ppath, fmt.Sprintf("A one.gy item (id %s) has a name that cannot be decrypted; it is skipped.", n.ID), "ignore")
+			}
+			r.stallRemote(n) // never a delete: its local copy and base row stay as they are
 			continue
 		}
 		if n.Name == "" {

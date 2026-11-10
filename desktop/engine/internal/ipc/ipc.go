@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -57,6 +58,12 @@ type Server struct {
 	// after its engine.subscribe reply (engine-ipc.md: one status event).
 	OnSubscribe func() (typ string, data any)
 
+	// Secret, when set (--ipc-secret-stdin), must be presented with ipc.hello
+	// before a connection may call anything but ipc.hello, engine.info and
+	// engine.shutdown: only the app that spawned the engine knows it, so other
+	// programs of the same user cannot ask for keys or website tickets.
+	Secret string
+
 	mu    sync.Mutex
 	conns map[*conn]bool
 	ln    net.Listener
@@ -74,6 +81,7 @@ type conn struct {
 	nc         net.Conn
 	out        chan []byte
 	subscribed bool // guarded by Server.mu
+	trusted    bool // guarded by Server.mu: presented Secret
 	done       chan struct{}
 }
 
@@ -190,7 +198,26 @@ func (s *Server) dispatch(ctx context.Context, c *conn, line []byte) (resp, afte
 	}
 	var result any
 	var err error
-	if req.Method == "engine.subscribe" {
+	s.mu.Lock()
+	trusted := c.trusted || s.Secret == ""
+	s.mu.Unlock()
+	if req.Method == "ipc.hello" {
+		var in struct {
+			Secret string `json:"secret"`
+		}
+		if err = Params(req.Params, &in); err == nil {
+			if s.Secret == "" || subtle.ConstantTimeCompare([]byte(in.Secret), []byte(s.Secret)) == 1 {
+				s.mu.Lock()
+				c.trusted = true
+				s.mu.Unlock()
+				result = struct{}{}
+			} else {
+				err = Errorf("forbidden", "wrong IPC secret")
+			}
+		}
+	} else if !trusted && req.Method != "engine.info" && req.Method != "engine.shutdown" {
+		err = Errorf("forbidden", "call ipc.hello first")
+	} else if req.Method == "engine.subscribe" {
 		s.mu.Lock()
 		c.subscribed = true
 		s.mu.Unlock()

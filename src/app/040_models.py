@@ -129,6 +129,15 @@ class Folder(db.Model):
     name_key_nonce = db.Column(db.String(255), nullable=True)      # Nonce for name key wrapping (base64)
     link_encrypted_name_key = db.Column(db.Text, nullable=True)   # Per-folder name key wrapped by link key (base64, for share links)
     link_name_key_nonce = db.Column(db.String(255), nullable=True) # Nonce for link name key wrapping (base64)
+    # Desktop key tree (sync-api.md "Key tree"): written and read only by ONE.GY
+    # Desktop, rebuildable from the master-key wraps above. A random folder key,
+    # wrapped under the folder key of tree_key_parent_id (0 = the root key), and
+    # this folder's name key wrapped under its own folder key.
+    tree_key_wrap = db.Column(db.Text, nullable=True)
+    tree_key_nonce = db.Column(db.String(255), nullable=True)
+    tree_key_parent_id = db.Column(db.Integer, nullable=True)
+    tree_name_key_wrap = db.Column(db.Text, nullable=True)
+    tree_name_key_nonce = db.Column(db.String(255), nullable=True)
     
     # Download tracking
     download_count = db.Column(db.Integer, default=0, nullable=True)
@@ -206,6 +215,11 @@ class File(db.Model):
     link_file_key_nonce = db.Column(db.String(255), nullable=True) # Base64 of link-wrapping nonce
     folder_link_encrypted_file_key = db.Column(db.Text, nullable=True)
     folder_link_file_key_nonce = db.Column(db.String(255), nullable=True)
+    # Desktop key tree: the file key wrapped under the folder key of
+    # tree_key_folder_id (0 = the root key). Cleared when the file key changes.
+    tree_file_key_wrap = db.Column(db.Text, nullable=True)
+    tree_file_key_nonce = db.Column(db.String(255), nullable=True)
+    tree_key_folder_id = db.Column(db.Integer, nullable=True)
     link_secret = db.Column(db.String(255), nullable=True)         # DEPRECATED: legacy link secret storage (being migrated out)
     is_link_shared = db.Column(db.Boolean, default=False, nullable=True)  # Whether this file has an active E2E link share
     # Encrypted filename (E2EE zero-knowledge): real filename encrypted with file key
@@ -461,6 +475,20 @@ class Device(db.Model):
     last_ip_hash = db.Column(db.String(64), nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=True)
     revoked_at = db.Column(db.DateTime, nullable=True)
+    # Device security (378_apiv1_device_security.py, sync-api.md "Device security").
+    pop_public_key = db.Column(db.Text, nullable=True)              # P-256 SubjectPublicKeyInfo DER (base64); requests must be signed with it
+    unlock_share = db.Column(db.String(64), nullable=True)          # 32 random bytes (base64): opens this device's sync-scope keys at rest
+    master_share = db.Column(db.String(64), nullable=True)          # 32 random bytes (base64): opens its master key at rest; only with the PIN or password
+    lock_enabled = db.Column(db.Boolean, nullable=False, default=False, server_default='0')  # app lock on: no grant = sync scope only
+    pin_verifier_hash = db.Column(db.String(64), nullable=True)     # SHA-256(pin_proof) hex; NULL after too many wrong PINs
+    pin_failures = db.Column(db.Integer, nullable=False, default=0, server_default='0')
+    pin_strict = db.Column(db.Boolean, nullable=False, default=False, server_default='0')   # unlock_share needs the PIN (or password)
+    password_verified_at = db.Column(db.DateTime, nullable=True)    # last password unlock; the PIN works until + desktop_pin_max_age_days
+    sync_scope = db.Column(db.Text, nullable=True)                  # JSON {"root": bool, "folders": [ids]}: reachable without a grant
+    grant_hash = db.Column(db.String(64), nullable=True)            # SHA-256(grant) hex: the app is unlocked
+    grant_expires_at = db.Column(db.DateTime, nullable=True)
+    web_ticket_hash = db.Column(db.String(64), nullable=True, index=True)  # one-use website sign-in ticket
+    web_ticket_expires_at = db.Column(db.DateTime, nullable=True)
 
 class SyncTombstone(db.Model):
     """Hard delete of a synced file/folder, served by /apiv1/sync/changes until
@@ -754,6 +782,9 @@ _SETTING_DEFAULTS = {
     # Desktop sync (375_apiv1_sync.py / 376_apiv1_sync_uploads.py).
     'allow_desktop_sync': True,
     'max_devices_per_user': '20',
+    # ONE.GY Desktop app lock (378_apiv1_device_security.py): a PIN works this many
+    # days after the password was last entered on that computer.
+    'desktop_pin_max_age_days': '14',
     'sync_tombstone_retention_days': '90',
     'sync_upload_session_ttl': '86400',
     # File versions (377_file_versions.py): newest N kept per file (0 = off,

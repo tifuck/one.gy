@@ -13,12 +13,22 @@ The contract between `desktop/engine/internal/ipc` (server) and
   writes `<state dir>/engine.json` `{"pid", "socket", "version"}` once listening.
 - State dir: Windows `%APPDATA%\ONE.GY`, Linux `$XDG_DATA_HOME/onegy`
   (default `~/.local/share/onegy`). Overridable with `--state-dir`.
+- IPC secret: the app starts the engine with `--ipc-secret-stdin` and writes a
+  random secret (≥ 32 chars) plus `\n` to its stdin. Every connection must then
+  call `ipc.hello {"secret"}` first; until it does, only `ipc.hello`,
+  `engine.info` and `engine.shutdown` answer, everything else is `forbidden`.
+  A wrong secret is `forbidden`. An engine left running by a crashed app has
+  another secret: the app asks it to shut down and starts its own. Without the
+  flag (tests, `onegyctl`, the dev bridge before 0.4) `ipc.hello` always succeeds.
 
 ## Errors
 
 JSON-RPC error `{"code": <int>, "message": "<human text>", "data": {"code": "<string code>"}}`.
-String codes: `not_signed_in`, `locked` (key not unlocked), `invalid_credentials`,
+String codes: `not_signed_in`, `locked` (key not unlocked), `app_locked` (the app
+lock is on: unlock with the PIN or password first), `invalid_credentials`,
 `totp_required`, `invalid_totp`, `captcha_required`, `device_revoked`,
+`invalid_pin`, `pin_locked`, `pin_expired`, `pin_not_set`, `pin_required`,
+`password_required`, `rate_limited`, `forbidden`,
 `validation_failed` (`data.errors`), `not_found`, `offline`, `server_error`,
 `internal`.
 Numeric `code`: `-32700` parse error, `-32600` invalid request, `-32601` unknown
@@ -107,11 +117,16 @@ merge); unknown keys are rejected.
 | `engine.nudge` | — | `{}`; poll the server now |
 | `engine.environment` | `{"on_battery": bool, "metered": bool}` | `{}`; the app reports power/network changes; syncs whose (inherited) `battery`/`metered` policy is `pause` pause while it holds |
 | `engine.clearCaches` | — | `{}`; drops unwrapped keys, cached capabilities and the remote tree cache, then takes a new snapshot |
-| `account.status` | — | `{"signed_in", "locked", "server", "username", "device_id", "device_name", "storage_used", "storage_limit", "versioning"}` (`versioning`: one.gy keeps previous versions on replace, from `GET /apiv1/me`) |
-| `account.authorize` | `{"server", "username", "password", "totp_code"?, "device_name"}` | `account.status` |
-| `account.unlock` | `{"password"}` | `account.status` (memory-only key mode) |
+| `account.status` | — | `{"signed_in", "locked", "full_keys", "app_locked", "lock_enabled", "pin_set", "pin_expires_at", "pin_strict", "pin_attempts_left", "signed_requests", "hardware_key", "server", "username", "user_id", "device_id", "device_name", "storage_used", "storage_limit", "versioning"}` (see "App lock"; `versioning`: one.gy keeps previous versions on replace, from `GET /apiv1/me`) |
+| `account.authorize` | `{"server", "username", "password", "totp_code"?, "device_name"}` | `account.status`; the app is left unlocked so a PIN can be chosen |
+| `account.unlock` | `{"password", "new_pin"?, "pin_strict"?}` | `account.status`; opens the password-sealed keys (works offline), then unlocks the app online; `new_pin` (opt-in) also sets the PIN, validated before anything changes |
+| `account.appUnlock` | `{"pin"}` | `account.status`; errors `invalid_pin` (re-read `pin_attempts_left`), `pin_locked`, `pin_expired`, `pin_not_set` (use `account.unlock`) |
+| `account.appLock` | — | `account.status`; drops the grant (sync goes on inside the scope) |
+| `account.setPin` | `{"pin", "strict"}` | `account.status`; app unlocked; 6 to 64 characters |
+| `account.removePin` | — | `account.status`; app unlocked; the lock then asks for the password |
 | `account.signOut` | `{"revoke": true}` | `{}`; pauses syncs, wipes keys, keeps files |
-| `account.webUnlockKey` | — | `{"master_key_b64"}` or error `locked`; only when `web_unlock` |
+| `account.webSession` | — | `{"ticket", "url"}` (main process only): load `url` with header `X-Onegy-Desktop-Ticket: <ticket>` to sign the site view in; `app_locked` while locked |
+| `account.webUnlockKey` | — | `{"master_key_b64"}` or error `locked`; only when `web_unlock` and the app is unlocked (`app_locked` otherwise) |
 | `remote.list` | `{"folder_id": null}` | `{"folder": node|null, "folders": [...], "files": [...]}`, names decrypted, + `size_plain` |
 | `remote.createFolder` | `{"parent_id", "name", "e2ee": true}` | folder node |
 | `syncs.list` | — | `[Sync]` |
@@ -214,6 +229,38 @@ Notifications from the engine: `{"jsonrpc": "2.0", "method": "event", "params": 
 | `activity` | `{"at","sync_id","action","path"}` |
 | `notify` | `{"title","body","kind": "conflict|issue|mass_delete|transfer|revoked|info"}` (conflicts and issues at most every 30 s per sync) |
 | `verify` | `{"sync_id","done","total"}` (progress of `syncs.verify`, ≤1/s) |
+| `account` | `account.status` (after any sign-in, key or app lock change) |
+
+## App lock
+
+Key states (sync-api.md "Device security", "Key tree"):
+
+- `locked`: no keys; sync stops. After a restart the engine opens its sync
+  keys with the server's unlock share (automatic, unless `pin_strict`: then
+  the PIN or password is needed).
+- `app_locked` (no grant) with `full_keys` false: only the folder keys of the
+  sync roots and the key pool are in memory, never the master key. Sync goes
+  on inside this computer's sync folders (the scope the engine sends whenever
+  the syncs change while unlocked); everything else is out of reach on both
+  ends: the server refuses content and writes elsewhere, the website ticket
+  and `account.webUnlockKey`, and nothing outside decrypts here. Nodes
+  without key-tree wraps yet wait for the next unlock (no issue).
+- unlocked (`full_keys`, a grant): the master key is back (from its sealed
+  copy with the PIN's master share, or the password); the engine rebuilds
+  the key tree, refreshes the sync folder keys and refills the key pool.
+  Locking wipes the master key again.
+
+`lock_enabled` is on for every device that has been unlocked with the
+password once by this version.
+
+The app shows a lock screen (no site page) while `lock_enabled && app_locked`:
+at start, when the OS locks the screen or sleeps, after the idle time in the
+app setting `lock_after_minutes`, and from the tray. Unlocking is the PIN when
+`pin_set` and before `pin_expires_at`, else the password. The PIN is opt-in.
+The server limits it: it works only `desktop_pin_max_age_days` (admin setting,
+default 14) after the last password unlock on this computer, and five wrong
+PINs in a row erase it. After either, the password unlocks once (and a new PIN
+can be set). The engine refreshes the grant every 5 minutes while unlocked (server TTL 15 minutes).
 
 A client subscribes by calling `engine.subscribe` (no params) on its connection.
 Right after the reply the engine sends one `status` event, so a new client

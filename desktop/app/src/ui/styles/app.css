@@ -11,7 +11,34 @@
    this box over the live site (opacity on the root would not fade the canvas).
    It stands in for body's flex column, so the site layout is unchanged. */
 body.rd-app{ background:transparent; }
-.dk-panel{ display:flex; flex-direction:column; flex:1 0 auto; background:var(--bg); }
+/* The panel sits below the app's title bar and right of the site's rail
+   (main/window.js): no nav of its own, so the layout starts at the top. */
+.dk-panel{ --nav-h:0px; display:flex; flex-direction:column; flex:1 0 auto; background:var(--bg); }
+/* Solo screens (sign-in, lock, messages; app.js): centred, no sidebar. */
+.dk-solo .adm-side{ display:none; }
+.dk-solo .adm-layout{ grid-template-columns:minmax(0,1fr); }
+.dk-solo .adm-main{ display:flex; flex-direction:column; }
+.dk-solo #admPanel{ width:100%; max-width:760px; margin:auto; }
+.dk-solo #admPanel:has(.dk-signin, .dk-lock){ max-width:400px; }
+
+/* ---- Sign-in (screens/signin.js): the website's sign-in card -------------- */
+.dk-signin{ padding:32px 32px 24px; background:var(--panel); border:1px solid var(--line); border-radius:14px; }
+.dk-signin-mark{ display:grid; place-items:center; width:40px; height:40px; margin-bottom:18px; border-radius:10px; background:var(--surface); color:var(--text); }
+.dk-signin-mark svg{ width:20px; height:20px; }
+.dk-signin-title{ font-size:1.375rem; font-weight:600; letter-spacing:-.022em; line-height:1.25; }
+.dk-signin-sub{ margin:6px 0 24px; font-size:.875rem; line-height:1.5; color:var(--text-dim); }
+.dk-signin-form{ display:flex; flex-direction:column; gap:16px; }
+.dk-signin-row{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.dk-signin-row .dk-signin-link{ font-size:.8rem; font-weight:400; color:var(--text-dim); text-decoration:none; }
+.dk-signin-row .dk-signin-link:hover{ color:var(--text); }
+.dk-signin-more > summary{ min-height:36px; font-size:.82rem; color:var(--text-dim); }
+.dk-signin-form .rd-field-error:empty{ display:none; }
+.ui-v2 .dk-signin-submit{ width:100%; margin-top:4px; }
+.dk-signin-foot{ display:flex; flex-direction:column; gap:8px; margin-top:20px; padding-top:20px; border-top:1px solid var(--line);
+  text-align:center; font-size:.86rem; color:var(--text-dim); }
+.dk-signin-link{ padding:0; border:0; background:none; font:inherit; font-weight:500; color:var(--text); text-decoration:underline;
+  text-decoration-color:var(--line-strong); text-underline-offset:3px; cursor:pointer; }
+.dk-signin-link:hover{ text-decoration-color:currentColor; }
 /* Section switches crossfade the content only, like the site's pinned nav. */
 .adm-side{ view-transition-name:dk-side; }
 .dk-notice > .rd-callout{ margin-bottom:16px; }

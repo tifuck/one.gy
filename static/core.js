@@ -13,8 +13,19 @@
     var root = document.documentElement
     var toggle = document.querySelector('.rd-nav-toggle')
     if (nav) {
-      var onScroll = function () { nav.classList.toggle('rd-scrolled', window.scrollY > 12) }
+      var scroller = document.querySelector('.rd-scroll')
+      var onScroll = function () { nav.classList.toggle('rd-scrolled', window.scrollY > 12 || (!!scroller && scroller.scrollTop > 12)) }
       window.addEventListener('scroll', onScroll, { passive: true })
+      if (scroller) scroller.addEventListener('scroll', onScroll, { passive: true })
+      // Keys scroll the focused element's scroller: with nothing focused, hand
+      // scroll keys to the page scroller (Tab still starts at the nav).
+      if (scroller && getComputedStyle(scroller).overflowY === 'auto') {
+        scroller.tabIndex = -1
+        var scrollKeys = [' ', 'PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home', 'End']
+        document.addEventListener('keydown', function (e) {
+          if (document.activeElement === document.body && scrollKeys.indexOf(e.key) >= 0) scroller.focus({ preventScroll: true })
+        }, true)
+      }
       onScroll()
     }
     if (toggle) {

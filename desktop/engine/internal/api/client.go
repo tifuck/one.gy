@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,7 @@ type Error struct {
 	Current          json.RawMessage // conflict / precondition_failed: current node
 	MinCursor        int64           // cursor_expired
 	MinClientVersion string          // client_too_old
+	AttemptsLeft     int             // invalid_pin
 	RetryAfter       time.Duration
 }
 
@@ -77,6 +79,8 @@ type Client struct {
 
 	mu        sync.Mutex
 	token     string
+	signer    Signer
+	grant     string
 	onRevoked func()
 
 	sleep func(context.Context, time.Duration) error // replaced in tests
@@ -139,6 +143,42 @@ func (c *Client) tokenValue() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.token
+}
+
+// Signer signs "<unix ts>\n<METHOD>\n<path>[?<query>]" (devkey.Key).
+type Signer interface {
+	Sign(msg []byte) ([]byte, error)
+}
+
+// SetSigner makes every device-auth request carry X-Onegy-Pop-Ts/-Sig.
+func (c *Client) SetSigner(s Signer) {
+	c.mu.Lock()
+	c.signer = s
+	c.mu.Unlock()
+}
+
+// SetGrant sets ("" clears) the unlock grant sent as X-Onegy-Grant.
+func (c *Client) SetGrant(g string) {
+	c.mu.Lock()
+	c.grant = g
+	c.mu.Unlock()
+}
+
+// Grant returns the current unlock grant ("" = app locked).
+func (c *Client) Grant() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.grant
+}
+
+// CopyAuth gives other the same token, signer and grant (proxy changes).
+func (c *Client) CopyAuth(other *Client) {
+	c.mu.Lock()
+	token, signer, grant := c.token, c.signer, c.grant
+	c.mu.Unlock()
+	other.mu.Lock()
+	other.token, other.signer, other.grant = token, signer, grant
+	other.mu.Unlock()
 }
 
 // OnRevoked registers a callback run (once per response) on 401 device_revoked.
@@ -230,7 +270,26 @@ func (c *Client) once(ctx context.Context, r request) (*http.Response, error) {
 		req.Header.Set("Content-Type", r.contentType)
 	}
 	if !r.noAuth {
-		req.Header.Set("Authorization", "Bearer "+c.tokenValue())
+		c.mu.Lock()
+		token, signer, grant := c.token, c.signer, c.grant
+		c.mu.Unlock()
+		req.Header.Set("Authorization", "Bearer "+token)
+		if grant != "" {
+			req.Header.Set("X-Onegy-Grant", grant)
+		}
+		if signer != nil {
+			ts := strconv.FormatInt(time.Now().Unix(), 10)
+			path := u.Path
+			if u.RawQuery != "" {
+				path += "?" + u.RawQuery
+			}
+			sig, err := signer.Sign([]byte(ts + "\n" + r.method + "\n" + path))
+			if err != nil {
+				return nil, fmt.Errorf("sign request: %w", err)
+			}
+			req.Header.Set("X-Onegy-Pop-Ts", ts)
+			req.Header.Set("X-Onegy-Pop-Sig", base64.StdEncoding.EncodeToString(sig))
+		}
 	}
 	return c.http.Do(req)
 }
@@ -252,11 +311,12 @@ func readError(resp *http.Response) *Error {
 		Current          json.RawMessage `json:"current"`
 		MinCursor        int64           `json:"min_cursor"`
 		MinClientVersion string          `json:"min_client_version"`
+		AttemptsLeft     int             `json:"attempts_left"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 	if json.Unmarshal(raw, &body) == nil {
 		e.Message, e.Code, e.Field, e.Current = body.Error, body.Code, body.Field, body.Current
-		e.MinCursor, e.MinClientVersion = body.MinCursor, body.MinClientVersion
+		e.MinCursor, e.MinClientVersion, e.AttemptsLeft = body.MinCursor, body.MinClientVersion, body.AttemptsLeft
 	}
 	if e.Code == "" {
 		e.Code = fmt.Sprintf("http_%d", resp.StatusCode)

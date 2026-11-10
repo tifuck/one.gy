@@ -124,6 +124,13 @@ export function handleEvent(ev) {
     case 'activity':
       emit('activity', d);
       break;
+    case 'account':
+      // Sign-in and lock changes (engine-ipc.md): the full account.status.
+      if (d && typeof d === 'object') {
+        store.account = d;
+        emit('account');
+      }
+      break;
     case 'verify':
       if (d && d.sync_id) {
         if (d.done >= d.total) store.verify.delete(d.sync_id);

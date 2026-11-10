@@ -1,8 +1,8 @@
 // ipcMain handlers. The native panel may call a fixed list of engine methods
-// plus a few app-owned actions; the website gets the site bridge
-// (desktop/docs/site-bridge.md): unlock key, open the sync panel, sync status,
-// its theme and its nav. Every handler checks who is asking and validates
-// what it gets.
+// plus a few app-owned actions; the title bar sends history commands and its
+// colours; the website gets the site bridge (desktop/docs/site-bridge.md):
+// unlock key, open the sync panel, sync status, its theme, its rail width and
+// its sign-out. Every handler checks who is asking and validates what it gets.
 'use strict';
 
 const fs = require('fs/promises');
@@ -14,13 +14,16 @@ const { isMainFrameOf } = require('./window');
 const { normalizeServerUrl } = require('./settings-store');
 const { isUiUrl } = require('./protocol');
 const { removeSync } = require('./remove-sync');
-const { cleanNav, isSitePath } = require('./site-nav');
+const { cleanInset, isSitePath } = require('./site-nav');
 const { UI_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS } = require('./ui-methods');
 const { mayUnlock } = require('./sync-status');
 
 const MAX_PARAMS_BYTES = 1024 * 1024;
 const PANEL_SCREENS = new Set(['syncs', 'transfers', 'issues', 'settings']);
 const THEMES = new Set(['frost', 'frost-dark']);
+const TITLEBAR_COMMANDS = new Set(['back', 'forward', 'reload']);
+// What getComputedStyle reports for a colour.
+const isCssColor = (v) => typeof v === 'string' && /^rgba?\([\d.,\s]{5,40}\)$/.test(v);
 // Server usernames: 1-80 characters (User.username).
 const isUsername = (v) => typeof v === 'string' && v.length > 0 && v.length <= 80 && !/[\u0000-\u001f]/.test(v);
 
@@ -47,8 +50,8 @@ async function probeServer(raw) {
 }
 
 // deps: { window (MainWindow), engine (EngineSupervisor), settings (SettingsStore),
-//         sync (SyncStatus) }
-function registerIpc({ window, engine, settings, sync }) {
+//         sync (SyncStatus), lockNow(), signOut(): 'site' | 'done' | 'cancelled' }
+function registerIpc({ window, engine, settings, sync, lockNow, signOut }) {
   const fromChrome = (event) => window.isPanelSender(event.sender)
     && isMainFrameOf(event.senderFrame, event.sender)
     && isUiUrl(event.senderFrame.url);
@@ -134,13 +137,8 @@ function registerIpc({ window, engine, settings, sync }) {
     window.showPanel();
     return true;
   });
-  handle('app:siteTheme', (theme) => {
-    if (!THEMES.has(theme)) throw Object.assign(new Error('Unknown theme'), { code: 'validation_failed' });
-    window.setSiteTheme(theme);
-    return true;
-  });
-  handle('app:siteLogout', async () => {
-    await window.siteLogout();
+  handle('app:lockNow', () => {
+    lockNow();
     return true;
   });
   handle('app:exportDiagnostics', async () => {
@@ -162,6 +160,17 @@ function registerIpc({ window, engine, settings, sync }) {
     return true;
   });
 
+  // Title bar: only its own view.
+  ipcMain.on('titlebar:command', (event, name) => {
+    if (window.isTitlebarSender(event.sender) && isMainFrameOf(event.senderFrame, event.sender) && TITLEBAR_COMMANDS.has(name)) {
+      window.runShortcut(name);
+    }
+  });
+  ipcMain.on('titlebar:colors', (event, c) => {
+    if (!window.isTitlebarSender(event.sender) || !isPlainObject(c) || !isCssColor(c.color) || !isCssColor(c.symbolColor)) return;
+    window.setTitlebarColors(c.color, c.symbolColor);
+  });
+
   // Website bridge: only the site view's main frame on the configured origin.
   ipcMain.on('site:openSync', (event, opts) => {
     if (!window.isSiteFrame(event.senderFrame)) return;
@@ -178,15 +187,28 @@ function registerIpc({ window, engine, settings, sync }) {
   ipcMain.on('site:theme', (event, theme) => {
     if (window.isSiteFrame(event.senderFrame) && THEMES.has(theme) && settings.get().theme !== theme) settings.set({ theme });
   });
-  ipcMain.on('site:nav', (event, raw) => {
-    if (!window.isSiteFrame(event.senderFrame)) return;
-    const nav = cleanNav(raw);
-    if (nav) window.setSiteNav(nav).catch((err) => console.error(`[IPC] site nav: ${err.message}`));
+  ipcMain.on('site:inset', (event, px) => {
+    const inset = cleanInset(px);
+    if (window.isSiteFrame(event.senderFrame) && inset !== null) window.setSiteInset(inset);
+  });
+  ipcMain.on('site:leavePanel', (event) => {
+    if (window.isSiteFrame(event.senderFrame)) window.leavePanel();
+  });
+  ipcMain.handle('site:logout', async (event) => {
+    if (!window.isSiteFrame(event.senderFrame)) return 'cancelled';
+    return signOut();
   });
   ipcMain.handle('site:unlock', async (event, username) => {
     if (!window.isSiteFrame(event.senderFrame) || !isUsername(username)) return null;
     try {
-      if (!mayUnlock(await engine.call('account.status'), username)) return null;
+      const account = await engine.call('account.status');
+      if (!mayUnlock(account, username)) return null;
+      // The page's account as the server sees it (the page's own DOM is not proof).
+      const who = await window.site.webContents.session.fetch(`${settings.get().server_url}/desktop/whoami`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }, cache: 'no-store', redirect: 'error',
+      });
+      const me = who.ok ? await who.json() : null;
+      if (!me || me.user_id !== account.user_id) return null;
       const res = await engine.call('account.webUnlockKey');
       return res && typeof res.master_key_b64 === 'string' ? res.master_key_b64 : null;
     } catch {

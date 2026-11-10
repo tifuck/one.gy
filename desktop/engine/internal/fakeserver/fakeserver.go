@@ -55,7 +55,8 @@ type Server struct {
 	nonces     map[string]string // file key + base nonce -> container sha256
 	violations []string
 	tombstones []api.Tombstone
-	devices    map[string]bool // sha256(token) -> active
+	devices    map[string]bool    // sha256(token) -> active
+	sec        map[string]*devSec // sha256(token) -> device security (security.go)
 	dedupe     map[string]int64
 	shares     map[int64]string    // link-shared folders (links.go)
 	wraps      map[string]linkWrap // file id -> folder-link wrap
@@ -268,6 +269,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tok := s.newDevice()
+		sum := sha256.Sum256([]byte(tok))
+		s.devSec(hex.EncodeToString(sum[:])).pop = parsePop(in.PopPublicKey)
 		writeJSON(w, 201, map[string]any{"device_id": fmt.Sprintf("d%d", len(s.devices)), "device_token": tok,
 			"user": map[string]any{"id": 1, "username": s.Username}})
 		return
@@ -282,13 +285,22 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "device_revoked")
 		return
 	}
+	sec := s.devSec(hex.EncodeToString(sum[:]))
+	if sec.pop != nil && !signatureOK(r, sec.pop) {
+		fail(w, 401, "invalid_signature")
+		return
+	}
+	if s.securityRoute(w, r, sec) {
+		return
+	}
 	s.refreshLinks()
 	p := r.URL.Path
 	switch {
 	case p == "/apiv1/devices/keys":
 		writeJSON(w, 200, s.keys)
 	case p == "/apiv1/me":
-		writeJSON(w, 200, map[string]any{"user_id": 1, "username": s.Username, "storage_used": 100, "storage_limit": 1000, "has_e2ee_keys": true})
+		writeJSON(w, 200, map[string]any{"user_id": 1, "username": s.Username, "storage_used": 100, "storage_limit": 1000, "has_e2ee_keys": true,
+			"device": sec.json()})
 	case p == "/apiv1/devices/self" && r.Method == "DELETE":
 		delete(s.devices, hex.EncodeToString(sum[:]))
 		w.WriteHeader(204)
@@ -307,6 +319,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.changes(w, r)
 	case p == "/apiv1/sync/tree":
 		s.tree(w, r)
+	case p == "/apiv1/sync/tree-keys" && r.Method == "POST":
+		s.treeKeys(w, r)
 	case p == "/apiv1/folders" && r.Method == "POST":
 		s.createFolder(w, r)
 	case strings.HasPrefix(p, "/apiv1/sync/files") || strings.HasPrefix(p, "/apiv1/sync/folders/") || strings.HasPrefix(p, "/apiv1/sync/uploads"):

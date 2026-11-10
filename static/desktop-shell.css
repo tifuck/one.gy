@@ -1,0 +1,62 @@
+/* ============================================================================
+   desktop-shell.css — the website inside ONE.GY Desktop. Loaded (and
+   html.is-desktop-app rendered) only for the app's User-Agent token, see
+   desktop/docs/site-bridge.md "Desktop shell". The app draws the title bar;
+   signed-in pages get the vertical rail from _nav.html instead of the top
+   nav, anonymous pages (sign-in) no nav at all, and there is no footer. So
+   --nav-h is 0: pages start at the top of the view, the rail takes the left
+   edge. Token-only.
+   ========================================================================== */
+:root{ --dk-rail-w:68px; }
+.is-desktop-app body{ --nav-h:0px; }
+.is-desktop-app body:has(.dk-rail){ padding-left:var(--dk-rail-w); }
+
+/* ---- Rail ------------------------------------------------------------------ */
+.dk-rail{ position:fixed; inset:0 auto 0 0; z-index:60; display:flex; flex-direction:column; align-items:center; gap:2px;
+  width:var(--dk-rail-w); padding:8px 0 10px; background:var(--pane); border-right:1px solid var(--line);
+  user-select:none; view-transition-name:rd-nav; }
+.dk-rail .dk-rail-link{ position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+  width:56px; height:54px; padding:0; border-radius:10px; color:var(--text-dim); font-size:.68rem; font-weight:500; line-height:1;
+  transition:background .12s, color .12s; }
+.dk-rail svg{ width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.dk-rail .dk-rail-link:hover{ color:var(--text); background:var(--hover); }
+.dk-rail .dk-rail-link.is-active{ color:var(--text); background:var(--press); }
+.dk-rail .dk-rail-link.is-active svg{ color:var(--accent); }
+/* The app's sync panel is open over the page (the app sets the attribute):
+   Sync is the current place, not the page under it. */
+[data-desktop-panel] .dk-rail .dk-rail-link.is-active{ color:var(--text-dim); background:none; }
+[data-desktop-panel] .dk-rail .dk-rail-link.is-active svg{ color:inherit; }
+[data-desktop-panel] .dk-rail [data-desktop-sync]{ color:var(--text); background:var(--press); }
+[data-desktop-panel] .dk-rail [data-desktop-sync] svg{ color:var(--accent); }
+
+/* Counts and the sync state sit on the icon's top-right corner. */
+.dk-rail .dk-rail-link .rd-badge, .dk-rail .rd-sync-note{ position:absolute; top:5px; left:calc(50% + 4px); margin:0;
+  min-width:16px; height:16px; padding:0 5px; border-radius:999px; font-size:.62rem; font-weight:600; line-height:16px; }
+.dk-rail .rd-sync-note{ background:var(--accent); color:var(--accent-contrast); }
+.dk-rail .rd-sync-note:empty{ display:none; }
+.dk-rail .rd-sync-dot{ position:absolute; top:10px; left:calc(50% + 6px); width:8px; height:8px; box-shadow:0 0 0 2px var(--pane); }
+.dk-rail .rd-sync-dot:has(~ .rd-sync-note:not([hidden])){ visibility:hidden; }
+
+.dk-rail-foot{ display:flex; flex-direction:column; align-items:center; gap:4px; margin-top:auto; }
+.dk-rail .dk-rail-btn{ display:grid; place-items:center; width:40px; height:40px; border-radius:10px; color:var(--text-dim); }
+.dk-rail .dk-rail-btn:hover, .dk-rail .rd-menu.is-open .dk-rail-btn{ color:var(--text); background:var(--hover); }
+.dk-rail .dk-rail-avatar img{ width:30px; height:30px; border-radius:50%; box-shadow:0 0 0 1px var(--line-strong); }
+/* Menus open to the right of the rail, bottom-aligned with their button. */
+.dk-rail .rd-menu-pop{ top:auto; right:auto; bottom:0; left:calc(100% + (var(--dk-rail-w) - 40px) / 2 + 8px); }
+
+/* ---- Fixed layers that start at the left edge on the website ---------------- */
+.is-desktop-app body:has(.dk-rail) :is(.music-player, .rd-notif-banners){ left:var(--dk-rail-w); }
+/* The pages' drawer breakpoints (files/music/browse.css 920px, notes.css 1024px). */
+@media (max-width:920px){
+  .is-desktop-app body:has(.dk-rail) :is(.fx-side, .mu-rail, .bw-side){ left:var(--dk-rail-w); }
+}
+@media (max-width:1024px){
+  .is-desktop-app body:has(.dk-rail) .nt-rail{ left:var(--dk-rail-w); }
+}
+/* Admin banners: with no nav bar to cover, a banner takes the nav's slot, so
+   pages move down by its height exactly like under the website's nav. */
+.is-desktop-app :is(.rd-notif, .rd-notif-inner){ height:44px; min-height:44px; max-height:44px; }
+.is-desktop-app body:has(.rd-notif-banners .rd-notif){ --nav-h:44px; }
+
+/* ---- Sign-in pages: just the card ------------------------------------------- */
+.is-desktop-app .auth-container{ padding-block:40px; }

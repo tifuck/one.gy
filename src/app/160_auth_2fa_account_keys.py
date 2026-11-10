@@ -840,6 +840,11 @@ def api_update_keys():
             user.password_hash = 'split-key-v1'
 
         user.session_epoch = db.func.coalesce(User.session_epoch, 0) + 1  # atomic in SQL: concurrent rotations must not collapse into one
+        if not is_initial_setup:
+            # Desktop devices hold the old master key (or keys pre-wrapped with
+            # it for uploads while locked): they must sign in again, or what
+            # they upload next would not open with the new key.
+            _deactivate_user_devices(user.id)
 
         db.session.commit()
         session['session_epoch'] = int(user.session_epoch or 0)

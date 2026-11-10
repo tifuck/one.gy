@@ -1,0 +1,20 @@
+/* ONE.GY Desktop title bar (titlebar.html). The bar is the window's drag
+   area; the native window controls overlay its right end (main/window.js
+   TITLEBAR_OVERLAY_W keeps that strip free). Site tokens only. */
+html, body.tb{ height:100%; margin:0; overflow:hidden; background:var(--pane); color:var(--text-dim); }
+.tb-bar{ position:relative; display:flex; align-items:center; height:100%; padding-right:var(--tb-overlay-w, 140px);
+  border-bottom:1px solid var(--line); user-select:none; -webkit-app-region:drag; }
+/* Centred over the website's rail (desktop-shell.css --dk-rail-w). */
+.tb-mark{ display:grid; place-items:center; flex:none; width:68px; color:var(--text); }
+.tb-mark svg{ width:17px; height:17px; }
+.tb-nav{ display:flex; gap:2px; -webkit-app-region:no-drag; }
+.tb-btn{ display:grid; place-items:center; width:28px; height:26px; padding:0; border:0; border-radius:6px; background:none; color:var(--text-dim); }
+.tb-btn svg{ width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+.tb-btn:hover:not(:disabled){ background:var(--hover); color:var(--text); }
+.tb-btn:active:not(:disabled){ background:var(--press); }
+.tb-btn:disabled{ opacity:.35; cursor:default; }
+.tb-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+/* Centred in the window, clear of the buttons on both sides. */
+.tb-title{ position:absolute; left:170px; right:170px; margin:0; overflow:hidden; text-align:center;
+  font-size:.78rem; font-weight:500; line-height:1; letter-spacing:0; white-space:nowrap; text-overflow:ellipsis; color:var(--text-dim);
+  pointer-events:none; }

@@ -20,12 +20,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tifuck/one.gy/desktop/engine/internal/account"
 	"github.com/tifuck/one.gy/desktop/engine/internal/api"
 	"github.com/tifuck/one.gy/desktop/engine/internal/exec"
 	"github.com/tifuck/one.gy/desktop/engine/internal/fakeserver"
 	"github.com/tifuck/one.gy/desktop/engine/internal/reconcile"
 	"github.com/tifuck/one.gy/desktop/engine/internal/remote"
 	"github.com/tifuck/one.gy/desktop/engine/internal/state"
+	"onegy/e2ee"
 )
 
 // Model-based test: 2-3 simulated devices and the "website" run random
@@ -42,6 +44,13 @@ type testAcct struct {
 
 func (a *testAcct) Client() (*api.Client, error) { return a.c, nil }
 func (a *testAcct) MasterKey() ([]byte, error)   { return append([]byte(nil), a.mk...), nil }
+
+func (a *testAcct) TreeKey(int64) ([]byte, bool) { return nil, false }
+func (a *testAcct) NewKey(context.Context) (*account.NewKey, error) {
+	k, _ := e2ee.RandomBytes(e2ee.KeySize)
+	w, n, err := e2ee.WrapKey(k, a.mk)
+	return &account.NewKey{Key: k, Wrap: e2ee.EncodeBase64(w), Nonce: e2ee.EncodeBase64(n)}, err
+}
 
 type device struct {
 	t      testing.TB

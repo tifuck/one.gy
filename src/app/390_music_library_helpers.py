@@ -587,7 +587,7 @@ def _music_required(f):
                 return jsonify({'error': 'SESSION_EXPIRED', 'redirect': url_for('login')}), 401
             flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
             return redirect(url_for('login'))
-        if int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0):
+        if int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0) or not _session_device_ok():
             session.clear()
             if is_ajax:
                 return jsonify({'error': 'SESSION_EXPIRED', 'redirect': url_for('login')}), 401

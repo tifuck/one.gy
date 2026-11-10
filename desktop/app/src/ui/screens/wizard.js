@@ -7,6 +7,7 @@ import {
   h, icon, clear, append, fill, field, row, switchInput, callout, pageHead,
 } from '../components/dom.js';
 import { treePicker } from '../components/tree-picker.js';
+import { pinFields, pinRules, pinSummary } from '../components/pin.js';
 import { syncOptionsForm, newSyncConfig, DEFAULT_IGNORE_RULES } from '../components/sync-options.js';
 import { toast } from '../components/toast.js';
 import {
@@ -23,10 +24,10 @@ const ACTIONS = [
   { type: 'backup', title: 'Back up a folder', text: 'Copies this computer to one.gy. The copy on one.gy is read-only.' },
   { type: 'mirror', title: 'Mirror a one.gy folder here', text: 'Downloads a one.gy folder and keeps it updated. Local edits are undone.' },
   { type: 'full', title: 'Sync my whole drive', text: 'Two-way sync of everything on one.gy. Cannot be combined with other syncs.' },
-  { type: null, title: 'Skip for now', text: 'Close this and keep using the website. Add syncs later from Sync.' },
+  { type: null, title: 'Skip for now', text: 'Go to your files. Add syncs later from Sync.' },
 ];
 
-const AUTH_ERRORS = {
+export const AUTH_ERRORS = {
   invalid_credentials: 'Wrong username or password.',
   invalid_totp: 'That code did not work. Check the time on this computer and try again.',
   captcha_required: 'Too many attempts. Wait a few minutes, then try again.',
@@ -65,14 +66,16 @@ export function mount(container, params = {}) {
   const signedIn = () => Boolean(store.account && store.account.signed_in && !store.account.locked);
   const STEPS = [
     { id: 'authorize', setup: true, render: stepAuthorize },
+    { id: 'pin', setup: true, render: stepPin },
     { id: 'action', render: stepAction },
     { id: 'local', render: stepLocal },
     { id: 'remote', render: stepRemote },
     { id: 'options', render: stepOptions },
     { id: 'preview', render: stepPreview },
   ];
-  const visible = () => STEPS.filter((s) => !(s.setup && fromSyncScreen));
-  const fromSyncScreen = signedIn();
+  // onboarding: right after the app's sign-in (signin.js): the PIN, then what to sync.
+  const visible = () => STEPS.filter((s) => !(s.setup && fromSyncScreen) && !(params.onboarding && s.id === 'authorize'));
+  const fromSyncScreen = signedIn() && !params.onboarding;
   let index = 0;
   if (fromSyncScreen) index = visible().findIndex((s) => s.id === (params.type ? 'local' : 'action'));
 
@@ -84,14 +87,16 @@ export function mount(container, params = {}) {
   const nextBtn = h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => next() }, 'Continue');
   const cancelBtn = h('button', {
     type: 'button', class: 'rd-btn rd-btn-ghost dk-step-cancel',
-    onclick: () => navigate(signedIn() ? 'syncs' : 'close'),
+    onclick: () => navigate(signedIn() && !params.onboarding ? 'syncs' : 'close'),
   }, 'Cancel');
   let onNext = async () => true;
 
   append(container, h('div', { class: 'adm-narrow' },
     fromSyncScreen
       ? pageHead(params.type === 'backup' ? 'New backup' : 'New sync', 'Pick the folders, then check what will happen before anything moves.')
-      : pageHead('Set up sync on this computer', 'Authorize this computer once, then choose what to sync.'),
+      : params.onboarding
+        ? pageHead(`Welcome, ${(store.account && store.account.username) || 'back'}`, 'A few choices for this computer. Skip any of them and change them later in Sync.')
+        : pageHead('Set up sync on this computer', 'Authorize this computer once, then choose what to sync.'),
     h('section', { class: 'rd-panel' },
       h('header', { class: 'rd-panel-head' }, h('div', null, title, stepOf)),
       h('div', { class: 'rd-panel-body' }, content, error),
@@ -151,7 +156,7 @@ export function mount(container, params = {}) {
     append(content,
       h('p', { class: 'dk-lead' }, 'Syncing runs in the background, so this computer needs its own access to your account and your encryption key. Confirm with your password once.'),
       callout('warn', 'lock', h('strong', null, 'This computer will be able to decrypt your files until you remove it in Devices. '),
-        'The key stays on this computer, in the system key store when there is one. Your password is used once and not saved.'),
+        'The key is stored sealed on this computer and only opens with one.gy\'s help, so removing the computer in Devices makes the copy useless. Your password is not saved.'),
       h('div', { class: 'dk-form' }, field('Username', username), field('Password', password), totpField,
         field('Device name', device, 'Shown in Devices on the website.')));
     (lockedUser ? password : username).focus();
@@ -201,6 +206,34 @@ export function mount(container, params = {}) {
       } finally {
         password.value = '';
       }
+      return true;
+    };
+  }
+
+  // ---- 2. Opt-in: a PIN instead of the password ------------------------------------
+  function stepPin() {
+    const a = store.account || {};
+    title.textContent = 'Unlock with a PIN?';
+    if (a.pin_set) {
+      append(content, callout('good', 'check', pinSummary(a)));
+      return;
+    }
+    const want = switchInput(false, (v) => { f.el.hidden = !v; setReady(true, v ? 'Save PIN' : 'Skip'); });
+    const f = pinFields();
+    f.el.hidden = true;
+    append(content,
+      h('p', { class: 'dk-lead' }, 'ONE.GY locks itself when you are away (and after a restart). Unlocking asks for your password, or for a PIN if you choose one now. You can change this later in Settings.'),
+      row('Use a PIN on this computer', pinRules(null), want), f.el);
+    setReady(true, 'Skip');
+    onNext = async () => {
+      if (f.el.hidden) return true;
+      const { pin, strict } = f.value();
+      try {
+        store.account = await rpc('account.setPin', { pin, strict });
+      } finally {
+        f.clear();
+      }
+      toast('PIN saved', 'success');
       return true;
     };
   }

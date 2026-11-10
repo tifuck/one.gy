@@ -30,7 +30,7 @@ func (x *Executor) createRemoteDir(ctx context.Context, j *job) error {
 		if err != nil {
 			return err
 		}
-		req, err := x.folderRequest(parent, o.RemoteName)
+		req, _, err := x.env.Tree.FolderRequest(ctx, parent, o.RemoteName, x.s.Encryption == "e2ee", "desktop-"+token())
 		if err != nil {
 			return err
 		}
@@ -53,7 +53,7 @@ func (x *Executor) createRemoteDir(ctx context.Context, j *job) error {
 		case err != nil:
 			return apiIssue(err, o.Path)
 		}
-		j.rec.Node = n
+		j.rec.Node = x.treeWrap(ctx, n)
 		if err := j.set(ctx, state.OpRemoteDone); err != nil {
 			return err
 		}
@@ -69,36 +69,6 @@ func (x *Executor) createRemoteDir(ctx context.Context, j *job) error {
 		}
 		return x.putRow(tx, o.Base, row)
 	})
-}
-
-// folderRequest builds a folder create; E2EE folders get a fresh name key
-// wrapped with the master key.
-func (x *Executor) folderRequest(parent *int64, name string) (*api.CreateFolderRequest, error) {
-	req := &api.CreateFolderRequest{Name: name, ParentID: parent, ClientDedupeToken: "desktop-" + token()}
-	if x.s.Encryption != "e2ee" {
-		return req, nil
-	}
-	mk, err := x.env.Acct.MasterKey()
-	if err != nil {
-		return nil, err
-	}
-	defer clear(mk)
-	nameKey, err := e2ee.RandomBytes(e2ee.KeySize)
-	if err != nil {
-		return nil, err
-	}
-	encName, nameNonce, err := e2ee.EncryptName(name, nameKey)
-	if err != nil {
-		return nil, err
-	}
-	wrapped, wrapNonce, err := e2ee.WrapKey(nameKey, mk)
-	if err != nil {
-		return nil, err
-	}
-	req.Name = "encrypted"
-	req.EncryptedName, req.NameNonce = e2ee.EncodeBase64(encName), e2ee.EncodeBase64(nameNonce)
-	req.EncryptedNameKey, req.NameKeyNonce = e2ee.EncodeBase64(wrapped), e2ee.EncodeBase64(wrapNonce)
-	return req, nil
 }
 
 func (x *Executor) moveRemote(ctx context.Context, j *job) error {
@@ -361,10 +331,42 @@ func (x *Executor) trashRemote(ctx context.Context, j *job) error {
 	})
 }
 
-// keyIssue: a key that no longer unwraps means the master key changed.
+// keyIssue: a key that no longer unwraps means the master key changed. A key
+// out of reach while the app is locked is not an issue: it waits.
 func keyIssue(err error) error {
-	if errors.Is(err, account.ErrLocked) || errors.Is(err, account.ErrNotSignedIn) {
+	if errors.Is(err, account.ErrLocked) || errors.Is(err, account.ErrNotSignedIn) || errors.Is(err, account.ErrNeedsUnlock) {
 		return err
 	}
 	return issuef("integrity", "", "A one.gy key cannot be unwrapped on this computer ("+err.Error()+"); re-authorize this device.", "retry")
+}
+
+// treeWrap adds a node this executor created or replaced to the key tree
+// (remote/keytree.go), so it stays reachable while the app is locked. Best
+// effort: Backfill catches anything missed.
+func (x *Executor) treeWrap(ctx context.Context, n *api.Node) *api.Node {
+	if n == nil || (n.Type == "file" && !n.IsE2E) {
+		return n
+	}
+	if n.Type == "folder" && n.TreeKeyWrap != "" {
+		return n
+	}
+	if n.Type == "file" && n.TreeFileKeyWrap != "" && keyFolder(n.TreeKeyFolderID) == keyFolder(n.FolderID) {
+		return n
+	}
+	var key []byte
+	if n.IsE2E {
+		k, err := x.env.Tree.Key(remote.ToState(n))
+		if err != nil && n.Type == "file" {
+			return n
+		}
+		key = k
+	}
+	return x.env.Tree.WrapNew(ctx, n, key)
+}
+
+func keyFolder(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }

@@ -1,8 +1,9 @@
 # ONE.GY Desktop
 
-Desktop client for one.gy (Windows and Linux): the website in its own window,
-plus live, end-to-end encrypted folder sync. Once you sign in on the site, its
-"Sync" nav entry sets up and manages sync in a panel over the site.
+Desktop client for one.gy (Windows and Linux): files, notes, music and (for
+admins) the admin console in a desktop window, plus live, end-to-end
+encrypted folder sync. You sign in once in the app; its "Sync" entry manages
+sync in a native panel.
 
 Download: GitHub Releases of this repository (`desktop-v*` tags): Windows
 installer `ONE.GY-Desktop-Setup.exe`, Linux installers `onegy-desktop_amd64.deb`
@@ -23,7 +24,7 @@ desktop/
     internal/             one package per concern (see engine/README.md)
   app/                    Electron: window, tray, native sync panel
     src/main/             main process (window, tray, engine supervisor, updater)
-    src/preload/          app-preload (panel bridge), site-preload (website bridge)
+    src/preload/          app-preload (panel bridge), titlebar-preload, site-preload (website bridge)
     src/ui/               sync panel screens (vanilla ES modules, no build step)
 ```
 

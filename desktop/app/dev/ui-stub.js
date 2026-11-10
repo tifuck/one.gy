@@ -1,11 +1,10 @@
 // Browser stand-in for the app preload (window.onegy), backed by
 // dev/mock-core.js. Lets src/ui run in a plain browser for UI work and
 // screenshots: load mock-core.js, then this file, before src/ui/index.html.
-// URL hash flags (comma separated): signed-out (setup flow), static (no live
-// ticks), light (light theme), user=<name> (website user the panel opens for,
-// default alice), screen=<syncs|transfers|issues|settings>, state=<site
-// status state for the nav's Sync entry, default up_to_date>. The nav data
-// (main/site-nav.js shape) is window.OnegyStubNav if set, else a sample.
+// URL hash flags (comma separated): signed-out (sign-in / setup flow), static
+// (no live ticks), light (light theme), user=<name> (website user the panel
+// opens for, default alice; user= for none, as when the app opens it),
+// screen=<syncs|transfers|issues|settings>.
 (function () {
   'use strict';
   const flags = new Set(location.hash.slice(1).split(',').filter(Boolean));
@@ -23,18 +22,6 @@
     theme: flags.has('light') ? 'frost' : 'frost-dark', site_zoom: 1, update_channel: 'stable', auto_update: true, prevent_sleep: true,
     notify: { conflict: true, issue: true, mass_delete: true, transfer: true, revoked: true, info: true },
   };
-  const nav = window.OnegyStubNav || {
-    links: [
-      { label: 'Files', href: '/files', active: true, badge: 0 },
-      { label: 'Notes', href: '/notes', active: false, badge: 2 },
-      { label: 'Music', href: '/music', active: false, badge: 0 },
-      { label: 'Prompts', href: '/prompts', active: false, badge: 0 },
-    ],
-    username: opt('user', 'alice'),
-    role: 'User',
-    account: { label: 'Account & settings', short: 'Account', href: '/account' },
-    avatar: null,
-  };
   const setSettings = (patch) => {
     settings = { ...settings, ...patch, notify: { ...settings.notify, ...(patch.notify || {}) } };
     emit({ type: 'app:settings', data: settings });
@@ -48,8 +35,7 @@
   setTimeout(() => emit({
     type: 'app:panel',
     data: {
-      username: opt('user', 'alice'), screen: opt('screen', 'syncs'), theme: settings.theme, nav,
-      status: { state: opt('state', 'up_to_date'), pending: 0, issues: 0 },
+      username: opt('user', 'alice') || null, screen: opt('screen', 'syncs'), theme: settings.theme,
     },
   }), 100);
 
@@ -72,9 +58,6 @@
     openSite: (p) => { window.OnegyStubLog.push(['openSite', p]); return ok(true); },
     closePanel: () => ok(true),
     panelReady: () => ok(true),
-    // The site's theme option, as reported back by the site preload.
-    siteTheme: (theme) => { window.OnegyStubLog.push(['siteTheme', theme]); return ok(setSettings({ theme }) && true); },
-    siteLogout: () => { window.OnegyStubLog.push(['siteLogout']); return ok(true); },
     exportDiagnostics: () => ok(null),
     openDataFolder: () => ok(true),
     removeSync: (id) => {

@@ -1,29 +1,36 @@
-// The one app window: a BaseWindow holding two WebContentsViews.
-//  - site:  https://<server> in partition persist:onegy, filling the window.
-//           The website is the app's only chrome (desktop/docs/site-bridge.md).
-//  - panel: the native sync panel (app://ui), layered over the site and
-//           hidden until the site's Sync entry, the tray or Ctrl+Shift+S opens it.
-// No visible browser controls: back/forward, reload and zoom are keyboard and
-// mouse-button only. A failed page load shows app://ui/offline.html.
-// The panel draws its own copy of the site's nav from the values the site
-// preload reports (setSiteNav), follows the site's theme and zoom, and asks
-// the site to switch theme or log out with the site's own controls.
+// The one app window: a BaseWindow (hidden native title bar, native window
+// controls as the title bar overlay) holding three WebContentsViews.
+//  - titlebar: app://ui/titlebar.html across the top: drag area, back /
+//           forward / reload and the window title.
+//  - site:  https://<server> in partition persist:onegy, below the title bar.
+//           The site renders its desktop shell for this app (User-Agent token,
+//           desktop/docs/site-bridge.md): its rail is the app's navigation.
+//  - panel: the native sync panel (app://ui) over the site's content area
+//           (right of the rail the site reports, setSiteInset), hidden until
+//           the rail's Sync entry, the tray or Ctrl+Shift+S opens it.
+// History and zoom also have keys and mouse buttons. A failed page load shows
+// app://ui/offline.html. The panel follows the site's theme and zoom and
+// closes when a link in the site's rail opens another page.
 'use strict';
 
 const path = require('path');
 const { app, BaseWindow, WebContentsView, nativeImage, session } = require('electron');
 const { webPreferences, lockChromeView, lockSiteView, configureSiteSession, originOf } = require('./security');
-const { UI_URL, OFFLINE_URL, handleScheme } = require('./protocol');
+const { UI_URL, OFFLINE_URL, TITLEBAR_URL, handleScheme } = require('./protocol');
 const { shortcutFor, nextZoom } = require('./shortcuts');
-const { avatarDataUrl } = require('./site-nav');
 
 const SITE_PARTITION = 'persist:onegy';
 const START_PATH = '/files';
 const BACKGROUND = { 'frost-dark': '#08080a', frost: '#ffffff' };
+// Title bar height (DIP) and its colours per theme until the bar reports the
+// ones it painted (site --pane / --text-dim, titlebar.js).
+const TITLEBAR_H = 36;
+const TITLEBAR_COLORS = { 'frost-dark': ['#0e0e11', '#96969e'], frost: ['#f6f7f9', '#5f6873'] };
+// The site renders its desktop shell for this token (src/app/225_desktop_pages.py).
+const UA_TOKEN = 'ONEGY-Desktop';
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const NUDGE_DEBOUNCE_MS = 1500;
 const PANEL_ONLY = new Set(['sync', 'devtools']);
-const PANEL_TITLE = 'Sync · ONE.GY';
 // The panel says when it has rendered what it was opened with (panelReady);
 // show it anyway after this long.
 const PANEL_SHOW_FALLBACK_MS = 400;
@@ -46,22 +53,33 @@ class MainWindow {
     this.win = null;
     this.site = null;
     this.panel = null;
+    this.titlebar = null;
     this.siteUser = null; // username the current site page reported via the bridge
-    this.siteNav = null; // the site's nav as values (site-nav.js), avatar as a data: URL
-    this.navKey = '';
-    this.avatar = { path: null, data: null };
+    this.siteInset = 0; // the site's rail width in CSS px (site:inset); the panel starts right of it
+    this.siteTitle = 'ONE.GY';
+    this.siteWanted = null; // last main-frame URL the site view set out to load
     this.nudgeTimer = null;
     this.panelLoaded = false;
     this.panelWanted = false;
     this.pendingPanel = null;
     this.showTimer = null;
+    this.siteLocked = false; // app locked: no site page, the panel cannot be closed
+  }
+
+  get theme() {
+    return this.opts.settings.get().theme === 'frost' ? 'frost' : 'frost-dark';
   }
 
   get background() {
-    return BACKGROUND[this.opts.settings.get().theme] || BACKGROUND['frost-dark'];
+    return BACKGROUND[this.theme];
   }
 
-  create({ show }) {
+  // One DIP short of the bar so its bottom hairline runs under the controls too.
+  overlay(colors = TITLEBAR_COLORS[this.theme]) {
+    return { color: colors[0], symbolColor: colors[1], height: TITLEBAR_H - 1 };
+  }
+
+  create({ show, loadSite = true }) {
     this.win = new BaseWindow({
       width: 1280,
       height: 820,
@@ -72,6 +90,8 @@ class MainWindow {
       backgroundColor: this.background,
       icon: nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'icon.png')),
       autoHideMenuBar: true,
+      titleBarStyle: 'hidden',
+      titleBarOverlay: this.overlay(),
     });
     this.win.on('resize', () => this.layout());
     // Mouse back/forward buttons (Windows and Linux).
@@ -81,7 +101,18 @@ class MainWindow {
     });
 
     this.configureSiteSession();
-    this.createSite();
+    this.titlebar = new WebContentsView({
+      webPreferences: webPreferences({ preload: path.join(__dirname, '..', 'preload', 'titlebar-preload.js') }),
+    });
+    this.titlebar.setBackgroundColor(TITLEBAR_COLORS[this.theme][0]);
+    lockChromeView(this.titlebar.webContents);
+    this.listenForShortcuts(this.titlebar.webContents, false);
+    this.win.contentView.addChildView(this.titlebar);
+    this.titlebar.webContents.on('did-finish-load', () => this.sendTitlebar());
+    this.titlebar.webContents.loadURL(TITLEBAR_URL);
+
+    this.siteLocked = !loadSite;
+    this.createSite(loadSite);
 
     this.panel = new WebContentsView({
       webPreferences: webPreferences({ preload: path.join(__dirname, '..', 'preload', 'app-preload.js') }),
@@ -93,6 +124,8 @@ class MainWindow {
     lockChromeView(this.panel.webContents);
     this.listenForShortcuts(this.panel.webContents, true);
     this.win.contentView.addChildView(this.panel);
+    // The panel titles itself by screen (app.js), e.g. "Sign in".
+    this.panel.webContents.on('page-title-updated', () => this.sendTitlebar());
     this.panel.webContents.on('did-finish-load', () => {
       this.panelLoaded = true;
       this.panel.webContents.setZoomFactor(this.opts.settings.get().site_zoom);
@@ -112,12 +145,14 @@ class MainWindow {
     const ses = session.fromPartition(SITE_PARTITION);
     handleScheme(ses);
     configureSiteSession(ses, () => this.opts.serverOrigin());
+    ses.setUserAgent(`${ses.getUserAgent()} ${UA_TOKEN}/${app.getVersion()}`);
     ses.webRequest.onCompleted({ urls: ['https://*/*'] }, (d) => {
       if (MUTATING.has(d.method) && d.statusCode < 400 && originOf(d.url) === this.opts.serverOrigin()) this.scheduleNudge();
     });
   }
 
-  createSite() {
+  // load false: an empty view (app locked).
+  createSite(load = true) {
     const origin = this.opts.serverOrigin();
     this.site = new WebContentsView({
       webPreferences: webPreferences({
@@ -131,11 +166,21 @@ class MainWindow {
     lockSiteView(wc, () => this.opts.serverOrigin());
     this.listenForShortcuts(wc, false);
     this.win.contentView.addChildView(this.site, 0);
-    wc.on('page-title-updated', (_e, title) => { if (!this.panelOpen) this.win.setTitle(title || 'ONE.GY'); });
-    wc.on('did-navigate', () => {
+    wc.on('page-title-updated', (_e, title) => {
+      this.siteTitle = title || 'ONE.GY';
+      this.sendTitlebar();
+    });
+    // The page asked for, before redirects (the sign-in page drops it).
+    wc.on('did-start-navigation', (d) => { if (d.isMainFrame && !d.isSameDocument) this.siteWanted = d.url; });
+    wc.on('did-navigate', (_e, url) => {
       this.siteUser = null;
       wc.setZoomFactor(this.opts.settings.get().site_zoom);
+      this.sendTitlebar();
+      if (this.opts.onSiteNavigate) this.opts.onSiteNavigate(url, this.siteWanted);
     });
+    wc.on('did-navigate-in-page', () => this.sendTitlebar());
+    // A page that loads under the open panel (crypto.js reloads once unlocked).
+    wc.on('dom-ready', () => { if (this.panelOpen) wc.send('onegy:panel', { open: true }); });
     wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
       if (isMainFrame && code !== -3) this.showOffline(url, desc);
     });
@@ -143,7 +188,36 @@ class MainWindow {
       console.error(`[WINDOW] site renderer gone: ${details.reason}`);
       this.showOffline(wc.getURL(), 'The page stopped working');
     });
-    wc.loadURL(origin + START_PATH);
+    if (load) wc.loadURL(origin + START_PATH);
+  }
+
+  // App lock: drop the site view (its sessionStorage keys die with it) and the
+  // site cookies; the device-bound website session also ends server-side when
+  // the grant is dropped. The panel shows the lock screen over the empty view.
+  async lockSite() {
+    this.siteLocked = true;
+    this.recreateSite(false);
+    await this.clearSiteSession();
+  }
+
+  // Ends the website session in this app (its cookies).
+  clearSiteSession() {
+    return session.fromPartition(SITE_PARTITION).clearStorageData({ origin: this.opts.serverOrigin(), storages: ['cookies'] })
+      .catch((err) => console.error(`[WINDOW] clearing site cookies failed: ${err.message}`));
+  }
+
+  // App unlocked: sign the site view in with a one-use device ticket
+  // (sent as a header, never in the URL) and open pathname.
+  unlockSite({ url, ticket }, pathname = START_PATH) {
+    this.siteLocked = false;
+    const next = new URLSearchParams({ next: pathname });
+    const wc = this.site.webContents;
+    // Signed in, the pages before (sign-in, lock) are no place to go back to.
+    wc.once('did-finish-load', () => {
+      wc.navigationHistory.clear();
+      this.sendTitlebar();
+    });
+    wc.loadURL(`${url}?${next}`, { extraHeaders: `X-Onegy-Desktop-Ticket: ${ticket}\n` });
   }
 
   // A small local page with Retry instead of a blank window.
@@ -155,16 +229,17 @@ class MainWindow {
   }
 
   // Server URL changed: drop the old view (and its preload origin) and rebuild.
-  recreateSite() {
+  recreateSite(load = !this.siteLocked) {
     if (this.site) {
       this.win.contentView.removeChildView(this.site);
       this.site.webContents.close();
       this.site = null;
     }
     this.siteUser = null;
-    this.siteNav = null;
-    this.navKey = '';
-    this.createSite();
+    this.siteInset = 0;
+    this.siteTitle = 'ONE.GY';
+    this.siteWanted = null;
+    this.createSite(load);
     this.layout();
   }
 
@@ -175,9 +250,44 @@ class MainWindow {
 
   layout() {
     const { width, height } = this.win.getContentBounds();
-    const bounds = { x: 0, y: 0, width, height };
-    if (this.site) this.site.setBounds(bounds);
-    if (this.panel) this.panel.setBounds(bounds);
+    const top = Math.min(TITLEBAR_H, height);
+    const inset = Math.min(width, Math.round(this.siteInset * this.opts.settings.get().site_zoom));
+    if (this.titlebar) this.titlebar.setBounds({ x: 0, y: 0, width, height: top });
+    if (this.site) this.site.setBounds({ x: 0, y: top, width, height: height - top });
+    if (this.panel) this.panel.setBounds({ x: inset, y: top, width: width - inset, height: height - top });
+  }
+
+  // The site's rail width (CSS px) as its preload measured it; 0 = no rail.
+  setSiteInset(px) {
+    if (px === this.siteInset) return;
+    this.siteInset = px;
+    this.layout();
+  }
+
+  // Title, history buttons and theme for the title bar view.
+  sendTitlebar() {
+    if (!this.titlebar || this.titlebar.webContents.isDestroyed()) return;
+    const wc = this.site && !this.site.webContents.isDestroyed() ? this.site.webContents : null;
+    const browsing = Boolean(wc) && !this.siteLocked && !this.panelOpen;
+    const title = this.panelOpen ? (this.panel.webContents.getTitle() || 'ONE.GY') : (this.siteLocked ? 'ONE.GY' : this.siteTitle);
+    // The taskbar names the app; the title bar shows the page.
+    this.win.setTitle(title.includes('ONE.GY') ? title : `${title} · ONE.GY`);
+    this.titlebar.webContents.send('onegy:titlebar', {
+      title,
+      theme: this.theme,
+      canGoBack: browsing && wc.navigationHistory.canGoBack(),
+      canGoForward: browsing && wc.navigationHistory.canGoForward(),
+      canReload: browsing,
+    });
+  }
+
+  // The colours the title bar painted (rgb()/rgba() strings, checked by ipc.js).
+  setTitlebarColors(color, symbolColor) {
+    if (process.platform !== 'darwin') this.win.setTitleBarOverlay(this.overlay([color, symbolColor]));
+  }
+
+  isTitlebarSender(wc) {
+    return Boolean(this.titlebar && wc === this.titlebar.webContents);
   }
 
   listenForShortcuts(wc, isPanel) {
@@ -212,6 +322,7 @@ class MainWindow {
     this.opts.settings.set({ site_zoom: factor });
     this.site.webContents.setZoomFactor(factor);
     this.panel.webContents.setZoomFactor(factor);
+    this.layout();
   }
 
   get panelOpen() {
@@ -227,7 +338,6 @@ class MainWindow {
       username: username || null,
       screen: screen || 'syncs',
       theme: this.opts.settings.get().theme,
-      nav: this.siteNav,
       status: this.opts.siteStatus(),
     };
     this.panelWanted = true;
@@ -243,56 +353,40 @@ class MainWindow {
     if (!this.panelWanted) return;
     if (!this.panelOpen) {
       this.panel.setVisible(true);
-      this.win.setTitle(PANEL_TITLE);
+      this.sendPanelState();
     }
     this.panel.webContents.focus();
   }
 
   // Hides the panel at once; the panel UI calls it when it has faded out.
   closePanel() {
+    if (this.siteLocked) return;
     this.panelWanted = false;
     clearTimeout(this.showTimer);
     if (!this.panelOpen) return;
     this.panel.setVisible(false);
-    this.win.setTitle(this.site.webContents.getTitle() || 'ONE.GY');
+    this.sendPanelState();
     this.site.webContents.focus();
   }
 
-  // nav: cleaned by site-nav.js. The avatar path is fetched with the site's
-  // session once per path and handed to the panel as a data: URL.
-  async setSiteNav(nav) {
-    const key = JSON.stringify(nav);
-    if (key === this.navKey) return;
-    this.navKey = key;
-    if (nav.avatar !== this.avatar.path) {
-      const data = nav.avatar
-        ? await avatarDataUrl((url, init) => this.site.webContents.session.fetch(url, init), this.opts.serverOrigin() + nav.avatar).catch(() => null)
-        : null;
-      this.avatar = { path: nav.avatar, data };
-    }
-    if (key !== this.navKey) return; // a newer nav arrived meanwhile
-    this.siteNav = { ...nav, avatar: this.avatar.data };
-    this.send({ type: 'app:nav', data: this.siteNav });
+  // A link in the site's rail was clicked (site preload): the panel fades out
+  // over the page it opens.
+  leavePanel() {
+    if (!this.panelOpen) return;
+    this.siteReady().then(() => this.send({ type: 'app:navigate', data: { screen: 'close' } }));
   }
 
-  // The site's own theme option (theme-switch.js persists it); the panel then
-  // follows the theme the site reports. No site page to ask: set it directly.
-  setSiteTheme(theme) {
-    if (originOf(this.site.webContents.getURL()) === this.opts.serverOrigin()) this.site.webContents.send('onegy:site-theme', theme);
-    else this.opts.settings.set({ theme });
-  }
-
-  // Submits the site's own logout form; resolves once the page it lands on
-  // is there for the panel to fade out over.
-  siteLogout() {
-    const ready = this.siteReady();
-    this.site.webContents.send('onegy:site-logout');
-    return ready;
+  // The site preload marks html[data-desktop-panel] so the rail shows Sync as
+  // the current place; the title bar shows the panel's title.
+  sendPanelState() {
+    if (this.site && !this.site.webContents.isDestroyed()) this.site.webContents.send('onegy:panel', { open: this.panelOpen });
+    this.sendTitlebar();
   }
 
   // Load a path on the server in the site view (e.g. /account, /files/folder/12)
   // under the panel; resolves once the page is there for the panel to fade out over.
   openSitePath(pathname) {
+    if (this.siteLocked) return Promise.resolve();
     const ready = this.siteReady();
     this.site.webContents.loadURL(this.opts.serverOrigin() + pathname);
     this.show();
@@ -336,6 +430,9 @@ class MainWindow {
     const bg = this.background;
     this.win.setBackgroundColor(bg);
     this.site.setBackgroundColor(bg);
+    this.titlebar.setBackgroundColor(TITLEBAR_COLORS[this.theme][0]);
+    if (process.platform !== 'darwin') this.win.setTitleBarOverlay(this.overlay());
+    this.sendTitlebar();
   }
 
   show() {

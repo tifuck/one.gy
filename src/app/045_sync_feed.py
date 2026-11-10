@@ -16,11 +16,30 @@ _SYNC_FILE_FIELDS = frozenset({
     'encrypted_name', 'name_nonce', 'stored_extension', 'encrypted_file_key',
     'file_key_nonce', 'payload_checksum', 'size', 'disk_size', 'content_version',
     'encrypted_meta', 'meta_nonce', 'is_trashed', 'trashed_by_device_id',
+    'tree_file_key_wrap', 'tree_file_key_nonce', 'tree_key_folder_id',
 })
 _SYNC_FOLDER_FIELDS = frozenset({
     'user_id', 'parent_id', 'name', 'is_e2e', 'encrypted_name', 'name_nonce',
     'encrypted_name_key', 'name_key_nonce', 'is_trashed', 'is_backup', 'backup_device_id',
+    'tree_key_wrap', 'tree_key_nonce', 'tree_key_parent_id', 'tree_name_key_wrap', 'tree_name_key_nonce',
 })
+
+
+def _tree_wraps_drop_stale(session):
+    """A key-tree wrap of a file key or folder name key that just changed (website
+    edit, version restore, encryption change) wraps the old key: drop it, unless
+    the same change wrote a new one. Desktop clients rebuild it."""
+    for obj in session.dirty:
+        if isinstance(obj, File):
+            key, wrap = 'encrypted_file_key', ('tree_file_key_wrap', 'tree_file_key_nonce', 'tree_key_folder_id')
+        elif isinstance(obj, Folder):
+            key, wrap = 'encrypted_name_key', ('tree_name_key_wrap', 'tree_name_key_nonce')
+        else:
+            continue
+        state = inspect(obj)
+        if state.attrs[key].history.has_changes() and not state.attrs[wrap[0]].history.has_changes():
+            for name in wrap:
+                setattr(obj, name, None)
 
 
 def _sync_file_owner(file):
@@ -109,6 +128,7 @@ def _sync_feed_before_flush(session, flush_context, instances):
     if not any(isinstance(obj, (File, Folder))
                for group in (session.new, session.dirty, session.deleted) for obj in group):
         return
+    _tree_wraps_drop_stale(session)
     stamps, tombstones = _sync_collect(session)
     if not stamps and not tombstones:
         return

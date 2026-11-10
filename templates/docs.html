@@ -1293,7 +1293,8 @@ curl -X DELETE https://{{ domain }}/apiv1/trash/empty \
       if (i >= 0) gr.select(i)
     })
     // Groups above the clicked one change height: keep the clicked tab still
-    if (anchor) window.scrollBy({ top: anchor.getBoundingClientRect().top - before, behavior: 'instant' })
+    var sc = document.querySelector('.rd-scroll')
+    if (anchor) (sc && sc.scrollHeight > sc.clientHeight ? sc : window).scrollBy({ top: anchor.getBoundingClientRect().top - before, behavior: 'instant' })
     try { localStorage.setItem(LANG_KEY, label) } catch (e) {}
   }
 
@@ -1358,7 +1359,9 @@ curl -X DELETE https://{{ domain }}/apiv1/trash/empty \
     ticking = false
     var idx = 0
     sections.forEach(function (s, i) { if (s && s.getBoundingClientRect().top <= 160) idx = i })
-    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) idx = links.length - 1
+    var sc = document.querySelector('.rd-scroll')
+    var el = sc && sc.scrollHeight > sc.clientHeight ? sc : document.documentElement
+    if (el.clientHeight + el.scrollTop >= el.scrollHeight - 4) idx = links.length - 1
     if (idx === activeIndex) return
     activeIndex = idx
     links.forEach(function (l, i) {
@@ -1376,9 +1379,9 @@ curl -X DELETE https://{{ domain }}/apiv1/trash/empty \
     }
   }
   var ticking = false
-  window.addEventListener('scroll', function () {
+  document.addEventListener('scroll', function () {
     if (!ticking) { ticking = true; requestAnimationFrame(updateActive) }
-  }, { passive: true })
+  }, { passive: true, capture: true })
   window.addEventListener('resize', updateActive)
   updateActive()
 })()

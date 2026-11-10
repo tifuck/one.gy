@@ -2,10 +2,12 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path"
 	"strconv"
 
+	"github.com/tifuck/one.gy/desktop/engine/internal/account"
 	"github.com/tifuck/one.gy/desktop/engine/internal/api"
 	"github.com/tifuck/one.gy/desktop/engine/internal/remote"
 	"onegy/e2ee"
@@ -30,6 +32,9 @@ func (x *Executor) linkNode(ctx context.Context, n *api.Node) (*api.Node, error)
 		return n, keyIssue(err)
 	}
 	mk, err := x.env.Acct.MasterKey()
+	if errors.Is(err, account.ErrNeedsUnlock) {
+		return n, nil // locked: the link key needs the master key; the website (or a later unlock) backfills it
+	}
 	if err != nil {
 		return n, err
 	}

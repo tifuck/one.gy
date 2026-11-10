@@ -61,6 +61,11 @@ def _sync_folder_node(folder):
         'backup_device_id': folder.backup_device_id,
         'updated_at': _sync_iso(folder.updated_at or folder.created_at),
         'folder_link_share_token': _sync_folder_link_token(folder.id),
+        'tree_key_wrap': folder.tree_key_wrap,
+        'tree_key_nonce': folder.tree_key_nonce,
+        'tree_key_parent_id': folder.tree_key_parent_id,
+        'tree_name_key_wrap': folder.tree_name_key_wrap if is_e2e else None,
+        'tree_name_key_nonce': folder.tree_name_key_nonce if is_e2e else None,
     }
 
 
@@ -91,6 +96,9 @@ def _sync_file_node(file):
         'folder_link_share_token': link_token,
         'needs_folder_link_key': bool(is_e2e and link_token and file.encrypted_file_key
                                       and not file.folder_link_encrypted_file_key),
+        'tree_file_key_wrap': file.tree_file_key_wrap if is_e2e else None,
+        'tree_file_key_nonce': file.tree_file_key_nonce if is_e2e else None,
+        'tree_key_folder_id': file.tree_key_folder_id if is_e2e else None,
     }
 
 
@@ -333,9 +341,12 @@ def apiv1_device_authorize():
     if not get_setting('allow_desktop_sync'):
         return _sync_error(403, 'sync_disabled', 'Desktop sync is disabled on this server')
     data = _sync_json_body()
-    fields = ('username', 'auth_token', 'totp_code', 'device_name', 'platform', 'client_version')
+    fields = ('username', 'auth_token', 'totp_code', 'device_name', 'platform', 'client_version', 'pop_public_key')
     if data is None or not _json_string_fields_valid(data, fields):
         return _sync_error(400, 'bad_request', 'Invalid request')
+    pop_public_key = data.get('pop_public_key') or None
+    if pop_public_key and not _valid_pop_public_key(pop_public_key):
+        return _sync_error(400, 'bad_request', 'pop_public_key must be a base64 P-256 public key', field='pop_public_key')
     username = (data.get('username') or '').strip()
     auth_token = data.get('auth_token') or ''
     device_name = sanitize_plaintext_name(data.get('device_name'), max_length=80)
@@ -383,7 +394,8 @@ def apiv1_device_authorize():
             return _sync_error(409, 'device_limit', 'Device limit reached. Remove a device in Devices first.')
         raw_token = _generate_device_token()
         device = Device(user_id=user_id, name=device_name, platform=platform,
-                        client_version=client_version, token_hash=_hash_device_token(raw_token))
+                        client_version=client_version, token_hash=_hash_device_token(raw_token),
+                        pop_public_key=pop_public_key)
         db.session.add(device)
         db.session.commit()
     finally:
@@ -421,6 +433,7 @@ def apiv1_me():
             'name': g.device.name,
             'platform': g.device.platform,
             'created_at': _sync_iso(g.device.created_at),
+            **_device_security_json(g.device),
         },
     })
 

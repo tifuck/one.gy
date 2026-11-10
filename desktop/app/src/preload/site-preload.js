@@ -1,17 +1,18 @@
 // Bridge for the website view, version 2 (desktop/docs/site-bridge.md):
 // window.onegyDesktop = { version, bridge, unlock(), openSync(), onStatus() },
-// only on the top-level frame of the configured server origin. For the sync
-// panel it also reports the site's theme (html[data-theme]) and its nav as
-// plain values, and on the panel's behalf clicks the site's own theme option
-// or submits its own logout form. The main process re-checks the sender frame
-// for every call.
+// only on the top-level frame of the configured server origin. For the app it
+// also reports the site's theme (html[data-theme]) and the width of its rail
+// ([data-desktop-rail], the sync panel starts right of it), marks
+// html[data-desktop-panel] while the sync panel is open (a rail link closes
+// it), and hands the site's
+// sign-out (form.js-logout-form) to the app first. The main process re-checks
+// the sender frame for every call.
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
 
 const BRIDGE_VERSION = 2;
 const SCREENS = new Set(['syncs', 'transfers', 'issues', 'settings']);
-const THEMES = new Set(['frost', 'frost-dark']);
 
 function arg(name) {
   const prefix = `--${name}=`;
@@ -29,44 +30,6 @@ const pageUsername = () => {
   return el ? el.getAttribute('data-username') : null;
 };
 
-// The site nav (templates/_nav.html) as values: never markup. Paths only for
-// links on this origin; main/site-nav.js validates again.
-function navData() {
-  const nav = document.querySelector('header.rd-nav');
-  if (!nav) return null;
-  const text = (el) => (el ? el.textContent.trim() : '');
-  const ownText = (el) => [...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('').trim();
-  const sitePath = (href) => {
-    try {
-      const u = new URL(href, location.href);
-      return u.origin === origin ? u.pathname + u.search : null;
-    } catch {
-      return null;
-    }
-  };
-  const links = [...nav.querySelectorAll('.rd-nav-mid a.rd-nav-link')].map((a) => {
-    const badge = a.querySelector('.rd-badge');
-    return {
-      label: ownText(a),
-      href: sitePath(a.href),
-      active: a.classList.contains('is-active'),
-      badge: badge && !badge.hidden ? Number.parseInt(badge.textContent, 10) || 0 : 0,
-    };
-  });
-  const user = nav.querySelector('.rd-menu-user');
-  const account = nav.querySelector('.rd-menu-pop a.rd-menu-item[href]');
-  const accountPath = account ? sitePath(account.href) : null;
-  const short = accountPath && [...nav.querySelectorAll('.rd-nav-drawer a.rd-nav-link')].find((a) => sitePath(a.href) === accountPath);
-  const avatar = nav.querySelector('.rd-avatar-btn img');
-  return {
-    links,
-    username: text(user && user.querySelector('b')),
-    role: text(user && user.querySelector('span')),
-    account: account ? { label: text(account), short: text(short), href: accountPath } : null,
-    avatar: avatar ? sitePath(avatar.src) : null,
-  };
-}
-
 if (origin && window.location.origin === origin && window.top === window) {
   const listeners = new Set();
   let last = null;
@@ -80,15 +43,31 @@ if (origin && window.location.origin === origin && window.top === window) {
   };
   ipcRenderer.on('onegy:site-status', (_e, status) => deliver(status));
 
-  // Asked by the panel's theme menu / avatar menu: the site's own controls do it.
-  ipcRenderer.on('onegy:site-theme', (_e, theme) => {
-    const option = THEMES.has(theme) && document.querySelector(`[data-set-theme="${theme}"]`);
-    if (option) option.click();
+  // The sync panel covers the page but not the rail: a rail link leaves it.
+  let panelOpen = false;
+  ipcRenderer.on('onegy:panel', (_e, state) => {
+    panelOpen = Boolean(state && state.open);
+    document.documentElement.toggleAttribute('data-desktop-panel', panelOpen);
   });
-  ipcRenderer.on('onegy:site-logout', () => {
-    const form = document.querySelector('form.js-logout-form');
-    if (form) form.requestSubmit();
-  });
+  document.addEventListener('click', (e) => {
+    if (panelOpen && e.target instanceof Element && e.target.closest('[data-desktop-rail] a[href]')) ipcRenderer.send('site:leavePanel');
+  }, true);
+
+  // Signed in on this computer, the site's sign-out signs out of the app (main
+  // asks first); otherwise ('site') the form goes through as usual. Window
+  // capture runs before the site's own submit hooks (core.js clears keys).
+  let logoutPassThrough = false;
+  window.addEventListener('submit', (e) => {
+    const form = e.target instanceof HTMLFormElement && e.target.matches('form.js-logout-form') ? e.target : null;
+    if (!form || logoutPassThrough) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    ipcRenderer.invoke('site:logout').then((result) => {
+      if (result !== 'site') return;
+      logoutPassThrough = true;
+      form.requestSubmit();
+    }, () => {});
+  }, true);
 
   contextBridge.exposeInMainWorld('onegyDesktop', Object.freeze({
     version,
@@ -133,25 +112,19 @@ if (origin && window.location.origin === origin && window.top === window) {
     const theme = document.documentElement && document.documentElement.getAttribute('data-theme');
     if (theme) ipcRenderer.send('site:theme', theme);
   };
-  // The nav changes after load (notes badge, sync status): report what differs.
-  let lastNav = '';
-  let navTimer = null;
-  const reportNav = () => {
-    navTimer = null;
-    const data = navData();
-    const key = JSON.stringify(data);
-    if (!data || key === lastNav) return;
-    lastNav = key;
-    ipcRenderer.send('site:nav', data);
+  // The rail's right edge in CSS px (0: no rail, e.g. the sign-in page).
+  let lastInset = -1;
+  const reportInset = (rail) => {
+    const px = rail && rail.isConnected ? Math.max(0, rail.getBoundingClientRect().right) : 0;
+    if (px === lastInset) return;
+    lastInset = px;
+    ipcRenderer.send('site:inset', px);
   };
   window.addEventListener('DOMContentLoaded', () => {
     reportTheme();
     new MutationObserver(reportTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    reportNav();
-    const nav = document.querySelector('header.rd-nav');
-    if (nav) {
-      new MutationObserver(() => { if (!navTimer) navTimer = setTimeout(reportNav, 150); })
-        .observe(nav, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['hidden', 'href', 'src'] });
-    }
+    const rail = document.querySelector('[data-desktop-rail]');
+    reportInset(rail);
+    if (rail) new ResizeObserver(() => reportInset(rail)).observe(rail);
   });
 }

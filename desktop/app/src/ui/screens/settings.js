@@ -6,6 +6,7 @@ import {
   h, icon, clear, append, fill, field, row, select, switchInput, pageHead,
 } from '../components/dom.js';
 import { confirmDialog } from '../components/dialog.js';
+import { pinDialog, pinRules, pinSummary } from '../components/pin.js';
 import { pickRemote } from '../components/tree-picker.js';
 import { toast, toastError } from '../components/toast.js';
 import { bytes, percent, SYNC_TYPES } from '../components/format.js';
@@ -62,7 +63,7 @@ function general() {
   const a = store.app;
   return [
     panel('Window', null,
-      row('Open at login', 'Start ONE.GY Desktop in the tray when you sign in to this computer.', switchInput(a.launch_at_login, (v) => saveApp({ launch_at_login: v }))),
+      row('Open at login', 'Start ONE.GY in the tray when you sign in to this computer.', switchInput(a.launch_at_login, (v) => saveApp({ launch_at_login: v }))),
       row('Start minimized', 'Open in the tray instead of showing the window.', switchInput(a.start_minimized, (v) => saveApp({ start_minimized: v }))),
       row('Keep running when the window is closed', 'Syncing continues in the tray. Quit from the tray menu.', switchInput(a.close_to_tray, (v) => saveApp({ close_to_tray: v }))),
       row('Prevent sleep while syncing', null, switchInput(a.prevent_sleep, (v) => saveApp({ prevent_sleep: v })))),
@@ -256,10 +257,35 @@ function network() {
   ];
 }
 
-function security() {
+function security(rerender) {
   const s = store.settings;
+  const a = store.account || {};
   const openSite = (p) => () => navigate('close', { path: p });
+  const pinActions = a.pin_set
+    ? [
+      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: async () => { if (await pinDialog({ title: 'Change PIN', strict: a.pin_strict })) rerender(); } }, 'Change PIN'),
+      h('button', {
+        type: 'button', class: 'rd-btn rd-btn-ghost',
+        onclick: async () => {
+          if (!await confirmDialog({ title: 'Stop using a PIN?', message: 'ONE.GY then asks for your password whenever it is locked.', confirmLabel: 'Stop using a PIN' })) return;
+          try {
+            store.account = await rpc('account.removePin');
+            toast('PIN removed', 'success');
+            rerender();
+          } catch (err) {
+            toastError(err);
+          }
+        },
+      }, 'Stop using a PIN')]
+    : [h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: async () => { if (await pinDialog()) rerender(); } }, 'Set up a PIN')];
   return [
+    panel('App lock', 'ONE.GY locks when it starts, when this computer sleeps or locks its screen, and after the idle time below. Syncing keeps going while it is locked.',
+      row('Unlock with a PIN', `${pinSummary(a)} ${a.pin_set ? '' : pinRules(null)}`, h('div', { class: 'dk-btn-row' }, pinActions)),
+      row('Lock after I am away for', null, select([[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [240, '4 hours'], [0, 'Only on start, sleep and screen lock']],
+        store.app.lock_after_minutes, (v) => saveApp({ lock_after_minutes: Number(v) }))),
+      a.lock_enabled ? h('div', { class: 'dk-btn-row' }, h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => bridge('lockNow').catch(toastError) }, icon('lock'), 'Lock now')) : null,
+      row('Request signing key', a.hardware_key ? 'Kept in this computer\'s security chip (TPM): a copy of the app data cannot be used on another computer.' : 'A software key in the system key store (this computer has no usable security chip).',
+        h('span', { class: 'rd-pill' }, a.signed_requests ? (a.hardware_key ? 'Hardware' : 'Software') : 'Not yet'))),
     panel('This computer', null,
       row('Ask for my password when the app starts', 'The key is then kept in memory only, never in the system key store.', switchInput(s.require_password_on_start, (v) => saveEngine({ require_password_on_start: v }))),
       row('Unlock the website with this device\'s key', 'Encrypted names show up on the Files page without typing your password. Any script running on the one.gy site in this app could also get the key, just as it could while you are unlocked in a browser.',
@@ -331,13 +357,13 @@ export function mount(container, params = {}) {
         return;
       }
     }
-    if (tab === 'account') await loadAccount().catch(() => {});
+    if (tab === 'account' || tab === 'security') await loadAccount().catch(() => {});
     if (!store.app) store.app = await appSettings.get();
     fill(body, ...RENDER[tab](render));
   }
 
   append(container, h('div', { class: 'adm-narrow' },
-    pageHead('Settings', 'How ONE.GY Desktop and its syncs behave on this computer.'), tabs, body));
+    pageHead('Settings', 'How ONE.GY and its syncs behave on this computer.'), tabs, body));
   render();
   return on('engine', (state) => { if (state === 'connected' && NEEDS_ENGINE.has(tab)) render(); });
 }

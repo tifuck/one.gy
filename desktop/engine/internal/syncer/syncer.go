@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tifuck/one.gy/desktop/engine/internal/account"
 	"github.com/tifuck/one.gy/desktop/engine/internal/api"
 	"github.com/tifuck/one.gy/desktop/engine/internal/exec"
 	"github.com/tifuck/one.gy/desktop/engine/internal/localfs"
@@ -241,7 +242,9 @@ func (r *Runner) Pass(ctx context.Context) error {
 		r.setState(ctx, "paused", false)
 		return nil
 	}
-	if _, err := r.env.Exec.Acct.MasterKey(); err != nil {
+	// Keys closed (not set up, strict start, offline after a restart): wait.
+	// A locked app still syncs with the key tree, so only the client counts.
+	if _, err := r.env.Exec.Acct.Client(); err != nil {
 		r.setState(ctx, "paused", false)
 		return nil
 	}
@@ -623,6 +626,8 @@ func (r *Runner) one(ctx context.Context, x *exec.Executor, o reconcile.Op) erro
 	case err == nil:
 		r.done(o)
 	case errors.Is(err, exec.ErrSuperseded):
+	case errors.Is(err, account.ErrNeedsUnlock):
+		r.backoff(o, false) // waits for the app to be unlocked; not an issue
 	case errors.Is(err, exec.ErrRemoteCycle):
 		return r.undoLocalMove(ctx, x, o)
 	case errors.Is(err, exec.ErrCrashed), errors.Is(err, api.ErrOffline), ctx.Err() != nil:

@@ -3,6 +3,7 @@
 // with backoff after a crash, and re-emits engine events. Pure Node.
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -46,6 +47,9 @@ class EngineSupervisor extends EventEmitter {
     this.backoff = BACKOFF_MIN_MS;
     this.connectedAt = 0;
     this.loop = null;
+    // Handed to the engine we spawn on stdin (--ipc-secret-stdin) and presented
+    // with ipc.hello: other programs of this user cannot drive the engine.
+    this.secret = crypto.randomBytes(32).toString('hex');
   }
 
   setState(state) {
@@ -94,6 +98,18 @@ class EngineSupervisor extends EventEmitter {
     } catch {
       return false;
     }
+    try {
+      await client.call('ipc.hello', { secret: this.secret });
+    } catch (err) {
+      if (err.code === 'forbidden') {
+        // An engine started by an earlier run of the app (it crashed): its
+        // secret is gone. Ask it to exit; run() then starts ours.
+        console.error('[ENGINE] running engine has another IPC secret; restarting it');
+        await client.call('engine.shutdown').catch(() => {});
+        client.close();
+        return false;
+      }
+    }
     this.client = client;
     this.connectedAt = Date.now();
     client.on('event', (ev) => this.emit('event', ev));
@@ -121,12 +137,14 @@ class EngineSupervisor extends EventEmitter {
       console.error(`[ENGINE] binary not found: ${this.command}`);
       return false;
     }
-    const child = spawn(this.command, [...this.args, '--socket', this.socketPath], {
+    const child = spawn(this.command, [...this.args, '--socket', this.socketPath, '--ipc-secret-stdin'], {
       env: { ...process.env, ...this.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
     this.child = child;
+    child.stdin.on('error', () => {});
+    child.stdin.end(`${this.secret}\n`);
     console.log(`[ENGINE] started pid ${child.pid}`);
     const forward = (stream) => {
       stream.setEncoding('utf8');

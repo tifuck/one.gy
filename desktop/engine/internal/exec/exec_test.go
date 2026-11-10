@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tifuck/one.gy/desktop/engine/internal/account"
 	"github.com/tifuck/one.gy/desktop/engine/internal/api"
 	"github.com/tifuck/one.gy/desktop/engine/internal/fakeserver"
 	"github.com/tifuck/one.gy/desktop/engine/internal/localfs"
@@ -30,6 +31,13 @@ type acct struct {
 
 func (a *acct) Client() (*api.Client, error) { return a.c, nil }
 func (a *acct) MasterKey() ([]byte, error)   { return append([]byte(nil), a.mk...), nil }
+
+func (a *acct) TreeKey(int64) ([]byte, bool) { return nil, false }
+func (a *acct) NewKey(context.Context) (*account.NewKey, error) {
+	k, _ := e2ee.RandomBytes(e2ee.KeySize)
+	w, n, err := e2ee.WrapKey(k, a.mk)
+	return &account.NewKey{Key: k, Wrap: e2ee.EncodeBase64(w), Nonce: e2ee.EncodeBase64(n)}, err
+}
 
 type fixture struct {
 	t      *testing.T

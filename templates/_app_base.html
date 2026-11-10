@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{% if desktop_app %} class="is-desktop-app"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -41,11 +41,12 @@ if(localStorage.getItem('onegy_rd_list_collapsed')==='1')r.setAttribute('data-rd
   <link rel="stylesheet" href="{{ versioned_static('context-menu.css') }}">
   {% if ui_v2|default(true) %}<link rel="stylesheet" href="{{ versioned_static('ui-v2.css') }}">{% endif %}
   {% block head_extra %}{% endblock %}
+  {% if desktop_app %}<link rel="stylesheet" href="{{ versioned_static('desktop-shell.css') }}">{% endif %}
 </head>
 <body class="rd-body {{ 'ui-v2' if ui_v2|default(true) else 'rd-theme-editorial' }} rd-app{% if nav_ghost|default(false) %} rd-nav-ghost{% endif %}">
 {% include '_nav.html' %}
 
-<main class="rd-app-main" id="main">
+<main class="rd-app-main rd-scroll" id="main">
   {% block content %}{% endblock %}
 </main>
 
