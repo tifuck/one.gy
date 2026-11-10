@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-theme="frost-dark">
+<head>
+  <meta charset="utf-8">
+  <title>ONE.GY</title>
+  <link rel="stylesheet" href="site/core.css">
+  <link rel="stylesheet" href="site/components.css">
+  <link rel="stylesheet" href="site/themes.css">
+  <link rel="stylesheet" href="site/app-shell.css">
+  <link rel="stylesheet" href="site/context-menu.css">
+  <link rel="stylesheet" href="site/ui-v2.css">
+  <link rel="stylesheet" href="styles/popover.css">
+  <script type="module" src="popover.js"></script>
+</head>
+<body class="ui-v2 tp">
+  <header class="tp-head">
+    <span class="tp-dot" id="dot" aria-hidden="true"></span>
+    <div class="tp-head-text" role="status" aria-live="polite">
+      <h1 class="tp-state" id="state">ONE.GY</h1>
+      <p class="tp-detail" id="detail"></p>
+    </div>
+    <div class="tp-head-actions" id="headActions"></div>
+  </header>
+  <div class="tp-body">
+    <section class="tp-col tp-account" aria-label="Account">
+      <div id="storage"></div>
+      <div id="issues"></div>
+      <div class="tp-sec-head">
+        <h2 class="tp-sec-title">Syncs</h2>
+        <button type="button" class="tp-link" data-panel="syncs">Manage</button>
+      </div>
+      <ul class="tp-list" id="syncs"></ul>
+    </section>
+    <section class="tp-col tp-activity" aria-label="Transfers">
+      <div class="tp-sec-head">
+        <h2 class="tp-sec-title">Transfers</h2>
+        <button type="button" class="tp-link" data-panel="transfers">All transfers</button>
+      </div>
+      <div id="transfers"></div>
+    </section>
+  </div>
+  <footer class="tp-foot">
+    <p class="tp-who" id="who"></p>
+    <button type="button" class="rd-btn rd-btn-primary rd-btn-sm" id="open">Open ONE.GY</button>
+  </footer>
+</body>
+</html>

@@ -1,6 +1,8 @@
 // Tray icon and menu. Before this computer is authorized for sync: only
-// "Open ONE.GY" and "Quit". After: status line, Open ONE.GY, Sync… (the sync
-// panel), pause/resume, Upload…, Quit (desktop/docs/site-bridge.md).
+// "Open ONE.GY" and "Quit". After: status line, Status and activity… (the
+// tray popover, tray-popover.js), Open ONE.GY, Sync… (the sync panel),
+// pause/resume, Upload…, Quit (desktop/docs/site-bridge.md). Left click opens
+// the popover once authorized and unlocked, else the window.
 'use strict';
 
 const path = require('path');
@@ -63,6 +65,7 @@ function menuTemplate({
   return [
     { label: statusLine(status, engineState), enabled: false },
     { type: 'separator' },
+    { label: 'Status and activity…', click: () => a.showStatus() },
     open,
     { label: 'Sync…', click: () => a.openSync() },
     { type: 'separator' },
@@ -75,14 +78,14 @@ function menuTemplate({
 }
 
 class AppTray {
-  // actions: { open, lock, openSync, pauseAll(ms|null), resumeAll, upload, quit }
+  // actions: { open, showStatus(trayBounds?), lock, openSync, pauseAll(ms|null), resumeAll, upload, quit }
   constructor(actions) {
     this.actions = actions;
     this.state = {
       authorized: false, status: null, engineState: 'connecting', pausedUntil: null, appLocked: false, canLock: false,
     };
     this.tray = new Tray(loadIcon('offline'));
-    this.tray.on('click', () => actions.open());
+    this.tray.on('click', (_e, bounds) => (this.state.authorized && !this.state.appLocked ? actions.showStatus(bounds) : actions.open()));
     this.render();
   }
 

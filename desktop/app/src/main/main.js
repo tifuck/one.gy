@@ -5,14 +5,17 @@
 
 const fs = require('fs');
 const path = require('path');
-const { app, dialog, Menu, Notification, powerMonitor, powerSaveBlocker, session } = require('electron');
+const {
+  app, dialog, Menu, Notification, powerMonitor, powerSaveBlocker, session, shell,
+} = require('electron');
 const { registerScheme, handleScheme } = require('./protocol');
 const { hardenApp } = require('./security');
 const { SettingsStore } = require('./settings-store');
 const { EngineSupervisor } = require('./engine');
-const { MainWindow } = require('./window');
+const { MainWindow, BACKGROUND } = require('./window');
 const { registerIpc } = require('./ipc');
 const { AppTray } = require('./tray');
+const { TrayPopover } = require('./tray-popover');
 const { createNotifier } = require('./notify');
 const { startUpdater } = require('./updater');
 const { watchEnvironment } = require('./environment');
@@ -22,7 +25,8 @@ const { isSitePath } = require('./site-nav');
 const SITE_STATUS_EVERY_MS = 500; // site-bridge.md: at most 2 updates per second
 const IDLE_CHECK_MS = 30 * 1000;
 const SITE_DECIDE_MAX_MS = 8000; // load the site anyway when the engine says nothing
-const RESUME_PANELS = new Set(['syncs', 'transfers', 'issues', 'settings']);
+const RESUME_PANELS = new Set(['syncs', 'transfers', 'issues', 'settings']); // also what the tray popover may open
+const MAX_PAUSE_MS = 24 * 60 * 60 * 1000;
 const RESIGN_EVERY_MS = 30 * 1000; // device mode: sign a site view that lost its session in again, at most this often
 
 const APP_ID = 'gy.one.desktop';
@@ -120,6 +124,7 @@ function start() {
   };
   let window = null;
   let tray = null;
+  let popover = null;
   let updater = null;
 
   // The sync panel for the account of the site page (else this computer's).
@@ -263,13 +268,19 @@ function start() {
       authorized: sync.authorized(), status: sync.status, engineState: sync.engineState,
       appLocked: appLocked(sync.account), canLock: Boolean(sync.account && sync.account.lock_enabled),
     });
+    // Locked or signed out: the popover's names and numbers wait for the unlock.
+    if (!sync.authorized() || appLocked(sync.account)) popover.hide();
     updatePowerSave();
     pushSiteStatus();
     applySiteMode().catch((err) => console.error(`[APP] site mode: ${err.message}`));
   });
-  engine.on('state', (s) => window.send({ type: 'app:engine', data: { state: s } }));
+  engine.on('state', (s) => {
+    window.send({ type: 'app:engine', data: { state: s } });
+    popover.send({ type: 'app:engine', data: { state: s } });
+  });
   engine.on('event', (ev) => {
     window.send(ev);
+    popover.send(ev);
     if (ev.type === 'notify') notify(ev.data);
   });
 
@@ -279,12 +290,34 @@ function start() {
     await engine.call('syncs.pause', {}).catch((err) => console.error(`[APP] pause failed: ${err.message}`));
     if (ms) state.pauseTimer = setTimeout(() => resumeAll(), ms);
     tray.update({ pausedUntil: state.pausedUntil });
+    popover.send({ type: 'app:tray', data: { pausedUntil: state.pausedUntil } });
   };
   const resumeAll = async () => {
     clearTimeout(state.pauseTimer);
     state.pausedUntil = null;
     await engine.call('syncs.resume', {}).catch((err) => console.error(`[APP] resume failed: ${err.message}`));
     tray.update({ pausedUntil: null });
+    popover.send({ type: 'app:tray', data: { pausedUntil: null } });
+  };
+  const upload = async () => {
+    if (!sync.authorized()) return;
+    const res = await dialog.showOpenDialog({ title: 'Upload to one.gy', properties: ['openFile', 'multiSelections', 'dontAddToRecent'] });
+    if (res.canceled || !res.filePaths.length) return;
+    openPanel('transfers');
+    window.send({ type: 'app:action', data: { action: 'upload', paths: res.filePaths } });
+  };
+  // A sync's local folder, by id (the path comes from the engine, not the popover).
+  const openSyncFolder = async (id) => {
+    if (typeof id !== 'string') return;
+    try {
+      const s = (await engine.call('syncs.list')).find((x) => x.id === id);
+      if (s) {
+        const err = await shell.openPath(s.local_path);
+        if (err) console.error(`[APP] opening a sync folder failed: ${err}`);
+      }
+    } catch (err) {
+      console.error(`[APP] opening a sync folder failed: ${err.message}`);
+    }
   };
 
   const quit = () => app.quit();
@@ -364,24 +397,35 @@ function start() {
       },
     });
 
+    popover = new TrayPopover({
+      background: () => BACKGROUND[window.theme],
+      state: () => ({
+        theme: window.theme, platform: process.platform, engine: sync.engineState, status: sync.status, pausedUntil: state.pausedUntil,
+      }),
+      actions: {
+        open: () => window.show(),
+        panel: (screen) => openPanel(RESUME_PANELS.has(screen) ? screen : 'syncs'),
+        folder: openSyncFolder,
+        pause: (ms) => pauseAll(Number.isSafeInteger(ms) && ms > 0 && ms <= MAX_PAUSE_MS ? ms : null),
+        resume: resumeAll,
+        upload,
+        close: () => {},
+      },
+    });
+
     registerIpc({
-      window, engine, settings, sync, updater, lockNow, signOut,
+      window, engine, settings, sync, updater, lockNow, signOut, popover,
     });
     watchEnvironment({ powerMonitor, engine });
 
     tray = new AppTray({
       open: () => window.show(),
+      showStatus: (bounds) => popover.toggle(bounds),
       lock: lockNow,
       openSync: () => openPanel('syncs'),
       pauseAll,
       resumeAll,
-      upload: async () => {
-        if (!sync.authorized()) return;
-        const res = await dialog.showOpenDialog({ title: 'Upload to one.gy', properties: ['openFile', 'multiSelections', 'dontAddToRecent'] });
-        if (res.canceled || !res.filePaths.length) return;
-        openPanel('transfers');
-        window.send({ type: 'app:action', data: { action: 'upload', paths: res.filePaths } });
-      },
+      upload,
       quit,
     });
 
@@ -391,6 +435,7 @@ function start() {
       if (next.launch_at_login !== before.launch_at_login) applyAutostart(next.launch_at_login);
       if (next.prevent_sleep !== before.prevent_sleep) updatePowerSave();
       window.send({ type: 'app:settings', data: next });
+      popover.send({ type: 'app:settings', data: next });
     });
     applyAutostart(settings.get().launch_at_login);
 

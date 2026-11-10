@@ -150,4 +150,12 @@ window.onegyDesktop = {
 - Once this computer is authorized, Ctrl+Shift+S and the tray's "Sync…" also
   open the panel.
 - The tray offers "Open ONE.GY" and "Quit" always, and the status line,
-  "Sync…", Pause / Resume and "Upload…" only once this computer is authorized.
+  "Status and activity…", "Sync…", Pause / Resume and "Upload…" only once this
+  computer is authorized.
+- Once this computer is authorized and the app is unlocked, a left click on
+  the tray icon (where the desktop reports one) and "Status and activity…"
+  open the tray popover by the icon: overall state and speed, storage, each
+  sync, transfers running and recently finished, open issues, with Pause /
+  Resume, Upload, Open ONE.GY and links into the panel. It reads only
+  `account.status`, `syncs.list`, `transfers.list` and `issues.list` and hides
+  when it loses focus, on Esc, and when the app locks or signs out.

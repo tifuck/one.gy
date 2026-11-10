@@ -2,7 +2,8 @@
 // plus a few app-owned actions; the title bar sends history commands and its
 // colours; the update toast its action and height; the website gets the site
 // bridge (desktop/docs/site-bridge.md): unlock key, open the sync panel, sync
-// status, its theme, its rail width and its sign-out. Every handler checks
+// status, its theme, its rail width and its sign-out; the tray popover reads
+// a few engine methods and asks for the tray's actions. Every handler checks
 // who is asking and validates what it gets.
 'use strict';
 
@@ -16,7 +17,9 @@ const { normalizeServerUrl } = require('./settings-store');
 const { isUiUrl } = require('./protocol');
 const { removeSync } = require('./remove-sync');
 const { cleanInset, isSitePath } = require('./site-nav');
-const { UI_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS } = require('./ui-methods');
+const {
+  UI_METHODS, POPOVER_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS,
+} = require('./ui-methods');
 const { mayUnlock } = require('./sync-status');
 
 const MAX_PARAMS_BYTES = 1024 * 1024;
@@ -51,9 +54,10 @@ async function probeServer(raw) {
 }
 
 // deps: { window (MainWindow), engine (EngineSupervisor), settings (SettingsStore),
-//         sync (SyncStatus), updater (updater.js), lockNow(), signOut(): 'site' | 'done' | 'cancelled' }
+//         sync (SyncStatus), updater (updater.js), lockNow(), signOut(): 'site' | 'done' | 'cancelled',
+//         popover (TrayPopover) }
 function registerIpc({
-  window, engine, settings, sync, updater, lockNow, signOut,
+  window, engine, settings, sync, updater, lockNow, signOut, popover,
 }) {
   const fromChrome = (event) => window.isPanelSender(event.sender)
     && isMainFrameOf(event.senderFrame, event.sender)
@@ -189,6 +193,22 @@ function registerIpc({
   });
   ipcMain.on('update:size', (event, px) => {
     if (fromNotice(event) && Number.isFinite(px) && px >= 0 && px <= 600) window.setNoticeHeight(Math.ceil(px));
+  });
+
+  // Tray popover: only its own window.
+  const fromPopover = (event) => popover.isSender(event.sender) && isMainFrameOf(event.senderFrame, event.sender) && isUiUrl(event.senderFrame.url);
+  ipcMain.handle('popover:engine', async (event, method, params) => {
+    if (!fromPopover(event) || !POPOVER_METHODS.has(method) || (params !== undefined && !isPlainObject(params))) {
+      return errorEnvelope({ code: 'forbidden', message: 'Not allowed' });
+    }
+    try {
+      return { ok: true, result: await engine.call(method, params) };
+    } catch (err) {
+      return errorEnvelope(err);
+    }
+  });
+  ipcMain.on('popover:action', (event, name, arg) => {
+    if (fromPopover(event)) popover.run(name, arg);
   });
 
   // Website bridge: only the site view's main frame on the configured origin.

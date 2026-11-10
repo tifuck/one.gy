@@ -1,6 +1,7 @@
 // Browser stand-in for the app preload (window.onegy), backed by
 // dev/mock-core.js. Lets src/ui run in a plain browser for UI work and
-// screenshots: load mock-core.js, then this file, before src/ui/index.html.
+// screenshots: load mock-core.js, then this file, before src/ui/index.html
+// (or src/ui/popover.html: window.onegyTray opens it like the tray does).
 // URL hash flags (comma separated): signed-out (sign-in / setup flow), static
 // (no live ticks), light (light theme), empty (no syncs yet), user=<name> (website user the panel
 // opens for, default alice; user= for none, as when the app opens it),
@@ -76,5 +77,12 @@
       try { return ok(engine.call('syncs.remove', { id })); } catch (err) { return fail(err); }
     },
     pathForFile: () => '/srv/alice/Dropped',
+  };
+
+  window.onegyTray = {
+    onShow: (cb) => setTimeout(() => cb({
+      theme: settings.theme, platform: 'linux', engine: 'connected', status: engine.overall(), pausedUntil: null,
+    }), 60),
+    action: (name, arg) => window.OnegyStubLog.push(['tray', name, arg]),
   };
 }());

@@ -526,4 +526,6 @@ class MainWindow {
   }
 }
 
-module.exports = { MainWindow, isMainFrameOf, SITE_PARTITION };
+module.exports = {
+  MainWindow, isMainFrameOf, SITE_PARTITION, BACKGROUND,
+};
