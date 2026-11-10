@@ -66,6 +66,7 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
   display:none; flex:none; width:32px; height:32px; margin-left:-6px; align-items:center; justify-content:center;
   border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
 }
+.mu-rail-toggle{ display:inline-flex; } /* shows or hides the library (panel-resize.js); a drawer on narrow windows */
 .mu-rail-toggle:hover, .mu-back:hover{ background:var(--hover); color:var(--text); }
 .mu-rail-toggle svg, .mu-back svg{ width:18px; height:18px; }
 .mu-search{ position:relative; flex:0 1 300px; min-width:0; }
@@ -364,7 +365,7 @@ body.mp-fs-open{ overflow:hidden; }
 @media (max-width:920px){
   .mu-shell{ grid-template-columns:1fr; }
   /* Drawer mode: rail is off-canvas at a fixed width (no resize/collapse) */
-  .mu-shell .rd-resizer, .mu-shell .rd-rail-label, .mu-rail .rd-side-head{ display:none !important; }
+  .mu-shell .rd-resizer, .mu-rail .rd-side-head{ display:none !important; }
   :root[data-rd-side="collapsed"] .mu-rail > .rd-side-inner{ display:flex; }
   .mu-rail{
     position:fixed; top:var(--nav-h); left:0; bottom:0; width:272px; z-index:50;
@@ -374,7 +375,6 @@ body.mp-fs-open{ overflow:hidden; }
   .mu-rail.is-open{ transform:none; visibility:visible; transition-delay:0s; }
   .mu-rail-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; z-index:49; background:var(--scrim); opacity:0; pointer-events:none; transition:opacity .2s; }
   .mu-rail-scrim.is-open{ opacity:1; pointer-events:auto; }
-  .mu-rail-toggle{ display:inline-flex; }
   .mu-topbar{ padding:0 12px; }
   .mu-view{ padding:14px 12px 40px; }
   .mu-shelf{ margin:0 -12px; padding:0 12px 6px; scroll-padding-inline:12px; }

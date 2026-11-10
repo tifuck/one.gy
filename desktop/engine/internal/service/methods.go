@@ -199,6 +199,7 @@ func (s *Service) register() {
 	h("syncs.verify", s.syncsVerify)
 	h("syncs.ignoreRules", s.syncsIgnoreRules)
 	h("syncs.setIgnoreRules", s.syncsSetIgnoreRules)
+	h("syncs.browse", s.syncsBrowse)
 	h("syncs.backupTarget", s.syncsBackupTarget)
 	h("syncs.clearDebris", s.syncsClearDebris)
 

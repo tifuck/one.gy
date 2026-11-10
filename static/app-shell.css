@@ -82,13 +82,15 @@
 .rd-side-row.is-active{border-left-color:var(--accent);background:var(--accent-soft);font-weight:600}
 
 /* ---- Resizable app rails ------------------------------------------------
-   One width vocabulary shared by the Files tree, the Notes rail and the Music
+   One width vocabulary shared by the Files tree, the Notes list and the Music
    library, so all three pages are the same width by construction. Page CSS
-   only feeds --rd-side-eff / --rd-list-eff into its own grid track.
+   only feeds --rd-side-eff into its own grid track. A collapsed rail is gone
+   (0px); the toggle at the start of each page's toolbar ([data-rd-collapse])
+   brings it back. Collapse is remembered per page (<html data-rd-page>).
 
    Two deliberate choices:
      1. Width + collapse state live on <html> (custom props + data attributes),
-        NOT on the rail elements — notes.js rebuilds #ntRail.innerHTML on every
+        NOT on the rail elements — notes.js and files.js rebuild theirs on
         render, so per-element classes would be wiped.
      2. The drag handles are absolutely-positioned children of the *shell*, not
         of the rail, for the same reason — and because .rd-side is overflow:hidden
@@ -101,23 +103,16 @@
    sensible absolute limits. Once the user drags, panel-resize.js stores an
    explicit px value and that wins from then on.
 
-   !! These three numbers are duplicated in panel-resize.js (defaultSide/
-   defaultList) and in the pre-paint snippet in _app_base.html. Change all
-   three together. !! */
+   !! These three numbers are duplicated in panel-resize.js (SIDE.def) and in
+   the pre-paint snippet in _app_base.html. Change all three together. !! */
 :root{
-  --rd-side-w:clamp(280px, 17vw, 460px);   /* library rail (files · notes · music) */
-  --rd-list-w:clamp(320px, 19vw, 520px);   /* notes "all notes" list pane          */
+  --rd-side-w:clamp(280px, 17vw, 460px);   /* files tree · notes list · music library */
   --rd-side-min:150px;  --rd-side-max:560px;
-  --rd-list-min:200px;  --rd-list-max:620px;
-  --rd-rail-collapsed-w:32px;
-  /* Effective track widths — what the page grids actually consume. */
+  /* Effective track width — what the page grids actually consume. */
   --rd-side-eff:var(--rd-side-w);
-  --rd-list-eff:var(--rd-list-w);
 }
-:root[data-rd-side="collapsed"]{ --rd-side-eff:var(--rd-rail-collapsed-w) }
-:root[data-rd-list="collapsed"]{ --rd-list-eff:var(--rd-rail-collapsed-w) }
-
-/* Collapsed rails hide their contents; the vertical label takes over. */
+:root[data-rd-side="collapsed"]{ --rd-side-eff:0px }
+:root[data-rd-side="collapsed"] .rd-side{ border-right-width:0 }
 :root[data-rd-side="collapsed"] .rd-side > .rd-side-inner{ display:none }
 
 /* Drag handle — sits on the seam between two panes. */
@@ -128,7 +123,6 @@
   transition:left .22s cubic-bezier(.2,.85,.25,1);
 }
 .rd-resizer[data-rd-resize="side"]{ left:var(--rd-side-eff) }
-.rd-resizer[data-rd-resize="list"]{ left:calc(var(--rd-side-eff) + var(--rd-list-eff)) }
 /* Accent seam + grip, in the same 2px/offset language as the rest of the UI */
 .rd-resizer::after{
   content:""; position:absolute; top:0; bottom:0; left:50%; width:2px; margin-left:-1px;
@@ -143,29 +137,16 @@
 .rd-resizer:hover::before,.rd-resizer:focus-visible::before,.rd-resizer.is-drag::before{ opacity:1;transform:scaleY(1) }
 .rd-resizer:focus-visible{ outline:none }
 
-/* Vertical label shown in place of a collapsed rail. */
-.rd-rail-label{
-  display:none; position:absolute; top:0; bottom:0; left:0; z-index:56;
-  width:var(--rd-rail-collapsed-w); align-items:center; justify-content:center;
-  border:0; background:none; cursor:pointer; color:var(--text-dim);
-  font-family:var(--font-mono); font-size:.62rem; letter-spacing:.22em; text-transform:uppercase;
-  writing-mode:vertical-rl; transform:rotate(180deg); user-select:none;
-}
-.rd-rail-label:hover{ color:var(--accent) }
-.rd-rail-label[data-rd-label="list"]{ left:var(--rd-side-eff); transition:left .22s cubic-bezier(.2,.85,.25,1) }
-:root[data-rd-side="collapsed"] .rd-rail-label[data-rd-label="side"]{ display:flex }
-:root[data-rd-list="collapsed"] .rd-rail-label[data-rd-label="list"]{ display:flex }
-
 /* Live drag: kill transitions so panes track the pointer 1:1, and stop the
    pointer from selecting text or hovering things underneath. */
 :root.rd-resizing,:root.rd-resizing *{ cursor:col-resize !important; user-select:none !important }
 :root.rd-resizing .fx-shell,:root.rd-resizing .mu-shell,:root.rd-resizing .nt-shell,
-:root.rd-resizing .rd-resizer,:root.rd-resizing .rd-rail-label,
+:root.rd-resizing .rd-resizer,:root.rd-resizing .nt-pane-toggle,
 :root.rd-resizing .music-player{ transition:none !important }
 :root.rd-resizing .fx-main,:root.rd-resizing .mu-main,:root.rd-resizing .nt-panes{ pointer-events:none }
 
 @media (prefers-reduced-motion:reduce){
-  .fx-shell,.mu-shell,.nt-shell,.rd-resizer,.rd-rail-label{ transition:none !important }
+  .fx-shell,.mu-shell,.nt-shell,.rd-resizer,.nt-pane-toggle{ transition:none !important }
 }
 
 /* ---- Content frame ------------------------------------------------------ */

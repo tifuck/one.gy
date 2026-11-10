@@ -6,7 +6,9 @@
   position:fixed; z-index:300; min-width:196px; max-width:280px;
   background:var(--surface); border:2px solid var(--border); box-shadow:6px 6px 0 var(--accent);
   padding:.25rem; display:none; flex-direction:column;
+  max-height:calc(100vh - 16px); overflow-y:auto;
 }
+.rd-cmenu > *{ flex:none; }
 .rd-cmenu.is-open{ display:flex; animation:rdcmenu .12s cubic-bezier(.2,.8,.2,1) both; }
 @keyframes rdcmenu{ from{ opacity:0; transform:scale(.97) translateY(-2px); } to{ opacity:1; transform:none; } }
 
@@ -21,6 +23,7 @@
 .rd-cmenu-ico{ width:16px; height:16px; flex:none; }
 .rd-cmenu-label{ flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rd-cmenu-hint{ font-family:var(--font-mono); font-size:.62rem; letter-spacing:.04em; color:var(--text-dim); flex:none; }
+.rd-cmenu-item.is-active{ background:var(--accent-soft); }
 .rd-cmenu-item[disabled]{ opacity:.4; cursor:default; }
 .rd-cmenu-item[disabled]:hover{ background:none; }
 

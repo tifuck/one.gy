@@ -1,14 +1,17 @@
 // Setup wizard (plan 10.2): set up sync on this computer (authorize it for the
 // account the website is signed in as: params.username, locked), then what to
-// do, local folder, one.gy folder, options, preview, start. The steps after
-// the setup also run from "Add sync" / "Add backup" / dropping a folder on
-// the Syncs screen.
+// do, local folder, one.gy folder (not for the whole drive), what to sync,
+// review (name, encryption, options, preview) and start. The steps after the
+// setup also run from "Add sync" / "Add backup" / the empty Syncs screen /
+// dropping a folder on the Syncs screen.
 import {
   h, icon, clear, append, fill, field, row, switchInput, callout, pageHead,
 } from '../components/dom.js';
 import { treePicker } from '../components/tree-picker.js';
 import { pinFields, pinRules, pinSummary } from '../components/pin.js';
-import { syncOptionsForm, newSyncConfig, DEFAULT_IGNORE_RULES } from '../components/sync-options.js';
+import { syncOptionsForm, newSyncConfig } from '../components/sync-options.js';
+import { syncFilter } from '../components/sync-filter.js';
+import { newRules, parseRules, describeRules } from '../components/rules.js';
 import { toast } from '../components/toast.js';
 import {
   bytes, count, basename, SYNC_TYPES,
@@ -19,9 +22,9 @@ import {
 
 const DEFAULT_SERVER = 'https://one.gy';
 
-const ACTIONS = [
+export const ACTIONS = [
   { type: 'two_way', title: 'Sync a folder', text: 'Changes on this computer and on one.gy show up on both sides.' },
-  { type: 'backup', title: 'Back up a folder', text: 'Copies this computer to one.gy. The copy on one.gy is read-only.' },
+  { type: 'backup', title: 'Back up a folder', text: 'Copies a folder, like a project, to one.gy. The copy on one.gy is read-only.' },
   { type: 'mirror', title: 'Mirror a one.gy folder here', text: 'Downloads a one.gy folder and keeps it updated. Local edits are undone.' },
   { type: 'full', title: 'Sync my whole drive', text: 'Two-way sync of everything on one.gy. Cannot be combined with other syncs.' },
   { type: null, title: 'Skip for now', text: 'Go to your files. Add syncs later from Sync.' },
@@ -51,7 +54,7 @@ export function mount(container, params = {}) {
   const platform = (store.version && store.version.platform) || 'linux';
   const w = {
     cfg: newSyncConfig((store.settings && store.settings.defaults) || {}, platform),
-    ignoreText: DEFAULT_IGNORE_RULES,
+    ignoreText: newRules(),
     initial: 'merge',
     validation: null,
     preview: null,
@@ -61,6 +64,7 @@ export function mount(container, params = {}) {
     nameTouched: false,
   };
   if (params.type) w.cfg.type = params.type;
+  if (!ACTIONS.some((a) => a.type === w.cfg.type)) w.cfg.type = 'two_way'; // e.g. an archive default
   if (params.localPath) w.cfg.local_path = params.localPath;
 
   const signedIn = () => Boolean(store.account && store.account.signed_in && !store.account.locked);
@@ -70,11 +74,13 @@ export function mount(container, params = {}) {
     { id: 'action', render: stepAction },
     { id: 'local', render: stepLocal },
     { id: 'remote', render: stepRemote },
-    { id: 'options', render: stepOptions },
-    { id: 'preview', render: stepPreview },
+    { id: 'filter', render: stepFilter },
+    { id: 'review', render: stepReview },
   ];
   // onboarding: right after the app's sign-in (signin.js): the PIN, then what to sync.
-  const visible = () => STEPS.filter((s) => !(s.setup && fromSyncScreen) && !(params.onboarding && s.id === 'authorize'));
+  // The whole drive has no one.gy folder to pick: its local step checks both sides.
+  const visible = () => STEPS.filter((s) => !(s.setup && fromSyncScreen) && !(params.onboarding && s.id === 'authorize')
+    && !(s.id === 'remote' && w.cfg.type === 'full'));
   const fromSyncScreen = signedIn() && !params.onboarding;
   let index = 0;
   if (fromSyncScreen) index = visible().findIndex((s) => s.id === (params.type ? 'local' : 'action'));
@@ -287,14 +293,19 @@ export function mount(container, params = {}) {
     title.textContent = w.cfg.type === 'mirror' ? 'Where should the copy go?' : 'Choose a folder on this computer';
     const pathBox = h('div', { class: 'dk-path-box' });
     const result = h('div', { 'aria-live': 'polite' });
+    const full = w.cfg.type === 'full';
+    if (full) {
+      w.cfg.remote_folder_id = null;
+      w.cfg.remote_path = '/';
+    }
     const check = async () => {
       clear(result);
       setReady(false);
       if (!w.cfg.local_path) return;
       append(result, h('p', { class: 'rd-field-hint' }, 'Checking the folder…'));
       try {
-        const v = await validate(false);
-        fill(result, validationView(v, false));
+        const v = await validate(full);
+        fill(result, validationView(v, full));
         setReady(Boolean(v.ok));
       } catch (err) {
         fill(result, callout('bad', 'alert', err.message));
@@ -315,7 +326,9 @@ export function mount(container, params = {}) {
           },
         }, w.cfg.local_path ? 'Change…' : 'Choose folder…'));
     };
-    append(content, h('p', { class: 'dk-lead' }, 'You can create a new folder in the picker.'), pathBox, result);
+    append(content,
+      full ? callout('accent', 'drive', 'Everything on one.gy syncs with this folder.') : null,
+      h('p', { class: 'dk-lead' }, 'You can create a new folder in the picker.'), pathBox, result);
     renderPath();
     if (w.cfg.local_path && !w.cfg.name) w.cfg.name = basename(w.cfg.local_path);
     check();
@@ -340,13 +353,6 @@ export function mount(container, params = {}) {
         }
       }, 250);
     };
-    if (w.cfg.type === 'full') {
-      w.cfg.remote_folder_id = null;
-      w.cfg.remote_path = '/';
-      append(content, callout('accent', 'drive', 'Whole drive: everything on one.gy syncs with this folder.'), result);
-      check();
-      return;
-    }
     if (w.cfg.type === 'backup' && !w.backupCustom) {
       stepBackupTarget();
       return;
@@ -398,15 +404,59 @@ export function mount(container, params = {}) {
     };
   }
 
-  // ---- 6. Options -------------------------------------------------------------------------
-  function stepOptions() {
-    title.textContent = 'Options';
+  // ---- 6. What to sync -----------------------------------------------------------------
+  function stepFilter() {
+    title.textContent = 'What to sync';
+    const t = w.cfg.type;
+    const f = syncFilter({
+      text: w.ignoreText,
+      type: t,
+      localPath: t === 'mirror' ? '' : w.cfg.local_path,
+      remoteFolderId: ['backup', 'archive'].includes(t) ? undefined : w.cfg.remote_folder_id,
+      includeHidden: w.cfg.include_hidden_system,
+      onChange: (text) => { w.ignoreText = text; },
+    });
+    append(content, f.el);
+  }
+
+  // ---- 7. Review: name, encryption, options, what will happen, start --------------------
+  const engineConfig = () => ({ ...w.cfg, name: w.cfg.name.trim(), ignore_rules: w.ignoreText });
+
+  function stepReview() {
+    title.textContent = 'Review and start';
     const cfg = w.cfg;
+    const folderName = basename(cfg.local_path);
+    const v = w.validation || {};
+    const bothHaveFiles = (v.local && v.local.files > 0) && (v.remote && v.remote.files > 0) && ['two_way', 'full'].includes(cfg.type);
+    const summary = h('div', { 'aria-live': 'polite' });
+    let timer = null;
+    let ticket = 0;
+    const load = (delay = 400) => {
+      clearTimeout(timer);
+      setReady(false, 'Start sync');
+      timer = setTimeout(async () => {
+        const mine = ++ticket;
+        fill(summary, h('p', { class: 'rd-field-hint' }, 'Working out what will change…'));
+        try {
+          const p = await rpc('syncs.preview', { config: engineConfig(), initial: w.initial });
+          if (mine !== ticket) return;
+          w.preview = p;
+          fill(summary, previewView(p));
+          setReady(true, 'Start sync');
+        } catch (err) {
+          if (mine === ticket) fill(summary, callout('bad', 'alert', err.message));
+        }
+      }, delay);
+    };
+    const strategy = bothHaveFiles ? h('div', { class: 'dk-radio-list', role: 'radiogroup', 'aria-label': 'Both sides have files' },
+      INITIAL.map(([value, label, text]) => h('label', { class: 'dk-radio' },
+        h('input', { type: 'radio', name: 'initial', value, checked: w.initial === value, onchange: () => { w.initial = value; load(0); } }),
+        h('span', null, h('strong', null, label), h('span', { class: 'rd-field-hint' }, text))))) : null;
+
     const name = h('input', {
       class: 'form-input', value: cfg.name, maxlength: 80,
       oninput: (e) => { cfg.name = e.target.value; w.nameTouched = true; },
     });
-    const folderName = basename(cfg.local_path);
     const confirmInput = h('input', {
       class: 'form-input', value: w.standardConfirm, autocomplete: 'off', spellcheck: 'false',
       oninput: (e) => { w.standardConfirm = e.target.value; },
@@ -414,7 +464,7 @@ export function mount(container, params = {}) {
     const confirmField = field(`Type "${folderName}" to use standard encryption`, confirmInput,
       'The server will be able to read these files and their names.');
     const hideExt = row('Hide file extensions from the server', 'The website then cannot preview these files by type.',
-      switchInput(cfg.hide_extensions, (v) => { cfg.hide_extensions = v; }));
+      switchInput(cfg.hide_extensions, (on) => { cfg.hide_extensions = on; }));
     const encCards = h('div', { class: 'dk-cards dk-cards-2', role: 'radiogroup', 'aria-label': 'Encryption' });
     const renderEnc = () => {
       clear(encCards);
@@ -432,73 +482,35 @@ export function mount(container, params = {}) {
       hideExt.hidden = cfg.encryption !== 'e2ee';
     };
     renderEnc();
-    const rules = h('textarea', {
-      class: 'form-input is-code dk-rules', rows: 8, spellcheck: 'false', value: w.ignoreText,
-      oninput: (e) => { w.ignoreText = e.target.value; },
-    });
-    append(content, 
+    const backup = cfg.type === 'backup';
+    const t = SYNC_TYPES[cfg.type];
+    append(content,
+      h('dl', { class: 'dk-kv' },
+        h('dt', null, 'Type'), h('dd', null, t.label),
+        h('dt', null, 'This computer'), h('dd', { class: 'dk-path' }, cfg.local_path),
+        h('dt', null, 'one.gy'), h('dd', { class: 'dk-path' }, `one.gy${cfg.remote_path === '/' ? '' : cfg.remote_path}`),
+        h('dt', null, 'What to sync'), h('dd', null, describeRules(parseRules(w.ignoreText)))),
+      strategy ? h('div', { class: 'rd-field' }, h('span', { class: 'rd-field-label' }, 'Both sides already have files'), strategy) : null,
+      summary,
       field('Name', name),
       h('div', { class: 'rd-field' }, h('span', { class: 'rd-field-label' }, 'Encryption (cannot be changed later)'), encCards),
       confirmField, hideExt,
+      backup ? row('Keep files in the backup after you delete them here', 'Off: deleting a file here moves the backup copy to the one.gy trash.',
+        switchInput(!cfg.propagate_deletes, (on) => { cfg.propagate_deletes = !on; load(); })) : null,
       h('details', { class: 'dk-details' },
         h('summary', null, 'Advanced options'),
-        h('div', { class: 'dk-details-body' },
-          syncOptionsForm(cfg, { platform }),
-          h('section', { class: 'dk-opt-group' },
-            h('h3', { class: 'dk-opt-title' }, 'Filters'),
-            field('Exclusion rules (.onegyignore)', rules, 'One rule per line, same format as MEGA\'s .megaignore. Example: -:*.iso skips ISO files, -d:node_modules skips those folders.')))));
+        h('div', { class: 'dk-details-body' }, syncOptionsForm(cfg, { platform, deletes: !backup, onChange: () => load() }))));
+    load(0);
     onNext = async () => {
       if (!cfg.name.trim()) cfg.name = folderName;
       if (cfg.encryption === 'standard' && w.standardConfirm.trim() !== folderName) {
         throw new Error(`Type "${folderName}" to confirm standard encryption, or choose end-to-end encrypted.`);
       }
       if (cfg.encryption === 'standard') cfg.hide_extensions = false;
-      return true;
-    };
-  }
-
-  // ---- 7. Preview and start -------------------------------------------------------------
-  const engineConfig = () => ({ ...w.cfg, name: w.cfg.name.trim(), ignore_rules: w.ignoreText });
-
-  function stepPreview() {
-    title.textContent = 'Review and start';
-    const v = w.validation || {};
-    const bothHaveFiles = (v.local && v.local.files > 0) && (v.remote && v.remote.files > 0) && ['two_way', 'full'].includes(w.cfg.type);
-    const summary = h('div', { 'aria-live': 'polite' });
-    const strategy = h('div', { class: 'dk-radio-list', role: 'radiogroup', 'aria-label': 'Both sides have files' });
-    const load = async () => {
-      setReady(false, 'Start sync');
-      fill(summary, h('p', { class: 'rd-field-hint' }, 'Working out what will change…'));
-      try {
-        w.preview = await rpc('syncs.preview', { config: engineConfig(), initial: w.initial });
-        fill(summary, previewView(w.preview));
-        setReady(true, 'Start sync');
-      } catch (err) {
-        fill(summary, callout('bad', 'alert', err.message));
-      }
-    };
-    if (bothHaveFiles) {
-      for (const [value, label, text] of INITIAL) {
-        append(strategy, h('label', { class: 'dk-radio' },
-          h('input', { type: 'radio', name: 'initial', value, checked: w.initial === value, onchange: () => { w.initial = value; load(); } }),
-          h('span', null, h('strong', null, label), h('span', { class: 'rd-field-hint' }, text))));
-      }
-    }
-    const t = SYNC_TYPES[w.cfg.type];
-    append(content, 
-      h('dl', { class: 'dk-kv' },
-        h('dt', null, 'Type'), h('dd', null, t.label),
-        h('dt', null, 'This computer'), h('dd', { class: 'dk-path' }, w.cfg.local_path),
-        h('dt', null, 'one.gy'), h('dd', { class: 'dk-path' }, `one.gy${w.cfg.remote_path === '/' ? '' : w.cfg.remote_path}`),
-        h('dt', null, 'Encryption'), h('dd', null, w.cfg.encryption === 'e2ee' ? 'End-to-end encrypted' : 'Standard')),
-      bothHaveFiles ? h('div', { class: 'rd-field' }, h('span', { class: 'rd-field-label' }, 'Both sides already have files'), strategy) : null,
-      summary);
-    load();
-    onNext = async () => {
       const sync = await rpc('syncs.create', { config: engineConfig(), initial: w.initial });
       store.syncs.set(sync.id, sync);
       await loadSyncs().catch(() => {});
-      toast(`${sync.name} is syncing`, 'success');
+      toast(`${sync.name} is ${backup ? 'backing up' : 'syncing'}`, 'success');
       navigate('syncs');
       return false;
     };

@@ -33,6 +33,7 @@ case "$1" in
       systemctl disable --now onegy-desktop-update.timer || true
     fi
     rm -f /etc/systemd/system/onegy-desktop-update.service /etc/systemd/system/onegy-desktop-update.timer
+    rm -f /etc/polkit-1/rules.d/49-onegy-desktop-update.rules
     if [ -d /run/systemd/system ]; then
       systemctl daemon-reload || true
     fi

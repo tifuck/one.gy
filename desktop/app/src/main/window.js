@@ -8,6 +8,8 @@
 //  - panel: the native sync panel (app://ui) over the site's content area
 //           (right of the rail the site reports, setSiteInset), hidden until
 //           the rail's Sync entry, the tray or Ctrl+Shift+S opens it.
+//  - notice: app://ui/update.html, the update toast in the bottom right
+//           corner over everything, sized to the card it shows (setNoticeHeight).
 // History and zoom also have keys and mouse buttons. A failed page load shows
 // app://ui/offline.html. The panel follows the site's theme and zoom and
 // closes when a link in the site's rail opens another page.
@@ -16,7 +18,9 @@
 const path = require('path');
 const { app, BaseWindow, WebContentsView, nativeImage, session } = require('electron');
 const { webPreferences, lockChromeView, lockSiteView, configureSiteSession, originOf } = require('./security');
-const { UI_URL, OFFLINE_URL, TITLEBAR_URL, handleScheme } = require('./protocol');
+const {
+  UI_URL, OFFLINE_URL, TITLEBAR_URL, UPDATE_URL, handleScheme,
+} = require('./protocol');
 const { shortcutFor, nextZoom } = require('./shortcuts');
 
 const SITE_PARTITION = 'persist:onegy';
@@ -38,6 +42,8 @@ const PANEL_SHOW_FALLBACK_MS = 400;
 // (siteReady); fade anyway after this long.
 const SITE_READY_MAX_MS = 2000;
 const TRANSPARENT = '#00000000';
+// The update toast view's width (DIP), shadow room included (styles/update.css).
+const NOTICE_W = 380;
 
 function isMainFrameOf(frame, wc) {
   const main = wc && !wc.isDestroyed() ? wc.mainFrame : null;
@@ -64,6 +70,12 @@ class MainWindow {
     this.pendingPanel = null;
     this.showTimer = null;
     this.siteLocked = false; // app locked: no site page, the panel cannot be closed
+    this.panelScreen = null; // the screen the panel was last opened with
+    this.notice = null;
+    this.noticeHeight = 0;
+    this.update = null; // the updater's state, for the toast
+    this.resumePath = null; // the site path to open first after an update restart
+    this.maximizeOnShow = false;
   }
 
   get theme() {
@@ -79,10 +91,14 @@ class MainWindow {
     return { color: colors[0], symbolColor: colors[1], height: TITLEBAR_H - 1 };
   }
 
-  create({ show, loadSite = true }) {
+  // bounds / maximized: where the window was before an update restart.
+  create({
+    show, loadSite = true, bounds = null, maximized = false,
+  }) {
     this.win = new BaseWindow({
       width: 1280,
       height: 820,
+      ...bounds,
       minWidth: 760,
       minHeight: 520,
       show: false,
@@ -134,7 +150,18 @@ class MainWindow {
     });
     this.panel.webContents.loadURL(UI_URL);
 
+    this.notice = new WebContentsView({
+      webPreferences: webPreferences({ preload: path.join(__dirname, '..', 'preload', 'update-preload.js') }),
+    });
+    this.notice.setBackgroundColor(TRANSPARENT);
+    this.notice.setVisible(false);
+    lockChromeView(this.notice.webContents);
+    this.win.contentView.addChildView(this.notice);
+    this.notice.webContents.on('did-finish-load', () => this.sendUpdate());
+    this.notice.webContents.loadURL(UPDATE_URL);
+
     this.layout();
+    this.maximizeOnShow = maximized;
     if (show) this.show();
     return this.win;
   }
@@ -188,7 +215,14 @@ class MainWindow {
       console.error(`[WINDOW] site renderer gone: ${details.reason}`);
       this.showOffline(wc.getURL(), 'The page stopped working');
     });
-    if (load) wc.loadURL(origin + START_PATH);
+    if (load) wc.loadURL(origin + this.takeResumePath());
+  }
+
+  // The page to open first: where the user was before an update restart, once.
+  takeResumePath() {
+    const p = this.resumePath || START_PATH;
+    this.resumePath = null;
+    return p;
   }
 
   // App lock: drop the site view (its sessionStorage keys die with it) and the
@@ -208,7 +242,7 @@ class MainWindow {
 
   // App unlocked: sign the site view in with a one-use device ticket
   // (sent as a header, never in the URL) and open pathname.
-  unlockSite({ url, ticket }, pathname = START_PATH) {
+  unlockSite({ url, ticket }, pathname = this.takeResumePath()) {
     this.siteLocked = false;
     const next = new URLSearchParams({ next: pathname });
     const wc = this.site.webContents;
@@ -255,6 +289,48 @@ class MainWindow {
     if (this.titlebar) this.titlebar.setBounds({ x: 0, y: 0, width, height: top });
     if (this.site) this.site.setBounds({ x: 0, y: top, width, height: height - top });
     if (this.panel) this.panel.setBounds({ x: inset, y: top, width: width - inset, height: height - top });
+    if (this.notice) {
+      const w = Math.min(NOTICE_W, width);
+      const h = Math.min(this.noticeHeight, height - top);
+      this.notice.setBounds({ x: width - w, y: height - h, width: w, height: h });
+    }
+  }
+
+  // The toast page's card height (CSS px); 0 hides the view.
+  setNoticeHeight(px) {
+    if (px === this.noticeHeight) return;
+    this.noticeHeight = px;
+    this.notice.setVisible(px > 0);
+    this.layout();
+  }
+
+  setUpdate(state) {
+    this.update = state;
+    this.sendUpdate();
+  }
+
+  sendUpdate() {
+    if (this.notice && !this.notice.webContents.isDestroyed() && this.update) {
+      this.notice.webContents.send('onegy:update', { ...this.update, theme: this.theme });
+    }
+  }
+
+  isNoticeSender(wc) {
+    return Boolean(this.notice && wc === this.notice.webContents);
+  }
+
+  // Where the user is, for the restart after an update (main.js).
+  snapshot() {
+    const wc = this.site && !this.site.webContents.isDestroyed() && !this.siteLocked ? this.site.webContents : null;
+    let at = null;
+    try { at = wc ? new URL(wc.getURL()) : null; } catch { /* no page */ }
+    return {
+      hidden: !this.win.isVisible(),
+      maximized: this.win.isMaximized(),
+      bounds: this.win.getNormalBounds(),
+      path: at && at.origin === this.opts.serverOrigin() ? at.pathname + at.search : null,
+      panel: this.panelOpen ? this.panelScreen : null,
+    };
   }
 
   // The site's rail width (CSS px) as its preload measured it; 0 = no rail.
@@ -340,6 +416,7 @@ class MainWindow {
       theme: this.opts.settings.get().theme,
       status: this.opts.siteStatus(),
     };
+    this.panelScreen = data.screen;
     this.panelWanted = true;
     if (this.panelLoaded) this.send({ type: 'app:panel', data });
     else this.pendingPanel = data;
@@ -433,10 +510,16 @@ class MainWindow {
     this.titlebar.setBackgroundColor(TITLEBAR_COLORS[this.theme][0]);
     if (process.platform !== 'darwin') this.win.setTitleBarOverlay(this.overlay());
     this.sendTitlebar();
+    this.sendUpdate();
   }
 
   show() {
     if (!this.win) return;
+    // maximize() also shows a hidden window, so it waits for the first show.
+    if (this.maximizeOnShow) {
+      this.maximizeOnShow = false;
+      this.win.maximize();
+    }
     if (this.win.isMinimized()) this.win.restore();
     this.win.show();
     this.win.focus();

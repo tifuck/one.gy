@@ -24,7 +24,8 @@ function numberInput(value, { min = 0, max, step = 1 }, onchange) {
   });
 }
 
-export function syncOptionsForm(cfg, { platform = 'linux', onChange = () => {} } = {}) {
+// deletes: false leaves out "Sync deletes" (the wizard asks backups directly).
+export function syncOptionsForm(cfg, { platform = 'linux', deletes = true, onChange = () => {} } = {}) {
   const set = (fn) => (v) => { fn(v); onChange(); };
   cfg.schedule = { mode: 'live', interval_minutes: 15, window: null, ...cfg.schedule };
   cfg.limits = { upload_kbps: 0, download_kbps: 0, ...cfg.limits };
@@ -51,8 +52,8 @@ export function syncOptionsForm(cfg, { platform = 'linux', onChange = () => {} }
       field('Issue handling', select(ISSUE_MODE, cfg.issue_mode, set((v) => { cfg.issue_mode = v; })))),
     h('section', { class: 'dk-opt-group' },
       h('h3', { class: 'dk-opt-title' }, 'Deletes'),
-      row('Sync deletes', 'Off: deleting a file on one side leaves the other copy alone.',
-        switchInput(cfg.propagate_deletes, set((v) => { cfg.propagate_deletes = v; }))),
+      deletes ? row('Sync deletes', 'Off: deleting a file on one side leaves the other copy alone.',
+        switchInput(cfg.propagate_deletes, set((v) => { cfg.propagate_deletes = v; }))) : null,
       debris),
     h('section', { class: 'dk-opt-group' },
       h('h3', { class: 'dk-opt-title' }, 'Schedule'),
@@ -105,9 +106,3 @@ export function newSyncConfig(defaults = {}, platform = 'linux') {
     thumbnails: defaults.thumbnails !== false,
   };
 }
-
-// The ignore rules a new sync starts with (plan 6.5).
-export const DEFAULT_IGNORE_RULES = [
-  '-:desktop.ini', '-:Thumbs.db', '-:.DS_Store', '-:~$*', '-:.~lock.*#', '-:*.tmp', '-:*.swp',
-  '-:*.part', '-:*.crdownload', '-:.Trash-*', '-:$RECYCLE.BIN', '-:System Volume Information',
-].join('\n');

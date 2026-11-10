@@ -84,3 +84,21 @@ EOF
   systemctl daemon-reload || true
   systemctl enable --now onegy-desktop-update.timer || true
 fi
+
+# ONE.GY: "Update and restart" in the app starts the same service. This rule
+# lets a user signed in at this computer start just that unit without a
+# password (it can only install the latest release, sha512-checked); polkit
+# without rules.d (older Debian/Ubuntu) asks for the password instead.
+if [ -d /etc/polkit-1/rules.d ]; then
+  cat > /etc/polkit-1/rules.d/49-onegy-desktop-update.rules <<'EOF'
+polkit.addRule(function (action, subject) {
+  if (action.id === "org.freedesktop.systemd1.manage-units" &&
+      action.lookup("unit") === "onegy-desktop-update.service" &&
+      action.lookup("verb") === "start" &&
+      subject.local && subject.active) {
+    return polkit.Result.YES;
+  }
+});
+EOF
+  chmod 644 /etc/polkit-1/rules.d/49-onegy-desktop-update.rules
+fi

@@ -1,8 +1,9 @@
 // ipcMain handlers. The native panel may call a fixed list of engine methods
 // plus a few app-owned actions; the title bar sends history commands and its
-// colours; the website gets the site bridge (desktop/docs/site-bridge.md):
-// unlock key, open the sync panel, sync status, its theme, its rail width and
-// its sign-out. Every handler checks who is asking and validates what it gets.
+// colours; the update toast its action and height; the website gets the site
+// bridge (desktop/docs/site-bridge.md): unlock key, open the sync panel, sync
+// status, its theme, its rail width and its sign-out. Every handler checks
+// who is asking and validates what it gets.
 'use strict';
 
 const fs = require('fs/promises');
@@ -50,8 +51,10 @@ async function probeServer(raw) {
 }
 
 // deps: { window (MainWindow), engine (EngineSupervisor), settings (SettingsStore),
-//         sync (SyncStatus), lockNow(), signOut(): 'site' | 'done' | 'cancelled' }
-function registerIpc({ window, engine, settings, sync, lockNow, signOut }) {
+//         sync (SyncStatus), updater (updater.js), lockNow(), signOut(): 'site' | 'done' | 'cancelled' }
+function registerIpc({
+  window, engine, settings, sync, updater, lockNow, signOut,
+}) {
   const fromChrome = (event) => window.isPanelSender(event.sender)
     && isMainFrameOf(event.senderFrame, event.sender)
     && isUiUrl(event.senderFrame.url);
@@ -154,6 +157,14 @@ function registerIpc({ window, engine, settings, sync, lockNow, signOut }) {
     { engine: { call: (m, p) => engine.call(m, p, { timeoutMs: SLOW_TIMEOUT_MS }) }, trash: (p) => shell.trashItem(p) },
     id, isPlainObject(opts) ? opts : {},
   ));
+  handle('app:update:state', () => updater.state());
+  handle('app:update:check', () => updater.check());
+  // Installs (and restarts) in the background; state arrives as app:update events.
+  handle('app:update:install', () => {
+    if (window.panelOpen) window.panelScreen = 'settings';
+    updater.install();
+    return updater.state();
+  });
   handle('app:openDataFolder', async () => {
     const info = await engine.call('engine.info');
     if (info && typeof info.state_dir === 'string' && path.isAbsolute(info.state_dir)) await shell.openPath(info.state_dir);
@@ -169,6 +180,15 @@ function registerIpc({ window, engine, settings, sync, lockNow, signOut }) {
   ipcMain.on('titlebar:colors', (event, c) => {
     if (!window.isTitlebarSender(event.sender) || !isPlainObject(c) || !isCssColor(c.color) || !isCssColor(c.symbolColor)) return;
     window.setTitlebarColors(c.color, c.symbolColor);
+  });
+
+  // Update toast: only its own view.
+  const fromNotice = (event) => window.isNoticeSender(event.sender) && isMainFrameOf(event.senderFrame, event.sender) && isUiUrl(event.senderFrame.url);
+  ipcMain.on('update:install', (event) => {
+    if (fromNotice(event)) updater.install();
+  });
+  ipcMain.on('update:size', (event, px) => {
+    if (fromNotice(event) && Number.isFinite(px) && px >= 0 && px <= 600) window.setNoticeHeight(Math.ceil(px));
   });
 
   // Website bridge: only the site view's main frame on the configured origin.

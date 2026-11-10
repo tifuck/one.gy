@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" data-theme="frost-dark">
+<head>
+  <meta charset="utf-8">
+  <title>Update</title>
+  <link rel="stylesheet" href="site/core.css">
+  <link rel="stylesheet" href="site/themes.css">
+  <link rel="stylesheet" href="site/ui-v2.css">
+  <link rel="stylesheet" href="styles/update.css">
+  <script type="module" src="update.js"></script>
+</head>
+<body class="ui-v2 up">
+  <div class="up-wrap" id="wrap" hidden>
+    <section class="up-card" id="card" role="status" aria-live="polite" aria-labelledby="title">
+      <h1 class="up-title" id="title"></h1>
+      <p class="up-text" id="text"></p>
+      <div class="up-bar" id="bar" hidden></div>
+      <div class="up-actions" id="actions">
+        <button type="button" class="rd-btn rd-btn-ghost rd-btn-sm" id="later">Later</button>
+        <button type="button" class="rd-btn rd-btn-primary rd-btn-sm" id="go"></button>
+      </div>
+      <button type="button" class="up-close" id="close" title="Close" aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </section>
+  </div>
+</body>
+</html>

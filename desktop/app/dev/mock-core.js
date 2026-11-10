@@ -41,7 +41,7 @@
     };
     const syncs = new Map();
     const addSync = (s) => syncs.set(s.id, Object.assign({}, baseSync, s));
-    if (o.signedIn) {
+    if (o.signedIn && !o.empty) {
       addSync({ id: 's_work', name: 'Work', type: 'two_way', local_path: local('Work'), remote_folder_id: 12, remote_path: '/Work', state: 'syncing',
         stats: { pending_up: 3, pending_down: 1, bytes_left: 158334976, issues: 2, last_synced_at: iso(60000) } });
       addSync({ id: 's_photos', name: 'Photos', type: 'backup', local_path: local('Pictures'), remote_folder_id: 21, remote_path: '/Backups/alice-laptop/Pictures', state: 'up_to_date',
@@ -93,6 +93,31 @@
         { type: 'folder', id: 21, parent_id: 20, name: 'alice-laptop', is_e2e: true },
       ], files: [] },
     };
+
+    // A pretend local folder for syncs.browse, whatever path is asked for.
+    const localTree = {
+      '': [['src', 'folder'], ['docs', 'folder'], ['node_modules', 'folder'], ['build', 'folder'], ['.git', 'folder'],
+        ['README.md', 'file', 4200], ['demo-recording.mp4', 'file', 2.4e9], ['notes.txt', 'file', 900], ['Thumbs.db', 'file', 12000]],
+      src: [['components', 'folder'], ['__pycache__', 'folder'], ['main.js', 'file', 18000], ['util.js', 'file', 5300], ['debug.log', 'file', 81000]],
+      docs: [['drafts', 'folder'], ['guide.pdf', 'file', 1.2e6], ['logo.png', 'file', 64000]],
+      'src/components': [['Button.js', 'file', 2100], ['Menu.js', 'file', 3400]],
+    };
+    // Roughly the engine's matcher: name globs, -d: folders, exact -pR:/+pR: paths, exclude-larger.
+    function mockMatch(text, path, kind, size) {
+      let verdict = null;
+      let larger = -1;
+      const name = path.split('/').pop();
+      const glob = (g) => new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i');
+      for (const line of String(text || '').split('\n')) {
+        let m = /^exclude-larger:(\d+)([KMG]?)$/i.exec(line);
+        if (m) { larger = Number(m[1]) * ({ k: 1024, m: 1048576, g: 1073741824 }[m[2].toLowerCase()] || 1); continue; }
+        m = /^([-+])pR:(.*)$/.exec(line);
+        if (m) { if (m[2].replace(/\\(.)/g, '$1') === path) verdict = m[1] === '-'; continue; }
+        m = /^([-+])(d?):(.+)$/.exec(line);
+        if (m && (!m[2] || kind === 'folder') && glob(m[3]).test(name)) verdict = m[1] === '-';
+      }
+      return { excluded: verdict === true, size_skipped: verdict === null && kind === 'file' && larger >= 0 && size > larger };
+    }
 
     function emit(type, data) {
       for (const fn of listeners) fn({ type, data: JSON.parse(JSON.stringify(data)) });
@@ -220,11 +245,33 @@
         return s;
       },
       'syncs.remove': (p) => { getSync(p.id); syncs.delete(p.id); return {}; },
+      'syncs.browse': (p) => {
+        const rel = p.path || '';
+        const byName = new Map();
+        if (p.local_path) for (const [name, kind, size] of localTree[rel] || []) byName.set(name, { name, kind, size: size || 0, local: true, remote: false });
+        if ('remote_folder_id' in p) {
+          const hit = remote[p.remote_folder_id === null || p.remote_folder_id === undefined ? 'null' : p.remote_folder_id];
+          for (const n of [...((hit && hit.folders) || []), ...((hit && hit.files) || [])]) {
+            const it = byName.get(n.name) || { name: n.name, kind: n.type, size: n.size_plain || 0, local: false };
+            it.remote = true;
+            if (n.type === 'folder') it.remote_id = n.id;
+            byName.set(n.name, it);
+          }
+        }
+        const ancestors = rel ? rel.split('/').map((_, i, a) => a.slice(0, i + 1).join('/')) : [];
+        const parentOut = ancestors.some((a) => mockMatch(p.ignore_rules, a, 'folder', 0).excluded);
+        const items = [...byName.values()].map((it) => {
+          const path = rel ? `${rel}/${it.name}` : it.name;
+          const m = mockMatch(p.ignore_rules, path, it.kind, it.size);
+          return Object.assign(it, { path, excluded: parentOut || m.excluded, size_skipped: !parentOut && m.size_skipped });
+        }).sort((a, b) => (a.kind === b.kind ? a.name.toLowerCase().localeCompare(b.name.toLowerCase()) : a.kind === 'folder' ? -1 : 1));
+        return { items, errors: [], more: 0, folder_excluded: parentOut };
+      },
       'syncs.backupTarget': (p) => {
         needSignedIn();
         const name = String(p.local_path || '').split(/[\\/]/).filter(Boolean).pop() || 'Folder';
         const path = `/Backups/${account.device_name}/${name}`;
-        return { folder_id: p.create ? 21 : null, path, exists: Boolean(p.create) };
+        return { folder_id: p.create ? 22 : null, path, exists: Boolean(p.create) }; // 21 is Photos' backup
       },
       'syncs.clearDebris': (p) => { getSync(p.id); return {}; },
       'engine.clearCaches': () => ({}),

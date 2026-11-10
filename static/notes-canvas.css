@@ -238,6 +238,13 @@
 }
 /* Touch: a move grip and resize handles a finger can actually hit */
 @media (pointer:coarse){
+  /* The toolbar too, at any width: a tablet is wider than the phone layout above but is still used with a finger */
+  .fxc-tools{ height:40px; }
+  .fxc-tool{ width:38px; }
+  .fxc-colors{ gap:10px; }
+  .fxc-swatch{ width:22px; height:22px; }
+  .fxc-abtn{ width:38px; height:36px; }
+  .fxc-zoom{ height:36px; }
   .fxc-grip{ top:-24px; width:48px; height:24px; border-radius:12px; }
   .fxc-handle{ width:18px; height:18px; border-radius:6px; }
   .fxc-h-nw, .fxc-h-n, .fxc-h-ne{ top:-10px; } .fxc-h-sw, .fxc-h-s, .fxc-h-se{ bottom:-10px; }

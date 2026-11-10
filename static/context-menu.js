@@ -4,7 +4,7 @@
 
    window.RdMenu.open(x, y, items)
      items: array of
-       { label, icon?, action?, danger?, disabled?, hint? }   // a row
+       { label, icon?, action?, danger?, disabled?, hint?, active? }   // a row (active: the current choice)
        { sep: true }                                           // divider
        { header: 'TEXT' }                                      // section label
        { swatches: [{ color, label, active? }], onPick }       // colour picker row
@@ -16,6 +16,15 @@
 (function () {
   'use strict'
   var menu = null
+  // Touch. A long-press opens the menu while the finger is still down, and a tap outside an open menu lands on
+  // whatever is under it. The mouse events a touch trails when it lifts must not close the menu that just opened,
+  // pick the row that opened under the finger, or activate what the dismissing tap happened to hit.
+  var touchDown = false, touchEnded = 0, heldOpen = false, eatClick = false
+  function touchLifted (e) { if (!e.touches.length) { touchDown = false; touchEnded = Date.now() } }
+  document.addEventListener('touchstart', function () { touchDown = true; heldOpen = eatClick = false }, { capture: true, passive: true })
+  document.addEventListener('touchend', touchLifted, { capture: true, passive: true })
+  document.addEventListener('touchcancel', touchLifted, { capture: true, passive: true })
+  document.addEventListener('click', function (e) { if (!heldOpen && !eatClick) return; heldOpen = eatClick = false; e.preventDefault(); e.stopPropagation() }, true)
   function esc (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] }) }
 
   function ensure () {
@@ -24,16 +33,21 @@
     menu.className = 'rd-cmenu'
     menu.setAttribute('role', 'menu')
     document.body.appendChild(menu)
-    document.addEventListener('mousedown', function (e) { if (!e.target.closest('.rd-cmenu')) close() }, true)
+    document.addEventListener('mousedown', function (e) {
+      if (heldOpen || e.target.closest('.rd-cmenu')) return
+      if (menu.classList.contains('is-open') && Date.now() - touchEnded < 700) eatClick = true
+      close()
+    }, true)
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close() })
     window.addEventListener('resize', close)
     window.addEventListener('blur', close)
-    document.addEventListener('scroll', close, true)
+    document.addEventListener('scroll', function (e) { if (e.target !== menu) close() }, true) // a long menu scrolls itself
     return menu
   }
 
   function open (x, y, items) {
     var m = ensure()
+    heldOpen = touchDown
     var acts = []
     var swatchSets = []
     m.innerHTML = (items || []).map(function (it) {
@@ -53,7 +67,7 @@
       var ico = it.icon
         ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + it.icon + '</svg>'
         : '<span class="rd-cmenu-ico"></span>'
-      return '<button class="rd-cmenu-item' + (it.danger ? ' rd-cmenu-danger' : '') + '"' + (it.disabled ? ' disabled' : '') + '>' +
+      return '<button class="rd-cmenu-item' + (it.danger ? ' rd-cmenu-danger' : '') + (it.active ? ' is-active' : '') + '"' + (it.disabled ? ' disabled' : '') + (it.active ? ' aria-current="true"' : '') + '>' +
         ico + '<span class="rd-cmenu-label">' + esc(it.label) + '</span>' +
         (it.hint ? '<span class="rd-cmenu-hint">' + esc(it.hint) + '</span>' : '') + '</button>'
     }).join('')

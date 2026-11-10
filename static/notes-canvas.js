@@ -210,7 +210,8 @@
       var c = cropInsets(block); return { x: block.x + block.w * c.l, y: block.y + block.h * c.t, w: block.w * (1 - c.l - c.r), h: block.h * (1 - c.t - c.b) }
     }
     function contentExtents () { var maxX = 0, maxY = 0; blocks.forEach(function (block) { maxX = Math.max(maxX, (+block.x || 0) + (+block.w || 0)); maxY = Math.max(maxY, (+block.y || 0) + (+block.h || 0)) }); return { x: maxX, y: maxY } }
-    function pageWidth () { var avail = Math.max(320, Math.floor((vp.clientWidth || PAGE_WIDTH) / zoom)); return Math.max(avail, Math.ceil(contentExtents().x + 40)) }
+    // The 40px margin is only for content that already reaches past the window: it made a block that still fit scroll the page sideways.
+    function pageWidth () { var avail = Math.max(320, Math.floor((vp.clientWidth || PAGE_WIDTH) / zoom)), right = Math.ceil(contentExtents().x); return right > avail ? right + 40 : avail }
     function pageHeight () { var minH = Math.max(480, Math.ceil((vp.clientHeight || 600) / zoom)); return Math.min(CANVAS_MAX_Y, Math.max(minH, Math.ceil(contentExtents().y + 300))) }
     function updatePageSize () {
       if (gesture || draw) return // page stays fixed during drags so pointer math is stable; grows on release
@@ -272,6 +273,9 @@
         })
       }
       if (g && g.type === 'marquee') paintSelection(); else renderOverlay()
+      // OneNote: a pinch zooms about the spot between the fingers, and moving both fingers pans. The page used to grow from
+      // its top-left corner instead, so whatever was being pinched slid off the screen.
+      if (pinch && pinch.x != null) { var rect = page.getBoundingClientRect(); vp.scrollLeft += rect.left + pinch.wx * zoom - pinch.x; vp.scrollTop += rect.top + pinch.wy * zoom - pinch.y }
     }
     function isAutoHeight (block) { return block && (block.type === 'text' || block.type === 'todo' || block.type === 'table' || block.type === 'code') }
     function syncBlockHeight (block, node) {
@@ -390,8 +394,25 @@
       }
       var equal = []; for (var i = 0; i < cols; i++) equal.push(100 / cols); return equal
     }
+    // Is the caret on the cell's first/last line (up/down) or at the very start/end of its text (left/right)?
+    function caretAtCellEdge (cell, key) {
+      var selection = window.getSelection(); if (!selection.rangeCount || !selection.isCollapsed) return false
+      var range = selection.getRangeAt(0), caret = range.getClientRects()[0], rest = range.cloneRange(); rest.selectNodeContents(cell)
+      var text = rest.getBoundingClientRect() // the text, not the cell: a neighbour with more lines makes the cell taller than its own text
+      if (key === 'ArrowUp' || key === 'ArrowDown') return !caret || !text.height || (key === 'ArrowUp' ? caret.top - text.top : text.bottom - caret.bottom) < caret.height / 2
+      if (key === 'ArrowLeft') rest.setEnd(range.startContainer, range.startOffset); else rest.setStart(range.endContainer, range.endOffset)
+      return !rest.toString()
+    }
     function tableCellKeydown (event, block, rr, cc) {
       if (readonly) return
+      // Word and OneNote: the arrow keys walk on into the next cell once the caret is at the edge of this one.
+      var step = !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[event.key]
+      if (step && caretAtCellEdge(event.currentTarget, event.key)) {
+        var flatCell = rr * block.cols + cc + step[1], toRow = step[0] ? rr + step[0] : Math.floor(flatCell / block.cols)
+        if (flatCell < 0 || toRow < 0 || toRow >= block.rows) return
+        event.preventDefault(); focusTableCell(block.id, toRow, step[0] ? cc : flatCell % block.cols, event.key === 'ArrowUp' || event.key === 'ArrowLeft')
+        return
+      }
       if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
         var flat = rr * block.cols + cc, next = flat + (event.shiftKey ? -1 : 1)
         if (next < 0) return
@@ -445,7 +466,7 @@
       }
       return node
     }
-    function focusTableCell (blockId, row, col) { focusNow(function () { var node = blockNode(blockId), cell = node && node.querySelector('td[data-row="' + row + '"][data-col="' + col + '"]'); if (cell) cell.focus(); return !!cell }) }
+    function focusTableCell (blockId, row, col, atEnd) { focusNow(function () { var node = blockNode(blockId), cell = node && node.querySelector('td[data-row="' + row + '"][data-col="' + col + '"]'); if (cell) { cell.focus(); if (atEnd) { window.getSelection().selectAllChildren(cell); window.getSelection().collapseToEnd() } } return !!cell }) }
     function insertSanitizedAtCaret (html, text) {
       var frag = sanitizeToFragment(html || '')
       if (!frag.childNodes.length) {
@@ -868,7 +889,8 @@
       toolSep()
       toolButton('• List', 'Bulleted list', 'insertUnorderedList'); toolButton('1. List', 'Numbered list', 'insertOrderedList'); toolButton('❝', 'Quote', 'formatBlock', 'blockquote')
       toolSep()
-      var link = controlButton('Link', function () { var url = safeUrl(window.prompt('Link URL'), false); if (url) command('createLink', url) }); link.title = 'Insert link'; link.addEventListener('pointerdown', function (event) { event.preventDefault() }); popover.appendChild(link)
+      // A bare "example.com" would resolve against this site and link to /example.com.
+      var link = controlButton('Link', function () { var typed = (window.prompt('Link URL') || '').trim(), url = typed && safeUrl(/^(https?:\/\/|mailto:)/i.test(typed) ? typed : 'https://' + typed, false); if (url) command('createLink', url) }); link.title = 'Insert link'; link.addEventListener('pointerdown', function (event) { event.preventDefault() }); popover.appendChild(link)
       colorControl('A', 'Text colour', '#0f1720', 'foreColor')
       colorControl('▰', 'Highlight', '#faef5a', 'hiliteColor')
       toolSep()
@@ -925,7 +947,7 @@
           if (block && pressCell && block.type === 'table') showTableMenu(block, pressCell, longPress.x, longPress.y)
           else if (block) showBlockMenu(block, longPress.x, longPress.y)
           else { selectBlock(null); showInsertMenu(longPress.x, longPress.y) }
-          longPress.fired = true; gesture = null; draw = null
+          longPress.fired = true; heldMenu = true; gesture = null; draw = null
           if (navigator.vibrate) navigator.vibrate(20)
         }, 550)
       }
@@ -936,8 +958,9 @@
       beginLongPress(event)
     }, { capture: true })
     vp.addEventListener('pointerdown', function (event) {
-      if (popover && !popover.contains(event.target)) closePopover()
-      if (Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }); pinch = { distance: distance(values[0], values[1]), zoom: zoom }; gesture = null; draw = null; return }
+      // A tap outside an open menu only dismisses it (it used to start a text container there as well).
+      if (popover && !popover.contains(event.target)) { var wasMenu = popover.classList.contains('rd-cmenu'); closePopover(); if (wasMenu && event.pointerType === 'touch') return }
+      if (Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }), between = toWorld((values[0].x + values[1].x) / 2, (values[0].y + values[1].y) / 2); pinch = { distance: distance(values[0], values[1]), zoom: zoom, wx: between.x, wy: between.y }; gesture = null; draw = null; return }
       if (readonly) return // native scroll + text selection
       if (event.button === 1 || spaceHeld) { event.preventDefault(); startScrollDrag(event); return }
       if (event.target.closest('.fxc-block,.fxc-handle,.fxc-colgrip')) return
@@ -957,7 +980,7 @@
     vp.addEventListener('pointermove', function (event) {
       if (pointers[event.pointerId]) { pointers[event.pointerId].x = event.clientX; pointers[event.pointerId].y = event.clientY }
       if (longPress && longPress.pointerId === event.pointerId && distance({ x: event.clientX, y: event.clientY }, longPress) > 10) { clearTimeout(longPress.timer); longPress = null }
-      if (pinch && Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }), d = distance(values[0], values[1]); zoom = Math.max(.2, Math.min(4, pinch.zoom * d / pinch.distance)); scheduleGesturePaint(); return }
+      if (pinch && Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }), d = distance(values[0], values[1]); zoom = Math.max(.2, Math.min(4, pinch.zoom * d / pinch.distance)); pinch.x = (values[0].x + values[1].x) / 2; pinch.y = (values[0].y + values[1].y) / 2; scheduleGesturePaint(); return }
       if (draw && draw.pointerId === event.pointerId) { var drawPoint = toWorld(event.clientX, event.clientY); if (draw.type === 'draw') draw.points.push([drawPoint.x, drawPoint.y]); else draw.points[1] = [drawPoint.x, drawPoint.y]; drawLive(); return }
       if (!gesture || gesture.pointerId !== event.pointerId) return
       if (gesture.type === 'tap') return
@@ -1013,6 +1036,11 @@
       if (event.ctrlKey || event.metaKey) { event.preventDefault(); zoomBy(event.deltaY < 0 ? 1.08 : 1 / 1.08, event.clientX, event.clientY) }
     }, { passive: false })
     vp.addEventListener('contextmenu', function (event) { if (readonly || event.target.closest('.fxc-block')) return; event.preventDefault(); selectBlock(null); showInsertMenu(event.clientX, event.clientY) })
+    // OneNote: a click or tap on a link opens it. (Read-only pages are not editable, so the browser follows their links itself.)
+    vp.addEventListener('click', function (event) {
+      var link = !readonly && event.target.closest('.fxc-text-content a[href], td a[href]'), url = link && window.getSelection().isCollapsed && safeUrl(link.getAttribute('href'), false)
+      if (url) { event.preventDefault(); window.open(url, '_blank', 'noopener,noreferrer') }
+    })
     vp.addEventListener('mouseup', function (event) {
       if (readonly || event.button !== 0) return
       var content = event.target.closest('.fxc-text-content,td'), blockNode = event.target.closest('.fxc-block'), block = blockNode && byId(blockNode.dataset.id)
@@ -1118,6 +1146,8 @@
         return
       }
       if (event.code === 'Space' && !editing) { event.preventDefault(); spaceHeld = true; vp.classList.add('is-pan-ready') }
+      // OneNote: Esc while typing leaves the text and keeps its container selected (Delete then removes it, the arrows nudge it).
+      if (event.key === 'Escape' && editing && root.contains(editing)) { event.preventDefault(); if (provisionalText[selected]) selectBlock(null); vp.focus(); return }
       if (editing) return
       if (event.key === 'Escape') { event.preventDefault(); if (tool !== 'select') setTool('select'); selectBlock(null); vp.focus(); return }
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedIds.length) { event.preventDefault(); removeSelected() }
@@ -1136,6 +1166,11 @@
     function onKeyUp (event) { if (event.code === 'Space') { spaceHeld = false; vp.classList.remove('is-pan-ready') } }
     document.addEventListener('keydown', onKeyDown, { signal: signal }); document.addEventListener('keyup', onKeyUp, { signal: signal })
     document.addEventListener('pointerdown', function (event) { if (popover && !popover.contains(event.target) && !vp.contains(event.target)) closePopover() }, { signal: signal })
+    // A long-press menu opens under a finger that is still down: the click that finger trails when it lifts
+    // must not pick whichever row happened to open beneath it.
+    var heldMenu = false
+    document.addEventListener('pointerdown', function () { heldMenu = false }, { capture: true, signal: signal })
+    document.addEventListener('click', function (event) { if (!heldMenu) return; heldMenu = false; event.preventDefault(); event.stopPropagation() }, { capture: true, signal: signal })
     window.addEventListener('blur', closePopover, { signal: signal }); window.addEventListener('resize', function () { closePopover(); updatePageSize() }, { signal: signal })
 
     // OneNote: Enter in the page title starts typing on the page - in its first text container, or a new one.

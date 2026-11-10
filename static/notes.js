@@ -13,7 +13,7 @@
     noteKey: null, meta: null, ver: null, titles: {}, dirty: false, saveTimer: null,
     currentType: null, canvas: null, isSaving: false, saveAgain: false,
     editRevision: 0, openSeq: 0, pendingOpenId: null, saveFailures: 0, query: '',
-    trashCount: 0, storage: null, editorReady: false, saveBlocked: false
+    trashCount: 0, editorReady: false, saveBlocked: false
   }
   var $ = function (id) { return document.getElementById(id) }
   var listEl, editorEl
@@ -208,14 +208,12 @@
       S.notebooks = nbData.notebooks || []
       await Promise.all(S.notebooks.map(async function (nb) { nb._name = await decNotebookName(nb, mk) }))
       S.trashCount = loaded[1] ? (loaded[1].notes || []).length : (nbData.trash_count || 0)
-      if (nbData.storage_used_bytes != null) S.storage = { used: nbData.storage_used_bytes, limit: nbData.storage_limit_gb }
-      renderRail(!railShown); railShown = true
       await loadNotes()
     } catch (e) { listEl.innerHTML = errState('Could not load notebooks.') }
   }
 
   var loadNotesSeq = 0
-  var railShown = false, loadedView = null  // entrance animations: first load / view switch only
+  var loadedView = null  // entrance animation: only when a view's notes are first shown
   async function loadNotes () {
     var seq = ++loadNotesSeq  // a later view switch supersedes this response
     var mk = await masterKey(); if (!mk || seq !== loadNotesSeq) return
@@ -238,47 +236,7 @@
     } catch (e) { if (seq === loadNotesSeq) listEl.innerHTML = errState('Could not load notes.') }
   }
 
-  function renderRail (animate) {
-    // Entrance only on the initial load — view switches re-render the rail for
-    // the active state and must not replay it
-    var rail = $('ntRail'); if (!rail) return
-    rail.classList.toggle('is-anim', !!animate)
-    var sys = '<button type="button" class="nt-rail-item rd-side-row' + (S.view === 'all' ? ' is-active' : '') + '" data-view="all"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="3.5" width="15" height="17" rx="2.5"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4"/></svg><span class="nt-nb-name">All notes</span></button>' +
-      '<button type="button" class="nt-rail-item rd-side-row' + (S.view === 'unfiled' ? ' is-active' : '') + '" data-view="unfiled"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13.5V6.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span class="nt-nb-name">Unfiled</span></button>'
-    var nbs = S.notebooks.filter(function (n) { return !n.is_trashed }).map(function (nb) {
-      var col = normColor(nb.color)
-      return '<button type="button" class="nt-rail-item rd-side-row nt-nb' + (col ? ' has-color' : '') + (String(S.view) === String(nb.id) ? ' is-active' : '') + '" data-view="' + nb.id + '"' + (col ? ' style="--nt-color:' + col + '"' : '') + '><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + NI.notebook + '</svg><span class="nt-nb-name">' + esc(nb._name) + '</span><span class="nt-nb-count">' + (nb.note_count || 0) + '</span></button>'
-    }).join('')
-    var trash = '<button type="button" class="rd-side-trash' + (S.view === 'trash' ? ' is-active' : '') + '" data-view="trash" title="Trash" aria-label="Trash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="' + TRASH_PATH + '"/></svg><span class="rd-side-trash-count" id="ntTrashCount"' + (S.trashCount > 0 ? '' : ' hidden') + '>' + (S.trashCount || 0) + '</span></button>'
-    rail.innerHTML = '<div class="rd-side-inner">' +
-      '<div class="rd-side-head"><span>Library</span><button type="button" class="rd-side-collapse" data-rd-collapse="side" title="Collapse library" aria-label="Collapse library"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15M16 9.5 13.5 12l2.5 2.5"/></svg></button></div>' +
-      '<nav class="nt-rail-scroll rd-side-scroll" aria-label="Notebooks">' + sys +
-        '<div class="rd-side-subhead"><span>Notebooks</span><button type="button" id="ntNewNb" title="New notebook" aria-label="New notebook"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 6v12M6 12h12"/></svg></button></div>' +
-        (nbs || '<div class="rd-side-hint">No notebooks</div>') +
-      '</nav>' +
-      '<div class="rd-side-foot">' + trash +
-        '<div class="rd-side-storage"><span>Storage</span><b id="ntStorageTxt">…</b></div>' +
-        '<div class="rd-meter"><div class="rd-meter-fill" id="ntMeter" style="width:0%"></div></div>' +
-      '</div></div>'
-    if (animate) {
-      var kids = rail.querySelectorAll('.rd-side-scroll > *, .rd-side-foot > *')
-      for (var i = 0; i < kids.length; i++) kids[i].style.setProperty('--i', i)
-    }
-    renderStorage()
-  }
   var TRASH_PATH = 'M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2'
-
-  function fmtBytes (b) { if (!b) return '0 B'; var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = Math.min(u.length - 1, Math.floor(Math.log(b) / Math.log(1024))); return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i] }
-  function renderStorage () {
-    if (!S.storage || S.storage.used == null) return
-    var used = S.storage.used, lim = S.storage.limit
-    var txt = $('ntStorageTxt'); if (txt) txt.textContent = fmtBytes(used) + ' of ' + lim + ' GB'
-    var pct = lim > 0 ? Math.min(100, (used / (lim * 1073741824)) * 100) : 0
-    var f = $('ntMeter'); if (!f) return
-    f.style.width = pct + '%'
-    f.classList.toggle('is-warn', pct >= 75 && pct < 90)
-    f.classList.toggle('is-bad', pct >= 90)
-  }
 
   // The head and search box are patched in place and only .nt-items is
   // replaced: rebuilding the whole pane reset the list's scroll on every
@@ -297,7 +255,10 @@
     return items
   }
   function listHead () {
-    return '<div class="nt-list-head"><button type="button" class="nt-rail-toggle" id="ntRailToggle" aria-label="Notebooks" title="Notebooks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg></button><h2 class="nt-list-title" title="' + esc(viewTitle()) + '">' + esc(viewTitle()) + '</h2>' +
+    var nb = S.notebooks.filter(function (n) { return String(n.id) === String(S.view) })[0], col = nb && normColor(nb.color)
+    return '<div class="nt-list-head"><h2 class="nt-list-title"><button type="button" class="nt-switch" id="ntSwitch" title="' + esc(viewTitle()) + '" aria-haspopup="menu">' +
+      (col ? '<span class="nt-switch-dot" style="--nb-color:' + col + '"></span>' : '') + '<span class="nt-switch-name">' + esc(viewTitle()) + '</span>' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button></h2>' +
       (S.view !== 'trash' ? '<button type="button" class="nt-newnote" id="ntNewNote" title="New note, canvas or notebook" aria-label="New" aria-haspopup="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg><span>New</span><svg class="nt-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></button>'
         : S.notes.length ? '<button type="button" class="nt-newnote nt-empty-trash" id="ntEmptyTrash">Empty trash</button>' : '') + '</div>'
   }
@@ -318,11 +279,18 @@
         (col ? ' style="--nt-color:' + col + '"' : '') + '>' +
         '<span class="nt-item-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (canvas ? NI.canvas : NI.doc) + '</svg></span>' +
         '<span class="nt-item-main"><span class="nt-item-row"><span class="nt-item-title">' + (n.is_pinned && !pinned ? '<svg class="nt-pin" viewBox="0 0 24 24" fill="currentColor"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg>' : '') + '<span class="nt-item-name">' + esc(n._title || 'Untitled') + '</span></span></span>' +
-        '<span class="nt-item-meta"><span>' + esc(fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' +
+        '<span class="nt-item-meta"><span>' + esc(fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' + nbTag(n) +
         (canvas ? '<span class="nt-badge">Canvas</span>' : '') + '</span></span></button>'
     }).join('')
     listItemsEl().innerHTML = items || listEmpty(S.query.trim())
     if (animate) { var its = listEl.querySelectorAll('.nt-item'); for (var ii = 0; ii < its.length; ii++) its[ii].style.setProperty('--i', ii) }
+  }
+  // All notes mixes notebooks, so each row names its own.
+  function nbTag (n) {
+    var nb = S.view === 'all' && n.notebook_id != null && S.notebooks.filter(function (b) { return String(b.id) === String(n.notebook_id) })[0]
+    if (!nb) return ''
+    var col = normColor(nb.color)
+    return '<span class="nt-item-nb"' + (col ? ' style="--nb-color:' + col + '"' : '') + '>' + esc(nb._name) + '</span>'
   }
   function sectionLabel (label, count) { return '<div class="nt-section">' + label + '<span>' + count + '</span></div>' }
   function listEmpty (q) {
@@ -432,6 +400,9 @@
     var tools = readonly ? '' :
       '<div class="nt-toolbar" role="toolbar" aria-label="Note formatting">' +
       tbtn('undo', ico(TB.undo), 'Undo') + tbtn('redo', ico(TB.redo), 'Redo') + '<span class="nt-tb-sep"></span>' +
+      '<select class="nt-tb-select nt-tb-font" data-cmd="fontName" title="Font" aria-label="Font"><option value="inherit">Default</option>' + FONT_FACES.map(function (face) { return '<option>' + face + '</option>' }).join('') + '</select>' +
+      '<select class="nt-tb-select nt-tb-size" data-cmd="fontSize" title="Font size" aria-label="Font size">' + FONT_SIZES.map(function (size, i) { return '<option value="' + (i + 1) + '"' + (i === 2 ? ' selected' : '') + '>' + size + '</option>' }).join('') + '</select>' +
+      '<span class="nt-tb-sep"></span>' +
       tbtn('bold', 'B', 'Bold', 'font-weight:700') + tbtn('italic', 'I', 'Italic', 'font-style:italic') + tbtn('underline', 'U', 'Underline', 'text-decoration:underline;text-underline-offset:2px') + tbtn('strikeThrough', 'S', 'Strikethrough', 'text-decoration:line-through') +
       '<span class="nt-tb-sep"></span>' +
       tbtn2('formatBlock', 'H1', 'Heading 1', '<h1>') + tbtn2('formatBlock', 'H2', 'Heading 2', '<h2>') + tbtn2('formatBlock', 'H3', 'Heading 3', '<h3>') + tbtn2('formatBlock', ico(TB.quote), 'Quote', '<blockquote>') + tbtn2('formatBlock', ico(TB.code), 'Code block', '<pre>') +
@@ -439,7 +410,10 @@
       tbtn('insertUnorderedList', ico(TB.ul), 'Bulleted list') + tbtn('insertOrderedList', ico(TB.ol), 'Numbered list') +
       '<button type="button" class="nt-tb-btn" data-check title="Checklist (Ctrl+1)" aria-label="Checklist">' + ico(TB.check) + '</button>' +
       '<span class="nt-tb-sep"></span>' +
+      Object.keys(ALIGN).map(function (key) { return tbtn(ALIGN[key][0], ico(ALIGN[key][2]), ALIGN[key][1] + ' (Ctrl+Shift+' + key.toUpperCase() + ')') }).join('') +
+      '<span class="nt-tb-sep"></span>' +
       '<button type="button" class="nt-tb-btn" data-link title="Insert link (Ctrl+K)" aria-label="Insert link">' + ico(TB.link) + '</button><button type="button" class="nt-tb-btn" data-image title="Insert image" aria-label="Insert image">' + ico(TB.image) + '</button>' +
+      '<button type="button" class="nt-tb-btn" data-table title="Table" aria-label="Table" aria-haspopup="menu">' + ico(TB.table) + '</button>' +
       '<label class="nt-tb-color" title="Text colour">' + ico(TB.color) + '<input type="color" data-color="foreColor" value="#d8231b" aria-label="Text colour"></label><label class="nt-tb-color" title="Highlight">' + ico(TB.mark) + '<input type="color" data-color="hiliteColor" value="#faef5a" aria-label="Highlight colour"></label>' +
       tbtn('removeFormat', ico(TB.clear), 'Clear formatting') +
       '<span class="nt-tb-zoom"><button type="button" class="nt-tb-btn" data-zoom="-1" title="Zoom out" aria-label="Zoom out">' + ico(TB.zoomOut) + '</button>' +
@@ -455,6 +429,7 @@
       if (readonly) body.querySelectorAll('input').forEach(function (box) { box.disabled = true }) // a tick in the trash would not be saved
       // Ctrl/Cmd + wheel (and a trackpad pinch, which arrives as one) zooms the text, as in Word.
       body.addEventListener('wheel', function (e) { if (e.ctrlKey || e.metaKey) { e.preventDefault(); setDocZoom(docZoom * Math.exp(-e.deltaY * 0.002)) } }, { passive: false })
+      body.addEventListener('scroll', placeImageFrame)
     }
     setDocZoom(docZoom)
     wireEditor(readonly)
@@ -487,6 +462,7 @@
     docZoom = Math.max(.5, Math.min(3, +z || 1))
     var body = $('ntBody'); if (body) body.style.zoom = Math.abs(docZoom - 1) < .005 ? '' : docZoom
     var level = $('ntZoomLevel'); if (level) level.textContent = Math.round(docZoom * 100) + '%'
+    placeImageFrame()
   }
   // An untitled note shows its default name as the placeholder, so typing a
   // title never starts with deleting "Untitled note".
@@ -494,7 +470,8 @@
   function focusEditorBody () { if (S.canvas && S.canvas.focusStart) S.canvas.focusStart(); else if ($('ntBody')) $('ntBody').focus() }
   function wireTitle () {
     var title = $('ntTitle')
-    title.addEventListener('input', markDirty)
+    // OneNote: the page list follows the title as it is typed, not a second after the typing stops.
+    title.addEventListener('input', function () { markDirty(); var name = listEl.querySelector('.nt-item.is-active .nt-item-name'); if (name) name.textContent = titleValue(title) })
     // OneNote: Enter (or Down) in the title moves into the page.
     title.addEventListener('keydown', function (e) { if ((e.key === 'Enter' || e.key === 'ArrowDown') && !e.isComposing) { e.preventDefault(); focusEditorBody() } })
   }
@@ -525,8 +502,19 @@
     mark: '<path d="m14 5 5 5-7 7H7v-5z"/><path d="m11 8 5 5"/>',
     clear: '<path d="M6 6.5V5h11v1.5M11.5 5 9 19M7 19h4M15 14l5 5M20 14l-5 5"/>',
     check: '<rect x="4" y="4.5" width="6" height="6" rx="1.5"/><path d="M14 7.5h6M4.5 17l2 2 3.5-4.5M14 17h6"/>',
+    table: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.2 4.5v15M14.8 4.5v15"/>',
     zoomOut: '<circle cx="11" cy="11" r="6.5"/><path d="M8.5 11h5M20 20l-4-4"/>',
     zoomIn: '<circle cx="11" cy="11" r="6.5"/><path d="M11 8.5v5M8.5 11h5M20 20l-4-4"/>'
+  }
+  var FONT_FACES = ['Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana']
+  // <font size="1".."7">, labelled with the point size each step shows at (notes.css scales them from the note text).
+  var FONT_SIZES = [8, 10, 11, 14, 18, 24, 36]
+  // Shortcut letter (with Ctrl+Shift, as in Google Docs: Word's Ctrl+L/E/R/J belong to the browser) -> command, label, icon.
+  var ALIGN = {
+    l: ['justifyLeft', 'Align left', '<path d="M4 6h16M4 10.5h10M4 15h16M4 19.5h10"/>'],
+    e: ['justifyCenter', 'Centre', '<path d="M4 6h16M7 10.5h10M4 15h16M7 19.5h10"/>'],
+    r: ['justifyRight', 'Align right', '<path d="M4 6h16M10 10.5h10M4 15h16M10 19.5h10"/>'],
+    j: ['justifyFull', 'Justify', '<path d="M4 6h16M4 10.5h16M4 15h16M4 19.5h16"/>']
   }
   function ico (paths) { return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>' }
   function tbtn (cmd, label, title, style) { return '<button type="button" class="nt-tb-btn" data-cmd="' + cmd + '" title="' + title + '" aria-label="' + title + '"' + (style ? ' style="' + style + '"' : '') + '>' + label + '</button>' }
@@ -543,6 +531,7 @@
       if (b.hasAttribute('data-image')) b.onclick = function () { $('ntImageInput').click() }
       else if (b.hasAttribute('data-link')) b.onclick = insertLink
       else if (b.hasAttribute('data-check')) b.onclick = toggleChecklist
+      else if (b.hasAttribute('data-table')) b.onclick = function () { tableButton(b) }
       else if (b.hasAttribute('data-zoom')) b.onclick = function () { var step = +b.getAttribute('data-zoom'); setDocZoom(step ? (Math.round(docZoom * 10) + step) / 10 : 1) }
       else b.onclick = function () {
         var cmd = b.getAttribute('data-cmd'), arg = b.getAttribute('data-arg'), el = selEl()
@@ -551,13 +540,23 @@
         document.execCommand(cmd, false, arg || null); markDirty(); syncToolbar()
       }
     })
-    editorEl.querySelectorAll('[data-color]').forEach(function (input) { input.oninput = function () { document.execCommand(input.dataset.color, false, input.value); inkHighlights($('ntBody')); markDirty() } })
+    editorEl.querySelectorAll('[data-color]').forEach(function (input) {
+      input.oninput = function () { document.execCommand(input.dataset.color, false, input.value); inkHighlights($('ntBody')); markDirty() }
+      // The picker leaves focus on its input, where typing went nowhere: go back to the text, with the colour armed for what is typed next.
+      input.onchange = function () { $('ntBody').focus(); if (window.getSelection().isCollapsed) document.execCommand(input.dataset.color, false, input.value) }
+    })
+    editorEl.querySelectorAll('.nt-tb-select').forEach(function (select) {
+      select.onchange = function () { $('ntBody').focus(); document.execCommand(select.getAttribute('data-cmd'), false, select.value); markDirty(); syncToolbar() }
+    })
     wireTitle()
     // Ticking a checkbox must not move focus onto it: typing then went nowhere and Space unticked it again.
     $('ntBody').addEventListener('mousedown', function (e) { if (e.target.nodeName === 'INPUT') e.preventDefault() })
     $('ntBody').addEventListener('keydown', bodyKeydown)
+    $('ntBody').addEventListener('pointerdown', function (e) { tapType = e.pointerType })
     $('ntBody').addEventListener('click', bodyClick)
     $('ntBody').addEventListener('input', markDirty)
+    $('ntBody').addEventListener('input', placeImageFrame)
+    $('ntBody').addEventListener('input', syncToolbar) // an undo changes the alignment or font without moving the caret
     $('ntBody').addEventListener('change', function (event) {
       var checkbox = event.target.closest && event.target.closest('input[type="checkbox"]')
       if (!checkbox) return
@@ -587,8 +586,9 @@
     var bar = editorEl && editorEl.querySelector('.nt-toolbar'), el = bar && selEl(); if (!el) return
     bar.querySelectorAll('[data-cmd]').forEach(function (b) {
       var cmd = b.getAttribute('data-cmd'), arg = b.getAttribute('data-arg'), on = false
+      if (b.tagName === 'SELECT') { var attr = cmd === 'fontName' ? 'face' : 'size', font = el.closest('font[' + attr + ']'); b.value = font ? font.getAttribute(attr) : attr === 'face' ? 'inherit' : '3'; return }
       if (arg) on = !!el.closest(arg.replace(/[<>]/g, ''))
-      else if (/^(bold|italic|underline|strikeThrough|insertUnorderedList|insertOrderedList)$/.test(cmd)) { try { on = document.queryCommandState(cmd) } catch (e) {} } else return
+      else if (/^(bold|italic|underline|strikeThrough|insertUnorderedList|insertOrderedList|justify\w+)$/.test(cmd)) { try { on = document.queryCommandState(cmd) } catch (e) {} } else return
       b.classList.toggle('is-active', on); b.setAttribute('aria-pressed', String(on))
     })
   }
@@ -612,6 +612,17 @@
     var el = selEl(); if (!el) return
     var mod = e.ctrlKey || e.metaKey
     if (mod && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === '1')) { e.preventDefault(); if (e.key === 'k') insertLink(); else toggleChecklist(); return }
+    var align = mod && e.shiftKey && !e.altKey && ALIGN[String(e.key).toLowerCase()]
+    if (align) { e.preventDefault(); document.execCommand(align[0]); markDirty(); syncToolbar(); return }
+    var cell = el.closest('td,th')
+    if (e.key === 'Tab' && !mod && !e.altKey && cell) {
+      // Word: Tab walks the cells and adds a row after the last one; Shift+Tab walks back.
+      e.preventDefault()
+      var cells = Array.prototype.slice.call(cell.closest('table').querySelectorAll('td,th')), next = cells[cells.indexOf(cell) + (e.shiftKey ? -1 : 1)]
+      if (next) window.getSelection().selectAllChildren(next)
+      else if (!e.shiftKey) tableEdit(cell, 'rowBelow', 0)
+      return
+    }
     if (e.key === 'Tab' && !mod && !e.altKey) {
       // Tab indents (a list level, or a gap in text) instead of throwing focus
       // out of the note. Shift+Tab outside a list still leaves the editor.
@@ -623,26 +634,28 @@
       return
     }
     if (e.key !== 'Enter' || e.shiftKey || mod || e.altKey) return
-    var pre = el.closest('pre'), quote = el.closest('blockquote')
-    if (pre) {
-      // Enter adds a line to the code block (it used to start a new block per
-      // line); Enter on an empty last line leaves the block.
-      e.preventDefault()
+    var pre = el.closest('pre'), box = pre || el.closest('blockquote')
+    if (box) {
+      // Enter adds a line to a code block (it used to start a new block per line). Enter on an empty last line leaves
+      // the code block or quote: Firefox keeps a quote's lines in one element, so an "empty quote" never came up there.
       var range = window.getSelection().getRangeAt(0)
-      var head = range.cloneRange(); head.selectNodeContents(pre); head.setEnd(range.startContainer, range.startOffset)
-      var tail = range.cloneRange(); tail.selectNodeContents(pre); tail.setStart(range.endContainer, range.endOffset)
+      var head = range.cloneRange(); head.selectNodeContents(box); head.setEnd(range.startContainer, range.startOffset)
+      var tail = range.cloneRange(); tail.selectNodeContents(box); tail.setStart(range.endContainer, range.endOffset)
       var onEmptyLastLine = range.collapsed && /\n$/.test(blockText(head.cloneContents())) && !blockText(tail.cloneContents()).replace(/\n$/, '')
-      if (!blockText(pre).trim()) document.execCommand('formatBlock', false, '<div>')
-      else if (onEmptyLastLine) {
+      if (!blockText(box).trim() && !box.querySelector('img')) { e.preventDefault(); document.execCommand('formatBlock', false, '<div>'); return }
+      if (onEmptyLastLine) {
+        e.preventDefault()
         document.execCommand('delete')
-        var after = document.createRange(), sel = window.getSelection(); after.setStartAfter(pre); after.collapse(true); sel.removeAllRanges(); sel.addRange(after)
+        var after = document.createRange(), sel = window.getSelection(); after.setStartAfter(box); after.collapse(true); sel.removeAllRanges(); sel.addRange(after)
         document.execCommand('insertHTML', false, '<div><br></div>')
+        // Firefox leaves the caret behind the new line's <br> and keeps that <br> beside what is typed (a stray blank
+        // line above or below the text). With the <br> selected, typing replaces it in every browser.
+        var line = box.nextElementSibling; if (line && line.tagName === 'DIV') sel.selectAllChildren(line)
+        return
       }
-      else document.execCommand('insertLineBreak')
-    } else if (quote && !quote.textContent.trim() && !quote.querySelector('img')) {
-      // Enter on an empty quote line ends the quote.
-      e.preventDefault(); document.execCommand('formatBlock', false, '<div>')
-    } else if (leadingCheckbox(lineBlock(el))) {
+      if (pre) { e.preventDefault(); document.execCommand('insertLineBreak'); return }
+    }
+    if (leadingCheckbox(lineBlock(el))) {
       // Enter continues a checklist; on an empty item it ends it.
       e.preventDefault()
       var item = lineBlock(el)
@@ -653,7 +666,19 @@
   }
   function bodyClick (e) {
     var body = $('ntBody'), link = e.target.closest && e.target.closest('a[href]')
-    if (link && (e.ctrlKey || e.metaKey)) { var url = safeUrl(link.getAttribute('href'), false); if (url) window.open(url, '_blank', 'noopener,noreferrer'); return }
+    var url = link && safeUrl(link.getAttribute('href'), false)
+    if (url && (e.ctrlKey || e.metaKey)) { window.open(url, '_blank', 'noopener,noreferrer'); return }
+    // Touch has no Ctrl+click: a tap on a link offers to open it, as Word does on phones.
+    if (url && (e.pointerType || tapType) === 'touch' && hasMenu()) {
+      RdMenu.open(e.clientX, e.clientY, [
+        { header: url.replace(/^https?:\/\//, '').replace(/\/$/, '').slice(0, 34) },
+        { label: 'Open link', icon: NI.open, action: function () { window.open(url, '_blank', 'noopener,noreferrer') } },
+        { label: 'Edit link', icon: NI.rename, action: insertLink },
+        { label: 'Remove link', icon: NI.trash, danger: true, action: function () { if (!link.isConnected) return; window.getSelection().selectAllChildren(link); document.execCommand('unlink'); markDirty() } }
+      ])
+      return
+    }
+    frameImage(e.target.nodeName === 'IMG' ? e.target : null)
     // A note ending in a code block, quote, table or list had no way to type
     // below it: a click under the last block starts a fresh line there.
     var last = body.lastElementChild
@@ -665,18 +690,105 @@
   async function insertLink () {
     var body = $('ntBody'), sel = window.getSelection()
     var range = selEl() ? sel.getRangeAt(0).cloneRange() : null
-    var url = await openPrompt('Insert link', 'example.com', '')
-    url = (url || '').trim()
-    if (!url || $('ntBody') !== body) return
+    // Word: Ctrl+K inside a link edits that link (it used to nest a second link in it); clearing the address removes it.
+    var link = selEl() && selEl().closest('a[href]')
+    var typed = await openPrompt(link ? 'Edit link' : 'Insert link', 'example.com', link ? link.getAttribute('href') : '')
+    if (typed == null || $('ntBody') !== body || (link && !link.isConnected)) return
+    typed = typed.trim()
+    if (!typed && !link) return
     // A bare "example.com" used to resolve against this site and link to /example.com.
-    if (!/^(https?:\/\/|mailto:)/i.test(url)) url = 'https://' + url
-    var safe = safeUrl(url, false)
-    if (!safe) { toast('THAT LINK IS NOT VALID', 'error'); return }
+    var safe = safeUrl(/^(https?:\/\/|mailto:)/i.test(typed) ? typed : 'https://' + typed, false)
+    if (typed && !safe) { toast('THAT LINK IS NOT VALID', 'error'); return }
     body.focus()
-    if (range) { sel.removeAllRanges(); sel.addRange(range) }
-    if (sel.isCollapsed) document.execCommand('insertHTML', false, '<a href="' + esc(safe) + '">' + esc(url) + '</a>')
+    if (link) sel.selectAllChildren(link)
+    else if (range) { sel.removeAllRanges(); sel.addRange(range) }
+    if (!typed) document.execCommand('unlink')
+    else if (sel.isCollapsed) document.execCommand('insertHTML', false, '<a href="' + esc(safe) + '">' + esc(typed) + '</a>')
     else document.execCommand('createLink', false, safe)
+    if (link) sel.collapseToEnd()
     markDirty()
+  }
+
+  // ---- Tables and pictures -------------------------------------------------
+  // Swaps one element for new markup (or nothing) as a single undo step, and returns the element that took its place.
+  function swapNode (node, html) {
+    var body = $('ntBody'), sel = window.getSelection(), range = document.createRange()
+    range.selectNode(node); sel.removeAllRanges(); sel.addRange(range)
+    if (!html) { document.execCommand('delete'); return null }
+    body.querySelectorAll('[data-nt-new]').forEach(function (old) { old.removeAttribute('data-nt-new') }) // a redo brings the marker back
+    document.execCommand('insertHTML', false, html.replace(/^<\w+/, '$& data-nt-new'))
+    var fresh = body.querySelector('[data-nt-new]'); if (fresh) fresh.removeAttribute('data-nt-new')
+    return fresh
+  }
+  // Row and column edits of the table around `cell`; `col` overrides the column the caret lands in.
+  // ponytail: counts cells, not grid columns, so a pasted table with merged cells shifts; map colspans if that matters.
+  function tableEdit (cell, op, col) {
+    var table = cell.closest('table'), r = cell.parentNode.rowIndex, c = col == null ? cell.cellIndex : col
+    var copy = table.cloneNode(true), width = copy.rows[r].cells.length
+    var eachRow = function (fn) { Array.prototype.forEach.call(copy.rows, fn) }
+    var blank = function (row, at) { row.insertCell(Math.min(at, row.cells.length)).innerHTML = '<br>' }
+    if (op === 'rowAbove' || op === 'rowBelow') { if (op === 'rowBelow') r++; var added = copy.insertRow(r); for (var i = 0; i < width; i++) blank(added, i) }
+    else if (op === 'colLeft' || op === 'colRight') { if (op === 'colRight') c++; eachRow(function (row) { blank(row, c) }) }
+    else if (op === 'delRow') { copy.deleteRow(r); r = Math.min(r, copy.rows.length - 1) }
+    else if (op === 'delCol') { eachRow(function (row) { if (row.cells[c]) row.deleteCell(c) }); c = Math.min(c, width - 2) }
+    var gone = op === 'delTable' || !copy.rows.length || !copy.rows[0].cells.length
+    var fresh = swapNode(table, gone ? '' : copy.outerHTML), target = fresh && fresh.rows[r] && (fresh.rows[r].cells[c] || fresh.rows[r].cells[0])
+    if (target) window.getSelection().collapse(target, 0)
+    markDirty()
+  }
+  // Outside a table the button inserts one; inside it offers the row and column commands (touch has no Tab key or right-click).
+  function tableButton (button) {
+    var cell = selEl() && selEl().closest('td,th')
+    if (!cell || !hasMenu()) {
+      var row = '<tr>' + new Array(4).join('<td><br></td>') + '</tr>'
+      insertSanitizedHtml('<table><tbody>' + new Array(4).join(row) + '</tbody></table><div><br></div>')
+      var here = selEl(), table = here && (here.closest('table') || (lineBlock(here) || {}).previousElementSibling) // the caret is now in the line after the table
+      if (table && table.tagName === 'TABLE') window.getSelection().collapse(table.rows[0].cells[0], 0)
+      markDirty(); return
+    }
+    var rect = button.getBoundingClientRect(), item = function (label, op, danger) { return { label: label, danger: danger, action: function () { if (cell.isConnected) { $('ntBody').focus(); tableEdit(cell, op) } } } }
+    RdMenu.open(rect.left, rect.bottom + 4, [
+      item('Insert row above', 'rowAbove'), item('Insert row below', 'rowBelow'), item('Insert column left', 'colLeft'), item('Insert column right', 'colRight'), { sep: true },
+      item('Delete row', 'delRow', true), item('Delete column', 'delCol', true), item('Delete table', 'delTable', true)
+    ])
+  }
+  // Word: clicking a picture selects it and shows a frame; dragging the frame's corner resizes it in proportion.
+  // The frame lives outside the note body (so it is never saved), in a layer clipped to the body's box.
+  var imgFrame = null, tapType = ''
+  function frameImage (img) {
+    if (imgFrame) imgFrame.remove()
+    imgFrame = null
+    if (!img || !S.editorReady) return
+    var range = document.createRange(), sel = window.getSelection(); range.selectNode(img); sel.removeAllRanges(); sel.addRange(range) // Delete, copy and typing act on the picture
+    imgFrame = document.createElement('div'); imgFrame.className = 'nt-img-layer'; imgFrame.innerHTML = '<div class="nt-img-frame"><span class="nt-img-handle" title="Drag to resize"></span></div>'
+    imgFrame.img = img; editorEl.appendChild(imgFrame); placeImageFrame()
+    imgFrame.querySelector('.nt-img-handle').addEventListener('pointerdown', resizeImage)
+  }
+  function placeImageFrame () {
+    if (!imgFrame) return
+    var body = $('ntBody'), img = imgFrame.img
+    if (!body || !img.isConnected) { frameImage(null); return }
+    var host = editorEl.getBoundingClientRect(), clip = body.getBoundingClientRect(), box = img.getBoundingClientRect(), frame = imgFrame.firstChild
+    imgFrame.style.cssText = 'left:' + (clip.left - host.left) + 'px;top:' + (clip.top - host.top) + 'px;width:' + body.clientWidth + 'px;height:' + clip.height + 'px'
+    frame.style.cssText = 'left:' + (box.left - clip.left) + 'px;top:' + (box.top - clip.top) + 'px;width:' + box.width + 'px;height:' + box.height + 'px'
+  }
+  function resizeImage (e) {
+    e.preventDefault()
+    var handle = e.currentTarget, img = imgFrame.img, was = img.getAttribute('width'), start = img.getBoundingClientRect().width, width = 0
+    handle.setPointerCapture(e.pointerId)
+    handle.onpointermove = function (move) {
+      width = Math.max(24, Math.round((start + move.clientX - e.clientX) / docZoom))
+      img.removeAttribute('height'); img.setAttribute('width', width); placeImageFrame() // the height follows (notes.css: height auto)
+    }
+    handle.onpointerup = handle.onpointercancel = function (end) {
+      handle.onpointermove = handle.onpointerup = handle.onpointercancel = null
+      if (!width || !img.isConnected) return
+      // Put the old width back, then make the change as an edit, so that Ctrl+Z undoes the resize.
+      if (was == null) img.removeAttribute('width'); else img.setAttribute('width', was)
+      if (end.type === 'pointercancel') { placeImageFrame(); return }
+      var copy = img.cloneNode(false); copy.removeAttribute('height'); copy.setAttribute('width', width)
+      frameImage(swapNode(img, copy.outerHTML)); markDirty()
+    }
   }
 
   function markDirty () {
@@ -732,6 +844,8 @@
     event.preventDefault()
     // Insert where it was dropped, not wherever the caret happened to be.
     var at = document.caretRangeFromPoint && document.caretRangeFromPoint(event.clientX, event.clientY)
+    var pos = !at && document.caretPositionFromPoint && document.caretPositionFromPoint(event.clientX, event.clientY) // Firefox
+    if (pos) { at = document.createRange(); at.setStart(pos.offsetNode, pos.offset); at.collapse(true) }
     if (at) { var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(at) }
     var file = firstImageFile(event.dataTransfer && event.dataTransfer.files)
     if (file) { insertDocumentImage(file); return }
@@ -985,10 +1099,11 @@
       var nameKey = await OneGyCrypto.generateFolderNameKey()
       var enc = await OneGyCrypto.encryptFolderName(name, nameKey)
       var wrapped = await OneGyCrypto.wrapFolderNameKey(nameKey, mk)
-      await apiSend('POST', '/notes/api/notebooks', {
+      var made = await apiSend('POST', '/notes/api/notebooks', {
         encrypted_name: enc.encryptedName, name_nonce: enc.nameNonce,
         encrypted_name_key: wrapped.encryptedNameKey, name_key_nonce: wrapped.nonce
       })
+      if (made.id != null) S.view = String(made.id)
       toast('NOTEBOOK CREATED', 'success'); loadAll()
     } catch (e) { toast('COULD NOT CREATE NOTEBOOK', 'error') }
   }
@@ -1229,7 +1344,9 @@
     doc: '<path d="M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"/><path d="M14 3.5V8h4.5M9 12.5h6M9 16h4"/>',
     canvas: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/>',
     notebook: '<path d="M5.5 18.5v-13a2 2 0 0 1 2-2h11v13h-11a2 2 0 0 0-2 2zm0 0a2 2 0 0 0 2 2h11"/><path d="M9.5 7.5h5"/>',
-    back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>'
+    back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
+    all: '<rect x="4.5" y="3.5" width="15" height="17" rx="2.5"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4"/>',
+    unfiled: '<path d="M4 13.5V6.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/>'
   }
   function hasMenu () { return typeof window.RdMenu !== 'undefined' }
 
@@ -1274,15 +1391,37 @@
       { label: 'New notebook', icon: NI.notebook, action: function () { openNbModal() } }
     ]
   }
-  // The "New" button drops the same create menu as a right-click on the list.
+  // The list head's two buttons drop a menu: the title switches notebook,
+  // "New" offers the same create menu as a right-click on the list.
   function openNewMenu (btn, focusFirst) {
-    if (!hasMenu()) { createNote('document'); return }
+    var sw = btn.id === 'ntSwitch'
+    if (!hasMenu()) { if (!sw) createNote('document'); return }
     var rect = btn.getBoundingClientRect()
-    RdMenu.open(rect.left, rect.bottom + 4, listMenu())
+    headMenuBtn = btn.id
+    RdMenu.open(rect.left, rect.bottom + 4, sw ? switchMenu() : listMenu())
     var first = focusFirst && document.querySelector('.rd-cmenu.is-open .rd-cmenu-item'); if (first) first.focus()
   }
 
-  // ---- Notebooks (rail context menu) ---------------------------------------
+  // ---- Notebooks (the switcher: the list head's title) ----------------------
+  function switchMenu () {
+    var go = function (v) { return function () { S.view = v; loadNotes() } }
+    var items = [
+      { label: 'All notes', icon: NI.all, active: S.view === 'all', action: go('all') },
+      { label: 'Unfiled', icon: NI.unfiled, active: S.view === 'unfiled', action: go('unfiled') },
+      { header: 'Notebooks' }
+    ]
+    var current = null
+    S.notebooks.filter(function (nb) { return !nb.is_trashed }).forEach(function (nb) {
+      var col = normColor(nb.color), on = String(S.view) === String(nb.id)
+      if (on) current = nb
+      items.push({ label: nb._name || 'Notebook', icon: col ? '<g stroke="' + col + '">' + NI.notebook + '</g>' : NI.notebook, hint: String(nb.note_count || 0), active: on, action: go(String(nb.id)) })
+    })
+    items.push({ label: 'New notebook', icon: NI.note, action: openNbModal })
+    // Rename, colour and delete act on the notebook being viewed.
+    if (current) items = items.concat([{ sep: true }, { header: current._name }], notebookMenu(current))
+    items.push({ sep: true }, { label: 'Trash', icon: NI.trash, hint: S.trashCount ? String(S.trashCount) : '', active: S.view === 'trash', action: go('trash') })
+    return items
+  }
   function notebookMenu (nb) {
     var items = []
     // The shared inbox is a system notebook: the server refuses to rename or delete it.
@@ -1290,10 +1429,6 @@
     items.push({ header: 'Colour' }, colorRow(nb.color, function (c) { setNotebookColor(nb, c) }))
     if (!nb.system_key) items.push({ sep: true }, { label: 'Delete notebook', icon: NI.trash, danger: true, action: function () { deleteNotebook(nb) } })
     return items
-  }
-  function openNotebookMenu (x, y, row) {
-    var id = row.getAttribute('data-view'), nb = S.notebooks.filter(function (item) { return String(item.id) === id })[0]
-    if (nb && hasMenu()) RdMenu.open(x, y, notebookMenu(nb))
   }
   async function renameNotebook (nb) {
     var mk = await masterKey(); if (!mk) { toast('UNLOCK YOUR KEYS FIRST', 'error'); return }
@@ -1304,13 +1439,13 @@
       var enc = await OneGyCrypto.encryptFolderName(next, key)
       await apiSend('PUT', '/notes/api/notebooks/' + nb.id, { encrypted_name: enc.encryptedName, name_nonce: enc.nameNonce })
       nb.encrypted_name = enc.encryptedName; nb.name_nonce = enc.nameNonce; nb._name = next
-      renderRail(); renderList()
+      renderList()
       toast('NOTEBOOK RENAMED', 'success')
     } catch (e) { toast('COULD NOT RENAME NOTEBOOK', 'error') }
   }
   async function setNotebookColor (nb, color) {
     var safe = normColor(color)
-    try { await apiSend('PUT', '/notes/api/notebooks/' + nb.id, { color: safe }); nb.color = safe; renderRail() } catch (e) { toast('COULD NOT UPDATE COLOUR', 'error') }
+    try { await apiSend('PUT', '/notes/api/notebooks/' + nb.id, { color: safe }); nb.color = safe; renderList() } catch (e) { toast('COULD NOT UPDATE COLOUR', 'error') }
   }
   async function deleteNotebook (nb) {
     var count = nb.note_count || 0
@@ -1401,16 +1536,11 @@
 
   // ---- Wiring --------------------------------------------------------------
   function wire () {
-    $('ntRail').addEventListener('click', function (e) {
-      if (lpFired) { lpFired = false; e.preventDefault(); e.stopPropagation(); return }
-      var v = e.target.closest('[data-view]'); if (v) { S.view = v.getAttribute('data-view'); renderRail(); loadNotes(); closeRail(); return }
-      if (e.target.closest('#ntNewNb')) { openNbModal(); return }
-    })
     listEl.addEventListener('click', function (e) {
       // A long-press already opened the menu; swallow the click it trails.
       if (lpFired) { lpFired = false; e.preventDefault(); e.stopPropagation(); return }
       // A second click on the button closes its menu (RdMenu already did, on mousedown).
-      var newBtn = e.target.closest('#ntNewNote'); if (newBtn) { if (!newMenuWasOpen) openNewMenu(newBtn, e.detail === 0); return }
+      var newBtn = e.target.closest('#ntNewNote, #ntSwitch'); if (newBtn) { if (e.detail === 0 || !newMenuWasOpen) openNewMenu(newBtn, e.detail === 0); return } // detail 0 = keyboard: no mousedown ever resets the flag
       if (e.target.closest('#ntEmptyTrash')) { emptyTrash(); return }
       // Clicking the note that is already open just shows it: reloading it threw away the caret and scroll position.
       var it = e.target.closest('[data-note]'); if (it) { if (it.getAttribute('data-note') !== S.noteId || !S.editorReady) openNote(it.getAttribute('data-note')); showEditorMobile(); return }
@@ -1424,16 +1554,12 @@
       if (it) openNoteMenu(e.clientX, e.clientY, it.getAttribute('data-note'))
       else RdMenu.open(e.clientX, e.clientY, listMenu())
     })
-    // Notebooks: rename, colour and delete live on a right-click of the rail row.
-    $('ntRail').addEventListener('contextmenu', function (e) {
-      var row = e.target.closest('.nt-nb'); if (!row || !hasMenu()) return
-      e.preventDefault(); openNotebookMenu(e.clientX, e.clientY, row)
-    })
     // Touch long-press stands in for right-click.
     bindLongPress(listEl, '[data-note]', function (x, y, card) { openNoteMenu(x, y, card.getAttribute('data-note')) })
-    bindLongPress($('ntRail'), '.nt-nb', openNotebookMenu)
-    document.addEventListener('mousedown', function (e) { newMenuWasOpen = !!(e.target.closest && e.target.closest('#ntNewNote') && document.querySelector('.rd-cmenu.is-open')) }, true)
+    document.addEventListener('mousedown', function (e) { newMenuWasOpen = !!(headMenuBtn && e.target.closest && e.target.closest('#' + headMenuBtn) && document.querySelector('.rd-cmenu.is-open')) }, true)
     document.addEventListener('selectionchange', syncToolbar)
+    // The picture frame goes when the selection moves off the picture.
+    document.addEventListener('selectionchange', function () { if (imgFrame && !window.getSelection().containsNode(imgFrame.img)) frameImage(null) })
     // Ctrl/Cmd+S saves now instead of opening the browser's "save page" dialog.
     document.addEventListener('keydown', function (e) {
       if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || String(e.key).toLowerCase() !== 's' || !S.noteId) return
@@ -1444,8 +1570,7 @@
     // Phones: the browser/system back button returns from the editor to the list.
     window.addEventListener('popstate', function (e) { $('ntPanes') && $('ntPanes').classList.toggle('nt-show-editor', !!(e.state && e.state.ntEditor)) })
     listEl.addEventListener('input', function (e) { if (e.target.id === 'ntSearch') renderList(e.target.value) })
-    $('ntRailScrim') && ($('ntRailScrim').onclick = closeRail)
-    document.addEventListener('click', function (e) { if (e.target.closest('#ntRailToggle')) openRail(); if (e.target.closest('#ntBackBtn')) hideEditorMobile() })
+    document.addEventListener('click', function (e) { if (e.target.closest('#ntBackBtn')) hideEditorMobile() })
     // Notebook modal
     editorEl.addEventListener('click', function (e) { var nb = e.target.closest('[data-new]'); if (nb) createNote(nb.getAttribute('data-new')) })
     $('ntNbSave') && ($('ntNbSave').onclick = function () { var n = $('ntNbName').value.trim(); if (!n) return; closeNbModal(); createNotebook(n) })
@@ -1468,9 +1593,7 @@
     })
     window.addEventListener('beforeunload', function (e) { if (S.dirty) { e.preventDefault(); e.returnValue = '' } })
   }
-  function openRail () { $('ntRail').classList.add('is-open'); $('ntRailScrim').classList.add('is-open') }
-  function closeRail () { var r = $('ntRail'); if (r) r.classList.remove('is-open'); var s = $('ntRailScrim'); if (s) s.classList.remove('is-open') }
-  var newMenuWasOpen = false
+  var newMenuWasOpen = false, headMenuBtn = null  // the head button whose menu was opened last
   function saveNow () { if (!S.dirty || S.saveBlocked) return; if (S.canvas && S.canvas.flush) S.canvas.flush(); saveNote() }
   function bindLongPress (root, selector, open) {
     root.addEventListener('pointerdown', function (e) {
@@ -1513,7 +1636,7 @@
     S.notebooks = (data.notebooks || []).map(function (n) { n._name = n.name; return n })
     S.notes = (data.notes || []).map(function (n) { n._title = n.title; return n })
     S.view = data.view || 'all'
-    showLock(false); renderRail(); renderList()
+    showLock(false); renderList()
     if (data.openNote) { var n = S.notes.filter(function (x) { return x.id === data.openNote })[0]; S.noteId = data.openNote; if (n) { renderList(); renderEditor(n._title, data.noteHtml || '', false) } }
     else editorEl.innerHTML = emptyEditor()
   }

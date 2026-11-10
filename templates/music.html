@@ -12,7 +12,7 @@
        ui-v2.css) so it matches the Files tree and the Notes rail. -->
   <aside class="mu-rail rd-side" id="muRail" aria-label="Music library">
     <div class="rd-side-inner">
-      <div class="rd-side-head"><span>Library</span><button type="button" class="rd-side-collapse" data-rd-collapse="side" title="Collapse library" aria-label="Collapse library"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15M16 9.5 13.5 12l2.5 2.5"/></svg></button></div>
+      <div class="rd-side-head">Library</div>
       {% if not music_disabled %}
       <nav class="mu-rail-scroll rd-side-scroll" aria-label="Library">
         <button type="button" class="mu-nav-item rd-side-row is-active" data-view="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/></svg>Home</button>
@@ -25,7 +25,6 @@
       {% endif %}
     </div>
   </aside>
-  <button type="button" class="rd-rail-label" data-rd-label="side" title="Expand library">Library</button>
   <div class="rd-resizer" data-rd-resize="side" role="separator" aria-orientation="vertical"
        aria-label="Resize library" tabindex="0" title="Drag to resize · double-click to collapse"></div>
   <div class="mu-rail-scrim" id="muRailScrim"></div>
@@ -34,7 +33,7 @@
   <div class="mu-main">
     <div class="mu-topbar">
       {% if not music_disabled %}
-      <button type="button" class="mu-rail-toggle" id="muRailToggle" aria-label="Library" aria-expanded="false">
+      <button type="button" class="mu-rail-toggle" id="muRailToggle" data-rd-collapse="side" title="Show or hide the library" aria-label="Library" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>
       </button>
       <button type="button" class="mu-back" id="muBack" aria-label="Back" title="Back" hidden>

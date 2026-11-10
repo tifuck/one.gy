@@ -142,6 +142,7 @@ merge); unknown keys are rejected.
 | `syncs.verify` | `{"id"}` | `{"matches","differs","missing"}` (async; progress via events) |
 | `syncs.ignoreRules` | `{"id"}` | `{"text"}` (contents of `.onegyignore`) |
 | `syncs.setIgnoreRules` | `{"id", "text"}` | `{"ok", "errors": [{"line","message"}]}` |
+| `syncs.browse` | `{"local_path"?, "remote_folder_id"?, "path": "", "ignore_rules": "<text>", "include_hidden_system"?}`; `local_path` = sync root (omitted = no local side), `remote_folder_id` = the one.gy folder at `path` (omitted = no remote side, `null` = drive root) | `{"items": [{"name","path","kind": "folder|file","size","local","remote","remote_id"? (folders),"excluded","size_skipped"}], "errors": [{"line","message"}], "more", "folder_excluded"}`; one folder of both sides, folders first, ≤2000 items; `excluded` / `size_skipped` = what the given root rules do (nested `.onegyignore` files are not read). The app's "What to sync" picker |
 | `versions.list` | `{"sync_id", "path"}` (synced file) | `{"file_id", "folder_id", "content_version", "versions": [{"version_id", "content_version", "size" (plaintext), "created_at", "same_key"}]}` newest first |
 | `versions.restore` | `{"sync_id", "path", "version_id"}` | file node (as `remote.list`); the sync then downloads it |
 | `transfers.list` | `{"state"?: "active|queued|done|failed|paused|cancelled"}` (`active` includes paused) | `[Transfer]` |

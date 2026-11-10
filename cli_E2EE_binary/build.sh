@@ -112,7 +112,7 @@ TARGETS=(
 # Ensure Go modules are available without mutating go.mod/go.sum during deploy
 cd "$SCRIPT_DIR"
 export PATH="$PATH:/usr/local/go/bin"
-# Unattended shells (e.g. the systemd merge-to-prod run) may not have $HOME set,
+# Unattended shells (e.g. the systemd promote-to-prod run) may not have $HOME set,
 # in which case Go cannot derive GOPATH ($HOME/go) and dies with
 # "module cache not found: neither GOMODCACHE nor GOPATH is set". Pin them so the
 # build works regardless of the ambient environment.

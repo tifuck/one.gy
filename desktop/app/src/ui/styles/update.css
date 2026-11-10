@@ -1,0 +1,26 @@
+/* ONE.GY Desktop update toast (update.html), the main window's bottom right
+   corner over the site and the panel (main/window.js NOTICE_W = the width of
+   .up-wrap: card plus shadow room). The site's v2 action card look
+   (ui-v2.css .upload-progress-toast, the toast dot). Site tokens only. */
+html, body.up{ margin:0; overflow:hidden; background:transparent; scrollbar-gutter:auto; }
+.up-wrap{ padding:20px 16px 16px 20px; }
+.up-wrap[hidden]{ display:none; }
+.up-card{ position:relative; padding:14px 14px 14px 16px; border-radius:12px; background:var(--raise); box-shadow:var(--shadow-pop);
+  color:var(--text); animation:up-in .22s cubic-bezier(.2,.9,.3,1); }
+.up-title{ display:flex; align-items:center; gap:.6rem; margin:0; padding-right:32px; font-size:.86rem; font-weight:600; line-height:1.4; letter-spacing:-.005em; }
+.up-title::before{ content:""; width:7px; height:7px; flex:none; border-radius:50%; background:var(--accent); }
+.up-card.is-error .up-title::before{ background:var(--bad); }
+.up-text, .up-bar{ margin:4px 0 0 calc(7px + .6rem); }
+.up-text{ font-size:.8rem; line-height:1.5; color:var(--text-dim); overflow-wrap:anywhere; }
+.up-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+.up-actions[hidden], .up-bar[hidden]{ display:none; }
+.up-bar{ height:3px; margin-top:12px; border-radius:2px; background:var(--hover); overflow:hidden; }
+.up-bar::after{ content:""; display:block; width:35%; height:100%; border-radius:inherit; background:var(--accent); animation:up-slide 1.2s ease-in-out infinite; }
+.up-close{ position:absolute; top:9px; right:9px; display:grid; place-items:center; width:28px; height:28px; padding:0; border:0; border-radius:7px;
+  background:none; color:var(--text-dim); cursor:pointer; }
+.up-close:hover{ background:var(--press); color:var(--text); }
+.up-close svg{ width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }
+.up-close:focus-visible, .up-card .rd-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+@keyframes up-in{ from{ opacity:0; transform:translateY(8px) scale(.98); } }
+@keyframes up-slide{ from{ transform:translateX(-100%); } to{ transform:translateX(290%); } }
+@media (prefers-reduced-motion: reduce){ .up-card, .up-bar::after{ animation:none; } }

@@ -2,6 +2,8 @@
    area; the native window controls overlay its right end (main/window.js
    TITLEBAR_OVERLAY_W keeps that strip free). Site tokens only. */
 html, body.tb{ height:100%; margin:0; overflow:hidden; background:var(--pane); color:var(--text-dim); }
+/* core.css reserves a scrollbar gutter on <html>; here it cut the hairline short of the window's right edge. */
+html{ scrollbar-gutter:auto; }
 .tb-bar{ position:relative; display:flex; align-items:center; height:100%; padding-right:var(--tb-overlay-w, 140px);
   border-bottom:1px solid var(--line); user-select:none; -webkit-app-region:drag; }
 /* Centred over the website's rail (desktop-shell.css --dk-rail-w). */

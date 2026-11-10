@@ -13,7 +13,7 @@ const UI_METHODS = new Set([
   'remote.list', 'remote.createFolder',
   'syncs.list', 'syncs.validate', 'syncs.preview', 'syncs.create', 'syncs.update',
   'syncs.pause', 'syncs.resume', 'syncs.syncNow', 'syncs.verify',
-  'syncs.ignoreRules', 'syncs.setIgnoreRules', 'syncs.backupTarget', 'syncs.clearDebris',
+  'syncs.ignoreRules', 'syncs.setIgnoreRules', 'syncs.browse', 'syncs.backupTarget', 'syncs.clearDebris',
   'versions.list', 'versions.restore',
   'transfers.list', 'transfers.pause', 'transfers.resume', 'transfers.cancel', 'transfers.clearCompleted',
   'issues.list', 'issues.resolve', 'issues.resolveAll',

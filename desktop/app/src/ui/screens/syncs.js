@@ -7,6 +7,8 @@ import { openMenu } from '../components/menu.js';
 import { openDialog, confirmDialog } from '../components/dialog.js';
 import { toast, toastError } from '../components/toast.js';
 import { syncOptionsForm } from '../components/sync-options.js';
+import { syncFilter } from '../components/sync-filter.js';
+import { ACTIONS } from './wizard.js';
 import {
   bytes, count, ago, percent, SYNC_TYPES, SYNC_STATES,
 } from '../components/format.js';
@@ -91,8 +93,8 @@ function rowMenu(s) {
     { label: 'Open folder', icon: 'folder', run: () => run(bridge('openPath', s.local_path)) },
     { label: 'Open on one.gy', icon: 'external', run: () => navigate('close', { path: s.remote_folder_id ? `/files/folder/${s.remote_folder_id}` : '/files' }) },
     'sep',
+    { label: 'Choose what to sync', icon: 'sliders', run: () => whatToSyncDialog(s) },
     { label: 'Settings', icon: 'settings', run: () => settingsDialog(s) },
-    { label: 'Manage exclusions', icon: 'eye', run: () => exclusionsDialog(s) },
     { label: 'View debris', icon: 'trash', run: () => run(bridge('openPath', joinLocal(s.local_path, '.onegy', 'debris'))) },
     'sep',
     { label: 'Remove sync', icon: 'x', danger: true, run: () => removeSync(s) },
@@ -147,7 +149,8 @@ function settingsDialog(s) {
   });
 }
 
-async function exclusionsDialog(s) {
+// The sync's .onegyignore as ticks and filters (components/sync-filter.js).
+async function whatToSyncDialog(s) {
   let text = '';
   try {
     ({ text } = await rpc('syncs.ignoreRules', { id: s.id }));
@@ -155,28 +158,27 @@ async function exclusionsDialog(s) {
     toastError(err);
     return;
   }
-  const area = h('textarea', { class: 'form-input is-code dk-rules', spellcheck: 'false', rows: 14, value: text });
-  const errors = h('ul', { class: 'dk-rule-errors' });
+  const filter = syncFilter({
+    text,
+    type: s.type,
+    localPath: s.type === 'mirror' ? '' : s.local_path,
+    remoteFolderId: ['backup', 'archive'].includes(s.type) ? undefined : (s.remote_folder_id ?? null),
+    includeHidden: s.include_hidden_system,
+  });
   openDialog({
-    title: `Exclusions for ${s.name}`,
+    title: `What to sync in ${s.name}`,
     wide: true,
-    body: [
-      h('p', null, 'Rules in .onegyignore, same format as MEGA\'s .megaignore. One rule per line, for example ', h('code', null, '-:*.tmp'), ' or ', h('code', null, '-d:node_modules'), '.'),
-      area, errors,
-    ],
+    body: filter.el,
     actions: [
       { label: 'Cancel', kind: 'ghost' },
       {
-        label: 'Save rules',
+        label: 'Save',
         kind: 'primary',
         run: async () => {
-          clear(errors);
-          const res = await rpc('syncs.setIgnoreRules', { id: s.id, text: area.value });
-          if (!res.ok) {
-            for (const e of res.errors || []) append(errors, h('li', null, `Line ${e.line}: ${e.message}`));
-            throw new Error('Fix the lines above, then save again.');
-          }
-          toast('Rules saved', 'success');
+          if (filter.text() === text) return;
+          const res = await rpc('syncs.setIgnoreRules', { id: s.id, text: filter.text() });
+          if (!res.ok) throw new Error((res.errors || []).map((e) => `Line ${e.line}: ${e.message}`).join(' '));
+          toast('Saved. The sync applies it now.', 'success');
         },
       },
     ],
@@ -232,9 +234,12 @@ export function mount(container) {
     if (!syncs.length) {
       append(list, h('div', { class: 'rd-empty' },
         h('span', { class: 'rd-empty-icon' }, icon('sync')),
-        h('h2', { class: 'rd-empty-title' }, 'No syncs yet'),
-        h('p', { class: 'rd-empty-text' }, 'Pick a folder on this computer and a folder on one.gy. Changes on either side show up on the other.'),
-        h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard', {}) }, icon('plus'), 'Add sync')));
+        h('h2', { class: 'rd-empty-title' }, 'Nothing syncs yet'),
+        h('p', { class: 'rd-empty-text' }, 'What should this computer do? You can add more later.'),
+        h('div', { class: 'dk-cards dk-empty-cards' }, ACTIONS.filter((a) => a.type).map((a) => h('button', {
+          type: 'button', class: 'dk-card', onclick: () => navigate('wizard', { type: a.type }),
+        }, h('span', { class: 'dk-card-icon' }, icon(SYNC_TYPES[a.type].icon)),
+        h('span', { class: 'dk-card-title' }, a.title), h('span', { class: 'dk-card-text' }, a.text))))));
       return;
     }
     append(list, h('section', { class: 'rd-panel' }, h('ul', { class: 'dk-sync-list' }, syncs.map(syncRow))));

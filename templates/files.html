@@ -15,7 +15,7 @@
   <!-- Sidebar -->
   <aside class="fx-side rd-side" id="fxSide" aria-label="Folder tree">
     <div class="rd-side-inner">
-      <div class="rd-side-head"><span>Library</span><button type="button" class="rd-side-collapse" data-rd-collapse="side" title="Collapse library" aria-label="Collapse library"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15M16 9.5 13.5 12l2.5 2.5"/></svg></button></div>
+      <div class="rd-side-head">Library</div>
       <nav class="fx-tree rd-side-scroll" id="fxTree" aria-label="Folders">
         <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
         <div class="rd-skel fx-tree-skel" aria-hidden="true"></div>
@@ -32,7 +32,6 @@
       </div>
     </div>
   </aside>
-  <button type="button" class="rd-rail-label" data-rd-label="side" title="Expand library">Library</button>
   <div class="rd-resizer" data-rd-resize="side" role="separator" aria-orientation="vertical"
        aria-label="Resize library" tabindex="0" title="Drag to resize · double-click to collapse"></div>
   <div class="fx-side-scrim" id="fxSideScrim"></div>
@@ -40,7 +39,7 @@
   <!-- Main -->
   <div class="fx-main">
     <div class="fx-toolbar">
-      <button type="button" class="fx-side-toggle" id="fxSideToggle" aria-label="Toggle folders" aria-expanded="false">
+      <button type="button" class="fx-side-toggle" id="fxSideToggle" data-rd-collapse="side" title="Show or hide folders" aria-label="Toggle folders" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>
       </button>
       <div class="fx-bcrumb" id="fxBcrumb" aria-label="Breadcrumb"></div>

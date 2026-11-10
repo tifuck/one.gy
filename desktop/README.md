@@ -48,7 +48,7 @@ End-to-end check of app + engine + a DEV server without a display:
 ## Release
 
 1. Bump `desktop/VERSION` in DEV and commit.
-2. Deploy/publish as usual (`merge-to-prod.sh` publishes to GitHub).
+2. Promote as usual (`bash promote-to-prod.sh` deploys to PROD and publishes to GitHub).
 3. `.github/workflows/desktop-release.yml` sees the new version on `main`,
    builds Windows (NSIS) and Linux (deb, rpm, AppImage) packages and attaches
    them to a `desktop-v<version>` release. The one.gy `/desktop` page links to the

@@ -214,7 +214,7 @@ def _run_startup_maintenance():
     # queue_note_replication() on all of them -- a SHA-256 of each note file plus
     # 1 + N_nodes queries each -- on EVERY boot, synchronously before gunicorn
     # binds the port. Restart downtime therefore grew linearly with the corpus
-    # until merge-to-prod.sh's health check false-negatived a healthy deploy.
+    # until promote-to-prod.sh's health check false-negatived a healthy deploy.
     # It is now incremental: a persisted watermark records the point up to which
     # every note has already been reconciled, so a boot only pays for notes
     # written/changed since the last successful pass (plus any note whose content

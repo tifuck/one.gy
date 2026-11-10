@@ -91,17 +91,19 @@ src/main/       main process
   environment.js  battery (powerMonitor) and metered network -> engine.environment
   remove-sync.js  remove a sync; optionally move its folder to the system trash
   tray.js, notify.js, updater.js, settings-store.js
-src/preload/    app-preload (panel bridge), titlebar-preload, site-preload
+src/preload/    app-preload (panel bridge), titlebar-preload, update-preload, site-preload
                 (window.onegyDesktop, bridge 2; theme, rail width, panel state,
                 sign-out handed to the app)
 src/ui/         native panel, plain ES modules, no build step
   app.js          panel shell: admin console layout (sidebar + page), gating
                   (sign-in / setup / lock / other account / sections), router
   titlebar.html   the window's title bar (titlebar.js, styles/titlebar.css)
+  update.html     the update toast (update.js, styles/update.css)
   store.js        state fed by engine events + bridge wrappers
   screens/        signin, wizard (incl. setup and onboarding), lock, syncs,
                   transfers, issues, settings
-  components/     dialog, menu, toast, tree picker, sync options, formatting
+  components/     dialog, menu, toast, tree picker, sync options, "What to sync"
+                  (sync-filter.js on rules.js: .onegyignore as ticks and filters), formatting
   offline.html    "Can't reach <server>" page for the site view
   site/           generated: the website's CSS + fonts (scripts/vendor-site.js)
   styles/app.css  panel-only additions, site tokens and classes
@@ -112,19 +114,28 @@ test/           node --test, plus the env-gated e2e_bridge.py
 
 ## Notes
 
-- Auto-update is fully automatic, no prompts (`updater.js`). NSIS and AppImage:
+- Updates ask before they restart (`updater.js`). The app checks every 30
+  minutes, on resume and on relaunch (Settings > General > Check for updates
+  any time); the update toast (`ui/update.html`, a view in the window's bottom
+  right corner) offers Update and restart / Restart now. The restart writes
+  `relaunch-state.json` (window bounds, maximized, hidden, site page, open
+  panel screen) and the next start opens there; with the app lock on, the lock
+  screen comes first. A ready update restarts by itself only while the window
+  is hidden in the tray or minimized and not mid-sync. NSIS and AppImage:
   electron-updater (generic provider on this repo's latest GitHub release)
-  checks every 30 minutes, on resume and on relaunch, downloads, then installs
-  silently and relaunches once the app is idle (window hidden or minimized, or
-  5 minutes of user idle time, and not mid-sync). The beta channel reads
-  `beta*.yml`, which every release also carries. deb and rpm (told apart by
-  `resources/package-type`): the package's post-install script
-  (`build/linux/after-install.sh`, the builder's default plus our block)
+  downloads in the background, Restart now installs silently and relaunches.
+  The beta channel reads `beta*.yml`, which every release also carries. deb and
+  rpm (told apart by `resources/package-type`): the package's post-install
+  script (`build/linux/after-install.sh`, the builder's default plus our block)
   installs a root systemd timer `onegy-desktop-update.timer` that runs
   `resources/update-system.sh` every 30 minutes: it installs the latest stable
-  release after checking its sha512 from `latest-linux.yml`. The app notices
-  `app.asar` was replaced and relaunches itself under the same idle rule. The
-  timer follows the stable channel only.
+  release after checking its sha512 from `latest-linux.yml`. The app reads
+  `latest-linux.yml` itself; Update and restart runs `systemctl start
+  onegy-desktop-update.service`, which a polkit rule
+  (`/etc/polkit-1/rules.d/49-onegy-desktop-update.rules`) allows for the local
+  active user without a password (older polkit asks for it). When the timer
+  installs first, the app notices `app.asar` was replaced and asks to restart.
+  deb and rpm follow the stable channel only.
 - The website bridge (`window.onegyDesktop`: `unlock`, `openSync`, `onStatus`)
   exists only on top-level frames of the configured server; the main process
   re-checks the frame for every call and the engine's `web_unlock` setting

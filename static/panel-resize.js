@@ -1,17 +1,18 @@
 /* ============================================================================
    panel-resize.js — drag-to-resize + collapse for the app rails.
 
-   Drives three panes through two CSS custom properties on <html>:
-     --rd-side-w   the library rail   (Files tree · Notes rail · Music library)
-     --rd-list-w   the Notes "all notes" list pane
+   Drives each page's one rail through a CSS custom property on <html>:
+     --rd-side-w   Files tree · Notes list · Music library · shared-folder tree
 
-   Because the library rail on all three pages reads the SAME variable, the
-   pages cannot drift out of sync — there is one stored width, not three.
+   Because every page reads the SAME variable, the pages cannot drift out of
+   sync — there is one stored width. Collapse is stored per page
+   (<html data-rd-page>): a collapsed rail is gone (0px) and any
+   [data-rd-collapse] button toggles it.
 
-   State lives entirely on <html> (custom props + data-rd-side / data-rd-list)
-   rather than on the rail elements, because notes.js rebuilds #ntRail.innerHTML
-   on every render and would otherwise wipe per-element classes. All listeners
-   are delegated on document for the same reason.
+   State lives entirely on <html> (custom prop + data-rd-side) rather than on
+   the rail elements, because notes.js and files.js rebuild theirs on render
+   and would otherwise wipe per-element classes. All listeners are delegated
+   on document for the same reason.
 
    Restored before first paint by the inline snippet in _app_base.html.
    ========================================================================== */
@@ -29,21 +30,13 @@
     key: 'side',
     cssVar: '--rd-side-w',
     lsWidth: 'onegy_rd_side_w',
-    lsCollapsed: 'onegy_rd_side_collapsed',
+    lsCollapsed: 'onegy_rd_side_collapsed_' + (document.documentElement.getAttribute('data-rd-page') || ''),
     def: function () { return prop(0.17, 280, 460) },
     min: 150, max: 560
   }
-  var LIST = {
-    key: 'list',
-    cssVar: '--rd-list-w',
-    lsWidth: 'onegy_rd_list_w',
-    lsCollapsed: 'onegy_rd_list_collapsed',
-    def: function () { return prop(0.19, 320, 520) },
-    min: 200, max: 620
-  }
-  var PANES = { side: SIDE, list: LIST }
+  var PANES = { side: SIDE }
 
-  var COLLAPSED_W = 32
+  var COLLAPSED_W = 0
   var SNAP = 110          // drag narrower than this -> snap collapsed
   var MIN_CONTENT = 340   // px the main content area must always keep
   var STEP = 16, STEP_BIG = 48
@@ -72,8 +65,7 @@
   function shell () {
     return document.querySelector('.fx-shell, .nt-shell, .mu-shell')
   }
-  function hasPane (key) {
-    if (key === 'list') return !!document.querySelector('.nt-shell')
+  function hasPane () {
     return !!shell()
   }
   /* Resizing is desktop-only; each page drops to a drawer at its own width.
@@ -98,20 +90,9 @@
     return isFinite(v) && v > 0 ? v : p.def()
   }
 
-  /* Width consumed by the other pane, so the two Notes panes can't gang up
-     and squeeze the editor out of existence. */
-  function siblingW (key) {
-    var other = key === 'side' ? 'list' : 'side'
-    if (!hasPane(other)) return 0
-    // A rail in drawer mode is out of flow and costs no horizontal space.
-    if (other === 'side' && !resizable('side') && hasPane('list')) return 0
-    return widthOf(other)
-  }
-
   function maxFor (key) {
     var p = PANES[key]
-    var room = window.innerWidth - MIN_CONTENT - siblingW(key)
-    return Math.max(p.min, Math.min(p.max, room))
+    return Math.max(p.min, Math.min(p.max, window.innerWidth - MIN_CONTENT))
   }
 
   function clamp (key, w) {
@@ -138,7 +119,17 @@
     if (on) root.setAttribute('data-rd-' + key, 'collapsed')
     else root.removeAttribute('data-rd-' + key)
     if (persist) writeFlag(PANES[key].lsCollapsed, on)
+    syncToggles()
     reclamp()
+  }
+
+  function syncToggles () {
+    var btns = document.querySelectorAll('[data-rd-collapse]')
+    for (var i = 0; i < btns.length; i++) {
+      var key = btns[i].getAttribute('data-rd-collapse')
+      // In drawer mode the page's own handler owns aria-expanded.
+      if (resizable(key)) btns[i].setAttribute('aria-expanded', String(!isCollapsed(key)))
+    }
   }
 
   function toggle (key) {
@@ -148,25 +139,15 @@
 
   /* Re-clamp stored preferences against the current viewport. The preferred
      width always comes from storage, so a pane squeezed by a narrow window
-     springs back to the user's choice when the space returns. Two passes so
-     the two Notes panes settle against each other. */
+     springs back to the user's choice when the space returns. */
   function reclamp () {
-    if (drag) return
-    for (var pass = 0; pass < 2; pass++) {
-      for (var key in PANES) {
-        if (!PANES.hasOwnProperty(key) || !hasPane(key)) continue
-        applyWidth(key, clamp(key, readNum(PANES[key].lsWidth, PANES[key].def())), false)
-      }
-    }
+    if (drag || !hasPane()) return
+    applyWidth('side', clamp('side', readNum(SIDE.lsWidth, SIDE.def())), false)
   }
 
   function restore () {
-    for (var key in PANES) {
-      if (!PANES.hasOwnProperty(key) || !hasPane(key)) continue
-      var p = PANES[key]
-      applyWidth(key, clamp(key, readNum(p.lsWidth, p.def())), false)
-    }
     reclamp()
+    syncToggles()
   }
 
   /* ---- drag ------------------------------------------------------------- */
@@ -229,6 +210,7 @@
     if (!collapsed) writeNum(PANES[key].lsWidth, widthOf(key))
 
     drag = null
+    syncToggles()
     reclamp()
   }
 
@@ -271,15 +253,11 @@
     if (!e.target.closest) return
     if (e.target.closest('.rd-resizer')) return   // dblclick handles this
 
-    var label = e.target.closest('.rd-rail-label')
-    if (label) {
-      e.preventDefault()
-      setCollapsed(label.getAttribute('data-rd-label'), false, true)
-      return
-    }
+    // The same buttons open the page's drawer where the rail is one (narrow
+    // windows): there the click is left to the page's own handler.
     var btn = e.target.closest('[data-rd-collapse]')
-    if (btn) {
-      e.preventDefault()
+    if (btn && resizable(btn.getAttribute('data-rd-collapse'))) {
+      e.preventDefault(); e.stopPropagation()
       toggle(btn.getAttribute('data-rd-collapse'))
     }
   }

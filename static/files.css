@@ -136,7 +136,13 @@
 
 .fx-toolbar .rd-btn{ flex:none; height:var(--fx-ctl-h); padding:0 11px; font-size:.82rem; white-space:nowrap; }
 .fx-toolbar .rd-btn svg{ width:15px; height:15px; }
-.fx-side-toggle{ display:none; }
+/* Shows or hides the folders panel (panel-resize.js); opens it as a drawer on narrow windows. */
+.fx-side-toggle{
+  display:inline-flex; align-items:center; justify-content:center; flex:none; width:var(--fx-ctl-h); height:var(--fx-ctl-h);
+  margin-left:-6px; border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
+}
+.fx-side-toggle:hover{ background:var(--hover); color:var(--text); }
+.fx-side-toggle svg{ width:18px; height:18px; }
 
 /* ---- E2EE unlock ----------------------------------------------------------- */
 .fx-unlock{
@@ -495,7 +501,7 @@
 /* ---- Mobile ---------------------------------------------------------------- */
 @media (max-width:920px){
   .fx-shell{ grid-template-columns:1fr; }
-  .fx-shell .rd-resizer, .fx-shell .rd-rail-label, .fx-side .rd-side-head{ display:none !important; }
+  .fx-shell .rd-resizer, .fx-side .rd-side-head{ display:none !important; }
   :root[data-rd-side="collapsed"] .fx-side > .rd-side-inner{ display:flex; }
   .fx-side{
     position:fixed; top:var(--nav-h); left:0; bottom:0; width:272px; z-index:50;
@@ -505,12 +511,6 @@
   .fx-side.is-open{ transform:none; visibility:visible; transition-delay:0s; }
   .fx-side-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; z-index:49; background:var(--scrim); opacity:0; pointer-events:none; transition:opacity .2s; }
   .fx-side-scrim.is-open{ opacity:1; pointer-events:auto; }
-  .fx-side-toggle{
-    display:inline-flex; align-items:center; justify-content:center; flex:none; width:var(--fx-ctl-h); height:var(--fx-ctl-h);
-    margin-left:-6px; border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
-  }
-  .fx-side-toggle:hover{ background:var(--hover); color:var(--text); }
-  .fx-side-toggle svg{ width:18px; height:18px; }
   .fx-toolbar{ padding:0 12px; }
   .fx-view{ padding:12px 12px 96px; }
   .fx-view[data-view="list"]{ padding-left:4px; padding-right:4px; }

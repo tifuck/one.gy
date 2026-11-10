@@ -39,6 +39,10 @@ contextBridge.exposeInMainWorld('onegy', {
   lockNow: () => invoke('app:lockNow'),
   exportDiagnostics: () => invoke('app:exportDiagnostics'),
   openDataFolder: () => invoke('app:openDataFolder'),
+  // Updater state (main/updater.js); changes also arrive as app:update events.
+  updateState: () => invoke('app:update:state'),
+  checkForUpdates: () => invoke('app:update:check'),
+  installUpdate: () => invoke('app:update:install'),
   // opts: { deleteLocal, releaseBackup }; deleteLocal moves the folder to the system trash.
   removeSync: (id, opts) => invoke('app:removeSync', id, opts),
   // Absolute path of a file or folder dropped onto the window.

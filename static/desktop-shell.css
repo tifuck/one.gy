@@ -46,12 +46,9 @@
 
 /* ---- Fixed layers that start at the left edge on the website ---------------- */
 .is-desktop-app body:has(.dk-rail) :is(.music-player, .rd-notif-banners){ left:var(--dk-rail-w); }
-/* The pages' drawer breakpoints (files/music/browse.css 920px, notes.css 1024px). */
+/* The pages' drawer breakpoint (files/music/browse.css 920px). */
 @media (max-width:920px){
   .is-desktop-app body:has(.dk-rail) :is(.fx-side, .mu-rail, .bw-side){ left:var(--dk-rail-w); }
-}
-@media (max-width:1024px){
-  .is-desktop-app body:has(.dk-rail) .nt-rail{ left:var(--dk-rail-w); }
 }
 /* Admin banners: with no nav bar to cover, a banner takes the nav's slot, so
    pages move down by its height exactly like under the website's nav. */

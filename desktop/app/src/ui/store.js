@@ -36,6 +36,7 @@ export const store = {
   settings: null,
   app: null,
   version: null,
+  update: null, // the updater's state (main/updater.js)
   panelUser: null, // the website user the panel was opened for
 };
 
@@ -45,7 +46,7 @@ export const sameUser = (a, b) => typeof a === 'string' && typeof b === 'string'
 const subs = new Map();
 
 // topic: engine | status | account | syncs | transfers | issues | verify | settings | app | activity
-//        | app:panel | app:action | app:navigate
+//        | app:panel | app:action | app:navigate | app:update
 export function on(topic, fn) {
   if (!subs.has(topic)) subs.set(topic, new Set());
   subs.get(topic).add(fn);
@@ -146,6 +147,10 @@ export function handleEvent(ev) {
     case 'app:settings':
       store.app = d;
       emit('app', d);
+      break;
+    case 'app:update':
+      store.update = d;
+      emit('app:update', d);
       break;
     default:
       emit(ev.type, d);

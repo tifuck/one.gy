@@ -166,6 +166,7 @@ body.rd-app{ background:transparent; }
 .dk-card-title{ font-size:.92rem; font-weight:600; color:var(--text); }
 .dk-card-text{ font-size:.8rem; line-height:1.45; color:var(--text-dim); }
 .dk-card-sm{ padding:12px 14px; }
+.dk-empty-cards{ width:100%; max-width:40rem; margin-top:14px; grid-template-columns:repeat(auto-fit,minmax(16rem,1fr)); }
 .dk-path-box{ display:flex; align-items:center; gap:10px; padding:10px 10px 10px 14px; border:1px solid var(--line-strong); border-radius:10px; background:var(--surface); }
 .dk-path-box .dk-path{ flex:1 1 auto; font-size:.88rem; }
 .dk-kind-folder{ color:var(--kind-folder); }
@@ -183,7 +184,6 @@ body.rd-app{ background:transparent; }
 .dk-opt-group{ display:flex; flex-direction:column; gap:12px; }
 .dk-opt-title{ font-size:.8rem; font-weight:600; color:var(--text-faint); }
 .dk-rules{ min-height:150px; }
-.dk-rule-errors{ font-size:.8rem; color:var(--bad); }
 .dk-radio-list{ display:flex; flex-direction:column; gap:6px; }
 .dk-radio{ display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border-radius:10px; background:var(--surface); cursor:pointer; }
 .dk-radio:has(input:checked){ background:var(--accent-soft); }
@@ -220,6 +220,21 @@ body.rd-app{ background:transparent; }
 .dk-tree-meta{ flex:none; font-size:.76rem; color:var(--text-faint); font-variant-numeric:tabular-nums; }
 .dk-tree-empty{ padding:24px; text-align:center; font-size:.84rem; color:var(--text-faint); }
 .dk-tree + .rd-field-hint:empty{ display:none; }
+
+/* ---- What to sync (components/sync-filter.js) ------------------------------------------------------------ */
+.dk-filter{ display:flex; flex-direction:column; gap:16px; }
+.dk-filter .dk-tree-list{ height:300px; }
+.dk-filter > div:empty{ display:none; }
+.dk-tree-row.is-out .dk-tree-name{ color:var(--text-faint); }
+.dk-tree-row.is-out .dk-kind-folder, .dk-tree-row.is-out .dk-kind-file{ opacity:.55; }
+label.dk-tree-name{ cursor:pointer; }
+.dk-chips{ display:flex; flex-wrap:wrap; gap:6px; }
+.dk-chips:empty{ display:none; }
+.dk-chip{ display:inline-flex; align-items:center; gap:2px; max-width:100%; height:28px; padding:0 2px 0 10px; border-radius:14px;
+  background:var(--surface-2); font-size:.8rem; }
+.dk-chip-x{ display:grid; place-items:center; width:24px; height:24px; border-radius:12px; color:var(--text-dim); }
+.dk-chip-x:hover{ background:var(--hover); color:var(--text); }
+.dk-chip-x .dk-icon svg{ width:13px; height:13px; }
 
 /* ---- Narrow windows -------------------------------------------------------------------------------------- */
 @media (max-width:620px){

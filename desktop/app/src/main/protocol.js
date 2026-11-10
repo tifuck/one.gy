@@ -1,4 +1,4 @@
-// The privileged app:// scheme: serves src/ui (sync panel, title bar, offline page)
+// The privileged app:// scheme: serves src/ui (sync panel, title bar, update toast, offline page)
 // with a strict CSP. Only app://ui/<file> under src/ui resolves; everything
 // else is 404.
 'use strict';
@@ -13,6 +13,7 @@ const UI_ROOT = path.join(__dirname, '..', 'ui');
 const UI_URL = `${SCHEME}://${HOST}/index.html`;
 const OFFLINE_URL = `${SCHEME}://${HOST}/offline.html`;
 const TITLEBAR_URL = `${SCHEME}://${HOST}/titlebar.html`;
+const UPDATE_URL = `${SCHEME}://${HOST}/update.html`;
 
 const CSP = [
   "default-src 'none'",
@@ -87,4 +88,6 @@ function handleScheme(session) {
   });
 }
 
-module.exports = { registerScheme, handleScheme, resolveUiPath, isUiUrl, UI_URL, OFFLINE_URL, TITLEBAR_URL };
+module.exports = {
+  registerScheme, handleScheme, resolveUiPath, isUiUrl, UI_URL, OFFLINE_URL, TITLEBAR_URL, UPDATE_URL,
+};

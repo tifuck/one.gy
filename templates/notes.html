@@ -18,22 +18,11 @@
 </div>
 
 <div class="nt-shell">
-  <aside class="nt-rail rd-side" id="ntRail" aria-label="Notebooks">
-    <div class="rd-side-inner" aria-hidden="true">
-      <div class="rd-side-head"><span>Library</span></div>
-      <div class="rd-skel nt-skel-row"></div>
-      <div class="rd-skel nt-skel-row"></div>
-      <div class="rd-skel nt-skel-row"></div>
-      <div class="rd-skel nt-skel-row"></div>
-    </div>
-  </aside>
-  <button type="button" class="rd-rail-label" data-rd-label="side" title="Expand library">Library</button>
-  <button type="button" class="rd-rail-label" data-rd-label="list" title="Expand notes">Notes</button>
+  <button type="button" class="nt-pane-toggle" data-rd-collapse="side" title="Show or hide the notes list" aria-label="Notes list" aria-expanded="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>
+  </button>
   <div class="rd-resizer" data-rd-resize="side" role="separator" aria-orientation="vertical"
-       aria-label="Resize library" tabindex="0" title="Drag to resize · double-click to collapse"></div>
-  <div class="rd-resizer" data-rd-resize="list" role="separator" aria-orientation="vertical"
        aria-label="Resize notes list" tabindex="0" title="Drag to resize · double-click to collapse"></div>
-  <div class="nt-rail-scrim" id="ntRailScrim"></div>
   <div class="nt-panes" id="ntPanes">
     <div class="nt-list" id="ntList" aria-label="Notes">
       <div class="nt-list-head" aria-hidden="true"><span class="rd-skel nt-skel-title"></span></div>

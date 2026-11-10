@@ -22,7 +22,7 @@ const { isSitePath } = require('./site-nav');
 const SITE_STATUS_EVERY_MS = 500; // site-bridge.md: at most 2 updates per second
 const IDLE_CHECK_MS = 30 * 1000;
 const SITE_DECIDE_MAX_MS = 8000; // load the site anyway when the engine says nothing
-const UPDATE_IDLE_S = 300; // an update restarts a visible window only after this much user idle time
+const RESUME_PANELS = new Set(['syncs', 'transfers', 'issues', 'settings']);
 const RESIGN_EVERY_MS = 30 * 1000; // device mode: sign a site view that lost its session in again, at most this often
 
 const APP_ID = 'gy.one.desktop';
@@ -35,6 +35,9 @@ const argValue = (name) => {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.slice(name.length + 3) : null;
 };
+// Window bounds from relaunch-state.json, or null.
+const cleanBounds = (b) => (b && ['x', 'y', 'width', 'height'].every((k) => Number.isSafeInteger(b[k])) && b.width >= 760 && b.height >= 520
+  ? { x: b.x, y: b.y, width: b.width, height: b.height } : null);
 
 registerScheme();
 hardenApp();
@@ -92,10 +95,17 @@ function applyAutostart(enabled) {
 
 function start() {
   const settings = new SettingsStore(app.getPath('userData'));
-  // Written before an update restart so a window hidden in the tray stays hidden.
+  // Written before an update restart (window.snapshot): the window, page and
+  // panel come back as they were, hidden in the tray stays hidden.
+  // relaunch-hidden is what 0.5.0 and older write.
+  const resumeFile = path.join(app.getPath('userData'), 'relaunch-state.json');
   const hiddenMarker = path.join(app.getPath('userData'), 'relaunch-hidden');
-  const relaunchHidden = fs.existsSync(hiddenMarker);
+  let resume = {};
+  try { resume = JSON.parse(fs.readFileSync(resumeFile, 'utf8')) || {}; } catch { /* a normal start */ }
+  const relaunchHidden = resume.hidden === true || fs.existsSync(hiddenMarker);
+  fs.rmSync(resumeFile, { force: true });
   fs.rmSync(hiddenMarker, { force: true });
+  let resumePanel = RESUME_PANELS.has(resume.panel) ? resume.panel : null;
   const devServer = DEV ? argValue('server') : null;
   if (devServer) settings.set({ server_url: devServer });
 
@@ -182,6 +192,8 @@ function start() {
       try {
         window.unlockSite(await engine.call('account.webSession'));
         if (wasLocked) window.closePanel(); // else the setup wizard goes on
+        if (resumePanel) openPanel(resumePanel);
+        resumePanel = null;
         return;
       } catch (err) {
         console.error(`[APP] website sign-in with the device failed: ${err.message}`);
@@ -279,7 +291,7 @@ function start() {
 
   app.on('second-instance', () => {
     if (window) window.show();
-    if (updater) updater.checkNow();
+    if (updater) updater.autoCheck();
   });
   app.on('window-all-closed', () => { /* tray keeps the app alive */ });
   app.on('before-quit', (e) => {
@@ -304,9 +316,12 @@ function start() {
       onSyncShortcut: () => { if (sync.authorized()) openPanel('syncs'); },
       onSiteNavigate,
     });
-    const startHidden = process.argv.includes('--hidden') || settings.get().start_minimized || relaunchHidden;
+    const startHidden = relaunchHidden || (!resume.bounds && (process.argv.includes('--hidden') || settings.get().start_minimized));
+    if (isSitePath(resume.path)) window.resumePath = resume.path;
     // The site loads once the engine says whether the app is locked (applySiteMode).
-    const win = window.create({ show: !startHidden, loadSite: false });
+    const win = window.create({
+      show: !startHidden, loadSite: false, bounds: cleanBounds(resume.bounds), maximized: resume.maximized === true,
+    });
     setTimeout(() => { if (siteMode === null) applySiteMode('plain'); }, SITE_DECIDE_MAX_MS);
     powerMonitor.on('lock-screen', lockNow);
     powerMonitor.on('suspend', lockNow);
@@ -324,7 +339,34 @@ function start() {
       }
     });
 
-    registerIpc({ window, engine, settings, sync, lockNow, signOut });
+    // A ready update asks first (the toast); it restarts by itself only when
+    // nobody would see the toast, and never mid-sync.
+    updater = startUpdater({
+      settings,
+      onChange: (s) => {
+        window.setUpdate(s);
+        window.send({ type: 'app:update', data: s });
+      },
+      canAutoRestart: () => !(sync.status && sync.status.state === 'syncing') && (!win.isVisible() || win.isMinimized()),
+      beforeRestart: async () => {
+        try {
+          fs.writeFileSync(resumeFile, JSON.stringify(window.snapshot()));
+        } catch (err) {
+          console.error(`[APP] saving the window for the restart failed: ${err.message}`);
+        }
+        state.quitting = true;
+        await engine.stop();
+        state.engineStopped = true;
+      },
+      relaunch: () => {
+        app.relaunch({ args: [] });
+        app.quit();
+      },
+    });
+
+    registerIpc({
+      window, engine, settings, sync, updater, lockNow, signOut,
+    });
     watchEnvironment({ powerMonitor, engine });
 
     tray = new AppTray({
@@ -351,24 +393,6 @@ function start() {
       window.send({ type: 'app:settings', data: next });
     });
     applyAutostart(settings.get().launch_at_login);
-
-    updater = startUpdater({
-      settings,
-      canRestart: () => {
-        if (sync.status && sync.status.state === 'syncing') return false;
-        return !win.isVisible() || win.isMinimized() || powerMonitor.getSystemIdleTime() >= UPDATE_IDLE_S;
-      },
-      beforeRestart: async () => {
-        if (!win.isVisible()) fs.writeFileSync(hiddenMarker, '');
-        state.quitting = true;
-        await engine.stop();
-        state.engineStopped = true;
-      },
-      relaunch: () => {
-        app.relaunch({ args: [] });
-        app.quit();
-      },
-    });
 
     engine.start();
   });

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"{% if desktop_app %} class="is-desktop-app"{% endif %}>
+<html lang="en"{% if desktop_app %} class="is-desktop-app"{% endif %} data-rd-page="{{ nav_active|default('browse') }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,25 +7,23 @@
   <script nonce="{{ csp_nonce }}">/* pre-paint theme (no FOUC) */(function(){try{var t=localStorage.getItem('onegy_theme');var ok=['frost','frost-dark'];document.documentElement.setAttribute('data-theme',ok.indexOf(t)>=0?t:'frost-dark')}catch(e){document.documentElement.setAttribute('data-theme','frost-dark')}})();</script>
   <script nonce="{{ csp_nonce }}">/* pre-paint rail widths (no layout shift) — see static/panel-resize.js */
 (function(){try{var r=document.documentElement,W=window.innerWidth,C=340;
-/* Defaults are viewport-proportional. Keep 0.17/280/460 and 0.19/320/520 in
-   sync with :root in app-shell.css and with panel-resize.js. */
-function prop(f,lo,hi){return Math.round(Math.max(lo,Math.min(hi,W*f)))}
-var dS=prop(0.17,280,460),dL=prop(0.19,320,520);
-/* One-time migration to the proportional defaults. Deliberately NEVER shrinks
-   anyone: a stored width is only dropped if it is narrower than the new
-   default, so a rail the user widened on purpose is left alone. */
-if(localStorage.getItem('onegy_rd_v')!=='2'){
-  var mig=[['onegy_rd_side_w',dS],['onegy_rd_list_w',dL]];
-  for(var i=0;i<mig.length;i++){var sv=parseInt(localStorage.getItem(mig[i][0]),10);
-    if(!isFinite(sv)||sv<mig[i][1])localStorage.removeItem(mig[i][0]);}
-  localStorage.setItem('onegy_rd_v','2');
+/* The default is viewport-proportional. Keep 0.17/280/460 in sync with :root
+   in app-shell.css and with panel-resize.js. */
+var dS=Math.round(Math.max(280,Math.min(460,W*0.17))),ver=localStorage.getItem('onegy_rd_v');
+if(ver!=='3'){
+  /* v2: proportional defaults. Deliberately NEVER shrinks anyone: a stored
+     width is only dropped if it is narrower than the new default. */
+  if(ver!=='2'){var sv=parseInt(localStorage.getItem('onegy_rd_side_w'),10);
+    if(!isFinite(sv)||sv<dS)localStorage.removeItem('onegy_rd_side_w');}
+  /* v3: one rail per page (the Notes list pane is gone), collapse per page. */
+  ['onegy_rd_list_w','onegy_rd_list_collapsed','onegy_rd_side_collapsed'].forEach(function(k){localStorage.removeItem(k)});
+  localStorage.setItem('onegy_rd_v','3');
 }
-function n(k,d){var v=parseInt(localStorage.getItem(k),10);return isFinite(v)&&v>0?v:d}
-function set(p,k,d,mn,mx){var w=Math.max(mn,Math.min(mx,n(k,d),W-C));r.style.setProperty(p,w+'px')}
-set('--rd-side-w','onegy_rd_side_w',dS,150,560);
-set('--rd-list-w','onegy_rd_list_w',dL,200,620);
-if(localStorage.getItem('onegy_rd_side_collapsed')==='1')r.setAttribute('data-rd-side','collapsed');
-if(localStorage.getItem('onegy_rd_list_collapsed')==='1')r.setAttribute('data-rd-list','collapsed');
+var v=parseInt(localStorage.getItem('onegy_rd_side_w'),10);
+r.style.setProperty('--rd-side-w',Math.max(150,Math.min(560,isFinite(v)&&v>0?v:dS,W-C))+'px');
+/* Files starts with its folders panel hidden; a stored choice wins. */
+var pg=r.getAttribute('data-rd-page'),c=localStorage.getItem('onegy_rd_side_collapsed_'+pg);
+if(c==='1'||(c===null&&pg==='files'))r.setAttribute('data-rd-side','collapsed');
 }catch(e){}})();</script>
   <title>{% block title %}ONE.GY{% endblock %}</title>
   <link rel="icon" type="image/x-icon" href="{{ versioned_static('logos/favicon.ico') }}">

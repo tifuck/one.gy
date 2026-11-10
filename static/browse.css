@@ -52,7 +52,11 @@
   display:flex; align-items:center; gap:8px; padding:0 16px 0 20px;
   border-bottom:1px solid var(--line); background:var(--bg);
 }
-.bw-side-toggle{ display:none; }
+/* Shows or hides the folder rail (panel-resize.js); opens it as a drawer on narrow windows. */
+.bw-side-toggle{ display:inline-flex; align-items:center; justify-content:center; flex:none; width:var(--bw-ctl-h); height:var(--bw-ctl-h);
+  margin-left:-6px; padding:0; border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer; }
+.bw-side-toggle:hover{ background:var(--hover); color:var(--text); }
+.bw-side-toggle svg{ width:18px; height:18px; }
 .bw-bcrumb{ display:flex; align-items:center; gap:2px; flex:0 1 auto; min-width:0; height:var(--bw-ctl-h);
   overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
 .bw-bcrumb::-webkit-scrollbar{ display:none; }
@@ -278,7 +282,7 @@
 /* ---- Drawer breakpoint (matches the Files page at 920px) ------------------------ */
 @media (max-width:920px){
   .bw-shell{ grid-template-columns:minmax(0,1fr); }
-  .bw-shell .rd-resizer, .bw-shell .rd-rail-label{ display:none !important; }
+  .bw-shell .rd-resizer{ display:none !important; }
   :root[data-rd-side="collapsed"] .bw-side > .rd-side-inner{ display:flex; }
   .bw-side{
     position:fixed; top:var(--nav-h); left:0; bottom:0; width:min(300px,86vw); z-index:50;
@@ -288,10 +292,6 @@
   .bw-side.is-open{ transform:none; visibility:visible; transition-delay:0s; }
   .bw-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; z-index:49; background:var(--scrim); opacity:0; pointer-events:none; transition:opacity .2s; }
   .bw-scrim.is-open{ opacity:1; pointer-events:auto; }
-  .bw-side-toggle{ display:inline-flex; align-items:center; justify-content:center; flex:none; width:var(--bw-ctl-h); height:var(--bw-ctl-h);
-    margin-left:-6px; padding:0; border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer; }
-  .bw-side-toggle:hover{ background:var(--hover); color:var(--text); }
-  .bw-side-toggle svg{ width:18px; height:18px; }
   .bw-toolbar{ padding:0 12px; }
   .bw-view{ padding:12px 12px 96px; }
   .bw-view[data-view="list"]{ padding:0 4px 96px; }

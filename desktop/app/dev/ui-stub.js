@@ -2,7 +2,7 @@
 // dev/mock-core.js. Lets src/ui run in a plain browser for UI work and
 // screenshots: load mock-core.js, then this file, before src/ui/index.html.
 // URL hash flags (comma separated): signed-out (sign-in / setup flow), static
-// (no live ticks), light (light theme), user=<name> (website user the panel
+// (no live ticks), light (light theme), empty (no syncs yet), user=<name> (website user the panel
 // opens for, default alice; user= for none, as when the app opens it),
 // screen=<syncs|transfers|issues|settings>.
 (function () {
@@ -12,7 +12,7 @@
     const hit = [...flags].find((f) => f.startsWith(`${name}=`));
     return hit ? decodeURIComponent(hit.slice(name.length + 1)) : dflt;
   };
-  const engine = window.OnegyMock.createMockEngine({ signedIn: !flags.has('signed-out'), platform: 'linux' });
+  const engine = window.OnegyMock.createMockEngine({ signedIn: !flags.has('signed-out'), empty: flags.has('empty'), platform: 'linux' });
   const listeners = new Set();
   const emit = (ev) => listeners.forEach((fn) => fn(ev));
   const ok = (result) => Promise.resolve({ ok: true, result: result === undefined ? null : JSON.parse(JSON.stringify(result)) });
@@ -26,6 +26,15 @@
     settings = { ...settings, ...patch, notify: { ...settings.notify, ...(patch.notify || {}) } };
     emit({ type: 'app:settings', data: settings });
     return settings;
+  };
+  // A check always finds 0.6.0; installing stays at installing.
+  let update = {
+    supported: true, kind: 'deb', state: 'idle', current: '0.2.0', version: null, progress: null, error: null, failed: null, checked_at: null,
+  };
+  const setUpdate = (patch) => {
+    update = { ...update, ...patch };
+    emit({ type: 'app:update', data: update });
+    return ok(update);
   };
   window.OnegyStubLog = [];
   engine.onEvent(emit);
@@ -60,6 +69,9 @@
     panelReady: () => ok(true),
     exportDiagnostics: () => ok(null),
     openDataFolder: () => ok(true),
+    updateState: () => ok(update),
+    checkForUpdates: () => setUpdate({ state: 'available', version: '0.6.0', checked_at: new Date().toISOString() }),
+    installUpdate: () => { window.OnegyStubLog.push(['installUpdate']); return setUpdate({ state: 'installing' }); },
     removeSync: (id) => {
       try { return ok(engine.call('syncs.remove', { id })); } catch (err) { return fail(err); }
     },

@@ -1,14 +1,15 @@
 /* ============================================================================
-   notes.css — Notes (UI v2). Three panes: notebooks rail · notes list ·
-   editor. Token-driven (themes.css .ui-v2 block); the sidebar rows, buttons,
-   menus and dialogs come from ui-v2.css. Only notes.html loads this file.
+   notes.css — Notes (UI v2). Two panes: notes list · editor. The list's
+   head is the notebook switcher (a menu), so there is no notebooks rail.
+   Token-driven (themes.css .ui-v2 block); buttons, menus and dialogs come
+   from ui-v2.css. Only notes.html loads this file.
    Prefix: .nt-*. Ids/classes are a contract with notes.js and the tests.
    ========================================================================== */
 .nt-shell{
-  display:grid; grid-template-columns:var(--rd-side-eff) var(--rd-list-eff) minmax(0,1fr);
+  display:grid; grid-template-columns:var(--rd-side-eff) minmax(0,1fr);
   height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h));
   min-height:0; overflow:hidden; background:var(--bg);
-  /* anchors the absolutely-positioned .rd-resizer / .rd-rail-label */
+  /* anchors the absolutely-positioned .rd-resizer / .nt-pane-toggle */
   position:relative;
   transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1);
 }
@@ -16,10 +17,22 @@
 .nt-shell .rd-resizer:focus-visible{ outline:none; }
 /* The wrapper only matters for the one-pane phone layout */
 .nt-panes{ display:contents; }
-/* Collapsing the notes list hides its body; the vertical label takes over.
-   Phones show one pane at a time, so the collapse never applies there. */
+/* Shows or hides the notes list (panel-resize.js). It rides the list's right
+   edge, inside the list head, and parks at the editor's left edge when the
+   list is hidden: the title only moves over for it then, so title and text
+   share a left edge while the list is open. */
+.nt-pane-toggle{
+  position:absolute; top:5px; left:max(8px, calc(var(--rd-side-eff) - 38px)); z-index:2;
+  display:inline-grid; place-items:center; width:30px; height:30px; padding:0; border:0; border-radius:8px;
+  background:none; color:var(--text-dim); cursor:pointer;
+  transition:left .22s cubic-bezier(.2,.85,.25,1), background .12s, color .12s;
+}
+.nt-pane-toggle:hover{ background:var(--hover); color:var(--text); }
+.nt-pane-toggle svg{ width:18px; height:18px; }
+/* Phones show one pane at a time, so the collapse never applies there. */
 @media (min-width:721px){
-  :root[data-rd-list="collapsed"] .nt-list > *{ display:none; }
+  :root[data-rd-side="collapsed"] .nt-list{ visibility:hidden; border-right-width:0; }
+  :root[data-rd-side="collapsed"] .nt-ed-head{ padding-left:50px; }
 }
 
 /* ---- Lock overlay (E2EE unlock) ------------------------------------------ */
@@ -41,28 +54,6 @@
 .nt-lock-form .form-input{ width:100%; }
 .nt-lock-form .rd-btn{ width:100%; height:38px; justify-content:center; }
 
-/* ---- Rail (notebooks) ----------------------------------------------------
-   Container, head, scroll body and pinned foot are .rd-side* (ui-v2.css),
-   shared with the Files sidebar; only the row internals live here. */
-.nt-rail .rd-side-inner{ padding-top:8px; }
-.nt-rail-item{
-  gap:10px; padding:0 8px 0 10px; border:0; background:none; cursor:pointer;
-  font:inherit; font-size:.84rem; color:var(--text); text-align:left;
-}
-.nt-rail-item svg{ width:16px; height:16px; flex:none; color:var(--text-dim); transition:color .12s; }
-.nt-rail-item.is-active svg{ color:var(--accent); }
-.nt-rail-item.has-color svg{ color:var(--nt-color); }
-.nt-nb-name{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.nt-nb-count{ flex:none; font-size:.74rem; color:var(--text-faint); font-variant-numeric:tabular-nums; }
-.nt-rail .rd-side-subhead{ margin-top:14px; padding-right:4px; }
-.nt-rail .rd-side-subhead button{
-  width:22px; height:22px; border:0; border-radius:6px; background:none; color:var(--text-faint);
-  transition:background .12s, color .12s;
-}
-.nt-rail .rd-side-subhead button:hover{ background:var(--press); color:var(--text); }
-.nt-rail .rd-side-subhead button svg{ width:14px; height:14px; }
-.nt-rail .rd-side-hint{ padding:4px 10px; font-size:.8rem; color:var(--text-faint); }
-
 /* ---- Notes list ----------------------------------------------------------- */
 .nt-list{
   display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden;
@@ -70,12 +61,20 @@
 }
 .nt-list-head{
   flex:none; display:flex; align-items:center; gap:6px; height:40px; box-sizing:border-box;
-  padding:0 10px 0 16px; border-bottom:1px solid var(--line);
+  padding:0 44px 0 16px; border-bottom:1px solid var(--line); /* right: room for .nt-pane-toggle */
 }
-.nt-list-title{
-  flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  font-size:.98rem; font-weight:600; letter-spacing:-.01em; line-height:1.3;
+/* The title is the notebook switcher: its menu lists All notes, Unfiled, the
+   notebooks and the trash (notes.js switchMenu). --nb-color is set inline. */
+.nt-list-title{ flex:1 1 auto; min-width:0; margin-left:-8px; font-size:inherit; }
+.nt-switch{
+  display:inline-flex; align-items:center; gap:7px; max-width:100%; height:30px; padding:0 6px 0 8px;
+  border:0; border-radius:8px; background:none; color:var(--text); cursor:pointer;
+  font:inherit; font-size:.98rem; font-weight:600; letter-spacing:-.01em; transition:background .12s;
 }
+.nt-switch:hover{ background:var(--hover); }
+.nt-switch-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nt-switch svg{ width:14px; height:14px; flex:none; color:var(--text-faint); }
+.nt-switch-dot, .nt-item-nb::before{ flex:none; width:8px; height:8px; border-radius:3px; background:var(--nb-color, var(--text-faint)); }
 .nt-newnote{
   height:30px; min-width:30px; display:inline-flex; align-items:center; justify-content:center; gap:6px;
   padding:0; border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
@@ -147,19 +146,20 @@
   flex:none; display:inline-flex; align-items:center; height:16px; padding:0 6px; border-radius:8px;
   background:var(--press); color:var(--text-dim); font-size:.66rem; font-weight:600; letter-spacing:.01em;
 }
+/* Which notebook a note is in, shown where notebooks are mixed (All notes) */
+.nt-item-meta > .nt-item-nb{ flex:0 10 auto; }
+.nt-item-nb::before{ content:""; display:inline-block; margin-right:5px; }
 .nt-items .rd-empty{ padding:clamp(32px,8vh,72px) 12px 24px; }
 .nt-items .rd-empty-icon{ width:48px; height:48px; }
 .nt-items .rd-empty-icon svg{ width:20px; height:20px; }
 
 /* ---- Skeletons + entrances ------------------------------------------------ */
-.nt-skel-row{ height:24px; margin:3px 6px; }
 .nt-skel-list{ padding:40px 12px 0; display:flex; flex-direction:column; gap:10px; }
 .nt-items .nt-skel-list{ padding:8px 6px 0; }
 .nt-skel-title{ display:block; width:96px; height:14px; }
 .nt-skel-item{ height:40px; }
 /* Only fresh data loads set .is-anim; re-renders from clicks/search must not replay it */
 .nt-list.is-anim .nt-item{ animation:rdFade .2s ease backwards; animation-delay:calc(min(var(--i,0),10)*14ms); }
-.nt-rail.is-anim .rd-side-scroll > *, .nt-rail.is-anim .rd-side-foot > *{ animation:rdFade .2s ease backwards; }
 
 /* ---- Editor --------------------------------------------------------------- */
 .nt-editor{ display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; background:var(--bg); }
@@ -228,6 +228,15 @@
 .nt-tb-color input::-webkit-color-swatch{ border:0; border-radius:2px; }
 .nt-tb-color input::-moz-color-swatch{ border:0; border-radius:2px; }
 .nt-tb-color input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+/* Font and size pickers: native selects, so a phone shows its own wheel */
+.nt-tb-select{
+  flex:none; height:30px; padding:0 2px 0 6px; border:0; border-radius:7px; background:none; color:var(--text-dim); cursor:pointer;
+  font:inherit; font-size:.82rem; font-weight:500; text-overflow:ellipsis; transition:background .12s, color .12s;
+}
+.nt-tb-select:hover{ background:var(--hover); color:var(--text); }
+.nt-tb-select option{ background:var(--raise); color:var(--text); }
+.nt-tb-font{ width:108px; }
+.nt-tb-size{ width:52px; font-variant-numeric:tabular-nums; }
 
 /* Document body: text starts at the same left edge as the title whatever the
    pane width (it used to sit in a centred column, so the start of a line moved
@@ -262,11 +271,31 @@
 .nt-ed-body code{ padding:.1em .35em; border-radius:4px; background:var(--press); font:.88em var(--font-mono); }
 .nt-ed-body pre code{ padding:0; background:none; font:inherit; }
 .nt-ed-body hr{ margin:1.6em 0; border:0; border-top:1px solid var(--line-strong); }
-.nt-ed-body table{ border-collapse:collapse; margin:.9em 0; font-size:.94em; }
+/* Full width with even columns, as Word inserts them: a column does not jump about while its cells are typed in */
+.nt-ed-body table{ width:100%; table-layout:fixed; border-collapse:collapse; margin:.9em 0; font-size:.94em; }
 .nt-ed-body td, .nt-ed-body th{ border:1px solid var(--line-strong); padding:6px 10px; vertical-align:top; text-align:left; }
 .nt-ed-body th{ background:var(--surface); font-weight:600; }
 .nt-ed-body img{ display:block; max-width:100%; height:auto; margin:.9em 0; border-radius:8px; }
 .nt-ed-body input[type="checkbox"]{ width:15px; height:15px; margin:0 .45em 0 0; vertical-align:-2px; accent-color:var(--accent); }
+/* A picture is a block, so it takes the alignment of its line through its margins (Word centres a picture with its paragraph) */
+.nt-ed-body [style*="text-align:center"] > img, .nt-ed-body [style*="text-align: center"] > img, .nt-ed-body [align="center"] > img{ margin-left:auto; margin-right:auto; }
+.nt-ed-body [style*="text-align:right"] > img, .nt-ed-body [style*="text-align: right"] > img, .nt-ed-body [align="right"] > img{ margin-left:auto; }
+/* Font size steps follow the note text (the browser's own are fixed pixel sizes, so "11" was not the size of plain text) */
+.nt-ed-body font[size="1"]{ font-size:.67em; }
+.nt-ed-body font[size="2"]{ font-size:.87em; }
+.nt-ed-body font[size="3"]{ font-size:1em; }
+.nt-ed-body font[size="4"]{ font-size:1.2em; }
+.nt-ed-body font[size="5"]{ font-size:1.6em; }
+.nt-ed-body font[size="6"]{ font-size:2.13em; }
+.nt-ed-body font[size="7"]{ font-size:3.2em; }
+/* Selected picture: a frame over it with a corner handle to drag (notes.js frameImage). The layer is the body's box. */
+.nt-editor{ position:relative; }
+.nt-img-layer{ position:absolute; overflow:hidden; pointer-events:none; animation:none; }
+.nt-img-frame{ position:absolute; box-sizing:border-box; border:1.5px solid var(--accent); border-radius:8px; }
+.nt-img-handle{
+  position:absolute; right:-1px; bottom:-1px; width:14px; height:14px; box-sizing:border-box; border:1.5px solid var(--accent); border-radius:4px 0 8px 0;
+  background:var(--bg); cursor:nwse-resize; pointer-events:auto; touch-action:none;
+}
 
 /* Canvas note mount fills the editor area below the header */
 .nt-canvas-mount{ flex:1 1 auto; min-width:0; min-height:0; display:flex; overflow:hidden; }
@@ -294,38 +323,14 @@
 .ui-v2 .rd-cmenu-hint{ letter-spacing:0; } /* word hints ("Document"), not key combos */
 .ui-v2 .rd-cmenu-item[disabled]{ opacity:.4; }
 .ui-v2 .rd-cmenu-item[disabled]:hover{ background:none; }
+.ui-v2 .rd-cmenu-item.is-active{ background:var(--sel); } /* the view the switcher is on */
 
-/* ---- Tablet: rail becomes a drawer ---------------------------------------- */
-.nt-rail-scrim{ display:none; }
-.nt-rail-toggle, .nt-back, .nt-ed-head-bare{ display:none; }
-@media (max-width:1024px){
-  /* Only the notes list stays resizable; its seam sits at the list width. */
-  .nt-shell{ grid-template-columns:var(--rd-list-eff) minmax(0,1fr); }
-  .nt-shell .rd-resizer[data-rd-resize="side"], .nt-shell .rd-rail-label[data-rd-label="side"], .nt-rail .rd-side-head{ display:none !important; }
-  .nt-shell .rd-resizer[data-rd-resize="list"]{ left:var(--rd-list-eff); }
-  .nt-shell .rd-rail-label[data-rd-label="list"]{ left:0; }
-  :root[data-rd-side="collapsed"] .nt-rail > .rd-side-inner{ display:flex; }
-  .nt-rail{
-    position:fixed; top:var(--nav-h); left:0; bottom:0; width:272px; max-width:86vw; z-index:75;
-    transform:translateX(-102%); visibility:hidden; transition:transform .28s cubic-bezier(.2,.85,.25,1), visibility 0s .28s;
-  }
-  /* Shadow only while open: a closed drawer's shadow bleeds onto the page edge */
-  .nt-rail.is-open{ transform:none; visibility:visible; transition-delay:0s; box-shadow:24px 0 48px -16px rgba(0,0,0,.5); }
-  .nt-rail-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; z-index:74; background:var(--scrim); opacity:0; pointer-events:none; transition:opacity .2s; }
-  .nt-rail-scrim.is-open{ opacity:1; pointer-events:auto; }
-  .nt-rail-toggle{
-    display:inline-flex; align-items:center; justify-content:center; flex:none; width:30px; height:30px; margin-left:-6px;
-    border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
-  }
-  .nt-rail-toggle:hover{ background:var(--hover); color:var(--text); }
-  .nt-rail-toggle svg{ width:18px; height:18px; }
-  .nt-list-head{ padding-left:12px; }
-}
+.nt-back, .nt-ed-head-bare{ display:none; }
 
 /* ---- Phone: one pane at a time (list -> editor) --------------------------- */
 @media (max-width:720px){
   .nt-shell{ grid-template-columns:minmax(0,1fr); }
-  .nt-shell .rd-resizer, .nt-shell .rd-rail-label{ display:none !important; }
+  .nt-shell .rd-resizer, .nt-pane-toggle{ display:none !important; }
   .nt-panes{ display:grid; grid-template-columns:minmax(0,1fr); min-width:0; min-height:0; }
   .nt-list{ border-right:0; }
   .nt-editor{ display:none; }
@@ -357,9 +362,11 @@
   .nt-ed-actions .rd-btn{ padding:0 10px; }
   .nt-ed-actions .rd-btn + .rd-btn{ margin-left:4px; }
   .nt-ro{ padding:8px 12px; }
-  /* Ten buttons to a row, so the whole bar is two even rows; zoom is a pinch on phones */
+  /* Ten buttons to a row (the font picker spans four, the size picker two), so the whole bar is three even rows; zoom is a pinch on phones */
   .nt-toolbar{ padding:4px 6px; gap:0; }
   .nt-toolbar .nt-tb-btn, .nt-toolbar .nt-tb-color{ flex:0 0 10%; min-width:0; }
+  .nt-toolbar .nt-tb-font{ flex:0 0 40%; width:auto; min-width:0; }
+  .nt-toolbar .nt-tb-size{ flex:0 0 20%; width:auto; min-width:0; }
   .nt-tb-sep, .nt-tb-zoom{ display:none; }
   .nt-ed-body{ padding:16px 16px 120px; font-size:16px; }
 }
@@ -370,17 +377,18 @@
 
 /* Touch: comfortable targets */
 @media (pointer:coarse){
-  .nt-rail .nt-rail-item{ min-height:40px; }
-  .nt-rail .rd-side-trash{ width:40px; height:40px; }
-  .nt-rail .rd-side-subhead button{ width:32px; height:32px; }
-  .nt-rail-toggle{ width:38px; height:38px; }
+  .nt-switch{ height:36px; }
   .nt-tb-btn, .nt-tb-color{ min-width:36px; height:36px; }
+  .nt-tb-select{ height:36px; }
+  .nt-ed-body input[type="checkbox"]{ width:20px; height:20px; vertical-align:-4px; }
+  .nt-img-handle{ width:26px; height:26px; }
+  .ui-v2 .rd-cmenu-swatches{ gap:8px; }
+  .ui-v2 .rd-cmenu-sw{ width:24px; height:24px; }
   .nt-ed-actions .rd-icon-btn{ width:38px; height:38px; }
   .ui-v2 .rd-cmenu-item{ height:40px; } /* note / notebook / New menus */
 }
 
 @media (prefers-reduced-motion:reduce){
-  .nt-rail, .nt-rail-scrim{ transition:none !important; }
-  .nt-list.is-anim .nt-item, .nt-rail.is-anim .rd-side-scroll > *, .nt-rail.is-anim .rd-side-foot > *,
+  .nt-list.is-anim .nt-item,
   .nt-editor > *, .nt-ed-loading, .nt-lock, .rd-skel{ animation:none !important; }
 }

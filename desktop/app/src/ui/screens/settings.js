@@ -3,13 +3,15 @@
 // everything else is the engine's settings.get / settings.set. Changes save
 // as soon as they are made. The theme follows the website's own switch.
 import {
-  h, icon, clear, append, fill, field, row, select, switchInput, pageHead,
+  h, icon, clear, append, fill, field, row, select, switchInput, pageHead, nextId,
 } from '../components/dom.js';
 import { confirmDialog } from '../components/dialog.js';
 import { pinDialog, pinRules, pinSummary } from '../components/pin.js';
 import { pickRemote } from '../components/tree-picker.js';
 import { toast, toastError } from '../components/toast.js';
-import { bytes, percent, SYNC_TYPES } from '../components/format.js';
+import {
+  bytes, percent, ago, SYNC_TYPES,
+} from '../components/format.js';
 import {
   rpc, bridge, appSettings, store, on, navigate, loadAccount,
 } from '../store.js';
@@ -59,17 +61,70 @@ function panel(title, sub, ...rows) {
     h('div', { class: 'rd-panel-body' }, ...rows));
 }
 
+// What the updater is doing and the one thing to do next: [hint, button label, action, primary].
+function updateStep(u) {
+  const v = u.version;
+  switch (u.state) {
+    case 'checking': return ['Checking for updates…', 'Checking…', null];
+    case 'downloading': return [`Downloading ${v}${u.progress ? ` · ${u.progress}%` : ''}…`, 'Downloading…', null];
+    case 'available': return [`ONE.GY ${v} is available.`, 'Update and restart', 'installUpdate', true];
+    case 'installing': return [`Installing ${v || 'the update'}… ONE.GY restarts when it is done.`, 'Installing…', null];
+    case 'ready': return [`${v ? `ONE.GY ${v}` : 'A new version'} is ready. Restart to use it; you'll be back where you left off.`, 'Restart now', 'installUpdate', true];
+    case 'error': return [u.error, u.failed === 'install' ? 'Try again' : 'Check for updates', u.failed === 'install' ? 'installUpdate' : 'checkForUpdates'];
+    case 'current': return [`Up to date · checked ${ago(u.checked_at)}.`, 'Check for updates', 'checkForUpdates'];
+    default: return ['', 'Check for updates', 'checkForUpdates'];
+  }
+}
+
+function updateRow() {
+  const u0 = store.update || { supported: false };
+  const hint = h('p', { class: 'rd-field-hint', 'aria-live': 'polite' });
+  const button = h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', id: nextId('r') });
+  let action = null;
+  const paint = (u) => {
+    const [text, label, next, primary] = u.supported ? updateStep(u) : ['This build does not update itself.', 'Check for updates', null];
+    hint.textContent = text;
+    button.textContent = label;
+    button.className = `rd-btn ${primary ? 'rd-btn-primary' : 'rd-btn-ghost'}`;
+    button.disabled = !next;
+    action = next;
+  };
+  button.addEventListener('click', async () => {
+    if (!action) return;
+    button.disabled = true;
+    try {
+      store.update = await bridge(action);
+    } catch (err) {
+      toastError(err);
+    }
+    paint(store.update || u0);
+  });
+  const off = on('app:update', (u) => (hint.isConnected ? paint(u) : off()));
+  paint(u0);
+  return h('div', { class: 'rd-field-row' },
+    h('div', { class: 'rd-field-text' },
+      h('label', { class: 'rd-field-label', for: button.id }, store.version ? `ONE.GY ${store.version.app}` : 'ONE.GY'),
+      hint),
+    button);
+}
+
 function general() {
   const a = store.app;
+  // deb / rpm installs follow the stable releases (build/linux/update-system.sh).
+  const system = store.update && ['deb', 'rpm'].includes(store.update.kind);
   return [
     panel('Window', null,
       row('Open at login', 'Start ONE.GY in the tray when you sign in to this computer.', switchInput(a.launch_at_login, (v) => saveApp({ launch_at_login: v }))),
       row('Start minimized', 'Open in the tray instead of showing the window.', switchInput(a.start_minimized, (v) => saveApp({ start_minimized: v }))),
       row('Keep running when the window is closed', 'Syncing continues in the tray. Quit from the tray menu.', switchInput(a.close_to_tray, (v) => saveApp({ close_to_tray: v }))),
       row('Prevent sleep while syncing', null, switchInput(a.prevent_sleep, (v) => saveApp({ prevent_sleep: v })))),
-    panel('Updates', store.version ? `Version ${store.version.app}` : null,
-      row('Install updates automatically', 'Downloads and installs in the background, then restarts the app while you are away from it. The .deb and .rpm installs are updated by the system every 30 minutes either way; this only restarts the app.', switchInput(a.auto_update, (v) => saveApp({ auto_update: v }))),
-      row('Update channel', 'Beta gets new versions first.', select([['stable', 'Stable'], ['beta', 'Beta']], a.update_channel, (v) => saveApp({ update_channel: v })))),
+    panel('Updates', null,
+      updateRow(),
+      row('Check for updates automatically', system
+        ? 'Checks every 30 minutes and asks before it restarts; while ONE.GY is in the tray it restarts by itself. This computer also installs new versions in the background every 30 minutes either way.'
+        : 'Checks every 30 minutes, downloads in the background and asks before it restarts; while ONE.GY is in the tray it restarts by itself.',
+      switchInput(a.auto_update, (v) => saveApp({ auto_update: v }))),
+      system ? null : row('Update channel', 'Beta gets new versions first.', select([['stable', 'Stable'], ['beta', 'Beta']], a.update_channel, (v) => saveApp({ update_channel: v })))),
     panel('Notifications', null,
       ...NOTIFY.map(([k, label]) => row(label, null, switchInput(a.notify[k], (v) => saveApp({ notify: { [k]: v } }))))),
     server(),
@@ -156,7 +211,7 @@ function syncs() {
         : h('p', { class: 'rd-field-hint' }, 'None yet.'),
       h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('syncs') }, 'Manage syncs')),
     panel('Defaults for new syncs', null,
-      row('Type', null, select(Object.entries(SYNC_TYPES).filter(([k]) => k !== 'full').map(([k, v]) => [k, v.label]), d.type, setDefault('type'))),
+      row('Type', 'Selected first in Add sync.', select(['two_way', 'backup', 'mirror'].map((k) => [k, SYNC_TYPES[k].label]), d.type, setDefault('type'))),
       row('When a file changed on both sides', null, select([['keep_both', 'Keep both copies'], ['prefer_remote', 'Prefer one.gy'], ['prefer_local', 'Prefer this computer'], ['ask', 'Ask me']], d.conflict_policy, setDefault('conflict_policy'))),
       row('Issue handling', null, select([['smart', 'Smart'], ['advanced', 'Advanced']], d.issue_mode, setDefault('issue_mode'))),
       row('Keep local deleted files for (days)', '0 uses the system trash.', num(d.debris_days ?? 30, 0, 3650, setDefault('debris_days'))),
@@ -358,6 +413,7 @@ export function mount(container, params = {}) {
       }
     }
     if (tab === 'account' || tab === 'security') await loadAccount().catch(() => {});
+    if (tab === 'general') store.update = await bridge('updateState').catch(() => store.update);
     if (!store.app) store.app = await appSettings.get();
     fill(body, ...RENDER[tab](render));
   }
