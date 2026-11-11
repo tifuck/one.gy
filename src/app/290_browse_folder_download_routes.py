@@ -1,32 +1,265 @@
-@app.route('/f/<share_token>/folder/<int:subfolder_id>/files')
+@app.route('/f/<share_token>/file/<file_id>/<filename>')
+@app.route('/f/<share_token>/file/<file_id>')
 @limiter.limit(download_rate_limit)
-def browse_folder_list_files(share_token, subfolder_id):
-    """List files in a subfolder of a browsable shared folder (JSON).
-    Used by client-side E2E ZIP download to discover files before decrypting."""
+def browse_folder_download_file(share_token, file_id, filename=None):
+    """Download a single file from a browsable shared folder"""
     folder, is_owner, error = check_folder_access(share_token)
     if error is not None:
-        return jsonify({'error': 'ACCESS DENIED'}), 403
+        return error
     
+    # Check if folder is browsable directly (public+browsable or E2E+browsable) or via ancestor
     folder_is_browsable = folder.is_browsable
     if not folder_is_browsable:
         ancestor = is_folder_in_browsable_ancestor(folder)
         if not ancestor:
             ancestor = is_folder_in_public_browsable_ancestor(folder)
         if not ancestor:
-            return jsonify({'error': 'NOT BROWSABLE'}), 403
+            abort(403)
+        folder_is_browsable = True
     
-    # AUDIT FIX P2: enforce sub-folder trash AND expiry, not just containment.
-    if not _shared_subfolder_available(subfolder_id, folder):
-        return jsonify({'error': 'NOT FOUND'}), 404
+    # Verify file belongs to this folder tree
+    allowed_files = collect_browsable_files(folder.id, is_owner, folder_is_browsable, bool(folder.is_link_shared))
+    allowed_ids = {f.id for f in allowed_files}
     
-    _fl_folder_name_map = []
-    # Bulk-load the subtree + files up front, then walk in-memory in the same
-    # DFS order as the old recursive version (2 queries per folder -> 2 total).
-    def collect_files_json(root_id):
-        result = []
+    if file_id not in allowed_ids:
+        abort(404)
+    
+    file = db.session.get(File, file_id)
+    if not file:
+        abort(404)
+
+    # AUDIT FIX P1: check_download_allowed() inspects max_downloads and NOTHING
+    # else, so expiry was never enforced on any /f/<share_token>/... route. The
+    # collector above now filters expired files too, but re-check explicitly here
+    # so this delivery path fails closed on its own. Unlike download_file_logic()
+    # this does NOT delete the row: an anonymous read path must not destroy data.
+    if not _file_not_expired(file):
+        print(f'[BROWSE DOWNLOAD] Refused expired file through folder token: {_log_safe(file.orig_name)}')
+        return render_template('notfound.html',
+            title='FILE EXPIRED',
+            subtitle='THIS FILE HAS PASSED ITS EXPIRATION DATE',
+            detail='EXPIRED FILES ARE AUTOMATICALLY DELETED FOR SECURITY'), 404
+
+    file_path = storage.get_file_path(file.filename)
+    if not file_path or not os.path.exists(file_path):
+        abort(404)
+    
+    success, error = check_download_allowed(file)
+    if not success:
+        if error == 'limit_reached':
+            return 'Download limit reached', 410
+        return render_template('notfound.html',
+            title='DOWNLOAD UNAVAILABLE',
+            subtitle='THIS FILE COULD NOT BE DOWNLOADED AT THIS TIME',
+            detail='THE DOWNLOAD CHECK FAILED. THE FILE MAY HAVE BEEN REMOVED'), 404
+    
+    # Decrypt and serve
+    print(f'[BROWSE DOWNLOAD] Serving file: {_log_safe(file.orig_name)} from folder: {_log_safe(folder.name)}')
+    
+    if file.is_e2e_encrypted:
+        if request.method == 'HEAD':
+            return _build_streaming_response(
+                lambda: iter(()), safe_served_mimetype(file.orig_name),
+                disposition='attachment', filename=file.orig_name, content_length=file.size,
+                headers={'Cache-Control': 'no-cache, no-store, must-revalidate', 'X-Accel-Buffering': 'no'})
+        success, error = check_and_increment_download(file)
+        if not success:
+            if error == 'limit_reached':
+                return 'Download limit reached', 410
+            return render_template('notfound.html',
+                title='DOWNLOAD UNAVAILABLE',
+                subtitle='THIS FILE COULD NOT BE DOWNLOADED AT THIS TIME',
+                detail='THE DOWNLOAD CHECK FAILED. THE FILE MAY HAVE BEEN REMOVED'), 404
+        # E2E files are stored as-is, serve directly.
+        # AUDIT Tier 0 #1: verify on-disk size + payload SHA-256.
+        mimetype = safe_served_mimetype(file.orig_name)
+        return _build_streaming_response(
+            lambda: _iter_file_chunks(
+                file_path,
+                expected_checksum=file.payload_checksum,
+                expected_size=file.disk_size,
+                file_id=file.id,
+                corruption_kind='e2ee-payload-browse',
+            ),
+            mimetype,
+            disposition='attachment',
+            filename=file.orig_name,
+            content_length=file.size,
+            headers={
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'X-Accel-Buffering': 'no'
+            },
+            on_finalize=lambda completed: finalize_reserved_download(file.id, completed)
+        )
+    
+    # Stream decrypted file directly (no temp file needed)
+    from flask import Response
+    if file.orig_name.endswith('.zip'):
+        mimetype = 'application/zip'
+    else:
+        mimetype = safe_served_mimetype(file.orig_name)
+    
+    # For large files, decrypt to a temp file first then serve.
+    # Streaming decryption directly over SSL causes "bad record mac" errors
+    # for long-running transfers (especially with CLI clients like wget/curl).
+    if request.method == 'HEAD':
+        return _build_streaming_response(
+            lambda: iter(()), mimetype, disposition='attachment',
+            filename=file.orig_name, content_length=file.size,
+            headers={'Cache-Control': 'no-cache, no-store, must-revalidate', 'X-Accel-Buffering': 'no'})
+    orig_size = file.size or 0
+    if orig_size > LARGE_FILE_THRESHOLD:
+        if is_browser_request() and not _wants_raw_bytes():
+            prep_id = str(uuid.uuid4())
+            prep_state = {
+                    'progress': 0,
+                    'status': 'pending',
+                    'temp_path': None,
+                    'ready': False,
+                    'error': None,
+                    'orig_name': file.orig_name,
+                    'mimetype': mimetype,
+                    'orig_size': orig_size,
+                    'file_id': file.id,
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                    'session_id': _get_download_session_id(),
+                }
+            reserved, active_preps = _reserve_prep_download_slot(prep_id, prep_state)
+            if not reserved:
+                print(f'[BROWSE DOWNLOAD] Too many concurrent preparations ({active_preps}), rejecting')
+                return 'SERVER BUSY - TOO MANY DOWNLOADS IN PROGRESS. PLEASE TRY AGAIN LATER.', 503
+
+            # Browser: show a progress page with async polling
+            print(f'[BROWSE DOWNLOAD] Large file ({orig_size} bytes) from browser, showing progress page. prep_id={prep_id}')
+            thread = threading.Thread(
+                target=_prepare_download_background,
+                args=(prep_id, file_path, orig_size),
+                kwargs={
+                    'file_id': file.id,
+                    'expected_payload_checksum': file.payload_checksum,
+                    'expected_disk_size': file.disk_size,
+                },
+                daemon=True
+            )
+            thread.start()
+            return render_template('preparing_download.html',
+                                   filename=file.orig_name,
+                                   prep_id=prep_id,
+                                   download_url=url_for('download_prepared_file', prep_id=prep_id))
+        else:
+            # CLI client (wget/curl/etc): decrypt to temp file synchronously, then serve
+            print(f'[BROWSE DOWNLOAD] Large file ({orig_size} bytes) from CLI client, decrypting to temp file first')
+            tmp_path, _cleanup_tmp = _prepare_sync_download(file_path, file)
+            if tmp_path is None:
+                return 'SERVER BUSY - TOO MANY DOWNLOADS IN PROGRESS. PLEASE TRY AGAIN LATER.', 503
+
+            try:
+                print(f'[BROWSE DOWNLOAD] Streaming decrypted temp file to CLI: {_log_safe(file.orig_name)} ({file.size} bytes)')
+                success, error = check_and_increment_download(file)
+                if not success:
+                    _cleanup_tmp(False)
+                    if error == 'limit_reached':
+                        return 'Download limit reached', 410
+                    return render_template('notfound.html',
+                        title='DOWNLOAD UNAVAILABLE',
+                        subtitle='THIS FILE COULD NOT BE DOWNLOADED AT THIS TIME',
+                        detail='THE DOWNLOAD CHECK FAILED. THE FILE MAY HAVE BEEN REMOVED'), 404
+                return _build_streaming_response(
+                    lambda: _iter_file_chunks(tmp_path),
+                    mimetype,
+                    disposition='attachment',
+                    filename=file.orig_name,
+                    content_length=file.size,
+                    headers={
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'X-Accel-Buffering': 'no'
+                    },
+                    on_finalize=_finalize_download_with_temp_cleanup(file.id, _cleanup_tmp)
+                )
+            except Exception:
+                _cleanup_tmp(False)
+                raise
+
+    # AUDIT FIX S3: reject a corrupt/truncated stored payload before emitting the
+    # 200 + Content-Length, so a known-bad file returns a proper error instead of
+    # a truncated 'success' body.
+    if not _payload_disk_size_matches(file_path, file.disk_size):
+        print(f'[ERROR] [BROWSE DOWNLOAD] Disk-size mismatch for {file.id} -- refusing to stream truncated download')
+        abort(500)
+    # Small files: stream decryption directly (with integrity check)
+    success, error = check_and_increment_download(file)
+    if not success:
+        if error == 'limit_reached':
+            return 'Download limit reached', 410
+        return render_template('notfound.html',
+            title='DOWNLOAD UNAVAILABLE',
+            subtitle='THIS FILE COULD NOT BE DOWNLOADED AT THIS TIME',
+            detail='THE DOWNLOAD CHECK FAILED. THE FILE MAY HAVE BEEN REMOVED'), 404
+    return _build_streaming_response(
+        lambda: decrypt_file_chunked(
+            file_path,
+            expected_size=file.size,
+            expected_payload_checksum=file.payload_checksum,
+            expected_disk_size=file.disk_size,
+            file_id=file.id,
+        ),
+        mimetype,
+        disposition='attachment',
+        filename=file.orig_name,
+        content_length=file.size,
+        headers={'X-Accel-Buffering': 'no'},
+        on_finalize=lambda completed: finalize_reserved_download(file.id, completed)
+    )
+
+@app.route('/f/<share_token>/folder/<int:subfolder_id>/<foldername>.zip')
+@app.route('/f/<share_token>/folder/<int:subfolder_id>')
+@limiter.limit(download_rate_limit)
+def browse_folder_download_subfolder(share_token, subfolder_id, foldername=None):
+    """Download a subfolder from a browsable shared folder as a ZIP file"""
+    folder, is_owner, error = check_folder_access(share_token)
+    if error is not None:
+        return error
+
+    # Check if folder is browsable directly or via a browsable ancestor
+    folder_is_browsable = folder.is_browsable
+    if not folder_is_browsable:
+        ancestor = is_folder_in_browsable_ancestor(folder)
+        if not ancestor:
+            ancestor = is_folder_in_public_browsable_ancestor(folder)
+        if not ancestor:
+            abort(403)
+        folder_is_browsable = True
+
+    # Verify subfolder belongs to this folder tree.
+    # AUDIT FIX P2: enforce trash AND expiry on the sub-folder and every folder
+    # between it and the share root, not just containment.
+    subfolder = _shared_subfolder_available(subfolder_id, folder)
+    if not subfolder:
+        abort(404)
+
+    if request.method == 'HEAD':
+        return _build_streaming_response(
+            lambda: iter(()), 'application/zip', disposition='attachment',
+            filename=f'{secure_filename(subfolder.name)}.zip')
+
+    print(f'[BROWSE DOWNLOAD] Downloading subfolder as ZIP: {_log_safe(subfolder.name)} (id={subfolder_id}) from shared folder: {_log_safe(folder.name)}')
+
+    # AUDIT FIX P5: files dropped by the PRE-FILTERS (download limit exhausted,
+    # payload missing on disk) were previously invisible -- not in the log, not in
+    # _DOWNLOAD_ERRORS.txt, not in the X-Incomplete-Archive header. They are now
+    # recorded. Access-control exclusions are deliberately NOT recorded: telling
+    # an anonymous visitor which hidden files exist would be an information leak.
+    pre_skipped = []
+
+    # Collect files recursively from the subfolder.
+    # Bulk-load the folder subtree + all its files up front (O(depth)+2 queries
+    # instead of 2 per folder), then walk the in-memory maps in the same DFS
+    # order as the old recursive version.
+    def collect_subfolder_files(root_id):
+        files_to_zip = []
         root_obj = db.session.get(Folder, root_id)
         if not root_obj or root_obj.is_trashed:
-            return result
+            return files_to_zip
         subtree_ids = _collect_descendant_folder_ids([root_id], include_roots=True)
         subtree_folders = Folder.query.filter(Folder.id.in_(list(subtree_ids)), Folder.is_trashed == False).all()
         children_map = {}
@@ -42,161 +275,175 @@ def browse_folder_list_files(share_token, subfolder_id):
 
         def _walk(fld_obj, path_prefix):
             fld_e2e_boundary = _e2e_upload_boundary_for_folder(fld_obj)
-            for f in files_by_folder.get(fld_obj.id, []):
-                # AUDIT FIX P1: do not offer an expired file to the client-side
-                # ZIP builder either.
-                if not _file_not_expired(f):
+            for file in files_by_folder.get(fld_obj.id, []):
+                # AUDIT FIX P1: never ZIP an expired file through a folder token.
+                if not _file_not_expired(file):
                     continue
-                if not is_owner and fld_e2e_boundary and not f.is_e2e_encrypted:
+                if not is_owner and fld_e2e_boundary and not file.is_e2e_encrypted:
                     continue
-                if f.password_hash:
+                if not file.is_public and file.registered_user_id and not folder.is_public and not folder_is_browsable:
+                    if not is_owner:
+                        continue
+                if file.password_hash:
                     continue
                 # Hide E2EE files without link/passphrase-scoped keys from non-owners.
-                if f.is_e2e_encrypted and not is_owner and not _e2e_file_has_non_owner_key(f):
+                if file.is_e2e_encrypted and not is_owner and not _e2e_file_has_non_owner_key(file):
                     continue
-                entry = {
-                    'id': f.id,
-                    # AUDIT FIX P14: this fed a CLIENT-SIDE E2EE ZIP builder from
-                    # RAW orig_name / folder name, so traversal neutralisation
-                    # depended entirely on the consumer -- and the server-side ZIP
-                    # path for the same data DID sanitise, which is exactly how a
-                    # zip-slip regression gets reintroduced. Sanitise at the source.
-                    'name': build_safe_browse_path(path_prefix, f.orig_name),
-                    'is_e2e': f.is_e2e_encrypted,
-                    'size': f.size
-                }
-                entry.update(_client_zip_file_fields(f, is_owner, share_token))
-                result.append(entry)
+                zip_path = os.path.join(path_prefix, safe_zip_entry_name(file.orig_name))
+                # Skip files that have exhausted their max_downloads limit
+                if file.max_downloads and (file.download_count or 0) >= file.max_downloads:
+                    pre_skipped.append(_zip_skip_entry(zip_path, 'DOWNLOAD LIMIT REACHED'))
+                    continue
+                if _zip_skip_if_e2e(file, zip_path, pre_skipped):
+                    continue
+                file_path = storage.get_file_path(file.filename)
+                if file_path and os.path.exists(file_path):
+                    files_to_zip.append((file_path, zip_path, file))
+                else:
+                    pre_skipped.append(_zip_skip_entry(zip_path, 'PAYLOAD NOT AVAILABLE'))
             for sf in children_map.get(fld_obj.id, []):
                 # AUDIT FIX P2: an expired sub-folder cuts off everything below it.
                 if not _folder_not_expired(sf) or _locked_folder_share(sf, folder):
                     continue
-                safe_sf_name = safe_zip_entry_name(sf.name)
-                sf_path = build_safe_browse_path(path_prefix, sf.name)
-                # Track encrypted folder name data for client-side path reconstruction.
-                # `placeholder` must be the SANITISED segment so it still matches the
-                # path segments emitted above (AUDIT FIX P14).
-                if sf.is_e2e is True and sf.encrypted_name:
-                    fn_entry = {'id': sf.id, 'placeholder': safe_sf_name, 'encrypted_name': sf.encrypted_name, 'name_nonce': sf.name_nonce}
-                    if is_owner:
-                        fn_entry['encrypted_name_key'] = sf.encrypted_name_key
-                        fn_entry['name_key_nonce'] = sf.name_key_nonce
-                    if sf.link_encrypted_name_key:
-                        fn_entry['link_encrypted_name_key'] = sf.link_encrypted_name_key
-                        fn_entry['link_name_key_nonce'] = sf.link_name_key_nonce
-                    _fl_folder_name_map.append(fn_entry)
+                sf_path = os.path.join(path_prefix, safe_zip_entry_name(sf.name))
                 _walk(sf, sf_path)
 
         _walk(root_obj, '')
-        return result
-    
-    files = collect_files_json(subfolder_id)
-    resp = {'files': files}
-    # AUDIT FIX P12: a single-use, signed ticket the client must echo back to
-    # /track-folder-download after it finishes its client-side ZIP build. See
-    # _issue_folder_download_ticket().
-    resp['download_ticket'] = _issue_folder_download_ticket(share_token, subfolder_id)
-    if _fl_folder_name_map:
-        resp['folder_names'] = _fl_folder_name_map
-    return jsonify(resp)
+        return files_to_zip
 
-@app.route('/f/<share_token>/all-files')
-@limiter.limit(download_rate_limit)
-def browse_folder_all_files(share_token):
-    """List ALL files in the root shared folder recursively (JSON).
-    Used by client-side E2E 'Download All' to discover files before decrypting."""
-    folder, is_owner, error = check_folder_access(share_token)
-    if error is not None:
-        return jsonify({'error': 'ACCESS DENIED'}), 403
+    files_to_zip = collect_subfolder_files(subfolder_id)
+    print(f'[BROWSE DOWNLOAD] Total files in subfolder ZIP: {len(files_to_zip)} ({len(pre_skipped)} pre-skipped)')
 
-    folder_is_browsable = folder.is_browsable
-    if not folder_is_browsable:
-        ancestor = is_folder_in_browsable_ancestor(folder)
-        if not ancestor:
-            ancestor = is_folder_in_public_browsable_ancestor(folder)
-        if not ancestor:
-            return jsonify({'error': 'NOT BROWSABLE'}), 403
+    if not files_to_zip:
+        flash('FOLDER IS EMPTY', 'error')
+        return render_template('notfound.html',
+            title='EMPTY FOLDER',
+            subtitle='THIS FOLDER DOES NOT CONTAIN ANY DOWNLOADABLE FILES',
+            detail='THE FOLDER EXISTS BUT HAS NO FILES TO DOWNLOAD'), 404
 
-    _af_folder_name_map = []
-    # Bulk-load the subtree + files up front, then walk in-memory in the same
-    # DFS order as the old recursive version (2 queries per folder -> 2 total).
-    def collect_all_files_json(root_id):
-        result = []
-        root_obj = db.session.get(Folder, root_id)
-        if not root_obj or root_obj.is_trashed:
-            return result
-        subtree_ids = _collect_descendant_folder_ids([root_id], include_roots=True)
-        subtree_folders = Folder.query.filter(Folder.id.in_(list(subtree_ids)), Folder.is_trashed == False).all()
-        children_map = {}
-        for fld in subtree_folders:
-            children_map.setdefault(fld.parent_id, []).append(fld)
-        files_by_folder = {}
-        for f in File.query.filter(
-            File.folder_id.in_(list(subtree_ids)),
-            File.is_temp_upload == False,
-            File.is_trashed == False
-        ).all():
-            files_by_folder.setdefault(f.folder_id, []).append(f)
+    ok, err_resp = _enforce_zip_limits(files_to_zip)
+    if not ok:
+        return err_resp
+    # AUDIT FIX P11: reserve the estimated disk footprint with the slot.
+    zip_estimate = _zip_build_estimate_bytes(files_to_zip)
+    zip_reservation, err_resp = _acquire_zip_slot(zip_estimate)
+    if not zip_reservation:
+        return err_resp
 
-        def _walk(fld_obj, path_prefix):
-            fld_e2e_boundary = _e2e_upload_boundary_for_folder(fld_obj)
-            for f in files_by_folder.get(fld_obj.id, []):
-                # AUDIT FIX P1: expired files are not offered for download-all.
-                if not _file_not_expired(f):
+    try:
+        temp_zip_dir = create_work_dir('browse_subfolder_dl_')
+    except Exception:
+        _release_zip_slot(zip_reservation)
+        raise
+    temp_zip_path = os.path.join(temp_zip_dir, 'folder.zip')
+    slot_handed_off = False
+
+    try:
+        files_added = 0
+        added_file_ids = []
+        added_reservations = []  # AUDIT FIX (finding 1): (id, reservation) for pre-response rollback
+        skipped_names = list(pre_skipped)  # AUDIT FIX H5/P5: every omission, whatever the reason
+        used_names = set()                 # AUDIT FIX P4: no member may shadow another
+        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_STORED) as zf:
+            for file_path, zip_path, file_obj in files_to_zip:
+                reserved = None
+                entry_name = zip_path
+                try:
+                    # AUDIT FIX D7: keep the work dir provably alive while a long
+                    # ZIP build is running.
+                    touch_work_dir(temp_zip_dir)
+                    reserved, skip_reason = _reserve_zip_download_slot(file_obj)
+                    if not reserved:
+                        skipped_names.append(_zip_skip_entry(zip_path, skip_reason))
+                        continue
+                    entry_name = _unique_zip_entry_name(zip_path, used_names)
+                    if file_obj.is_e2e_encrypted:
+                        zf.write(file_path, entry_name)
+                        files_added += 1
+                    else:
+                        temp_decrypted_path = os.path.join(temp_zip_dir, f'dec_{files_added}')
+                        with open(temp_decrypted_path, 'wb') as dec_f:
+                            for chunk in decrypt_file_chunked(
+                                file_path,
+                                expected_size=file_obj.size,
+                                expected_payload_checksum=file_obj.payload_checksum,
+                                expected_disk_size=file_obj.disk_size,
+                                file_id=file_obj.id,
+                            ):
+                                dec_f.write(chunk)
+                        zf.write(temp_decrypted_path, entry_name)
+                        files_added += 1
+                        os.remove(temp_decrypted_path)
+                    added_file_ids.append(file_obj.id)
+                    added_reservations.append((file_obj.id, reserved))
+                except Exception as e:
+                    if reserved:
+                        rollback_reserved_download(file_obj.id, reserved)
+                    skipped_names.append(_zip_skip_entry(entry_name, 'DECRYPTION OR INTEGRITY FAILURE'))
+                    print(f'[BROWSE DOWNLOAD] Error adding file {entry_name} to ZIP: {e}')
                     continue
-                if not is_owner and fld_e2e_boundary and not f.is_e2e_encrypted:
-                    continue
-                if f.password_hash:
-                    continue
-                if f.is_e2e_encrypted and not is_owner and not _e2e_file_has_non_owner_key(f):
-                    continue
-                entry = {
-                    'id': f.id,
-                    # AUDIT FIX P14: sanitise at the source (see browse_folder_list_files).
-                    'name': build_safe_browse_path(path_prefix, f.orig_name),
-                    'is_e2e': f.is_e2e_encrypted,
-                    'size': f.size
-                }
-                entry.update(_client_zip_file_fields(f, is_owner, share_token))
-                result.append(entry)
-            for sf in children_map.get(fld_obj.id, []):
-                # AUDIT FIX P2: an expired sub-folder cuts off everything below it.
-                if not _folder_not_expired(sf) or _locked_folder_share(sf, folder):
-                    continue
-                safe_sf_name = safe_zip_entry_name(sf.name)
-                sf_path = build_safe_browse_path(path_prefix, sf.name)
-                if sf.is_e2e is True and sf.encrypted_name:
-                    fn_entry = {'id': sf.id, 'placeholder': safe_sf_name, 'encrypted_name': sf.encrypted_name, 'name_nonce': sf.name_nonce}
-                    if is_owner:
-                        fn_entry['encrypted_name_key'] = sf.encrypted_name_key
-                        fn_entry['name_key_nonce'] = sf.name_key_nonce
-                    if sf.link_encrypted_name_key:
-                        fn_entry['link_encrypted_name_key'] = sf.link_encrypted_name_key
-                        fn_entry['link_name_key_nonce'] = sf.link_name_key_nonce
-                    _af_folder_name_map.append(fn_entry)
-                _walk(sf, sf_path)
+            _write_zip_skip_manifest(zf, skipped_names, used_names)
 
-        _walk(root_obj, '')
-        return result
+        # AUDIT FIX H5: a ZIP where every file failed to decrypt/verify must not
+        # be returned as a clean 200 -- surface a server error instead.
+        if files_added == 0:
+            raise RuntimeError('NO FILES COULD BE ADDED TO THE DOWNLOAD ARCHIVE')
 
-    files = collect_all_files_json(folder.id)
-    print(f'[BROWSE DOWNLOAD] Listed all files for download-all: {len(files)} files in folder {_log_safe(folder.name)}')
-    resp = {'files': files, 'folder_name': folder.name}
-    # AUDIT FIX P12: single-use ticket for /track-folder-download (see below).
-    resp['download_ticket'] = _issue_folder_download_ticket(share_token, folder.id)
-    # Include root folder encrypted name data
-    if folder.is_e2e is True and folder.encrypted_name:
-        resp['folder_name_encrypted'] = folder.encrypted_name
-        resp['folder_name_nonce'] = folder.name_nonce
-        if is_owner:
-            resp['folder_name_key'] = folder.encrypted_name_key
-            resp['folder_name_key_nonce'] = folder.name_key_nonce
-        if folder.link_encrypted_name_key:
-            resp['folder_link_name_key'] = folder.link_encrypted_name_key
-            resp['folder_link_name_key_nonce'] = folder.link_name_key_nonce
-    if _af_folder_name_map:
-        resp['folder_names'] = _af_folder_name_map
-    return jsonify(resp)
+        print(f'[BROWSE DOWNLOAD] Subfolder ZIP created with {files_added} files ({len(skipped_names)} skipped)')
+        
+        # Track subfolder + its sub-folder download counts (cascading)
+        increment_folder_download_counts(subfolder.id)
+        
+        safe_name = secure_filename(subfolder.name)
+        zip_filename = f'{safe_name}.zip'
+
+        response = _build_zip_download_response(temp_zip_path, temp_zip_dir, zip_filename, added_file_ids,
+                                                '[BROWSE DOWNLOAD]', incomplete_count=len(skipped_names),
+                                                release_zip_reservation=zip_reservation)
+        # Slot ownership now belongs to the response finalizer (AUDIT FIX P11).
+        slot_handed_off = True
+        return response
+    except Exception as e:
+        # AUDIT FIX (finding 1): a pre-response failure must give back every
+        # member slot already reserved, or a max_downloads link burns slots
+        # without ever delivering a ZIP. Members that failed mid-build were
+        # already rolled back per-member and never enter added_reservations
+        # (no double rollback); once slot_handed_off the stream finalizer
+        # owns the slots and this block can no longer run.
+        if not slot_handed_off:
+            for _fid, _res in added_reservations:
+                rollback_reserved_download(_fid, _res)
+        try:
+            shutil.rmtree(temp_zip_dir)
+        except Exception:
+            pass
+        print(f'[BROWSE DOWNLOAD] Error creating subfolder ZIP: {e}')
+        raise
+    finally:
+        if not slot_handed_off:
+            _release_zip_slot(zip_reservation)
+
+def _client_zip_file_fields(f, is_owner, share_token):
+    """Key + name material the client ZIP builder needs to decrypt E2EE members."""
+    extra = {}
+    if f.is_e2e_encrypted:
+        extra['download_url'] = f'/f/{f.id}/{f.orig_name}'
+        if f.encrypted_name:
+            extra['encrypted_name'] = f.encrypted_name
+            extra['name_nonce'] = f.name_nonce
+        if f.encrypted_file_key and is_owner:
+            extra['encrypted_file_key'] = f.encrypted_file_key
+            extra['file_key_nonce'] = f.file_key_nonce
+        if f.link_encrypted_file_key:
+            extra['link_encrypted_file_key'] = f.link_encrypted_file_key
+            extra['link_file_key_nonce'] = f.link_file_key_nonce
+        if getattr(f, 'folder_link_encrypted_file_key', None):
+            extra['folder_link_encrypted_file_key'] = f.folder_link_encrypted_file_key
+            extra['folder_link_file_key_nonce'] = f.folder_link_file_key_nonce
+    else:
+        extra['download_url'] = f'/f/{share_token}/file/{f.id}/{f.orig_name}'
+    return extra
+
 
 @app.route('/f/<share_token>/download-all')
 @limiter.limit(download_rate_limit)
@@ -715,4 +962,3 @@ def browse_folder_download_selected(share_token):
     finally:
         if not slot_handed_off:
             _release_zip_slot(zip_reservation)
-

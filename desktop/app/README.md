@@ -22,8 +22,8 @@ npm test             # unit tests: settings, notifications, shortcuts, tray menu
 
 Dev-only flags (ignored in packaged builds): `--mock-engine`, `--server=https://…`
 (sets the server URL; only https is accepted). F12 opens DevTools in dev.
-Packaged builds start on `https://one.gy`; Settings > General > Server in the
-sync panel changes it.
+Packaged builds start on `https://one.gy`; App settings (the rail's gear) >
+General > Server changes it.
 
 Keys (the title bar has back / forward / reload too): Alt+←/→ and the mouse
 back/forward buttons, Ctrl+R / F5, Ctrl+Shift+R, Ctrl+= / Ctrl+- / Ctrl+0 (zoom, kept),
@@ -95,7 +95,7 @@ src/main/       main process
   tray-popover.js the popover window by the tray icon (placement, hide on blur, actions)
   notify.js, updater.js, settings-store.js
 src/preload/    app-preload (panel bridge), titlebar-preload, update-preload, popover-preload, site-preload
-                (window.onegyDesktop, bridge 2; theme, rail width, panel state,
+                (window.onegyDesktop, bridge 3; theme, rail width, panel state,
                 sign-out handed to the app)
 src/ui/         native panel, plain ES modules, no build step
   app.js          panel shell: admin console layout (sidebar + page), gating
@@ -120,7 +120,7 @@ test/           node --test, plus the env-gated e2e_bridge.py
 ## Notes
 
 - Updates ask before they restart (`updater.js`). The app checks every 30
-  minutes, on resume and on relaunch (Settings > General > Check for updates
+  minutes, on resume and on relaunch (App settings > Updates > Check for updates
   any time); the update toast (`ui/update.html`, a view in the window's bottom
   right corner) offers Update and restart / Restart now. The restart writes
   `relaunch-state.json` (window bounds, maximized, hidden, site page, open

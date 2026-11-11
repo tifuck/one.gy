@@ -1,13 +1,21 @@
 /* desktop-bridge.js — website side of the ONE.GY Desktop site bridge
-   (desktop/docs/site-bridge.md, v2). Loaded by _nav.html on signed-in pages
+   (desktop/docs/site-bridge.md, v2+). Loaded by _nav.html on signed-in pages
    only. Inside the app it reveals the [data-desktop-sync] nav entries, drives
-   their status indicator and hides [data-hide-in-desktop]; in a normal
-   browser (no window.onegyDesktop, or bridge < 2) it does nothing. */
+   their status indicator, reveals the rail's App settings button (bridge 3)
+   and hides [data-hide-in-desktop]; in a normal browser (no
+   window.onegyDesktop, or bridge < 2) it does nothing. */
 (function () {
   'use strict';
   var app = window.onegyDesktop;
   if (!app || !(app.bridge >= 2)) return;
   document.documentElement.classList.add('is-desktop-app');
+
+  if (typeof app.openSettings === 'function') {
+    document.querySelectorAll('[data-desktop-settings]').forEach(function (el) {
+      el.hidden = false;
+      el.addEventListener('click', function () { app.openSettings({ username: el.getAttribute('data-username') || '' }); });
+    });
+  }
 
   var entries = document.querySelectorAll('[data-desktop-sync]');
   if (!entries.length) return;

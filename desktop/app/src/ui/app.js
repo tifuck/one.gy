@@ -1,10 +1,14 @@
 // Native sync panel shell. The panel opens over the website's content area,
 // right of the site's rail (desktop/docs/site-bridge.md), for the account the
 // site page is signed in as, and looks like a page of the site: the admin
-// console layout (sidebar Syncs / Transfers / Issues / Settings, page head,
-// panels) with the vendored site CSS. It shows only what fits this computer's
-// state: the app's sign-in when it is signed out, the setup for a website
-// user, a switch-account guard when it syncs someone else, else the sections.
+// console layout (sidebar, page head, panels) with the vendored site CSS. Two
+// modes, by the sidebar they show: sync (Syncs / Transfers / Issues /
+// Settings, from the rail's Sync) and app settings (General / Account /
+// Security / Updates / About, from the rail's gear). Sync
+// shows only what fits this computer's state: the app's sign-in when it is
+// signed out, the setup for a website user, a switch-account guard when it
+// syncs someone else, else the sections. App settings work in any state but
+// the lock; Account and Security get the switch-account guard.
 // Sign-in, lock and message screens are "solo": centred, no sidebar, over
 // the whole window below the title bar.
 // Screens are modules exporting mount(container, params) -> unmount().
@@ -36,6 +40,16 @@ const SECTIONS = [
   { id: 'issues', label: 'Issues', icon: 'alert', count: issueCount },
   { id: 'settings', label: 'Settings', icon: 'sliders' },
 ];
+// account: this computer's account, so not for another website user. Same ids as main/window.js SETTINGS_SCREENS.
+const APP_SECTIONS = [
+  { id: 'general', label: 'General', icon: 'settings' },
+  { id: 'account', label: 'Account', icon: 'user', account: true },
+  { id: 'security', label: 'Security', icon: 'shield', account: true },
+  { id: 'updates', label: 'Updates', icon: 'download' },
+  { id: 'about', label: 'About', icon: 'info' },
+];
+for (const { id } of APP_SECTIONS) SCREENS[id] = { mount: (el, params) => settingsScreen.mountApp(el, { ...params, section: id }) };
+const SIDE_HEADS = { sync: 'Sync on this computer', app: 'App settings' };
 
 // The site's page switch (core.css ::view-transition-old/new(root)): the page
 // going away fades out, the one coming in fades in, the nav stays. Played
@@ -61,11 +75,13 @@ const els = {
   panel: document.getElementById('panel'),
   main: document.getElementById('main'),
   side: document.getElementById('side'),
+  sideHead: document.getElementById('sideHead'),
   content: document.getElementById('admPanel'),
   notice: document.getElementById('notice'),
   screen: document.getElementById('screen'),
 };
 let current = null; // mounted screen
+let mode = 'sync'; // sync | app: which sidebar shows
 let mountedGate = null;
 let unmount = null;
 let wanted = 'syncs'; // the section to show once the panel may show sections
@@ -92,18 +108,21 @@ function go(screen, params = {}) {
 
 function mountScreen(screen, params) {
   const g = gate();
+  const appSection = APP_SECTIONS.find((s) => s.id === screen);
   let target = screen;
+  if (g === 'lock') target = 'lock';
+  else if (appSection) target = appSection.account && g === 'other' ? 'other' : screen;
   // Opened by the app (no website user): its own sign-in; from the site's Sync entry: the setup for that user.
-  if (g === 'setup') target = store.panelUser ? 'wizard' : 'signin';
-  else if (g === 'lock') target = 'lock';
+  else if (g === 'setup') target = store.panelUser ? 'wizard' : 'signin';
   else if (g !== 'ready') target = g;
   else if (!SCREENS[target]) target = 'syncs';
-  if (SECTIONS.some((s) => s.id === target)) wanted = target;
+  if (appSection || SECTIONS.some((s) => s.id === target)) wanted = appSection ? screen : target;
   if (unmount) { unmount(); unmount = null; }
   current = target;
+  mode = appSection ? 'app' : 'sync';
   mountedGate = g;
-  els.panel.classList.toggle('dk-solo', g !== 'ready' || Boolean(params.onboarding));
-  document.title = params.onboarding ? 'Welcome' : TITLES[target] || 'Sync';
+  els.panel.classList.toggle('dk-solo', target === 'lock' || (!appSection && g !== 'ready') || Boolean(params.onboarding));
+  document.title = params.onboarding ? 'Welcome' : TITLES[target] || (appSection ? 'Settings' : 'Sync');
   clear(els.screen);
   const mount = SCREENS[target] ? SCREENS[target].mount : MESSAGES[target];
   unmount = mount(els.screen, { ...params, username: store.panelUser }) || null;
@@ -188,14 +207,17 @@ const MESSAGES = {
 // ---- Sidebar -------------------------------------------------------------------
 // The admin console's sidebar (admin.html .adm-side), built once and updated
 // in place: status events arrive up to once a second.
-const sections = SECTIONS.map((s) => {
+const navLink = (group) => (s) => {
   const badge = h('span', { class: 'rd-badge', hidden: true });
   const button = h('button', {
     type: 'button', role: 'tab', class: 'adm-nav-link', 'aria-controls': 'admPanel', onclick: () => go(s.id),
   }, svg(ICONS[s.icon]), s.label, badge);
   els.side.append(button);
-  return { s, button, badge };
-});
+  return {
+    s, button, badge, group,
+  };
+};
+const sections = [...SECTIONS.map(navLink('sync')), ...APP_SECTIONS.map(navLink('app'))];
 els.notice.append(h('div', { class: 'rd-callout is-warn dk-banner' }, icon('lock'),
   h('div', null, 'Sync is locked. Enter your password to start syncing.'),
   h('button', { type: 'button', class: 'rd-btn rd-btn-primary rd-btn-sm', onclick: () => unlockDialog() }, 'Unlock')));
@@ -203,12 +225,18 @@ els.notice.append(h('div', { class: 'rd-callout is-warn dk-banner' }, icon('lock
 function renderSide() {
   const ready = mountedGate === 'ready';
   const active = current === 'wizard' ? 'syncs' : current;
-  for (const { s, button, badge } of sections) {
-    const selected = ready && active === s.id;
+  els.sideHead.textContent = SIDE_HEADS[mode];
+  for (const {
+    s, button, badge, group,
+  } of sections) {
+    // App settings stay reachable while sync is not set up; only the lock closes them.
+    const usable = group === 'app' ? mountedGate !== 'lock' : ready;
+    const selected = usable && active === s.id;
     const n = ready && s.count ? s.count() : 0;
+    button.hidden = group !== mode;
     button.classList.toggle('is-active', selected);
     button.setAttribute('aria-selected', String(selected));
-    button.disabled = !ready;
+    button.disabled = !usable;
     badge.hidden = !n;
     badge.textContent = n > 99 ? '99+' : String(n);
   }

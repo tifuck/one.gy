@@ -3,7 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('events');
-const { SyncStatus, bridgeStatus, sameUser, mayUnlock, throttle } = require('../src/main/sync-status');
+const {
+  SyncStatus, bridgeStatus, bridgeSyncs, sameUser, mayUnlock, throttle,
+} = require('../src/main/sync-status');
 
 const alice = { signed_in: true, locked: false, username: 'alice' };
 const base = { engineState: 'connected', account: alice, status: { state: 'up_to_date', pending: 0 }, issueCount: 0 };
@@ -29,6 +31,30 @@ test('bridge states follow the contract', () => {
   }
   assert.deepEqual(bridgeStatus({ ...base, status: { state: 'syncing', pending: 7 }, issueCount: 2 }, 'alice'),
     { state: 'syncing', pending: 7, issues: 2 });
+});
+
+test('the website gets each sync\'s one.gy folder and state, nothing local', () => {
+  const sync = (id, extra) => ({
+    id, name: 'Work', local_path: '/Users/a/Work', remote_folder_id: 12, type: 'backup', state: 'up_to_date', paused: false,
+    stats: { pending_up: 2, pending_down: 1, issues: 0 }, ...extra,
+  });
+  const syncs = new Map([
+    ['a', sync('a')], ['b', sync('b', { type: 'full', remote_folder_id: null, state: 'scanning' })],
+    ['c', sync('c', { paused: true, stats: { issues: 3 } })], ['d', sync('d', { stats: { issues: 1 } })],
+    ['e', sync('e', { state: 'root_missing' })], ['f', sync('f', { state: 'offline' })],
+  ]);
+  const list = bridgeSyncs({ ...base, syncs }, 'Alice');
+  assert.deepEqual(list[0], {
+    id: 'a', folder_id: 12, type: 'backup', state: 'up_to_date', pending: 3, issues: 0,
+  });
+  assert.deepEqual(list.map((s) => s.state), ['up_to_date', 'syncing', 'paused', 'issues', 'error', 'offline']);
+  assert.equal(list[1].folder_id, null);
+  assert.ok(!JSON.stringify(list).includes('/Users/a'));
+  assert.ok(bridgeSyncs({ ...base, syncs, account: { ...alice, locked: true } }, 'alice').every((s) => s.state === 'locked'));
+  assert.deepEqual(bridgeSyncs({ ...base, syncs }, 'bob'), []);
+  assert.deepEqual(bridgeSyncs({ ...base, syncs }, null), []);
+  assert.deepEqual(bridgeSyncs({ ...base, syncs, engineState: 'connecting' }, 'alice'), []);
+  assert.deepEqual(bridgeSyncs({ ...base, syncs, account: { signed_in: false } }, 'alice'), []);
 });
 
 test('another account never sees this computer\'s numbers', () => {

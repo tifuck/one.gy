@@ -5,7 +5,7 @@
 // URL hash flags (comma separated): signed-out (sign-in / setup flow), static
 // (no live ticks), light (light theme), empty (no syncs yet), user=<name> (website user the panel
 // opens for, default alice; user= for none, as when the app opens it),
-// screen=<syncs|transfers|issues|settings>.
+// screen=<syncs|transfers|issues|settings|general|account|security|updates|about>.
 (function () {
   'use strict';
   const flags = new Set(location.hash.slice(1).split(',').filter(Boolean));

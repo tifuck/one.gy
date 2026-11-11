@@ -38,6 +38,9 @@ const PANEL_ONLY = new Set(['sync', 'devtools']);
 // The panel says when it has rendered what it was opened with (panelReady);
 // show it anyway after this long.
 const PANEL_SHOW_FALLBACK_MS = 400;
+// The panel's App settings sections (the rest is the sync panel: syncs,
+// transfers, issues, settings = sync settings).
+const SETTINGS_SCREENS = new Set(['general', 'account', 'security', 'updates', 'about']);
 // The panel fades out over the site's next page once its DOM is there
 // (siteReady); fade anyway after this long.
 const SITE_READY_MAX_MS = 2000;
@@ -419,6 +422,7 @@ class MainWindow {
     };
     this.panelScreen = data.screen;
     this.panelWanted = true;
+    if (this.panelOpen) this.sendPanelState();
     if (this.panelLoaded) this.send({ type: 'app:panel', data });
     else this.pendingPanel = data;
     clearTimeout(this.showTimer);
@@ -454,10 +458,11 @@ class MainWindow {
     this.siteReady().then(() => this.send({ type: 'app:navigate', data: { screen: 'close' } }));
   }
 
-  // The site preload marks html[data-desktop-panel] so the rail shows Sync as
-  // the current place; the title bar shows the panel's title.
+  // The site preload marks html[data-desktop-panel] so the rail shows Sync or
+  // App settings as the current place; the title bar shows the panel's title.
   sendPanelState() {
-    if (this.site && !this.site.webContents.isDestroyed()) this.site.webContents.send('onegy:panel', { open: this.panelOpen });
+    const mode = SETTINGS_SCREENS.has(this.panelScreen) ? 'settings' : 'sync';
+    if (this.site && !this.site.webContents.isDestroyed()) this.site.webContents.send('onegy:panel', { open: this.panelOpen, mode });
     this.sendTitlebar();
   }
 
@@ -504,6 +509,11 @@ class MainWindow {
     if (this.site && !this.site.webContents.isDestroyed()) this.site.webContents.send('onegy:site-status', status);
   }
 
+  // This computer's syncs for the website (onSyncs subscribers).
+  sendSiteSyncs(list) {
+    if (this.site && !this.site.webContents.isDestroyed()) this.site.webContents.send('onegy:site-syncs', list);
+  }
+
   setTheme() {
     const bg = this.background;
     this.win.setBackgroundColor(bg);
@@ -528,5 +538,5 @@ class MainWindow {
 }
 
 module.exports = {
-  MainWindow, isMainFrameOf, SITE_PARTITION, BACKGROUND,
+  MainWindow, isMainFrameOf, SITE_PARTITION, BACKGROUND, SETTINGS_SCREENS,
 };

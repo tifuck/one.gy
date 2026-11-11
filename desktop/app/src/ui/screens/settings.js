@@ -1,7 +1,12 @@
-// Settings tab of the sync panel (plan 10.6). App-owned settings (window,
-// autostart, server, updates, notifications) go through appSettings;
-// everything else is the engine's settings.get / settings.set. Changes save
-// as soon as they are made. The theme follows the website's own switch.
+// Settings in the panel (plan 10.6), split by what they are about. Sync
+// settings (the sync panel's Settings; tabs New syncs, Network, Folders,
+// Notifications, Advanced): anything that changes how files sync or what you
+// hear about it. App settings (the rail's gear; General, Account, Security,
+// Updates, About, one sidebar entry each): the app itself, whether or not
+// anything syncs. App-owned values (window, autostart, server, updates,
+// notifications, prevent sleep) go through appSettings; everything else is
+// the engine's settings.get / settings.set. Changes save as soon as they are
+// made. The theme follows the website's own switch.
 import {
   h, icon, clear, append, fill, field, row, select, switchInput, pageHead, nextId,
 } from '../components/dom.js';
@@ -16,14 +21,16 @@ import {
   rpc, bridge, appSettings, store, on, navigate, loadAccount,
 } from '../store.js';
 
-const TABS = [
-  ['general', 'General'], ['account', 'Account'], ['syncs', 'Syncs'], ['folders', 'Folders'], ['network', 'Network'],
-  ['security', 'Security'], ['advanced', 'Advanced'],
-];
-const NOTIFY = [
-  ['conflict', 'Conflicts'], ['issue', 'Sync issues'], ['mass_delete', 'Large deletions'],
-  ['transfer', 'Finished transfers'], ['revoked', 'Device removed'], ['info', 'Updates and other news'],
-];
+const SYNC_TABS = [['defaults', 'New syncs'], ['network', 'Network'], ['folders', 'Folders'], ['notifications', 'Notifications'], ['advanced', 'Advanced']];
+const APP_PAGES = {
+  general: ['General', 'How ONE.GY starts and runs on this computer.'],
+  account: ['Account', 'The account this computer is signed in to.'],
+  security: ['Security', 'The app lock and how this computer keeps your key.'],
+  updates: ['Updates', 'Which version runs here and how it updates.'],
+  about: ['About', 'Versions and diagnostics for support.'],
+};
+const SYNC_NOTIFY = [['conflict', 'Conflicts'], ['issue', 'Sync issues'], ['mass_delete', 'Large deletions'], ['transfer', 'Finished transfers']];
+const APP_NOTIFY = [['revoked', 'This computer removed from your devices'], ['info', 'Updates and other news']];
 const INHERITLESS = [['pause', 'Pause'], ['continue', 'Keep syncing']];
 
 async function saveApp(patch) {
@@ -110,18 +117,25 @@ function updateRow() {
 
 function general() {
   const a = store.app;
-  // deb / rpm installs follow the stable releases (build/linux/update-system.sh).
-  const system = store.update && ['deb', 'rpm'].includes(store.update.kind);
   return [
     panel('Window', null,
       row('Open at login', 'Start ONE.GY in the tray when you sign in to this computer.', switchInput(a.launch_at_login, (v) => saveApp({ launch_at_login: v }))),
       row('Start minimized', 'Open in the tray instead of showing the window.', switchInput(a.start_minimized, (v) => saveApp({ start_minimized: v }))),
       row('Keep running when the window is closed', 'Syncing continues in the tray. Quit from the tray menu.', switchInput(a.close_to_tray, (v) => saveApp({ close_to_tray: v }))),
-      row('Prevent sleep while syncing', null, switchInput(a.prevent_sleep, (v) => saveApp({ prevent_sleep: v }))),
       store.version && store.version.platform === 'linux'
         ? row('Open the status popover under the tray icon', 'GNOME on Wayland lets no app place its windows, so ONE.GY runs through XWayland there. Turn this off if text looks blurry with fractional scaling. Applies the next time ONE.GY starts.',
           switchInput(a.linux_x11, (v) => saveApp({ linux_x11: v })))
         : null),
+    notifyPanel(APP_NOTIFY, 'Notifications about syncing are in Sync > Settings > Notifications.'),
+    server(),
+  ];
+}
+
+function updates() {
+  const a = store.app;
+  // deb / rpm installs follow the stable releases (build/linux/update-system.sh).
+  const system = store.update && ['deb', 'rpm'].includes(store.update.kind);
+  return [
     panel('Updates', null,
       updateRow(),
       row('Check for updates automatically', system
@@ -129,11 +143,15 @@ function general() {
         : 'Checks every 30 minutes, downloads in the background and asks before it restarts; while ONE.GY is in the tray it restarts by itself.',
       switchInput(a.auto_update, (v) => saveApp({ auto_update: v }))),
       system ? null : row('Update channel', 'Beta gets new versions first.', select([['stable', 'Stable'], ['beta', 'Beta']], a.update_channel, (v) => saveApp({ update_channel: v })))),
-    panel('Notifications', null,
-      ...NOTIFY.map(([k, label]) => row(label, null, switchInput(a.notify[k], (v) => saveApp({ notify: { [k]: v } }))))),
-    server(),
   ];
 }
+
+function notifyPanel(kinds, sub) {
+  const a = store.app;
+  return panel('Notifications', sub, ...kinds.map(([k, label]) => row(label, null, switchInput(a.notify[k], (v) => saveApp({ notify: { [k]: v } })))));
+}
+
+const notifications = () => [notifyPanel(SYNC_NOTIFY, 'Updates and device notifications are in App settings > General.')];
 
 function server() {
   const current = store.app.server_url;
@@ -203,18 +221,12 @@ function account() {
   ];
 }
 
-function syncs() {
+function defaults() {
   const s = store.settings;
   const d = s.defaults || {};
   const setDefault = (k) => (v) => saveEngine({ defaults: { ...d, [k]: v } }).then(() => { Object.assign(d, { [k]: v }); });
-  const list = [...store.syncs.values()];
   return [
-    panel('Syncs on this computer', null,
-      list.length
-        ? h('ul', { class: 'dk-mini-list' }, list.map((x) => h('li', null, h('span', null, x.name), h('span', { class: 'dk-path' }, x.local_path))))
-        : h('p', { class: 'rd-field-hint' }, 'None yet.'),
-      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('syncs') }, 'Manage syncs')),
-    panel('Defaults for new syncs', null,
+    panel('Defaults for new syncs', 'Each sync can change these later in its own settings.',
       row('Type', 'Selected first in Add sync.', select(['two_way', 'backup', 'mirror'].map((k) => [k, SYNC_TYPES[k].label]), d.type, setDefault('type'))),
       row('When a file changed on both sides', null, select([['keep_both', 'Keep both copies'], ['prefer_remote', 'Prefer one.gy'], ['prefer_local', 'Prefer this computer'], ['ask', 'Ask me']], d.conflict_policy, setDefault('conflict_policy'))),
       row('Issue handling', null, select([['smart', 'Smart'], ['advanced', 'Advanced']], d.issue_mode, setDefault('issue_mode'))),
@@ -270,21 +282,6 @@ function folders(rerender) {
           h('span', null, s.name, ' ', h('span', { class: 'dk-path' }, s.local_path)),
           h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => clearDebris(s) }, 'Clear debris now'))))
         : h('p', { class: 'rd-field-hint' }, 'No syncs yet.')),
-    panel('Caches', 'Forgets the cached list of one.gy folders and the decrypted keys, then loads them again. Your files are not touched.',
-      h('div', { class: 'dk-btn-row' }, h('button', {
-        type: 'button', class: 'rd-btn rd-btn-ghost',
-        onclick: async (e) => {
-          e.currentTarget.disabled = true;
-          try {
-            await rpc('engine.clearCaches');
-            toast('Caches cleared', 'success');
-          } catch (err) {
-            toastError(err);
-          } finally {
-            e.currentTarget.disabled = false;
-          }
-        },
-      }, 'Clear caches'))),
   ];
 }
 
@@ -309,9 +306,10 @@ function network() {
         if (v !== 'manual') saveEngine({ proxy: { mode: v, url: '' } });
       })),
       proxyField),
-    panel('Metered networks and battery', null,
+    panel('Power and metered networks', 'Each sync can override the first two in its own settings.',
       row('On a metered network', null, select(INHERITLESS, s.metered, (v) => saveEngine({ metered: v }))),
       row('On battery', null, select(INHERITLESS, s.battery, (v) => saveEngine({ battery: v }))),
+      row('Prevent sleep while syncing', null, switchInput(store.app.prevent_sleep, (v) => saveApp({ prevent_sleep: v }))),
       row('Check one.gy for changes at most every (seconds)', null, num(s.poll_floor_seconds, 5, 3600, (v) => saveEngine({ poll_floor_seconds: v })))),
   ];
 }
@@ -359,20 +357,43 @@ function security(rerender) {
 
 function advanced() {
   const s = store.settings;
+  return [
+    panel('Safety', null,
+      row('Pause and ask when a sync would delete more than (items)', null, num(s.mass_delete_count, 1, 1000000, (v) => saveEngine({ mass_delete_count: v }))),
+      row('…or more than (% of the sync)', null, num(s.mass_delete_percent, 1, 100, (v) => saveEngine({ mass_delete_percent: v })))),
+    panel('Sync engine', null,
+      row('Full rescan every (minutes)', 'Catches changes the file watcher missed.', num(s.rescan_minutes, 5, 1440, (v) => saveEngine({ rescan_minutes: v }))),
+      row('Log detail', 'For troubleshooting with Export diagnostics in App settings > About. Logs never contain file names unless set to debug.',
+        select([['error', 'Errors'], ['warn', 'Warnings'], ['info', 'Normal'], ['debug', 'Debug']], s.log_level, (v) => saveEngine({ log_level: v })))),
+    panel('Caches', 'Forgets the cached list of one.gy folders and the decrypted keys, then loads them again. Your files are not touched.',
+      h('div', { class: 'dk-btn-row' }, h('button', {
+        type: 'button', class: 'rd-btn rd-btn-ghost',
+        onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          try {
+            await rpc('engine.clearCaches');
+            toast('Caches cleared', 'success');
+          } catch (err) {
+            toastError(err);
+          } finally {
+            e.currentTarget.disabled = false;
+          }
+        },
+      }, 'Clear caches'))),
+  ];
+}
+
+// Works without the engine too: its rows then stay out.
+function about() {
   const info = h('dl', { class: 'dk-kv' });
+  if (store.version) append(info, h('dt', null, 'App'), h('dd', null, `${store.version.app} · Electron ${store.version.electron}`));
   rpc('engine.info').then((e) => {
     append(info, h('dt', null, 'Engine'), h('dd', null, `${e.version} (protocol ${e.protocol})`),
       h('dt', null, 'Data folder'), h('dd', { class: 'dk-path' }, e.state_dir));
   }).catch(() => {});
-  if (store.version) append(info, h('dt', null, 'App'), h('dd', null, `${store.version.app} · Electron ${store.version.electron}`));
   return [
-    panel('Sync engine', null,
-      row('Full rescan every (minutes)', 'Catches changes the file watcher missed.', num(s.rescan_minutes, 5, 1440, (v) => saveEngine({ rescan_minutes: v }))),
-      row('Pause and ask when a sync would delete more than (items)', null, num(s.mass_delete_count, 1, 1000000, (v) => saveEngine({ mass_delete_count: v }))),
-      row('…or more than (% of the sync)', null, num(s.mass_delete_percent, 1, 100, (v) => saveEngine({ mass_delete_percent: v }))),
-      row('Log detail', 'Logs never contain file names unless set to debug.', select([['error', 'Errors'], ['warn', 'Warnings'], ['info', 'Normal'], ['debug', 'Debug']], s.log_level, (v) => saveEngine({ log_level: v })))),
+    panel('Version', null, info),
     panel('Diagnostics', 'A zip with logs and a redacted summary. Check it before you send it to anyone.',
-      info,
       h('div', { class: 'dk-btn-row' },
         h('button', {
           type: 'button', class: 'rd-btn rd-btn-ghost',
@@ -390,22 +411,25 @@ function advanced() {
 }
 
 const RENDER = {
-  general, account, syncs, folders, network, security, advanced,
+  defaults, network, folders, advanced, general, account, security, notifications, updates, about,
 };
-const NEEDS_ENGINE = new Set(['syncs', 'network', 'security', 'advanced']);
+const NEEDS_ENGINE = new Set(['defaults', 'network', 'advanced', 'security']);
 
-export function mount(container, params = {}) {
-  let tab = RENDER[params.tab] ? params.tab : 'general';
-  const tabs = h('div', { class: 'rd-tabs', role: 'tablist', 'aria-label': 'Settings sections' });
-  const body = h('div', { class: 'dk-settings-body', role: 'tabpanel' });
+// tabList: [[id, label]] for a tab bar, or null for a single section.
+function settingsPage(container, title, sub, tabList, first) {
+  let tab = first;
+  const tabs = tabList ? h('div', { class: 'rd-tabs', role: 'tablist', 'aria-label': 'Settings sections' }) : null;
+  const body = h('div', { class: 'dk-settings-body', role: tabs ? 'tabpanel' : null });
 
   async function render() {
-    clear(tabs);
-    for (const [id, label] of TABS) {
-      append(tabs, h('button', {
-        type: 'button', role: 'tab', class: 'rd-tab', 'aria-selected': String(tab === id),
-        onclick: () => { tab = id; render(); },
-      }, label));
+    if (tabs) {
+      clear(tabs);
+      for (const [id, label] of tabList) {
+        append(tabs, h('button', {
+          type: 'button', role: 'tab', class: 'rd-tab', 'aria-selected': String(tab === id),
+          onclick: () => { tab = id; render(); },
+        }, label));
+      }
     }
     clear(body);
     if (NEEDS_ENGINE.has(tab)) {
@@ -417,13 +441,26 @@ export function mount(container, params = {}) {
       }
     }
     if (tab === 'account' || tab === 'security') await loadAccount().catch(() => {});
-    if (tab === 'general') store.update = await bridge('updateState').catch(() => store.update);
+    if (tab === 'updates') store.update = await bridge('updateState').catch(() => store.update);
     if (!store.app) store.app = await appSettings.get();
-    fill(body, ...RENDER[tab](render));
+    // The account's own settings need this computer signed in; account() says so.
+    const signedIn = store.account && store.account.signed_in;
+    fill(body, ...(tab === 'security' && !signedIn ? account() : RENDER[tab](render)));
   }
 
-  append(container, h('div', { class: 'adm-narrow' },
-    pageHead('Settings', 'How ONE.GY and its syncs behave on this computer.'), tabs, body));
+  append(container, h('div', { class: 'adm-narrow' }, pageHead(title, sub), tabs, body));
   render();
-  return on('engine', (state) => { if (state === 'connected' && NEEDS_ENGINE.has(tab)) render(); });
+  return on('engine', (state) => { if (state === 'connected' && (NEEDS_ENGINE.has(tab) || tab === 'about' || tab === 'account')) render(); });
+}
+
+// The sync panel's Settings.
+export function mount(container, params = {}) {
+  const first = SYNC_TABS.some(([id]) => id === params.tab) ? params.tab : SYNC_TABS[0][0];
+  return settingsPage(container, 'Sync settings', 'How syncing behaves on this computer.', SYNC_TABS, first);
+}
+
+// One App settings section (app.js APP_SECTIONS).
+export function mountApp(container, { section }) {
+  const [title, sub] = APP_PAGES[section];
+  return settingsPage(container, title, sub, null, section);
 }

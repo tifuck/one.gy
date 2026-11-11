@@ -340,45 +340,12 @@ async function _uploadFiles(files) {
   // Capture toggle states before replacing HTML so we can restore them
   const _shortChecked = document.getElementById('shortToggle')?.checked ?? false;
   const _e2eChecked = document.getElementById('e2eToggle')?.checked ?? true;
-  // The idle markup comes from _uploader.html; snapshot it (checked is a
-  // property, not markup, so the toggles are re-applied on restore).
-  const idleHTML = dropZone.innerHTML;
-  function restoreDropZone() {
-    dropZone.classList.remove('uploading');
-    dropZone.innerHTML = idleHTML;
-    dropZone.style.height = '';
-    const shortToggle = document.getElementById('shortToggle');
-    const e2eToggle = document.getElementById('e2eToggle');
-    if (shortToggle) shortToggle.checked = _shortChecked;
-    if (e2eToggle) e2eToggle.checked = _e2eChecked;
-  }
-  function showProgressCard(icon, title, status, cancellable) {
-    dropZone.classList.add('uploading');
-    dropZone.innerHTML = _progressCardHTML(icon, title, status, cancellable);
-    document.getElementById('progressSub').textContent = files.length === 1
-      ? `${files[0].name} · ${formatBytes(files[0].size)}`
-      : `${files.length} files · ${formatBytes(totalSize)}`;
-  }
 
   // Check file sizes before upload
-  let totalSize = 0;
-  for (let file of files) {
-    if (file.size > maxBytes) {
-      showToast(`FILE "${file.name.toUpperCase()}" (${formatBytes(file.size)}) EXCEEDS MAXIMUM SIZE OF ${maxGb} GB`, 'error');
-      return;
-    }
-    totalSize += file.size;
-  }
-  
-  // Warn about memory limits for client-side ZIP/E2E operations
-  const MAX_BROWSER_ZIP_SIZE = 512 * 1024 * 1024; // 512MB
-  const isE2EChecked = _e2eChecked;
-  if ((files.length > 1 || isE2EChecked) && totalSize > MAX_BROWSER_ZIP_SIZE) {
-    const msg = isE2EChecked
-      ? `E2E encryption requires loading all files into browser memory. Total size ${formatBytes(totalSize)} may cause browser issues. For large files, consider uploading without E2E encryption. Continue anyway?`
-      : `Creating a ZIP of ${files.length} files (${formatBytes(totalSize)}) requires loading them into browser memory. This may cause browser issues with very large uploads. Continue anyway?`;
-    if (!confirm(msg)) return;
-  }
+  const totalSize = _checkUploadSizes(files, maxBytes, maxGb);
+  if (totalSize < 0) return;
+  const ui = _uploadDropZoneUI(dropZone, files, totalSize, _shortChecked, _e2eChecked);
+  if (!_confirmBrowserMemoryUse(files, totalSize, _e2eChecked)) return;
 
   // Lock the drop zone height so the progress card matches the idle panel exactly
   const dropZoneHeight = dropZone.offsetHeight;
@@ -390,16 +357,7 @@ async function _uploadFiles(files) {
   // sends allow_unencrypted; logged-in uploads are refused without it.
   let unencryptedConfirmed = false;
   if (!isE2E && typeof showConfirm === 'function') {
-    const unlockIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-1"/></svg>';
-    const fileLabel = files.length === 1 ? 'file' : 'files';
-    const confirmed = await showConfirm(
-      'No end-to-end encryption',
-      `Your ${fileLabel} will be uploaded with server-side encryption only. For maximum privacy, turn on End-to-end.`,
-      'Upload anyway',
-      unlockIcon,
-      'confirm-no-e2e'
-    );
-    if (!confirmed) {
+    if (!(await _confirmUnencryptedUpload(files))) {
       dropZone.style.height = '';
       return;
     }
@@ -407,44 +365,140 @@ async function _uploadFiles(files) {
   }
 
   let encryptedFiles = files;
-  
-  // Check if any file has folder structure (fullPath property)
-  const hasFolderStructure = files.some(file => file.fullPath && file.fullPath !== file.name);
-  
+
   // For non-E2E uploads with folder structure or multiple files, create zip first
   // This preserves folder structure in the zip
-  if (!isE2E && (files.length > 1 || hasFolderStructure)) {
-    showProgressCard('box', `Preparing ${files.length} ${files.length === 1 ? 'file' : 'files'}`, 'Zipping…', false);
-    
-    try {
-      // Create zip with folder structure preserved
-      const zipBlob = await createZip(files);
-      // Use original folder name if this was a folder upload, otherwise generic name
-      let zipName = `files_${files.length}.zip`;
-      if (hasFolderStructure) {
-        const firstPath = files.find(f => f.fullPath && f.fullPath.includes('/'));
-        if (firstPath) {
-          const folderName = firstPath.fullPath.split('/')[0];
-          if (folderName) zipName = folderName + '.zip';
-        }
-      }
-      encryptedFiles = [new File([zipBlob], zipName, { type: 'application/zip' })];
-    } catch (error) {
-      showToast('FAILED TO PREPARE FILES: ' + error.message, 'error');
-      restoreDropZone();
-      return;
-    }
+  if (!isE2E && (files.length > 1 || _hasFolderStructure(files))) {
+    encryptedFiles = await _zipPlainUpload(files, ui);
+    if (!encryptedFiles) return;
   }
 
   // Generate client-side thumbnail before encryption (while plaintext is available)
-  let pendingThumbnailDataUrl = null;
-  let pendingThumbnailBlob = null;
+  const thumb = await _pendingUploadThumbnail(files, isE2E);
+
+  let e2e = null;
+  if (isE2E) {
+    e2e = await _encryptUpload(files, thumb.blob, ui);
+    if (!e2e) return;
+    encryptedFiles = e2e.files;
+  }
+
+  await _uploadWithRetries(encryptedFiles, {
+    ui,
+    dropZone,
+    files,
+    isE2E,
+    e2e,
+    unencryptedConfirmed,
+    thumbDataUrl: thumb.dataUrl,
+    // Collect form settings once (before innerHTML replacement)
+    form: _collectUploadFormSettings(_shortChecked)
+  });
+}
+
+// The idle markup comes from _uploader.html; snapshot it (checked is a
+// property, not markup, so the toggles are re-applied on restore).
+function _uploadDropZoneUI(dropZone, files, totalSize, shortChecked, e2eChecked) {
+  const idleHTML = dropZone.innerHTML;
+  return {
+    restore() {
+      dropZone.classList.remove('uploading');
+      dropZone.innerHTML = idleHTML;
+      dropZone.style.height = '';
+      const shortToggle = document.getElementById('shortToggle');
+      const e2eToggle = document.getElementById('e2eToggle');
+      if (shortToggle) shortToggle.checked = shortChecked;
+      if (e2eToggle) e2eToggle.checked = e2eChecked;
+    },
+    showCard(icon, title, status, cancellable) {
+      dropZone.classList.add('uploading');
+      dropZone.innerHTML = _progressCardHTML(icon, title, status, cancellable);
+      document.getElementById('progressSub').textContent = files.length === 1
+        ? `${files[0].name} · ${formatBytes(files[0].size)}`
+        : `${files.length} files · ${formatBytes(totalSize)}`;
+    }
+  };
+}
+
+// Total size of the selection, or -1 (after a toast) when one file is too big.
+function _checkUploadSizes(files, maxBytes, maxGb) {
+  let totalSize = 0;
+  for (let file of files) {
+    if (file.size > maxBytes) {
+      showToast(`FILE "${file.name.toUpperCase()}" (${formatBytes(file.size)}) EXCEEDS MAXIMUM SIZE OF ${maxGb} GB`, 'error');
+      return -1;
+    }
+    totalSize += file.size;
+  }
+  return totalSize;
+}
+
+// Warn about memory limits for client-side ZIP/E2E operations
+function _confirmBrowserMemoryUse(files, totalSize, isE2EChecked) {
+  const MAX_BROWSER_ZIP_SIZE = 512 * 1024 * 1024; // 512MB
+  if ((files.length > 1 || isE2EChecked) && totalSize > MAX_BROWSER_ZIP_SIZE) {
+    const msg = isE2EChecked
+      ? `E2E encryption requires loading all files into browser memory. Total size ${formatBytes(totalSize)} may cause browser issues. For large files, consider uploading without E2E encryption. Continue anyway?`
+      : `Creating a ZIP of ${files.length} files (${formatBytes(totalSize)}) requires loading them into browser memory. This may cause browser issues with very large uploads. Continue anyway?`;
+    if (!confirm(msg)) return false;
+  }
+  return true;
+}
+
+function _confirmUnencryptedUpload(files) {
+  const unlockIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.9-1"/></svg>';
+  const fileLabel = files.length === 1 ? 'file' : 'files';
+  return showConfirm(
+    'No end-to-end encryption',
+    `Your ${fileLabel} will be uploaded with server-side encryption only. For maximum privacy, turn on End-to-end.`,
+    'Upload anyway',
+    unlockIcon,
+    'confirm-no-e2e'
+  );
+}
+
+// Check if any file has folder structure (fullPath property)
+function _hasFolderStructure(files) {
+  return files.some(file => file.fullPath && file.fullPath !== file.name);
+}
+
+// Use original folder name if this was a folder upload, otherwise generic name
+function _zipUploadName(files, hasFolderStructure) {
+  let zipName = `files_${files.length}.zip`;
+  if (hasFolderStructure) {
+    const firstPath = files.find(f => f.fullPath && f.fullPath.includes('/'));
+    if (firstPath) {
+      const folderName = firstPath.fullPath.split('/')[0];
+      if (folderName) zipName = folderName + '.zip';
+    }
+  }
+  return zipName;
+}
+
+// Zip a non-E2E multi-file/folder selection. Returns [zip File] or null.
+async function _zipPlainUpload(files, ui) {
+  ui.showCard('box', `Preparing ${files.length} ${files.length === 1 ? 'file' : 'files'}`, 'Zipping…', false);
+
+  try {
+    // Create zip with folder structure preserved
+    const zipBlob = await createZip(files);
+    const zipName = _zipUploadName(files, _hasFolderStructure(files));
+    return [new File([zipBlob], zipName, { type: 'application/zip' })];
+  } catch (error) {
+    showToast('FAILED TO PREPARE FILES: ' + error.message, 'error');
+    ui.restore();
+    return null;
+  }
+}
+
+async function _pendingUploadThumbnail(files, isE2E) {
+  const thumb = { blob: null, dataUrl: null };
   if (isE2E && files.length === 1 && typeof OneGyCrypto !== 'undefined') {
     try {
       const thumbBlob = await OneGyCrypto.generateThumbnail(files[0]);
       if (thumbBlob) {
-        pendingThumbnailBlob = thumbBlob;
-        pendingThumbnailDataUrl = await new Promise((resolve) => {
+        thumb.blob = thumbBlob;
+        thumb.dataUrl = await new Promise((resolve) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result);
           reader.onerror = () => resolve(null);
@@ -455,542 +509,596 @@ async function _uploadFiles(files) {
       // Thumbnail generation is non-critical
     }
   }
+  return thumb;
+}
 
-  // E2EE key metadata for upload
-  let e2eEncryptedFileKey, e2eFileKeyNonce, e2eFileKeySalt;
-  let e2eEncryptedThumbBlob = null, e2eEncryptedThumbNonce = null;
-  let e2eEncryptedName = null, e2eNameNonce = null, e2eStoredExtension = null;
-  let e2eGuestPassphrase = null;  // Store passphrase for post-upload keychain persistence
-  
-  if (isE2E) {
-    // Temp uploads always use passphrase wrapping (even for logged-in users)
-    // so recipients can decrypt with just the passphrase — no account needed
-    // Passphrase is auto-generated silently — share link contains it in the URL fragment
-    const passphrase = _generatePassphrase();
-    e2eGuestPassphrase = passphrase;
-    
-    showProgressCard('lock', `Encrypting ${files.length} ${files.length === 1 ? 'file' : 'files'}`, 'Encrypting…', false);
-    try {
-      const fillEl = document.getElementById('progressFill');
-      const percentEl = document.getElementById('progressPercent');
-      const statusEl = document.getElementById('progressStatus');
-      
-      // Step 1: Prepare file data
-      // For single files (no folder structure): encrypt the raw file directly (no ZIP wrapper)
-      // For multiple files or folder uploads: ZIP first, then encrypt the ZIP
-      // AUDIT FIX F4: pass the File/zip Blob itself instead of materializing a
-      // full ArrayBuffer — crypto.js streams Blob input in 64MB slices inside
-      // the worker, so the plaintext never fully lands in main-thread memory
-      // (the old `await files[0].arrayBuffer()` held the whole file, then
-      // crypto.js made ANOTHER full copy to hand it to the worker).
-      let dataToEncrypt;
-      let uploadFileName;
-      const e2eHasFolderStructure = files.some(f => f.fullPath && f.fullPath !== f.name);
-      
-      if (files.length === 1 && !e2eHasFolderStructure) {
-        statusEl.textContent = 'Preparing…';
-        dataToEncrypt = files[0];
-        uploadFileName = files[0].name;
-      } else {
-        statusEl.textContent = 'Zipping…';
-        dataToEncrypt = await createZip(files);
-        // Use original folder name if this was a folder upload
-        uploadFileName = `files_${files.length}.zip`;
-        if (e2eHasFolderStructure) {
-          const firstPath = files.find(f => f.fullPath && f.fullPath.includes('/'));
-          if (firstPath) {
-            const folderName = firstPath.fullPath.split('/')[0];
-            if (folderName) uploadFileName = folderName + '.zip';
-          }
-        }
-      }
-      
-      statusEl.textContent = 'Encrypting…';
-      if (fillEl) fillEl.style.width = '10%';
-      if (percentEl) percentEl.textContent = '10%';
-      
-      // Step 2: Encrypt with per-file key using OneGyCrypto
-      // Temp uploads always use passphrase wrapping for shareability
-      let result;
-      result = await OneGyCrypto.encryptFileForGuestUpload(dataToEncrypt, passphrase, function(pct) {
-        if (fillEl) fillEl.style.width = (10 + pct * 0.85) + '%';
-        if (percentEl) percentEl.textContent = Math.round(10 + pct * 0.85) + '%';
-      });
-      e2eEncryptedFileKey = result.encryptedFileKey;
-      e2eFileKeyNonce = result.fileKeyNonce;
-      e2eFileKeySalt = result.fileKeySalt;
-      
-      // Encrypt thumbnail with the file key (so it can be stored server-side and decrypted later)
-      if (pendingThumbnailBlob && result.fileKey) {
-        try {
-          // Reading our own data: URL with fetch() is blocked by the site's
-          // connect-src CSP. Keep the generated Blob and read it directly.
-          const thumbArrayBuf = await pendingThumbnailBlob.arrayBuffer();
-          const encThumb = await OneGyCrypto.encryptThumbnail(thumbArrayBuf, result.fileKey);
-          e2eEncryptedThumbBlob = new Blob([encThumb.data], { type: 'application/octet-stream' });
-          e2eEncryptedThumbNonce = encThumb.nonce;
-        } catch (e) {
-          // Thumbnail encryption is non-critical
-        }
-      }
-      
-      if (fillEl) fillEl.style.width = '100%';
-      if (percentEl) percentEl.textContent = '100%';
-      statusEl.textContent = 'Encrypted';
-      
-      // Encrypt filename (zero-knowledge: server never sees real name)
-      try {
-        const nameResult = await OneGyCrypto.encryptFileName(uploadFileName, result.fileKey);
-        e2eEncryptedName = nameResult.encryptedName;
-        e2eNameNonce = nameResult.nameNonce;
-        e2eStoredExtension = OneGyCrypto.extractExtension(uploadFileName);
-      } catch (nameErr) {
-        console.error('[E2E NAME ENCRYPT]', nameErr);
-        throw new Error('FILENAME ENCRYPTION FAILED');
-      }
-      
-      // Use generic filename in multipart -- real name is in encrypted_name field (zero-knowledge)
-      encryptedFiles = [new File([result.encryptedBlob], 'encrypted.bin', { type: 'application/octet-stream' })];
-      
-    } catch (error) {
-      showToast('ENCRYPTION FAILED: ' + error.message, 'error');
-      restoreDropZone();
-      return;
-    }
+// Step 1: Prepare file data
+// For single files (no folder structure): encrypt the raw file directly (no ZIP wrapper)
+// For multiple files or folder uploads: ZIP first, then encrypt the ZIP
+// AUDIT FIX F4: pass the File/zip Blob itself instead of materializing a
+// full ArrayBuffer — crypto.js streams Blob input in 64MB slices inside
+// the worker, so the plaintext never fully lands in main-thread memory
+// (the old `await files[0].arrayBuffer()` held the whole file, then
+// crypto.js made ANOTHER full copy to hand it to the worker).
+async function _prepareE2EPayload(files, statusEl) {
+  let dataToEncrypt;
+  let uploadFileName;
+  const e2eHasFolderStructure = _hasFolderStructure(files);
+
+  if (files.length === 1 && !e2eHasFolderStructure) {
+    statusEl.textContent = 'Preparing…';
+    dataToEncrypt = files[0];
+    uploadFileName = files[0].name;
+  } else {
+    statusEl.textContent = 'Zipping…';
+    dataToEncrypt = await createZip(files);
+    // Use original folder name if this was a folder upload
+    uploadFileName = _zipUploadName(files, e2eHasFolderStructure);
   }
+  return { dataToEncrypt, uploadFileName };
+}
 
+// E2EE: encrypt the payload, its thumbnail and its name. Returns the upload
+// key metadata plus the File to send, or null (after a toast) on failure.
+async function _encryptUpload(files, pendingThumbnailBlob, ui) {
+  // Temp uploads always use passphrase wrapping (even for logged-in users)
+  // so recipients can decrypt with just the passphrase — no account needed
+  // Passphrase is auto-generated silently — share link contains it in the URL fragment
+  const passphrase = _generatePassphrase();
+
+  ui.showCard('lock', `Encrypting ${files.length} ${files.length === 1 ? 'file' : 'files'}`, 'Encrypting…', false);
+  try {
+    const fillEl = document.getElementById('progressFill');
+    const percentEl = document.getElementById('progressPercent');
+    const statusEl = document.getElementById('progressStatus');
+
+    const { dataToEncrypt, uploadFileName } = await _prepareE2EPayload(files, statusEl);
+
+    statusEl.textContent = 'Encrypting…';
+    if (fillEl) fillEl.style.width = '10%';
+    if (percentEl) percentEl.textContent = '10%';
+
+    // Step 2: Encrypt with per-file key using OneGyCrypto
+    // Temp uploads always use passphrase wrapping for shareability
+    const result = await OneGyCrypto.encryptFileForGuestUpload(dataToEncrypt, passphrase, function(pct) {
+      if (fillEl) fillEl.style.width = (10 + pct * 0.85) + '%';
+      if (percentEl) percentEl.textContent = Math.round(10 + pct * 0.85) + '%';
+    });
+    // passphrase is kept for post-upload keychain persistence
+    const e2e = {
+      passphrase,
+      encryptedFileKey: result.encryptedFileKey,
+      fileKeyNonce: result.fileKeyNonce,
+      fileKeySalt: result.fileKeySalt,
+      thumbBlob: null,
+      thumbNonce: null,
+      encryptedName: null,
+      nameNonce: null,
+      storedExtension: null,
+      files: null
+    };
+
+    // Encrypt thumbnail with the file key (so it can be stored server-side and decrypted later)
+    if (pendingThumbnailBlob && result.fileKey) {
+      try {
+        // Reading our own data: URL with fetch() is blocked by the site's
+        // connect-src CSP. Keep the generated Blob and read it directly.
+        const thumbArrayBuf = await pendingThumbnailBlob.arrayBuffer();
+        const encThumb = await OneGyCrypto.encryptThumbnail(thumbArrayBuf, result.fileKey);
+        e2e.thumbBlob = new Blob([encThumb.data], { type: 'application/octet-stream' });
+        e2e.thumbNonce = encThumb.nonce;
+      } catch (e) {
+        // Thumbnail encryption is non-critical
+      }
+    }
+
+    if (fillEl) fillEl.style.width = '100%';
+    if (percentEl) percentEl.textContent = '100%';
+    statusEl.textContent = 'Encrypted';
+
+    // Encrypt filename (zero-knowledge: server never sees real name)
+    try {
+      const nameResult = await OneGyCrypto.encryptFileName(uploadFileName, result.fileKey);
+      e2e.encryptedName = nameResult.encryptedName;
+      e2e.nameNonce = nameResult.nameNonce;
+      e2e.storedExtension = OneGyCrypto.extractExtension(uploadFileName);
+    } catch (nameErr) {
+      console.error('[E2E NAME ENCRYPT]', nameErr);
+      throw new Error('FILENAME ENCRYPTION FAILED');
+    }
+
+    // Use generic filename in multipart -- real name is in encrypted_name field (zero-knowledge)
+    e2e.files = [new File([result.encryptedBlob], 'encrypted.bin', { type: 'application/octet-stream' })];
+    return e2e;
+
+  } catch (error) {
+    showToast('ENCRYPTION FAILED: ' + error.message, 'error');
+    ui.restore();
+    return null;
+  }
+}
+
+function _collectUploadFormSettings(shortChecked) {
+  return {
+    expires: document.getElementById('expires')?.value,
+    maxDownloads: document.getElementById('maxDownloads')?.value,
+    password: document.getElementById('password')?.value,
+    isPublic: document.getElementById('isPublic')?.checked,
+    // #shortToggle lives in the drop zone, which preparation has already
+    // replaced by now; use the state captured before that rebuild.
+    isShortUrl: shortChecked,
+    csrfToken: getCSRFToken()
+  };
+}
+
+// Build formData (needed for retries — FormData can't be reused after send)
+function _buildUploadFormData(encryptedFiles, fileId, opts) {
+  const fd = new FormData();
+  for (let file of encryptedFiles) {
+    fd.append('files', file);
+  }
+  fd.append('file_id', fileId);
+  fd.append('upload_id', fileId);
+  // Be explicit: this widget is the temp/quick-share uploader, so it always
+  // wants an expiring public link. The server no longer defaults is_temp to
+  // true for an authenticated user (an omitted flag used to give logged-in
+  // users a public file that self-destructed in 24h), so the intent has to
+  // be stated here rather than inferred.
+  fd.append('is_temp', 'true');
+  if (!opts.isE2E && opts.unencryptedConfirmed) fd.append('allow_unencrypted', 'true');
+  if (opts.isE2E) _appendE2EUploadFields(fd, opts.e2e);
+  const s = opts.form;
+  if (s.csrfToken) fd.append('csrf_token', s.csrfToken);
+  if (s.expires) fd.append('expires', s.expires);
+  if (s.maxDownloads) fd.append('max_downloads', s.maxDownloads);
+  if (s.password) fd.append('password', s.password);
+  if (s.isPublic) fd.append('is_public', 'true');
+  if (s.isShortUrl) fd.append('short_url', 'true');
+  return fd;
+}
+
+function _appendE2EUploadFields(fd, e2e) {
+  fd.append('e2e', 'true');
+  // MEGA-style: per-file wrapped key metadata
+  if (e2e.encryptedFileKey) fd.append('encrypted_file_key', e2e.encryptedFileKey);
+  if (e2e.fileKeyNonce) fd.append('file_key_nonce', e2e.fileKeyNonce);
+  if (e2e.fileKeySalt) fd.append('file_key_salt', e2e.fileKeySalt);
+  // E2EE encrypted filename
+  if (e2e.encryptedName) {
+    fd.append('encrypted_name', e2e.encryptedName);
+    fd.append('name_nonce', e2e.nameNonce);
+    fd.append('stored_extension', e2e.storedExtension);
+  }
+  // Encrypted thumbnail (stored server-side, decrypted client-side on page load)
+  if (e2e.thumbBlob && e2e.thumbNonce) {
+    fd.append('encrypted_thumbnail', e2e.thumbBlob, 'thumb.enc.jpg');
+    fd.append('thumbnail_nonce', e2e.thumbNonce);
+  }
+}
+
+// AUDIT FIX F6: upload idempotency key. randomUUID() when available,
+// otherwise a CSPRNG-built UUIDv4 — the old Math.random() fallback made the
+// server-side dedupe key guessable/collision-prone (Math.random() is not a
+// CSPRNG). getRandomValues is present in every browser that can run the
+// WebCrypto E2EE path this uploader already requires.
+function _secureUploadId() {
+  if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+  const b = new Uint8Array(16);
+  window.crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40; // UUIDv4 version bits
+  b[8] = (b[8] & 0x3f) | 0x80; // UUIDv4 variant bits
+  const h = [];
+  for (let i = 0; i < 16; i++) h.push(b[i].toString(16).padStart(2, '0'));
+  const s = h.join('');
+  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20);
+}
+
+async function _uploadWithRetries(encryptedFiles, opts) {
   const MAX_RETRIES = 3;
   const totalUploadSize = encryptedFiles.reduce((sum, file) => sum + file.size, 0);
-  
-  // Collect form settings once (before innerHTML replacement)
-  const expires = document.getElementById('expires')?.value;
-  const maxDownloads = document.getElementById('maxDownloads')?.value;
-  const password = document.getElementById('password')?.value;
-  const isPublic = document.getElementById('isPublic')?.checked;
-  // #shortToggle lives in the drop zone, which preparation has already
-  // replaced by now; use the state captured before that rebuild.
-  const isShortUrl = _shortChecked;
-  const csrfToken = getCSRFToken();
-  
-  let cancelled = false;
-  let activeXhr = null;
-  // True once the request body has been fully sent — from that moment the
-  // server is in its finalizing/saving phase and may already have committed
-  // the file, so an abort would orphan it (and lose the E2E passphrase).
-  let bodyFullySent = false;
-  
-  showProgressCard('up', `Uploading ${files.length} ${files.length === 1 ? 'file' : 'files'}`, 'Uploading…', true);
-  
-  // Wire up cancel button
-  document.getElementById('progressCancel').addEventListener('click', () => {
-    // Refuse to abort once the body is fully sent: the server is already
-    // finalizing and may have committed the file. Aborting would leave a
-    // committed upload whose passphrase was never persisted — unrecoverable.
-    if (bodyFullySent) {
-      showToast('UPLOAD ALREADY SENT. THE SERVER IS SAVING IT AND IT CAN NO LONGER BE CANCELLED', 'error');
-      return;
-    }
-    cancelled = true;
-    if (activeXhr) activeXhr.abort();
-  });
-  
-  // Build formData helper (needed for retries — FormData can't be reused after send)
-  function buildFormData(fileId) {
-    const fd = new FormData();
-    for (let file of encryptedFiles) {
-      fd.append('files', file);
-    }
-    fd.append('file_id', fileId);
-    fd.append('upload_id', fileId);
-    // Be explicit: this widget is the temp/quick-share uploader, so it always
-    // wants an expiring public link. The server no longer defaults is_temp to
-    // true for an authenticated user (an omitted flag used to give logged-in
-    // users a public file that self-destructed in 24h), so the intent has to
-    // be stated here rather than inferred.
-    fd.append('is_temp', 'true');
-    if (!isE2E && unencryptedConfirmed) fd.append('allow_unencrypted', 'true');
-    if (isE2E) {
-      fd.append('e2e', 'true');
-      // MEGA-style: per-file wrapped key metadata
-      if (e2eEncryptedFileKey) fd.append('encrypted_file_key', e2eEncryptedFileKey);
-      if (e2eFileKeyNonce) fd.append('file_key_nonce', e2eFileKeyNonce);
-      if (e2eFileKeySalt) fd.append('file_key_salt', e2eFileKeySalt);
-      // E2EE encrypted filename
-      if (e2eEncryptedName) {
-        fd.append('encrypted_name', e2eEncryptedName);
-        fd.append('name_nonce', e2eNameNonce);
-        fd.append('stored_extension', e2eStoredExtension);
-      }
-      // Encrypted thumbnail (stored server-side, decrypted client-side on page load)
-      if (e2eEncryptedThumbBlob && e2eEncryptedThumbNonce) {
-        fd.append('encrypted_thumbnail', e2eEncryptedThumbBlob, 'thumb.enc.jpg');
-        fd.append('thumbnail_nonce', e2eEncryptedThumbNonce);
-      }
-    }
-    if (csrfToken) fd.append('csrf_token', csrfToken);
-    if (expires) fd.append('expires', expires);
-    if (maxDownloads) fd.append('max_downloads', maxDownloads);
-    if (password) fd.append('password', password);
-    if (isPublic) fd.append('is_public', 'true');
-    if (isShortUrl) fd.append('short_url', 'true');
-    return fd;
-  }
 
-  // AUDIT FIX F6: upload idempotency key. randomUUID() when available,
-  // otherwise a CSPRNG-built UUIDv4 — the old Math.random() fallback made the
-  // server-side dedupe key guessable/collision-prone (Math.random() is not a
-  // CSPRNG). getRandomValues is present in every browser that can run the
-  // WebCrypto E2EE path this uploader already requires.
-  function _secureUploadId() {
-    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
-    const b = new Uint8Array(16);
-    window.crypto.getRandomValues(b);
-    b[6] = (b[6] & 0x0f) | 0x40; // UUIDv4 version bits
-    b[8] = (b[8] & 0x3f) | 0x80; // UUIDv4 variant bits
-    const h = [];
-    for (let i = 0; i < 16; i++) h.push(b[i].toString(16).padStart(2, '0'));
-    const s = h.join('');
-    return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20);
-  }
+  // bodyFullySent: true once the request body has been fully sent — from that
+  // moment the server is in its finalizing/saving phase and may already have
+  // committed the file, so an abort would orphan it (and lose the E2E
+  // passphrase). It stays true across retries: an earlier attempt may already
+  // have committed the file server-side, so cancelling now would orphan it.
+  const state = { cancelled: false, activeXhr: null, bodyFullySent: false };
+
+  opts.ui.showCard('up', `Uploading ${opts.files.length} ${opts.files.length === 1 ? 'file' : 'files'}`, 'Uploading…', true);
+  _wireUploadCancel(state);
+
   const uploadFileId = _secureUploadId();
-  
+
   // Retry loop
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    if (cancelled) {
-      restoreDropZone();
+    if (state.cancelled) {
+      opts.ui.restore();
       return;
     }
-    
+
     if (attempt > 1) {
-      const delay = Math.pow(2, attempt) * 1000;
-      document.getElementById('progressStatus').textContent = `Retrying (${attempt}/${MAX_RETRIES})…`;
-      document.getElementById('progressSpeed').textContent = `Wait ${delay / 1000}s`;
-      const speedLabel = document.getElementById('progressSpeedLabel');
-      if (speedLabel) speedLabel.textContent = 'Speed';
-      await new Promise(r => setTimeout(r, delay));
-      if (cancelled) { restoreDropZone(); return; }
-      document.getElementById('progressStatus').textContent = 'Uploading…';
-      document.getElementById('progressFill').style.width = '0%';
-      document.getElementById('progressPercent').textContent = '0%';
-      document.getElementById('progressSpeed').textContent = '–';
-      document.getElementById('progressEta').textContent = '';
+      await _waitBeforeUploadRetry(attempt, MAX_RETRIES);
+      if (state.cancelled) { opts.ui.restore(); return; }
+      _resetUploadProgress();
     }
-    
-    const formData = buildFormData(uploadFileId);
-    
-    const baseTimeout = 600000; // 10 minutes base
-    const transferTimeout = Math.ceil(totalUploadSize / (1024 * 1024)) * 1000;
-    const processingTimeout = Math.ceil(totalUploadSize / (1024 * 1024)) * 500;
-    
-    let startTime = performance.now();
-    let uploadFinished = false;
-    let progressPollInterval = null;
-    let lastDisplayedPercent = 0;
-    // bodyFullySent stays true across retries: an earlier attempt may already
-    // have committed the file server-side, so cancelling now would orphan it.
-    
-    function startProgressPolling() {
-      progressPollInterval = setInterval(async () => {
-        try {
-          const resp = await fetch(`/upload/progress/${uploadFileId}`);
-          if (!resp.ok) return;
-          const data = await resp.json();
-          
-          const statusEl = document.getElementById('progressStatus');
-          const speedEl = document.getElementById('progressSpeed');
-          const speedLabel = document.getElementById('progressSpeedLabel');
-          const percentEl = document.getElementById('progressPercent');
-          const fillEl = document.getElementById('progressFill');
-          const etaEl = document.getElementById('progressEta');
-          const etaLabel = document.getElementById('progressEtaLabel');
-          if (!statusEl) return;
-          
-          if (data.phase === 'encrypting') {
-            statusEl.textContent = 'Encrypting…';
-            if (data.percent >= lastDisplayedPercent) {
-              lastDisplayedPercent = data.percent;
-              percentEl.textContent = data.percent + '%';
-              fillEl.style.width = data.percent + '%';
-            }
-            if (speedLabel) speedLabel.textContent = 'Speed';
-            speedEl.textContent = data.speed ? data.speed + ' MB/s' : '--';
-            if (etaEl) etaEl.textContent = '';
-          } else if (data.phase === 'zipping') {
-            statusEl.textContent = 'Zipping…';
-            if (data.percent >= lastDisplayedPercent) {
-              lastDisplayedPercent = data.percent;
-              percentEl.textContent = data.percent + '%';
-              fillEl.style.width = data.percent + '%';
-            }
-            if (speedLabel) speedLabel.textContent = 'Speed';
-            speedEl.textContent = '–';
-            if (etaEl) etaEl.textContent = '';
-          } else if (data.phase === 'finalizing') {
-            statusEl.textContent = 'Saving…';
-            percentEl.textContent = '100%';
-            fillEl.style.width = '100%';
-            if (speedLabel) speedLabel.textContent = 'Speed';
-            speedEl.textContent = '–';
-            if (etaEl) etaEl.textContent = '';
-          } else if (data.phase === 'saving') {
-            statusEl.textContent = 'Processing…';
-            if (speedLabel) speedLabel.textContent = 'Speed';
-            speedEl.textContent = '–';
-            if (etaEl) etaEl.textContent = '';
-          }
-        } catch (e) {
-          // Polling errors are non-critical
-        }
-      }, 1000);
-    }
-    
-    function stopProgressPolling() {
-      if (progressPollInterval) {
-        clearInterval(progressPollInterval);
-        progressPollInterval = null;
-        const speedLabel = document.getElementById('progressSpeedLabel');
-        if (speedLabel) speedLabel.textContent = 'Speed';
-      }
-    }
-    
+
+    const formData = _buildUploadFormData(encryptedFiles, uploadFileId, opts);
+
     try {
-      const result = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        activeXhr = xhr;
-        xhr.open('POST', '/upload');
-        // Header copy of upload_id: lets the server return an already-committed
-        // upload on retry before the body is checked against remaining quota.
-        xhr.setRequestHeader('X-Upload-Id', uploadFileId);
-        xhr.timeout = Math.max(baseTimeout, transferTimeout + processingTimeout);
-        
-        xhr.upload.addEventListener('progress', function(e) {
-          if (e.lengthComputable) {
-            const percent = Math.round((e.loaded / e.total) * 100);
-            if (percent >= lastDisplayedPercent) {
-              lastDisplayedPercent = percent;
-              document.getElementById('progressFill').style.width = percent + '%';
-              document.getElementById('progressPercent').textContent = percent + '%';
-            }
-            
-            const elapsed = (performance.now() - startTime) / 1000;
-            if (elapsed > 0) {
-              const speed = (e.loaded / (elapsed * 1024 * 1024)).toFixed(1);
-              const remaining = e.total - e.loaded;
-              const secondsRemaining = (remaining / (e.loaded / elapsed)).toFixed(0);
-              const timeStr = secondsRemaining < 60 ? `${secondsRemaining}s` : `${Math.ceil(secondsRemaining / 60)}m`;
-              document.getElementById('progressSpeed').textContent = speed + ' MB/s';
-              const etaEl = document.getElementById('progressEta');
-              if (etaEl) etaEl.textContent = timeStr + ' remaining';
-            }
-            
-            if (e.loaded === e.total && !uploadFinished) {
-              uploadFinished = true;
-              // Body is committed to the wire — close the cancel window.
-              bodyFullySent = true;
-              const cancelNowBtn = document.getElementById('progressCancel');
-              if (cancelNowBtn) {
-                cancelNowBtn.style.opacity = '.45';
-                cancelNowBtn.title = 'Already sent. It cannot be cancelled while the server saves it';
-                cancelNowBtn.setAttribute('aria-disabled', 'true');
-              }
-              lastDisplayedPercent = 0;
-              document.getElementById('progressStatus').textContent = 'Processing…';
-              document.getElementById('progressSpeed').textContent = '–';
-              const etaEl = document.getElementById('progressEta');
-              if (etaEl) etaEl.textContent = '';
-              startProgressPolling();
-            }
-          }
-        });
-        
-        // Settle exactly once. A throw inside an xhr event handler happens
-        // OUTSIDE the executor's synchronous scope, so without this the promise
-        // could hang forever and the retry loop would never advance.
-        let settled = false;
-        function _settle(fn, arg) {
-          if (settled) return;
-          settled = true;
-          stopProgressPolling();
-          activeXhr = null;
-          fn(arg);
-        }
-        
-        xhr.onload = function() {
-          if (xhr.status === 200) {
-            let parsed;
-            try {
-              parsed = JSON.parse(xhr.responseText);
-            } catch (parseErr) {
-              // 200 with a non-JSON body (proxy interstitial, truncated
-              // response). The upload very likely committed server-side, so
-              // retry: /upload is idempotent on upload_id and a retry returns
-              // the existing record — which is the only way to recover file_id
-              // and persist the E2E passphrase.
-              const err = new Error('Server returned an unreadable response; retrying to recover the upload');
-              err.retryable = true;
-              _settle(reject, err);
-              return;
-            }
-            _settle(resolve, { success: true, response: parsed });
-          } else {
-            let errorMessage = 'Upload failed';
-            let statusCode = xhr.status;
-            try {
-              const data = JSON.parse(xhr.responseText);
-              errorMessage = data.error || errorMessage;
-            } catch {}
-            const err = new Error(errorMessage);
-            err.statusCode = statusCode;
-            _settle(reject, err);
-          }
-        };
-        
-        xhr.onerror = function() {
-          const err = new Error('Network error during upload');
-          err.retryable = true;
-          _settle(reject, err);
-        };
-        
-        xhr.ontimeout = function() {
-          const timeoutMinutes = Math.round(xhr.timeout / 60000);
-          const err = new Error(`Upload timed out after ${timeoutMinutes} minutes`);
-          err.retryable = true;
-          _settle(reject, err);
-        };
-        
-        xhr.onabort = function() {
-          const err = new Error('Upload cancelled');
-          err.cancelled = true;
-          _settle(reject, err);
-        };
-        
-        // Safety net: loadend always fires after load/error/timeout/abort, so
-        // the promise settles even if one of those handlers threw first.
-        xhr.addEventListener('loadend', function() {
-          if (settled) return;
-          const err = new Error('Upload ended without a usable server response');
-          err.retryable = true;
-          _settle(reject, err);
-        });
-        
-        xhr.send(formData);
-      });
-      
+      const result = await _sendUploadXhr(formData, uploadFileId, totalUploadSize, state);
       // Success — handle response and exit
-      if (typeof _pendingUploadRefresh !== 'undefined') _pendingUploadRefresh = true;
-      document.getElementById('progressStatus').textContent = 'Complete';
-      document.getElementById('progressFill').style.width = '100%';
-      document.getElementById('progressPercent').textContent = '100%';
-      const speedDone = document.getElementById('progressSpeed');
-      if (speedDone) speedDone.textContent = 'Done';
-      const etaDone = document.getElementById('progressEta');
-      if (etaDone) etaDone.textContent = '';
-      // Hide cancel button on success
-      const cancelBtn = document.getElementById('progressCancel');
-      if (cancelBtn) cancelBtn.style.display = 'none';
-      const doneCard = dropZone.querySelector('.upload-progress-card');
-      if (doneCard) {
-        doneCard.classList.add('is-done');
-        doneCard.querySelector('.upload-card-icon').innerHTML = _CARD_ICONS.check;
-        doneCard.querySelector('.upload-card-title').textContent = 'Uploaded';
-      }
-      // Keep the client-side thumbnail in memory only — it is a plaintext
-      // render of a file we just end-to-end encrypted (see _getMemThumbStore)
-      if (pendingThumbnailDataUrl && result.response.file_id) {
-        _getMemThumbStore().set(result.response.file_id, pendingThumbnailDataUrl);
-      }
-      if (result.response.management_token) {
-        // E2EE guest upload: persist passphrase to the per-file keychain only
-        if (e2eGuestPassphrase) {
-          const downloadUrl = result.response.download_url || '';
-          const fullShareUrl = downloadUrl ? (downloadUrl.startsWith('http') ? downloadUrl : window.location.origin + downloadUrl) + '#passphrase=' + btoa(unescape(encodeURIComponent(e2eGuestPassphrase))) : '';
-          // Persist for the current browser session and VERIFY it landed —
-          // the keychain write is silently a no-op without the onegy_manager
-          // cookie, and this passphrase is the only way to decrypt the upload.
-          const persisted = await _storePassphraseVerified(result.response.file_id, e2eGuestPassphrase);
-
-          let copied = false;
-          if (fullShareUrl && typeof showConfirm === 'function') {
-            const lockIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
-            const shouldCopy = await showConfirm(
-              'Copy share link?',
-              'This link contains the decryption secret. Copying it may expose the secret in clipboard history.',
-              'Copy link',
-              lockIcon,
-              'confirm-warn'
-            );
-            if (shouldCopy) {
-              try {
-                await navigator.clipboard.writeText(fullShareUrl);
-                copied = true;
-                showToast('SHARE LINK COPIED TO CLIPBOARD', 'success');
-              } catch (e) {
-                showToast('COPY FAILED - SAVE THE LINK SHOWN BELOW', 'error');
-              }
-            }
-          }
-
-          if (!persisted && fullShareUrl) {
-            // The manage panel rebuilds the link from this same keychain, so it
-            // will NOT have the passphrase. Never promise a link that will not
-            // exist — block here until the user has actually saved it, and keep
-            // the passphrase in memory in the meantime.
-            console.error(`[UPLOAD] Passphrase could not be persisted for ${result.response.file_id} — forcing manual save`);
-            await _showUnsavedShareLinkPanel(fullShareUrl, copied);
-            e2eGuestPassphrase = null;
-            restoreDropZone();
-            showToast('UPLOAD COMPLETE. THE LINK YOU SAVED IS THE ONLY WAY TO DECRYPT IT', 'success');
-            return;
-          }
-
-          if (!persisted) {
-            // No share link could even be built — say so plainly.
-            showToast('UPLOADED, BUT THE DECRYPTION SECRET COULD NOT BE SAVED. THIS FILE MAY NOT BE RECOVERABLE', 'error');
-          } else if (!copied) {
-            showToast('SHARE LINK READY IN THE MANAGE PANEL', 'success');
-          }
-          e2eGuestPassphrase = null;
-        }
-        // The landing page has no manage-modal markup. Once its upload secret
-        // is safely persisted, continue on the dedicated quick-share page.
-        if (window.location.pathname !== '/share') {
-          window.location.assign('/share');
-          return;
-        }
-        // Reset drop zone then open manage overlay
-        restoreDropZone();
-        if (typeof ManageModal !== 'undefined') {
-          ManageModal.openFileByToken(result.response.management_token);
-        } else if (result.response.redirect) {
-          window.location.href = result.response.redirect;
-        }
-      } else {
-        restoreDropZone();
-      }
+      await _onUploadSuccess(result, opts);
       return;
-      
+
     } catch (err) {
-      if (err.cancelled || cancelled) {
-        restoreDropZone();
+      if (err.cancelled || state.cancelled) {
+        opts.ui.restore();
         return;
       }
-      
+
       // Don't retry client errors (4xx)
       const isRetryable = err.retryable || (err.statusCode && err.statusCode >= 500);
       if (!isRetryable || attempt === MAX_RETRIES) {
         // Final failure
-        const fileSizeGB = (totalUploadSize / (1024 * 1024 * 1024)).toFixed(1);
-        let errorMsg = err.message;
-        if (err.retryable && totalUploadSize > 1024 * 1024 * 1024) {
-          errorMsg += `\n\nLarge file (${fileSizeGB}GB): Try uploading from the Files dashboard, or try a wired connection.`;
-        }
-        showToast(errorMsg, 'error');
-        restoreDropZone();
+        _reportUploadFailure(err, totalUploadSize);
+        opts.ui.restore();
         return;
       }
-      
+
       console.log(`[UPLOAD RETRY] Attempt ${attempt} failed: ${err.message}. Retrying...`);
     }
+  }
+}
+
+// Wire up cancel button
+function _wireUploadCancel(state) {
+  document.getElementById('progressCancel').addEventListener('click', () => {
+    // Refuse to abort once the body is fully sent: the server is already
+    // finalizing and may have committed the file. Aborting would leave a
+    // committed upload whose passphrase was never persisted — unrecoverable.
+    if (state.bodyFullySent) {
+      showToast('UPLOAD ALREADY SENT. THE SERVER IS SAVING IT AND IT CAN NO LONGER BE CANCELLED', 'error');
+      return;
+    }
+    state.cancelled = true;
+    if (state.activeXhr) state.activeXhr.abort();
+  });
+}
+
+async function _waitBeforeUploadRetry(attempt, maxRetries) {
+  const delay = Math.pow(2, attempt) * 1000;
+  document.getElementById('progressStatus').textContent = `Retrying (${attempt}/${maxRetries})…`;
+  document.getElementById('progressSpeed').textContent = `Wait ${delay / 1000}s`;
+  const speedLabel = document.getElementById('progressSpeedLabel');
+  if (speedLabel) speedLabel.textContent = 'Speed';
+  await new Promise(r => setTimeout(r, delay));
+}
+
+function _resetUploadProgress() {
+  document.getElementById('progressStatus').textContent = 'Uploading…';
+  document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('progressPercent').textContent = '0%';
+  document.getElementById('progressSpeed').textContent = '–';
+  document.getElementById('progressEta').textContent = '';
+}
+
+function _reportUploadFailure(err, totalUploadSize) {
+  const fileSizeGB = (totalUploadSize / (1024 * 1024 * 1024)).toFixed(1);
+  let errorMsg = err.message;
+  if (err.retryable && totalUploadSize > 1024 * 1024 * 1024) {
+    errorMsg += `\n\nLarge file (${fileSizeGB}GB): Try uploading from the Files dashboard, or try a wired connection.`;
+  }
+  showToast(errorMsg, 'error');
+}
+
+// One POST /upload attempt. Resolves { success, response } or rejects with an
+// Error flagged retryable / cancelled / statusCode.
+function _sendUploadXhr(formData, uploadFileId, totalUploadSize, state) {
+  const baseTimeout = 600000; // 10 minutes base
+  const transferTimeout = Math.ceil(totalUploadSize / (1024 * 1024)) * 1000;
+  const processingTimeout = Math.ceil(totalUploadSize / (1024 * 1024)) * 500;
+
+  const prog = { startTime: performance.now(), uploadFinished: false, pollInterval: null, lastDisplayedPercent: 0 };
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    state.activeXhr = xhr;
+    xhr.open('POST', '/upload');
+    // Header copy of upload_id: lets the server return an already-committed
+    // upload on retry before the body is checked against remaining quota.
+    xhr.setRequestHeader('X-Upload-Id', uploadFileId);
+    xhr.timeout = Math.max(baseTimeout, transferTimeout + processingTimeout);
+
+    xhr.upload.addEventListener('progress', function(e) {
+      _onUploadBodyProgress(e, prog, state, uploadFileId);
+    });
+
+    // Settle exactly once. A throw inside an xhr event handler happens
+    // OUTSIDE the executor's synchronous scope, so without this the promise
+    // could hang forever and the retry loop would never advance.
+    let settled = false;
+    function _settle(fn, arg) {
+      if (settled) return;
+      settled = true;
+      _stopUploadProgressPolling(prog);
+      state.activeXhr = null;
+      fn(arg);
+    }
+
+    _bindUploadXhrSettlers(xhr, _settle, resolve, reject, () => settled);
+
+    xhr.send(formData);
+  });
+}
+
+function _bindUploadXhrSettlers(xhr, settle, resolve, reject, isSettled) {
+  xhr.onload = function() {
+    if (xhr.status === 200) {
+      let parsed;
+      try {
+        parsed = JSON.parse(xhr.responseText);
+      } catch (parseErr) {
+        // 200 with a non-JSON body (proxy interstitial, truncated
+        // response). The upload very likely committed server-side, so
+        // retry: /upload is idempotent on upload_id and a retry returns
+        // the existing record — which is the only way to recover file_id
+        // and persist the E2E passphrase.
+        const err = new Error('Server returned an unreadable response; retrying to recover the upload');
+        err.retryable = true;
+        settle(reject, err);
+        return;
+      }
+      settle(resolve, { success: true, response: parsed });
+    } else {
+      let errorMessage = 'Upload failed';
+      let statusCode = xhr.status;
+      try {
+        const data = JSON.parse(xhr.responseText);
+        errorMessage = data.error || errorMessage;
+      } catch {}
+      const err = new Error(errorMessage);
+      err.statusCode = statusCode;
+      settle(reject, err);
+    }
+  };
+
+  xhr.onerror = function() {
+    const err = new Error('Network error during upload');
+    err.retryable = true;
+    settle(reject, err);
+  };
+
+  xhr.ontimeout = function() {
+    const timeoutMinutes = Math.round(xhr.timeout / 60000);
+    const err = new Error(`Upload timed out after ${timeoutMinutes} minutes`);
+    err.retryable = true;
+    settle(reject, err);
+  };
+
+  xhr.onabort = function() {
+    const err = new Error('Upload cancelled');
+    err.cancelled = true;
+    settle(reject, err);
+  };
+
+  // Safety net: loadend always fires after load/error/timeout/abort, so
+  // the promise settles even if one of those handlers threw first.
+  xhr.addEventListener('loadend', function() {
+    if (isSettled()) return;
+    const err = new Error('Upload ended without a usable server response');
+    err.retryable = true;
+    settle(reject, err);
+  });
+}
+
+function _onUploadBodyProgress(e, prog, state, uploadFileId) {
+  if (!e.lengthComputable) return;
+  const percent = Math.round((e.loaded / e.total) * 100);
+  if (percent >= prog.lastDisplayedPercent) {
+    prog.lastDisplayedPercent = percent;
+    document.getElementById('progressFill').style.width = percent + '%';
+    document.getElementById('progressPercent').textContent = percent + '%';
+  }
+
+  const elapsed = (performance.now() - prog.startTime) / 1000;
+  if (elapsed > 0) {
+    const speed = (e.loaded / (elapsed * 1024 * 1024)).toFixed(1);
+    const remaining = e.total - e.loaded;
+    const secondsRemaining = (remaining / (e.loaded / elapsed)).toFixed(0);
+    const timeStr = secondsRemaining < 60 ? `${secondsRemaining}s` : `${Math.ceil(secondsRemaining / 60)}m`;
+    document.getElementById('progressSpeed').textContent = speed + ' MB/s';
+    const etaEl = document.getElementById('progressEta');
+    if (etaEl) etaEl.textContent = timeStr + ' remaining';
+  }
+
+  if (e.loaded === e.total && !prog.uploadFinished) {
+    prog.uploadFinished = true;
+    // Body is committed to the wire — close the cancel window.
+    state.bodyFullySent = true;
+    const cancelNowBtn = document.getElementById('progressCancel');
+    if (cancelNowBtn) {
+      cancelNowBtn.style.opacity = '.45';
+      cancelNowBtn.title = 'Already sent. It cannot be cancelled while the server saves it';
+      cancelNowBtn.setAttribute('aria-disabled', 'true');
+    }
+    prog.lastDisplayedPercent = 0;
+    document.getElementById('progressStatus').textContent = 'Processing…';
+    document.getElementById('progressSpeed').textContent = '–';
+    const etaEl = document.getElementById('progressEta');
+    if (etaEl) etaEl.textContent = '';
+    _startUploadProgressPolling(uploadFileId, prog);
+  }
+}
+
+function _startUploadProgressPolling(uploadFileId, prog) {
+  prog.pollInterval = setInterval(async () => {
+    try {
+      const resp = await fetch(`/upload/progress/${uploadFileId}`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      _renderUploadPhase(data, prog);
+    } catch (e) {
+      // Polling errors are non-critical
+    }
+  }, 1000);
+}
+
+function _stopUploadProgressPolling(prog) {
+  if (prog.pollInterval) {
+    clearInterval(prog.pollInterval);
+    prog.pollInterval = null;
+    const speedLabel = document.getElementById('progressSpeedLabel');
+    if (speedLabel) speedLabel.textContent = 'Speed';
+  }
+}
+
+function _renderUploadPhase(data, prog) {
+  const statusEl = document.getElementById('progressStatus');
+  const speedEl = document.getElementById('progressSpeed');
+  const speedLabel = document.getElementById('progressSpeedLabel');
+  const percentEl = document.getElementById('progressPercent');
+  const fillEl = document.getElementById('progressFill');
+  const etaEl = document.getElementById('progressEta');
+  if (!statusEl) return;
+
+  if (data.phase === 'encrypting') {
+    statusEl.textContent = 'Encrypting…';
+    if (data.percent >= prog.lastDisplayedPercent) {
+      prog.lastDisplayedPercent = data.percent;
+      percentEl.textContent = data.percent + '%';
+      fillEl.style.width = data.percent + '%';
+    }
+    if (speedLabel) speedLabel.textContent = 'Speed';
+    speedEl.textContent = data.speed ? data.speed + ' MB/s' : '--';
+    if (etaEl) etaEl.textContent = '';
+  } else if (data.phase === 'zipping') {
+    statusEl.textContent = 'Zipping…';
+    if (data.percent >= prog.lastDisplayedPercent) {
+      prog.lastDisplayedPercent = data.percent;
+      percentEl.textContent = data.percent + '%';
+      fillEl.style.width = data.percent + '%';
+    }
+    if (speedLabel) speedLabel.textContent = 'Speed';
+    speedEl.textContent = '–';
+    if (etaEl) etaEl.textContent = '';
+  } else if (data.phase === 'finalizing') {
+    statusEl.textContent = 'Saving…';
+    percentEl.textContent = '100%';
+    fillEl.style.width = '100%';
+    if (speedLabel) speedLabel.textContent = 'Speed';
+    speedEl.textContent = '–';
+    if (etaEl) etaEl.textContent = '';
+  } else if (data.phase === 'saving') {
+    statusEl.textContent = 'Processing…';
+    if (speedLabel) speedLabel.textContent = 'Speed';
+    speedEl.textContent = '–';
+    if (etaEl) etaEl.textContent = '';
+  }
+}
+
+function _showUploadComplete(dropZone) {
+  document.getElementById('progressStatus').textContent = 'Complete';
+  document.getElementById('progressFill').style.width = '100%';
+  document.getElementById('progressPercent').textContent = '100%';
+  const speedDone = document.getElementById('progressSpeed');
+  if (speedDone) speedDone.textContent = 'Done';
+  const etaDone = document.getElementById('progressEta');
+  if (etaDone) etaDone.textContent = '';
+  // Hide cancel button on success
+  const cancelBtn = document.getElementById('progressCancel');
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  const doneCard = dropZone.querySelector('.upload-progress-card');
+  if (doneCard) {
+    doneCard.classList.add('is-done');
+    doneCard.querySelector('.upload-card-icon').innerHTML = _CARD_ICONS.check;
+    doneCard.querySelector('.upload-card-title').textContent = 'Uploaded';
+  }
+}
+
+async function _onUploadSuccess(result, opts) {
+  if (typeof _pendingUploadRefresh !== 'undefined') _pendingUploadRefresh = true;
+  _showUploadComplete(opts.dropZone);
+  // Keep the client-side thumbnail in memory only — it is a plaintext
+  // render of a file we just end-to-end encrypted (see _getMemThumbStore)
+  if (opts.thumbDataUrl && result.response.file_id) {
+    _getMemThumbStore().set(result.response.file_id, opts.thumbDataUrl);
+  }
+  if (!result.response.management_token) {
+    opts.ui.restore();
+    return;
+  }
+  // E2EE guest upload: persist passphrase to the per-file keychain only
+  if (opts.e2e && opts.e2e.passphrase) {
+    if (!(await _finishE2EGuestUpload(result.response, opts.e2e.passphrase, opts.ui))) return;
+  }
+  // The landing page has no manage-modal markup. Once its upload secret
+  // is safely persisted, continue on the dedicated quick-share page.
+  if (window.location.pathname !== '/share') {
+    window.location.assign('/share');
+    return;
+  }
+  // Reset drop zone then open manage overlay
+  opts.ui.restore();
+  if (typeof ManageModal !== 'undefined') {
+    ManageModal.openFileByToken(result.response.management_token);
+  } else if (result.response.redirect) {
+    window.location.href = result.response.redirect;
+  }
+}
+
+// Persists the guest passphrase and offers the share link. Returns false when
+// the upload flow ended here (the user had to save the link by hand).
+async function _finishE2EGuestUpload(response, passphrase, ui) {
+  const downloadUrl = response.download_url || '';
+  const fullShareUrl = downloadUrl ? (downloadUrl.startsWith('http') ? downloadUrl : window.location.origin + downloadUrl) + '#passphrase=' + btoa(unescape(encodeURIComponent(passphrase))) : '';
+  // Persist for the current browser session and VERIFY it landed —
+  // the keychain write is silently a no-op without the onegy_manager
+  // cookie, and this passphrase is the only way to decrypt the upload.
+  const persisted = await _storePassphraseVerified(response.file_id, passphrase);
+
+  let copied = false;
+  if (fullShareUrl && typeof showConfirm === 'function') {
+    copied = await _offerShareLinkCopy(fullShareUrl);
+  }
+
+  if (!persisted && fullShareUrl) {
+    // The manage panel rebuilds the link from this same keychain, so it
+    // will NOT have the passphrase. Never promise a link that will not
+    // exist — block here until the user has actually saved it, and keep
+    // the passphrase in memory in the meantime.
+    console.error(`[UPLOAD] Passphrase could not be persisted for ${response.file_id} — forcing manual save`);
+    await _showUnsavedShareLinkPanel(fullShareUrl, copied);
+    ui.restore();
+    showToast('UPLOAD COMPLETE. THE LINK YOU SAVED IS THE ONLY WAY TO DECRYPT IT', 'success');
+    return false;
+  }
+
+  if (!persisted) {
+    // No share link could even be built — say so plainly.
+    showToast('UPLOADED, BUT THE DECRYPTION SECRET COULD NOT BE SAVED. THIS FILE MAY NOT BE RECOVERABLE', 'error');
+  } else if (!copied) {
+    showToast('SHARE LINK READY IN THE MANAGE PANEL', 'success');
+  }
+  return true;
+}
+
+async function _offerShareLinkCopy(fullShareUrl) {
+  const lockIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+  const shouldCopy = await showConfirm(
+    'Copy share link?',
+    'This link contains the decryption secret. Copying it may expose the secret in clipboard history.',
+    'Copy link',
+    lockIcon,
+    'confirm-warn'
+  );
+  if (!shouldCopy) return false;
+  try {
+    await navigator.clipboard.writeText(fullShareUrl);
+    showToast('SHARE LINK COPIED TO CLIPBOARD', 'success');
+    return true;
+  } catch (e) {
+    showToast('COPY FAILED - SAVE THE LINK SHOWN BELOW', 'error');
+    return false;
   }
 }
 

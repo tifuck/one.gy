@@ -1,5 +1,5 @@
 // Updates that ask before they restart. The app checks every 30 minutes, on
-// resume and on relaunch (Settings > General > Check for updates any time),
+// resume and on relaunch (App settings > Updates > Check for updates any time),
 // and the update toast (ui/update.html) offers the one step left; the restart
 // comes back where the user was (main.js relaunch-state.json).
 // Windows NSIS and Linux AppImage: electron-updater (generic provider on this

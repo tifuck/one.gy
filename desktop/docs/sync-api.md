@@ -115,7 +115,7 @@ versions on replace (server enabled and the user's *Keep previous versions* on).
 ## Device security
 
 Server: `src/app/378_apiv1_device_security.py` (routes) and
-`110_auth_decorators_download_limits.py` (request checks). Engine:
+`110_auth_decorators.py` (request checks). Engine:
 `internal/account`, `internal/devkey`.
 
 **Signed requests.** `authorize` takes an optional `pop_public_key` (base64 DER

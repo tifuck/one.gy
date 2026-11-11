@@ -2,7 +2,7 @@
 # request signing keys, the server half of the at-rest key (unlock_share), the
 # app lock PIN, unlock grants, the sync scope a locked device is limited to,
 # and one-use tickets that sign the app's website view in.
-# The request-time checks live in 110_auth_decorators_download_limits.py.
+# The request-time checks live in 110_auth_decorators.py.
 
 DEVICE_GRANT_TTL_SECONDS = 15 * 60
 DEVICE_PIN_MAX_FAILURES = 5
@@ -23,7 +23,7 @@ def _valid_pop_public_key(value):
 
 def _device_pin_expires_at(device):
     """The PIN works until the password was last entered + desktop_pin_max_age_days."""
-    verified = _aware_utc(device.password_verified_at)
+    verified = _utc_aware(device.password_verified_at)
     if not device.pin_verifier_hash or verified is None:
         return None
     return verified + timedelta(days=get_numeric_setting('desktop_pin_max_age_days'))
@@ -396,7 +396,7 @@ def desktop_session():
     to the device: it ends when the device is removed or its app locks."""
     raw = request.headers.get('X-Onegy-Desktop-Ticket', '')
     device = Device.query.filter_by(web_ticket_hash=_sha256_hex(raw)).first() if raw else None
-    expires = _aware_utc(device.web_ticket_expires_at) if device else None
+    expires = _utc_aware(device.web_ticket_expires_at) if device else None
     if device is not None:
         device.web_ticket_hash = None
         device.web_ticket_expires_at = None

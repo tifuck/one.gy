@@ -61,6 +61,7 @@
 
 {% block scripts %}
 <script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">
 const fileId = {{ file.id | tojson }}
 let origName = {{ file.orig_name | tojson }}

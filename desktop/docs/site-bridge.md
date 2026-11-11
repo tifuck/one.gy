@@ -1,4 +1,4 @@
-# Site bridge (website ↔ desktop app), version 2
+# Site bridge (website ↔ desktop app), version 3
 
 How the one.gy website integrates with ONE.GY Desktop when it runs inside the
 app. The app draws the window's title bar (drag area, back / forward /
@@ -42,12 +42,17 @@ Absent in normal browsers, so every website change must be a no-op without it.
 ```js
 window.onegyDesktop = {
   version: '0.5.0',          // app version
-  bridge: 2,                 // this contract's version
+  bridge: 3,                 // this contract's version
   unlock(): Promise<ArrayBuffer | null>,   // master key for crypto.js (v1, unchanged)
   openSync(opts): void,      // open the native sync panel
+  openSettings(opts): void,  // open the app's settings (v3)
   onStatus(cb): () => void,  // subscribe to sync status; returns unsubscribe
+  onSyncs(cb): () => void,   // subscribe to this computer's syncs (v3); returns unsubscribe
 }
 ```
+
+Version 3 adds `openSettings` and `onSyncs`; feature-test them
+(`typeof app.onSyncs === 'function'`), a v2 app has neither.
 
 - `unlock()`: resolves to the master key only on a page signed in as the
   account this computer is authorized for (the page's `data-username`, see
@@ -63,6 +68,16 @@ window.onegyDesktop = {
   - If this computer is not authorized yet (the site was signed in without
     the app, see "Sign-in"), the panel starts at "Set up sync on this
     computer" (password + TOTP).
+- `openSettings({ username, section })`: opens the panel on the app's own
+  settings (sidebar General, Account, Security, Updates, About; `section` picks one, default `'general'`). They work in every state
+  but the app lock; for `other_account` Account and Security show the
+  switch-account guard. `username` as for `openSync`.
+- `onSyncs(cb)`: like `onStatus`, with this computer's syncs: an array of
+  `{ id, folder_id, type, state, pending, issues }`. `folder_id` is the
+  one.gy folder (`null` = the drive root, type `full`); `type` is `two_way` |
+  `backup` | `mirror` | `archive` | `full`; `state` is `up_to_date` |
+  `syncing` | `paused` | `issues` | `offline` | `error` | `locked`. No local
+  paths or names. Empty unless this computer is signed in as the page's user.
 - `onStatus(cb)`: `cb` is called immediately (with the last known status, or
   as soon as the app answers on a fresh page) and on every change, at most
   twice a second, with `{ state, pending, issues }`:
@@ -82,17 +97,20 @@ window.onegyDesktop = {
   every change; the title bar, the window controls and the panel follow it.
 - Rail width: reports `[data-desktop-rail]`'s right edge in CSS px (0 without
   a rail) on load and on resize (`site:inset`); the panel starts there.
-- Panel state: sets `html[data-desktop-panel]` while the sync panel is open,
-  so the rail shows Sync as the current place (`desktop-shell.css`). A click
-  on a link in the rail while it is open closes the panel (`site:leavePanel`).
+- Panel state: sets `html[data-desktop-panel]` to `sync` or `settings`
+  while the panel is open, so the rail shows Sync or App settings as the
+  current place (`desktop-shell.css`; v2 apps set it empty, which counts as
+  `sync`). A click on a link in the rail while it is open closes the panel
+  (`site:leavePanel`).
 - Sign-out: a submit of `form.js-logout-form` is held (window capture phase,
   before the site's own hooks) and handed to the app (`site:logout`). With
   this computer signed in the app asks "Sign out of ONE.GY on this
   computer?", then ends the site session and revokes the device (syncs stop,
   local files stay) and shows its sign-in; otherwise the form goes through.
-- `[data-desktop-rail]`, `[data-set-theme]`, `form.js-logout-form` and
-  `[data-desktop-sync][data-username]` are part of this contract: renaming
-  them in `_nav.html` needs the same change in the site preload.
+- `[data-desktop-rail]`, `[data-set-theme]`, `form.js-logout-form`,
+  `[data-desktop-sync][data-username]` and `[data-desktop-settings]` are part
+  of this contract: renaming them in `_nav.html` needs the same change in the
+  site preload.
 
 ## Website side
 
@@ -104,7 +122,15 @@ window.onegyDesktop = {
     labelled "Sync", with a status dot / count driven by `onStatus`; click →
     `openSync({ username })`;
   - hide elements marked `[data-hide-in-desktop]` (e.g. "Download the desktop
-    app" links).
+    app" links);
+  - with `openSettings` (v3): reveal the rail's gear `[data-desktop-settings]`
+    (rendered `hidden`), "App settings"; click → `openSettings({ username })`.
+- Files page (`files.js`, with `onSyncs`): a folder this computer syncs gets
+  a sync mark after its name in the tree and the listing, coloured by
+  `state`; the toolbar shows a chip ("Backup · Up to date") in a sync's
+  folder and anywhere below it, which opens the sync panel (Issues when the
+  sync has some). The tooltip says what the type means ("Backup of this
+  computer, read-only on one.gy").
 - The username is read from a `data-username` attribute rendered by the
   template, never from the URL.
 
@@ -138,7 +164,8 @@ window.onegyDesktop = {
 - `openSync` opens the native panel over the content area (right of the
   rail, below the title bar). It verifies the sender frame's origin in the
   main process before acting. The panel uses the admin console layout
-  (sidebar Syncs / Transfers / Issues / Settings, page head, panels), drawn
+  (sidebar Syncs / Transfers / Issues / Settings, or for `openSettings` the
+  App settings sections; page head, panels), drawn
   with the site's own CSS that the app vendors from `static/` at build time
   (`desktop/app/scripts/vendor-site.js`). Sign-in, lock and message screens
   are centred without the sidebar. It shows "Set up sync on this computer"

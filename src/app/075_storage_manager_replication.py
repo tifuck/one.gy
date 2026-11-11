@@ -886,55 +886,10 @@ class _StorageManagerReplication:
                 print(f'[REPLICATION] No backend for {self._node_name(target_node_id)}, skipping {category}/{item_id}')
                 return result
 
-            note_obj = None
-            file_obj = None
-            if category == 'files':
-                file_obj = db.session.get(File, item_id)
-                if not file_obj:
-                    result['status'] = 'deleted'
-                    result['error'] = f'RESOURCE DELETED DURING REPLICATION: {category}/{item_id}'
-                    return result
-                if expected_checksum is None:
-                    expected_checksum = file_obj.payload_checksum
-                    result['expected_checksum'] = expected_checksum
-            if category == 'notes':
-                note_obj = db.session.get(Note, item_id)
-                if not note_obj:
-                    result['status'] = 'deleted'
-                    result['error'] = f'RESOURCE DELETED DURING REPLICATION: {category}/{item_id}'
-                    return result
-                current_version = int(note_obj.content_version or 1)
-                current_checksum = note_obj.content_checksum
-                if expected_version is None:
-                    expected_version = current_version
-                    result['expected_version'] = expected_version
-                if expected_checksum is None:
-                    expected_checksum = current_checksum
-                    result['expected_checksum'] = expected_checksum
-                if current_version != int(expected_version or 0):
-                    result['status'] = 'stale'
-                    result['error'] = f'NOTE VERSION ADVANCED DURING REPLICATION: expected v{expected_version}, now v{current_version}'
-                    return result
-                if current_checksum and expected_checksum and current_checksum != expected_checksum:
-                    result['status'] = 'stale'
-                    result['error'] = f'NOTE CHECKSUM ADVANCED DURING REPLICATION: {item_id}'
-                    return result
-            if category == 'thumbnails' and expected_checksum is None:
-                # AUDIT FIX (finding 4): thumbnails replicated from the local
-                # source never consulted the DB authority
-                # (File.thumbnail_checksum / thumbnail_e2e_checksum), so a
-                # corrupt local thumbnail was copied to every node as if it
-                # were good. Resolve the authoritative checksum for this
-                # variant so the local-source path below can compare it.
-                _thumb_base = item_id.rsplit('.', 1)[0] if '.' in item_id else item_id
-                _thumb_ext = item_id.rsplit('.', 1)[1] if '.' in item_id else ''
-                _trow = db.session.get(File, _thumb_base)
-                if _trow is not None:
-                    expected_checksum = (
-                        _trow.thumbnail_e2e_checksum if _thumb_ext == 'e2e'
-                        else _trow.thumbnail_checksum
-                    )
-                    result['expected_checksum'] = expected_checksum
+            _expected = self._replication_expectations(category, item_id, expected_version, expected_checksum, result)
+            if _expected is None:
+                return result
+            expected_version, expected_checksum = _expected
 
             # Determine the file identifier for disk operations
             if category == 'files':
@@ -1071,25 +1026,7 @@ class _StorageManagerReplication:
                 result['status'] = 'deleted'
                 result['error'] = f'RESOURCE DELETED DURING REPLICATION: {category}/{item_id}'
                 return result
-            if category == 'files':
-                sources_query = FileReplica.query.filter_by(file_id=item_id, status='synced')
-                if expected_checksum:
-                    sources_query = sources_query.filter_by(checksum=expected_checksum)
-            elif category == 'notes':
-                sources_query = NoteReplica.query.filter_by(
-                    note_id=item_id,
-                    status='synced',
-                    synced_version=expected_version,
-                )
-                if expected_checksum:
-                    sources_query = sources_query.filter_by(checksum=expected_checksum)
-            else:
-                # For thumbnails, item_id is "uuid.ext", split to get file_id and thumb_type
-                _thumb_file_id = item_id.rsplit('.', 1)[0]
-                _thumb_type = 'e2e' if item_id.endswith('.e2e') else 'jpg'
-                sources_query = ThumbnailReplica.query.filter_by(
-                    file_id=_thumb_file_id, thumb_type=_thumb_type, status='synced'
-                )
+            sources_query = self._replication_sources_query(category, item_id, expected_version, expected_checksum)
             sources = self._find_replication_sources(sources_query, source_mode, primary_id, skip_nodes={target_node_id})
             if not sources and local_mismatch:
                 # The only copy is corrupt. Report a counted failure (cooldown,
@@ -1180,35 +1117,8 @@ class _StorageManagerReplication:
                             return result
                     result['error'] = str(src_err)
                     print(f'[REPLICATION] Source {self._node_name(source_replica.node_id)} failed for {category}/{item_id}: {src_err}')
-                    # If the file provably doesn't exist on the source node,
-                    # mark that source replica as error so it's no longer
-                    # treated as a valid synced source (prevents infinite retry loops).
-                    # Covers SFTP (OSError errno=ENOENT) and S3 (ClientError 404/NoSuchKey).
-                    # Important: only treat ENOENT as "not found on remote" if the
-                    # error references a remote path — local temp-file ENOENT
-                    # (e.g. os.replace race) must not mark the remote replica stale.
-                    _is_not_found = False
-                    import errno as _errno
-                    if isinstance(src_err, OSError) and src_err.errno == _errno.ENOENT:
-                        _err_path = str(src_err.filename) if src_err.filename else str(src_err)
-                        if not _err_path.startswith(tmp_dir):
-                            _is_not_found = True
-                    else:
-                        try:
-                            from botocore.exceptions import ClientError as _CE
-                            if isinstance(src_err, _CE) and src_err.response['Error']['Code'] in ('404', 'NoSuchKey'):
-                                _is_not_found = True
-                        except (ImportError, KeyError, AttributeError):
-                            pass
-                    # A not-found raised by the TARGET write must not condemn the
-                    # source replica the bytes were just read from.
-                    if _is_not_found and not _source_read_ok:
-                        try:
-                            source_replica.status = 'error'
-                            db.session.commit()
-                            print(f'[REPLICATION] Marked stale synced replica on {self._node_name(source_replica.node_id)} as error for {category}/{item_id} (not found on remote)')
-                        except Exception:
-                            db.session.rollback()
+                    self._mark_missing_replication_source(
+                        src_err, source_replica, tmp_dir, _source_read_ok, category, item_id)
                 finally:
                     if tmp_path:
                         try:
@@ -1224,6 +1134,114 @@ class _StorageManagerReplication:
             result['error'] = str(e)
             print(f'[REPLICATION] Error replicating {category}/{item_id} -> {self._node_name(target_node_id)}: {e}')
             return result
+
+    def _replication_expectations(self, category, item_id, expected_version, expected_checksum, result):
+        """Resolve the expected version/checksum from the DB authority (recorded in result).
+        Returns (expected_version, expected_checksum), or None when result is final (deleted/stale)."""
+        note_obj = None
+        file_obj = None
+        if category == 'files':
+            file_obj = db.session.get(File, item_id)
+            if not file_obj:
+                result['status'] = 'deleted'
+                result['error'] = f'RESOURCE DELETED DURING REPLICATION: {category}/{item_id}'
+                return None
+            if expected_checksum is None:
+                expected_checksum = file_obj.payload_checksum
+                result['expected_checksum'] = expected_checksum
+        if category == 'notes':
+            note_obj = db.session.get(Note, item_id)
+            if not note_obj:
+                result['status'] = 'deleted'
+                result['error'] = f'RESOURCE DELETED DURING REPLICATION: {category}/{item_id}'
+                return None
+            current_version = int(note_obj.content_version or 1)
+            current_checksum = note_obj.content_checksum
+            if expected_version is None:
+                expected_version = current_version
+                result['expected_version'] = expected_version
+            if expected_checksum is None:
+                expected_checksum = current_checksum
+                result['expected_checksum'] = expected_checksum
+            if current_version != int(expected_version or 0):
+                result['status'] = 'stale'
+                result['error'] = f'NOTE VERSION ADVANCED DURING REPLICATION: expected v{expected_version}, now v{current_version}'
+                return None
+            if current_checksum and expected_checksum and current_checksum != expected_checksum:
+                result['status'] = 'stale'
+                result['error'] = f'NOTE CHECKSUM ADVANCED DURING REPLICATION: {item_id}'
+                return None
+        if category == 'thumbnails' and expected_checksum is None:
+            # AUDIT FIX (finding 4): thumbnails replicated from the local
+            # source never consulted the DB authority
+            # (File.thumbnail_checksum / thumbnail_e2e_checksum), so a
+            # corrupt local thumbnail was copied to every node as if it
+            # were good. Resolve the authoritative checksum for this
+            # variant so the local-source path below can compare it.
+            _thumb_base = item_id.rsplit('.', 1)[0] if '.' in item_id else item_id
+            _thumb_ext = item_id.rsplit('.', 1)[1] if '.' in item_id else ''
+            _trow = db.session.get(File, _thumb_base)
+            if _trow is not None:
+                expected_checksum = (
+                    _trow.thumbnail_e2e_checksum if _thumb_ext == 'e2e'
+                    else _trow.thumbnail_checksum
+                )
+                result['expected_checksum'] = expected_checksum
+        return expected_version, expected_checksum
+
+    def _replication_sources_query(self, category, item_id, expected_version, expected_checksum):
+        """Synced replicas that may serve as a replication source for this item."""
+        if category == 'files':
+            sources_query = FileReplica.query.filter_by(file_id=item_id, status='synced')
+            if expected_checksum:
+                sources_query = sources_query.filter_by(checksum=expected_checksum)
+        elif category == 'notes':
+            sources_query = NoteReplica.query.filter_by(
+                note_id=item_id,
+                status='synced',
+                synced_version=expected_version,
+            )
+            if expected_checksum:
+                sources_query = sources_query.filter_by(checksum=expected_checksum)
+        else:
+            # For thumbnails, item_id is "uuid.ext", split to get file_id and thumb_type
+            _thumb_file_id = item_id.rsplit('.', 1)[0]
+            _thumb_type = 'e2e' if item_id.endswith('.e2e') else 'jpg'
+            sources_query = ThumbnailReplica.query.filter_by(
+                file_id=_thumb_file_id, thumb_type=_thumb_type, status='synced'
+            )
+        return sources_query
+
+    def _mark_missing_replication_source(self, src_err, source_replica, tmp_dir, _source_read_ok, category, item_id):
+        # If the file provably doesn't exist on the source node,
+        # mark that source replica as error so it's no longer
+        # treated as a valid synced source (prevents infinite retry loops).
+        # Covers SFTP (OSError errno=ENOENT) and S3 (ClientError 404/NoSuchKey).
+        # Important: only treat ENOENT as "not found on remote" if the
+        # error references a remote path — local temp-file ENOENT
+        # (e.g. os.replace race) must not mark the remote replica stale.
+        _is_not_found = False
+        import errno as _errno
+        if isinstance(src_err, OSError) and src_err.errno == _errno.ENOENT:
+            _err_path = str(src_err.filename) if src_err.filename else str(src_err)
+            if not _err_path.startswith(tmp_dir):
+                _is_not_found = True
+        else:
+            try:
+                from botocore.exceptions import ClientError as _CE
+                if isinstance(src_err, _CE) and src_err.response['Error']['Code'] in ('404', 'NoSuchKey'):
+                    _is_not_found = True
+            except (ImportError, KeyError, AttributeError):
+                pass
+        # A not-found raised by the TARGET write must not condemn the
+        # source replica the bytes were just read from.
+        if _is_not_found and not _source_read_ok:
+            try:
+                source_replica.status = 'error'
+                db.session.commit()
+                print(f'[REPLICATION] Marked stale synced replica on {self._node_name(source_replica.node_id)} as error for {category}/{item_id} (not found on remote)')
+            except Exception:
+                db.session.rollback()
 
     def run_replication_cycle(self):
         """Run one replication cycle.

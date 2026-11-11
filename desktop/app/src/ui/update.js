@@ -1,6 +1,6 @@
 // The update toast (main/window.js notice view, bottom right of the window):
 // the updater's state when it needs the user, with the one step left. Later
-// or Close hides it until the state or version changes; Settings > General
+// or Close hides it until the state or version changes; App settings > Updates
 // keeps the same actions. It reports its height so the view fits the card.
 const bridge = window.onegyUpdate;
 const els = Object.fromEntries(['wrap', 'card', 'title', 'text', 'bar', 'actions', 'later', 'go', 'close']

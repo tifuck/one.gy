@@ -12,7 +12,7 @@ const { registerScheme, handleScheme } = require('./protocol');
 const { hardenApp } = require('./security');
 const { SettingsStore } = require('./settings-store');
 const { EngineSupervisor } = require('./engine');
-const { MainWindow, BACKGROUND } = require('./window');
+const { MainWindow, BACKGROUND, SETTINGS_SCREENS } = require('./window');
 const { registerIpc } = require('./ipc');
 const { AppTray } = require('./tray');
 const { TrayPopover, isGnomeWayland } = require('./tray-popover');
@@ -25,7 +25,7 @@ const { isSitePath } = require('./site-nav');
 const SITE_STATUS_EVERY_MS = 500; // site-bridge.md: at most 2 updates per second
 const IDLE_CHECK_MS = 30 * 1000;
 const SITE_DECIDE_MAX_MS = 8000; // load the site anyway when the engine says nothing
-const RESUME_PANELS = new Set(['syncs', 'transfers', 'issues', 'settings']); // also what the tray popover may open
+const RESUME_PANELS = new Set(['syncs', 'transfers', 'issues', 'settings', ...SETTINGS_SCREENS]); // also what the tray popover may open
 const MAX_PAUSE_MS = 24 * 60 * 60 * 1000;
 const RESIGN_EVERY_MS = 30 * 1000; // device mode: sign a site view that lost its session in again, at most this often
 
@@ -152,7 +152,7 @@ function start() {
   const showNotification = ({ title, body, kind }) => {
     if (!Notification.isSupported()) return;
     const n = new Notification({ title, body, silent: kind === 'transfer' });
-    const screen = { conflict: 'issues', issue: 'issues', mass_delete: 'issues', transfer: 'transfers', revoked: 'settings' }[kind];
+    const screen = { conflict: 'issues', issue: 'issues', mass_delete: 'issues', transfer: 'transfers', revoked: 'account' }[kind];
     n.on('click', () => (screen ? openPanel(screen) : window.show()));
     n.show();
   };
@@ -167,14 +167,22 @@ function start() {
     }
   };
 
-  // Website onStatus subscribers: throttled, and only when something changed.
+  // Website onStatus and onSyncs subscribers: throttled, and only when something changed.
   let lastSiteStatus = '';
+  let lastSiteSyncs = '';
   const pushSiteStatus = throttle(() => {
     const st = sync.forUser(window.siteUser);
     const key = JSON.stringify([window.siteUser, st]);
-    if (key === lastSiteStatus) return;
-    lastSiteStatus = key;
-    window.sendSiteStatus(st);
+    if (key !== lastSiteStatus) {
+      lastSiteStatus = key;
+      window.sendSiteStatus(st);
+    }
+    const list = sync.syncsForUser(window.siteUser);
+    const listKey = JSON.stringify([window.siteUser, list]);
+    if (listKey !== lastSiteSyncs) {
+      lastSiteSyncs = listKey;
+      window.sendSiteSyncs(list);
+    }
   }, SITE_STATUS_EVERY_MS);
 
   // ---- Site modes and the app lock (engine-ipc.md "App lock") ----

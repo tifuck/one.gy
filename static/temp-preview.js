@@ -1189,54 +1189,100 @@
     // The contenteditable editor only round-trips '\n'; encodeTextBytes() puts
     // the file's own line endings (encInfo.eol) back on save.
     text = text.replace(/\r\n?/g, '\n')
-    const lang = getHighlightLanguage(extension)
-    const langName = getLanguageDisplayName(extension)
-    let savedText = text
+    const els = _buildTextEditorDom(text, getLanguageDisplayName(extension))
+    const ed = {
+      els,
+      lang: getHighlightLanguage(extension),
+      fileId, isE2E, fileName, encInfo, generation,
+      highlightTimer: null,
+      isHighlighting: false,
+      // Modified state
+      isModified: false,
+      editRevision: 0,
+      savedRevision: 0,
+      saving: false,
+      lineNumRaf: 0,
+      markModTimer: 0,
+      editor: null
+    }
 
-    const container = document.createElement('div')
-    container.className = 'preview-editor-container'
+    const editor = {
+      container: els.container,
+      codeEl: els.codeEl,
+      getEditorText: () => _editorText(els.codeEl),
+      isModified: () => ed.editRevision !== ed.savedRevision,
+      _originalText: text
+    }
+    ed.editor = editor
 
-    const toolbar = document.createElement('div')
-    toolbar.className = 'preview-editor-toolbar'
+    _bindTextEditorKeys(ed)
+    _bindTextEditorInput(ed)
+    els.saveBtn.addEventListener('click', () => _saveTextEditor(ed))
 
-    const langLabel = document.createElement('span')
-    langLabel.className = 'preview-editor-lang'
-    langLabel.textContent = langName
+    // Initial render
+    _highlightTextEditor(ed)
+    _updateEditorLineNumbers(ed)
+    _updateEditorCursorInfo(ed)
 
-    const status = document.createElement('span')
-    status.className = 'preview-editor-status'
-    const statusDot = document.createElement('span')
-    statusDot.className = 'preview-editor-status-dot'
-    const statusText = document.createElement('span')
-    statusText.textContent = 'Ready'
-    status.appendChild(statusDot)
-    status.appendChild(statusText)
+    _activeEditor = editor
 
-    const saveBtn = document.createElement('button')
-    saveBtn.className = 'preview-editor-save'
-    saveBtn.textContent = 'Save'
-    saveBtn.type = 'button'
+    return els.container
+  }
 
-    toolbar.appendChild(langLabel)
-    toolbar.appendChild(status)
-    toolbar.appendChild(saveBtn)
+  function _el(tag, className, textContent) {
+    const el = document.createElement(tag)
+    if (className) el.className = className
+    if (textContent !== undefined) el.textContent = textContent
+    return el
+  }
 
-    const wrapper = document.createElement('div')
-    wrapper.className = 'preview-editor-wrapper'
+  function _buildTextEditorDom(text, langName) {
+    const els = {}
+    els.container = _el('div', 'preview-editor-container')
 
-    const gutter = document.createElement('div')
-    gutter.className = 'preview-editor-gutter'
-    const gutterInner = document.createElement('div')
-    gutterInner.className = 'preview-editor-gutter-inner'
-    gutter.appendChild(gutterInner)
+    const toolbar = _el('div', 'preview-editor-toolbar')
+    els.status = _el('span', 'preview-editor-status')
+    els.status.appendChild(_el('span', 'preview-editor-status-dot'))
+    els.statusText = _el('span', '', 'Ready')
+    els.status.appendChild(els.statusText)
+    els.saveBtn = _el('button', 'preview-editor-save', 'Save')
+    els.saveBtn.type = 'button'
+    toolbar.appendChild(_el('span', 'preview-editor-lang', langName))
+    toolbar.appendChild(els.status)
+    toolbar.appendChild(els.saveBtn)
 
-    const scrollArea = document.createElement('div')
-    scrollArea.className = 'preview-editor-scroll'
+    const wrapper = _el('div', 'preview-editor-wrapper')
+    els.gutter = _el('div', 'preview-editor-gutter')
+    els.gutterInner = _el('div', 'preview-editor-gutter-inner')
+    els.gutter.appendChild(els.gutterInner)
+    els.scrollArea = _el('div', 'preview-editor-scroll')
+    const codeWrap = _el('pre', 'preview-editor-code-pre')
+    els.codeEl = _buildEditorCodeEl(text)
+    codeWrap.appendChild(els.codeEl)
+    els.textarea = _el('textarea', 'preview-editor-hidden-textarea')
+    els.textarea.tabIndex = -1
+    els.textarea.setAttribute('aria-hidden', 'true')
+    els.textarea.value = text
+    els.scrollArea.appendChild(codeWrap)
+    els.scrollArea.appendChild(els.textarea)
+    wrapper.appendChild(els.gutter)
+    wrapper.appendChild(els.scrollArea)
 
-    const codeWrap = document.createElement('pre')
-    codeWrap.className = 'preview-editor-code-pre'
-    const codeEl = document.createElement('code')
-    codeEl.className = 'preview-editor-code hljs'
+    const footer = _el('div', 'preview-editor-footer')
+    els.cursorInfo = _el('span', '', 'Ln 1, Col 1')
+    els.sizeInfo = _el('span', '', formatFileSize(new TextEncoder().encode(text).byteLength))
+    footer.appendChild(els.cursorInfo)
+    footer.appendChild(_el('span', '', 'UTF-8'))
+    footer.appendChild(els.sizeInfo)
+
+    els.container.appendChild(toolbar)
+    els.container.appendChild(wrapper)
+    els.container.appendChild(footer)
+    return els
+  }
+
+  function _buildEditorCodeEl(text) {
+    const codeEl = _el('code', 'preview-editor-code hljs')
     codeEl.contentEditable = 'true'
     codeEl.spellcheck = false
     codeEl.setAttribute('autocorrect', 'off')
@@ -1244,229 +1290,186 @@
     codeEl.setAttribute('autocomplete', 'off')
     codeEl.setAttribute('data-gramm', 'false')
     // Trailing sentinel newline, as every highlight path writes it:
-    // getEditorText() strips exactly one, so without it the file's own final
+    // _editorText() strips exactly one, so without it the file's own final
     // newline would be dropped on the first highlight and saved that way.
     codeEl.textContent = text + '\n'
-    codeWrap.appendChild(codeEl)
+    return codeEl
+  }
 
-    const textarea = document.createElement('textarea')
-    textarea.className = 'preview-editor-hidden-textarea'
-    textarea.tabIndex = -1
-    textarea.setAttribute('aria-hidden', 'true')
-    textarea.value = text
+  // ---- Get text from contenteditable ----
+  function _editorText(codeEl) {
+    const text = codeEl.innerText
+    return text.replace(/\n$/, '')
+  }
 
-    scrollArea.appendChild(codeWrap)
-    scrollArea.appendChild(textarea)
-    wrapper.appendChild(gutter)
-    wrapper.appendChild(scrollArea)
-
-    const footer = document.createElement('div')
-    footer.className = 'preview-editor-footer'
-
-    const cursorInfo = document.createElement('span')
-    cursorInfo.textContent = 'Ln 1, Col 1'
-
-    const encodingInfo = document.createElement('span')
-    encodingInfo.textContent = 'UTF-8'
-
-    const sizeInfo = document.createElement('span')
-    sizeInfo.textContent = formatFileSize(new TextEncoder().encode(text).byteLength)
-
-    footer.appendChild(cursorInfo)
-    footer.appendChild(encodingInfo)
-    footer.appendChild(sizeInfo)
-
-    container.appendChild(toolbar)
-    container.appendChild(wrapper)
-    container.appendChild(footer)
-
-    // ---- Get/set text from contenteditable ----
-    function getEditorText() {
-      const text = codeEl.innerText
-      return text.replace(/\n$/, '')
-    }
-
-    function setEditorText(newText) {
-      textarea.value = newText
-    }
-
-    // ---- Highlighting ----
-    let highlightTimer = null
-    let _isHighlighting = false
-
-    function escapeHtml(str) {
-      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    }
-
-    function setHighlightedHtml(el, html) {
-      var template = document.createElement('template')
-      template.innerHTML = String(html || '')
-      function clean (node) {
-        if (node.nodeType === Node.COMMENT_NODE) { node.remove(); return }
-        if (node.nodeType !== Node.ELEMENT_NODE) return
-        var tag = node.tagName.toLowerCase()
-        if (tag !== 'span') {
-          var parent = node.parentNode
-          if (parent) { while (node.firstChild) parent.insertBefore(node.firstChild, node); node.remove() }
-          return
-        }
-        Array.prototype.slice.call(node.attributes).forEach(function (attr) {
-          var name = attr.name.toLowerCase()
-          if (name === 'class') {
-            var classes = attr.value.split(/\s+/).filter(function (c) { return /^hljs[-a-z0-9]*$/i.test(c) })
-            if (classes.length) node.className = classes.join(' ')
-            else node.removeAttribute('class')
-          } else node.removeAttribute(attr.name)
-        })
-        Array.prototype.slice.call(node.childNodes).forEach(clean)
+  // ---- Highlighting ----
+  function _setHighlightedHtml(el, html) {
+    var template = document.createElement('template')
+    template.innerHTML = String(html || '')
+    function clean (node) {
+      if (node.nodeType === Node.COMMENT_NODE) { node.remove(); return }
+      if (node.nodeType !== Node.ELEMENT_NODE) return
+      var tag = node.tagName.toLowerCase()
+      if (tag !== 'span') {
+        var parent = node.parentNode
+        if (parent) { while (node.firstChild) parent.insertBefore(node.firstChild, node); node.remove() }
+        return
       }
-      Array.prototype.slice.call(template.content.childNodes).forEach(clean)
-      el.replaceChildren()
-      el.appendChild(template.content)
-      el.appendChild(document.createTextNode('\n'))
+      Array.prototype.slice.call(node.attributes).forEach(function (attr) {
+        var name = attr.name.toLowerCase()
+        if (name === 'class') {
+          var classes = attr.value.split(/\s+/).filter(function (c) { return /^hljs[-a-z0-9]*$/i.test(c) })
+          if (classes.length) node.className = classes.join(' ')
+          else node.removeAttribute('class')
+        } else node.removeAttribute(attr.name)
+      })
+      Array.prototype.slice.call(node.childNodes).forEach(clean)
     }
+    Array.prototype.slice.call(template.content.childNodes).forEach(clean)
+    el.replaceChildren()
+    el.appendChild(template.content)
+    el.appendChild(document.createTextNode('\n'))
+  }
 
-    function doHighlight() {
-      if (_isHighlighting) return
-      _isHighlighting = true
-      const savedSel = saveSelection(codeEl)
-      const code = getEditorText()
-      textarea.value = code
-      try {
-        if (typeof hljs !== 'undefined' && lang !== 'plaintext') {
-          const result = hljs.highlight(code, { language: lang, ignoreIllegals: true })
-          setHighlightedHtml(codeEl, result.value)
-        } else {
-          codeEl.textContent = code + '\n'
-        }
-      } catch (e) {
+  function _highlightTextEditor(ed) {
+    if (ed.isHighlighting) return
+    ed.isHighlighting = true
+    const codeEl = ed.els.codeEl
+    const savedSel = _saveEditorSelection(codeEl)
+    const code = _editorText(codeEl)
+    ed.els.textarea.value = code
+    try {
+      if (typeof hljs !== 'undefined' && ed.lang !== 'plaintext') {
+        const result = hljs.highlight(code, { language: ed.lang, ignoreIllegals: true })
+        _setHighlightedHtml(codeEl, result.value)
+      } else {
         codeEl.textContent = code + '\n'
       }
-      restoreSelection(codeEl, savedSel)
-      _isHighlighting = false
+    } catch (e) {
+      codeEl.textContent = code + '\n'
     }
+    _restoreEditorSelection(codeEl, savedSel)
+    ed.isHighlighting = false
+  }
 
-    function scheduleHighlight() {
-      if (highlightTimer) clearTimeout(highlightTimer)
-      highlightTimer = setTimeout(doHighlight, HIGHLIGHT_DEBOUNCE_MS)
-    }
+  function _scheduleTextEditorHighlight(ed) {
+    if (ed.highlightTimer) clearTimeout(ed.highlightTimer)
+    ed.highlightTimer = setTimeout(() => _highlightTextEditor(ed), HIGHLIGHT_DEBOUNCE_MS)
+  }
 
-    // ---- Cursor save/restore ----
-    function saveSelection(containerEl) {
-      const sel = window.getSelection()
-      if (!sel.rangeCount) return null
-      const range = sel.getRangeAt(0)
-      const preRange = document.createRange()
-      preRange.selectNodeContents(containerEl)
-      preRange.setEnd(range.startContainer, range.startOffset)
-      const start = preRange.toString().length
-      return { start, end: start + range.toString().length }
-    }
+  // ---- Cursor save/restore ----
+  function _saveEditorSelection(containerEl) {
+    const sel = window.getSelection()
+    if (!sel.rangeCount) return null
+    const range = sel.getRangeAt(0)
+    const preRange = document.createRange()
+    preRange.selectNodeContents(containerEl)
+    preRange.setEnd(range.startContainer, range.startOffset)
+    const start = preRange.toString().length
+    return { start, end: start + range.toString().length }
+  }
 
-    function restoreSelection(containerEl, savedSel) {
-      if (!savedSel) return
-      const sel = window.getSelection()
-      const range = document.createRange()
-      let charIndex = 0
-      let foundStart = false
-      let stop = false
-      const nodeStack = [containerEl]
-      let node, startNode, startOffset, endNode, endOffset
+  function _restoreEditorSelection(containerEl, savedSel) {
+    if (!savedSel) return
+    const sel = window.getSelection()
+    const range = document.createRange()
+    let charIndex = 0
+    let foundStart = false
+    let stop = false
+    const nodeStack = [containerEl]
+    let node, startNode, startOffset, endNode, endOffset
 
-      while (!stop && (node = nodeStack.pop())) {
-        if (node.nodeType === 3) {
-          const nextCharIndex = charIndex + node.length
-          if (!foundStart && savedSel.start >= charIndex && savedSel.start <= nextCharIndex) {
-            startNode = node
-            startOffset = savedSel.start - charIndex
-            foundStart = true
-          }
-          if (foundStart && savedSel.end >= charIndex && savedSel.end <= nextCharIndex) {
-            endNode = node
-            endOffset = savedSel.end - charIndex
-            stop = true
-          }
-          charIndex = nextCharIndex
-        } else {
-          let i = node.childNodes.length
-          while (i--) nodeStack.push(node.childNodes[i])
+    while (!stop && (node = nodeStack.pop())) {
+      if (node.nodeType === 3) {
+        const nextCharIndex = charIndex + node.length
+        if (!foundStart && savedSel.start >= charIndex && savedSel.start <= nextCharIndex) {
+          startNode = node
+          startOffset = savedSel.start - charIndex
+          foundStart = true
         }
-      }
-
-      if (startNode) {
-        try {
-          range.setStart(startNode, startOffset)
-          range.setEnd(endNode || startNode, endOffset !== undefined ? endOffset : startOffset)
-          sel.removeAllRanges()
-          sel.addRange(range)
-        } catch (e) {
-          range.selectNodeContents(containerEl)
-          range.collapse(false)
-          sel.removeAllRanges()
-          sel.addRange(range)
+        if (foundStart && savedSel.end >= charIndex && savedSel.end <= nextCharIndex) {
+          endNode = node
+          endOffset = savedSel.end - charIndex
+          stop = true
         }
+        charIndex = nextCharIndex
+      } else {
+        let i = node.childNodes.length
+        while (i--) nodeStack.push(node.childNodes[i])
       }
     }
 
-    function getCaretOffset(containerEl) {
-      const sel = window.getSelection()
-      if (!sel.rangeCount) return 0
-      const range = sel.getRangeAt(0)
-      const preRange = document.createRange()
-      preRange.selectNodeContents(containerEl)
-      preRange.setEnd(range.startContainer, range.startOffset)
-      return preRange.toString().length
-    }
-
-    // ---- Line numbers ----
-    function updateLineNumbers() {
-      const text = getEditorText()
-      const lineCount = text.split('\n').length
-      let nums = ''
-      for (let i = 1; i <= lineCount; i++) {
-        nums += i + '\n'
+    if (startNode) {
+      try {
+        range.setStart(startNode, startOffset)
+        range.setEnd(endNode || startNode, endOffset !== undefined ? endOffset : startOffset)
+        sel.removeAllRanges()
+        sel.addRange(range)
+      } catch (e) {
+        range.selectNodeContents(containerEl)
+        range.collapse(false)
+        sel.removeAllRanges()
+        sel.addRange(range)
       }
-      gutterInner.textContent = nums
     }
+  }
 
-    function syncScroll() {
-      gutter.scrollTop = scrollArea.scrollTop
+  function _editorCaretOffset(containerEl) {
+    const sel = window.getSelection()
+    if (!sel.rangeCount) return 0
+    const range = sel.getRangeAt(0)
+    const preRange = document.createRange()
+    preRange.selectNodeContents(containerEl)
+    preRange.setEnd(range.startContainer, range.startOffset)
+    return preRange.toString().length
+  }
+
+  // ---- Line numbers / cursor info ----
+  function _updateEditorLineNumbers(ed) {
+    const text = _editorText(ed.els.codeEl)
+    const lineCount = text.split('\n').length
+    let nums = ''
+    for (let i = 1; i <= lineCount; i++) {
+      nums += i + '\n'
     }
+    ed.els.gutterInner.textContent = nums
+  }
 
-    function updateCursorInfo() {
-      const pos = getCaretOffset(codeEl)
-      const text = getEditorText()
-      const textBefore = text.substring(0, pos)
-      const line = textBefore.split('\n').length
-      const col = pos - textBefore.lastIndexOf('\n')
-      cursorInfo.textContent = 'Ln ' + line + ', Col ' + col
-    }
+  function _updateEditorCursorInfo(ed) {
+    const pos = _editorCaretOffset(ed.els.codeEl)
+    const text = _editorText(ed.els.codeEl)
+    const textBefore = text.substring(0, pos)
+    const line = textBefore.split('\n').length
+    const col = pos - textBefore.lastIndexOf('\n')
+    ed.els.cursorInfo.textContent = 'Ln ' + line + ', Col ' + col
+  }
 
-    // ---- Modified state ----
-    let isModified = false
-    let editRevision = 0
-    let savedRevision = 0
-    let saving = false
+  // ---- Modified state ----
+  function _setEditorStatus(els, text, modifier) {
+    els.statusText.textContent = text
+    els.status.className = 'preview-editor-status' + (modifier ? ' ' + modifier : '')
+  }
 
-    function markModified() {
-      const current = getEditorText()
-      textarea.value = current
-      const nowModified = editRevision !== savedRevision
-      if (nowModified !== isModified) {
-        isModified = nowModified
-        if (isModified) {
-          statusText.textContent = 'Modified'
-          status.className = 'preview-editor-status modified'
-          saveBtn.classList.add('active')
-        } else {
-          statusText.textContent = 'Ready'
-          status.className = 'preview-editor-status'
-          saveBtn.classList.remove('active')
-        }
+  function _markTextEditorModified(ed) {
+    const els = ed.els
+    const current = _editorText(els.codeEl)
+    els.textarea.value = current
+    const nowModified = ed.editRevision !== ed.savedRevision
+    if (nowModified !== ed.isModified) {
+      ed.isModified = nowModified
+      if (ed.isModified) {
+        _setEditorStatus(els, 'Modified', 'modified')
+        els.saveBtn.classList.add('active')
+      } else {
+        _setEditorStatus(els, 'Ready')
+        els.saveBtn.classList.remove('active')
       }
-      sizeInfo.textContent = formatFileSize(new TextEncoder().encode(current).byteLength)
     }
+    els.sizeInfo.textContent = formatFileSize(new TextEncoder().encode(current).byteLength)
+  }
 
+  function _bindTextEditorKeys(ed) {
+    const codeEl = ed.els.codeEl
     // ---- Tab key handling ----
     codeEl.addEventListener('keydown', (e) => {
       if (e.key === 'Tab') {
@@ -1475,16 +1478,16 @@
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault()
-        markModified()
-        if (isModified) saveBtn.click()
+        _markTextEditorModified(ed)
+        if (ed.isModified) ed.els.saveBtn.click()
       }
     })
 
     // Auto-indent on Enter
     codeEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        const pos = getCaretOffset(codeEl)
-        const text = getEditorText()
+        const pos = _editorCaretOffset(codeEl)
+        const text = _editorText(codeEl)
         const lineStart = text.lastIndexOf('\n', pos - 1) + 1
         const currentLine = text.substring(lineStart, pos)
         const indent = currentLine.match(/^(\s*)/)[1]
@@ -1503,124 +1506,99 @@
         document.execCommand('insertText', false, text)
       }
     })
+  }
 
+  function _bindTextEditorInput(ed) {
+    const els = ed.els
     // Debounced editor helpers to avoid per-keystroke layout/encoding work
-    let _lineNumRaf = 0
-    function debouncedUpdateLineNumbers() {
-      if (!_lineNumRaf) {
-        _lineNumRaf = requestAnimationFrame(() => { _lineNumRaf = 0; updateLineNumbers() })
+    els.codeEl.addEventListener('input', () => {
+      ed.editRevision++
+      _scheduleTextEditorHighlight(ed)
+      if (!ed.lineNumRaf) {
+        ed.lineNumRaf = requestAnimationFrame(() => { ed.lineNumRaf = 0; _updateEditorLineNumbers(ed) })
       }
-    }
-    let _markModTimer = 0
-    function debouncedMarkModified() {
-      clearTimeout(_markModTimer)
-      _markModTimer = setTimeout(markModified, 150)
-    }
-
-    // Event listeners
-    codeEl.addEventListener('input', () => {
-      editRevision++
-      scheduleHighlight()
-      debouncedUpdateLineNumbers()
-      debouncedMarkModified()
+      clearTimeout(ed.markModTimer)
+      ed.markModTimer = setTimeout(() => _markTextEditorModified(ed), 150)
     })
 
-    scrollArea.addEventListener('scroll', syncScroll)
-    codeEl.addEventListener('click', updateCursorInfo)
-    codeEl.addEventListener('keyup', updateCursorInfo)
+    els.scrollArea.addEventListener('scroll', () => { els.gutter.scrollTop = els.scrollArea.scrollTop })
+    els.codeEl.addEventListener('click', () => _updateEditorCursorInfo(ed))
+    els.codeEl.addEventListener('keyup', () => _updateEditorCursorInfo(ed))
+  }
 
-    const editor = {
-      container,
-      codeEl,
-      getEditorText,
-      isModified: () => editRevision !== savedRevision,
-      _originalText: savedText
-    }
+  function _textEditorIsCurrent(ed) {
+    return _activeEditor === ed.editor && _isPreviewCurrent(ed.generation) && ed.els.container.isConnected
+  }
 
-    function editorIsCurrent() {
-      return _activeEditor === editor && _isPreviewCurrent(generation) && container.isConnected
-    }
+  // ---- Save handler ----
+  async function _saveTextEditor(ed) {
+    const els = ed.els
+    _markTextEditorModified(ed)
+    if (!ed.isModified || ed.saving || !_textEditorIsCurrent(ed)) return
 
-    // ---- Save handler ----
-    saveBtn.addEventListener('click', async () => {
-      markModified()
-      if (!isModified || saving || !editorIsCurrent()) return
+    ed.saving = true
+    const currentText = _editorText(els.codeEl)
+    const submittedRevision = ed.editRevision
 
-      saving = true
-      const currentText = getEditorText()
-      const submittedRevision = editRevision
+    _setEditorStatus(els, 'Saving…', 'saving')
+    els.saveBtn.classList.remove('active')
+    els.saveBtn.disabled = true
 
-      statusText.textContent = 'Saving…'
-      status.className = 'preview-editor-status saving'
-      saveBtn.classList.remove('active')
-      saveBtn.disabled = true
-
-      try {
-        let response
-        if (isE2E) {
-          response = await saveE2EFileContent(fileId, currentText, fileName, encInfo)
-        } else {
-          response = await saveFileContent(fileId, currentText, encInfo)
-        }
-
-        if (response.success) {
-          savedText = currentText
-          savedRevision = submittedRevision
-          editor._originalText = currentText
-          if (!editorIsCurrent()) return
-          if (editRevision === submittedRevision) {
-            isModified = false
-            statusText.textContent = 'Saved'
-            status.className = 'preview-editor-status saved'
-            saveBtn.classList.remove('active')
-          } else {
-            isModified = true
-            statusText.textContent = 'Modified'
-            status.className = 'preview-editor-status modified'
-            saveBtn.classList.add('active')
-          }
-
-          if (response.new_size_formatted) {
-            // Update size in the temp file list
-            const row = document.querySelector(`.temp-browser-row[data-file-id="${fileId}"]`)
-            if (row) {
-              const sizeEl = row.querySelector('.col-size')
-              if (sizeEl) sizeEl.textContent = response.new_size_formatted
-            }
-          }
-
-          setTimeout(() => {
-            if (editorIsCurrent() && editRevision === submittedRevision && !isModified) {
-              statusText.textContent = 'Ready'
-              status.className = 'preview-editor-status'
-            }
-          }, 2000)
-        } else {
-          if (!editorIsCurrent()) return
-          statusText.textContent = response.error || 'Save failed'
-          status.className = 'preview-editor-status error'
-          saveBtn.classList.add('active')
-        }
-      } catch (err) {
-        console.error('[TEMP EDITOR] Save failed:', err)
-        if (!editorIsCurrent()) return
-        statusText.textContent = 'Save failed'
-        status.className = 'preview-editor-status error'
-        saveBtn.classList.add('active')
-      } finally {
-        saving = false
-        if (editorIsCurrent()) saveBtn.disabled = false
+    try {
+      let response
+      if (ed.isE2E) {
+        response = await saveE2EFileContent(ed.fileId, currentText, ed.fileName, ed.encInfo)
+      } else {
+        response = await saveFileContent(ed.fileId, currentText, ed.encInfo)
       }
-    })
 
-    // Initial render
-    doHighlight()
-    updateLineNumbers()
-    updateCursorInfo()
+      if (response.success) {
+        ed.savedRevision = submittedRevision
+        ed.editor._originalText = currentText
+        if (!_textEditorIsCurrent(ed)) return
+        _onTextEditorSaved(ed, response, submittedRevision)
+      } else {
+        if (!_textEditorIsCurrent(ed)) return
+        _setEditorStatus(els, response.error || 'Save failed', 'error')
+        els.saveBtn.classList.add('active')
+      }
+    } catch (err) {
+      console.error('[TEMP EDITOR] Save failed:', err)
+      if (!_textEditorIsCurrent(ed)) return
+      _setEditorStatus(els, 'Save failed', 'error')
+      els.saveBtn.classList.add('active')
+    } finally {
+      ed.saving = false
+      if (_textEditorIsCurrent(ed)) els.saveBtn.disabled = false
+    }
+  }
 
-    _activeEditor = editor
+  function _onTextEditorSaved(ed, response, submittedRevision) {
+    const els = ed.els
+    if (ed.editRevision === submittedRevision) {
+      ed.isModified = false
+      _setEditorStatus(els, 'Saved', 'saved')
+      els.saveBtn.classList.remove('active')
+    } else {
+      ed.isModified = true
+      _setEditorStatus(els, 'Modified', 'modified')
+      els.saveBtn.classList.add('active')
+    }
 
-    return container
+    if (response.new_size_formatted) {
+      // Update size in the temp file list
+      const row = document.querySelector(`.temp-browser-row[data-file-id="${ed.fileId}"]`)
+      if (row) {
+        const sizeEl = row.querySelector('.col-size')
+        if (sizeEl) sizeEl.textContent = response.new_size_formatted
+      }
+    }
+
+    setTimeout(() => {
+      if (_textEditorIsCurrent(ed) && ed.editRevision === submittedRevision && !ed.isModified) {
+        _setEditorStatus(els, 'Ready')
+      }
+    }, 2000)
   }
 
   // ─── E2E Preview (passphrase-based decryption) ────────────────────

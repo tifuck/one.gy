@@ -430,6 +430,7 @@
     if (!S.trashMode && S.folderId == null) rootRow.el.classList.add('is-active')
     if (rootOpen) walk('root', 1, revealKey === 'root')
     if (animate) for (var i = 0; i < tree.children.length; i++) tree.children[i].style.setProperty('--i', i)
+    paintSyncs()
   }
   // Collapse a branch: fade its descendant rows out first, then rebuild the
   // tree (the rebuild is what actually removes them — the animation is cosmetic).
@@ -492,6 +493,73 @@
     return { el: row }
   }
 
+  // ---- Desktop app: this computer's syncs (site-bridge.md onSyncs) ----------
+  // Inside ONE.GY Desktop a folder this computer syncs gets a sync mark after
+  // its name (tree and listing, coloured by state), and the toolbar says how
+  // the open folder syncs, also anywhere below a sync's folder; it opens the
+  // app's sync panel. In a browser there is no onSyncs, so none of this shows.
+  var desk = window.onegyDesktop && typeof window.onegyDesktop.onSyncs === 'function' ? window.onegyDesktop : null
+  var syncByFolder = {}
+  var SYNC_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 0 1-13.7 5.6M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v3.6h-3.6M6 21v-3.6h3.6"/></svg>'
+  var SYNC_KIND = { two_way: 'Two-way sync', full: 'Whole drive sync', backup: 'Backup', archive: 'Upload only', mirror: 'Mirror' }
+  var SYNC_WITH = {
+    two_way: 'Syncs with this computer', full: 'Syncs with this computer', archive: 'Uploads from this computer, deletes are kept here',
+    backup: 'Backup of this computer, read-only on one.gy', mirror: 'Copied to this computer, changes there do not come back'
+  }
+  var SYNC_TONE = { up_to_date: ' is-good', syncing: ' is-accent', issues: ' is-warn', error: ' is-warn' }
+  function syncStateText (s) {
+    switch (s.state) {
+      case 'up_to_date': return 'Up to date'
+      case 'syncing': return s.pending > 0 ? 'Syncing, ' + s.pending + ' left' : 'Syncing'
+      case 'paused': return 'Paused'
+      case 'issues': return s.issues + (s.issues === 1 ? ' issue' : ' issues')
+      case 'offline': return 'Offline'
+      case 'locked': return 'Locked'
+      default: return 'Needs attention'
+    }
+  }
+  function syncLabel (s) { return (SYNC_WITH[s.type] || SYNC_WITH.two_way) + ' · ' + syncStateText(s) }
+  function syncFor (id) { return syncByFolder[id == null || id === '' ? 'root' : String(id)] }
+  function onSyncs (list) {
+    syncByFolder = {}
+    list.forEach(function (s) { syncByFolder[s.folder_id == null ? 'root' : String(s.folder_id)] = s })
+    paintSyncs()
+  }
+  // Adds, updates or removes the mark right after a name element.
+  function markName (nameEl, s) {
+    if (!nameEl) return
+    var m = nameEl.nextElementSibling
+    if (m && !m.classList.contains('fx-sync-mark')) m = null
+    if (!s) { if (m) m.remove(); return }
+    if (!m) { m = document.createElement('span'); m.className = 'fx-sync-mark'; m.setAttribute('role', 'img'); m.innerHTML = SYNC_ICON; nameEl.after(m) }
+    m.setAttribute('data-sync-state', s.state)
+    m.title = syncLabel(s)
+    m.setAttribute('aria-label', syncLabel(s))
+  }
+  function paintSyncs () {
+    if (!desk) return
+    el.view.querySelectorAll('[data-folder="true"][data-id]').forEach(function (it) {
+      markName(it.querySelector('.fx-item-name, .fx-name, .fx-col-name'), syncFor(it.getAttribute('data-id')))
+    })
+    document.querySelectorAll('#fxTree .fx-tree-row').forEach(function (r) { markName(r.querySelector('.fx-tree-name'), syncFor(r.getAttribute('data-fid'))) })
+    var chip = $('fxSyncChip'), s = null
+    if (!S.trashMode && !S.searchQ) {
+      for (var i = S.breadcrumbs.length - 1; i >= 0 && !s; i--) s = syncFor(S.breadcrumbs[i].id)
+      s = s || syncFor(null)
+    }
+    chip.hidden = !s
+    if (!s) return
+    chip.className = 'rd-pill fx-sync-chip' + (SYNC_TONE[s.state] || '')
+    chip.setAttribute('data-sync-state', s.state)
+    chip.innerHTML = SYNC_ICON + '<span>' + esc((SYNC_KIND[s.type] || SYNC_KIND.two_way) + ' · ' + syncStateText(s)) + '</span>'
+    chip.title = syncLabel(s) + '. Open in Sync.'
+    chip.setAttribute('aria-label', syncLabel(s) + '. Open in Sync')
+    chip.onclick = function () {
+      var u = document.querySelector('[data-desktop-sync][data-username]')
+      if (u && typeof desk.openSync === 'function') desk.openSync({ username: u.getAttribute('data-username'), screen: s.issues ? 'issues' : 'syncs' })
+    }
+  }
+
   // ---- Rendering: listing --------------------------------------------------
   function skeleton () {
     el.view.classList.remove('is-enter')
@@ -515,11 +583,12 @@
     var files = sortItems(S.files, false)
     // Failed loads leave the listing empty, so the error is derived here: a
     // later sort / view change must not repaint it as "Trash is empty".
-    if (!folders.length && !files.length) { el.view.innerHTML = S.loadFailed ? errorState(S.loadError) : emptyState(); return }
+    if (!folders.length && !files.length) { el.view.innerHTML = S.loadFailed ? errorState(S.loadError) : (S.view === 'list' ? upEntry() : folderGrid([])) + emptyState(); paintSyncs(); return }
     var fn = { grid: renderGrid, list: renderList, gallery: renderGallery, columns: renderColumns }[S.view] || renderGrid
     fn(folders, files)
     observeThumbs()
     columnPreview()
+    paintSyncs()
   }
 
   // E2EE is the default, so it gets no badge; only exceptions are flagged.
@@ -530,12 +599,29 @@
     return b
   }
 
+  // ".." back to the parent folder (the only way up on phones, where the
+  // breadcrumb shows just the current folder). Not an item: without data-k,
+  // selection, Ctrl+A, arrow keys, menus and drag skip it; it takes drops.
+  function parentFolderId () { var b = S.breadcrumbs; return b.length > 1 ? b[b.length - 2].id : null }
+  function upEntry (tile) {
+    if (S.folderId == null || S.trashMode || S.searchQ || S.loadFailed) return ''
+    var p = parentFolderId(), to = esc(folderLabel(p))
+    var label = tile
+      ? '<span class="fx-item-body"><span class="fx-item-top"><span class="fx-item-name">..</span></span><span class="fx-item-sub"><span class="fx-meta">' + to + '</span></span></span>'
+      : '<span class="fx-name">..</span><span class="fx-meta">' + to + '</span>'
+    return '<button type="button" class="fx-up" data-up data-fid="' + (p == null ? '' : p) + '" title="Up to ' + to + '" aria-label="Up to ' + to + '">' + itemIcon(null, true) + label + '</button>'
+  }
+  function folderGrid (folders) {
+    var up = upEntry(true)
+    if (!folders.length) return up && '<div class="fx-grid">' + up + '</div>'
+    return sectionLabel('Folders', folders.length) + '<div class="fx-grid">' + up + folders.map(function (f) { return gridCard(f, true) }).join('') + '</div>'
+  }
+
   var TICK = '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>'
 
   // GRID
   function renderGrid (folders, files) {
-    var h = ''
-    if (folders.length) { h += sectionLabel('Folders', folders.length) + '<div class="fx-grid">'; folders.forEach(function (f) { h += gridCard(f, true) }); h += '</div>' }
+    var h = folderGrid(folders)
     if (files.length) { h += sectionLabel('Files', files.length) + '<div class="fx-grid">'; files.forEach(function (f) { h += gridCard(f, false) }); h += '</div>' }
     el.view.innerHTML = h
   }
@@ -595,7 +681,7 @@
         (on ? '<svg class="fx-sort-ind' + (desc ? ' is-desc' : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>' : '') + '</button>'
     }
     var h = '<div class="fx-list"><div class="fx-list-head">' +
-      head('name', 'Name') + '<span>Kind</span>' + head('size', 'Size') + head('date', 'Modified') + '<span></span></div>'
+      head('name', 'Name') + '<span>Kind</span>' + head('size', 'Size') + head('date', 'Modified') + '<span></span></div>' + upEntry()
     folders.forEach(function (f) { h += listRow(f, true) })
     files.forEach(function (f) { h += listRow(f, false) })
     h += '</div>'
@@ -623,8 +709,8 @@
 
   // GALLERY
   function renderGallery (folders, files) {
-    var h = ''
-    if (folders.length) { h += sectionLabel('Folders', folders.length) + '<div class="fx-grid">'; folders.forEach(function (f) { h += gridCard(f, true) }); h += '</div>' + (files.length ? sectionLabel('Files', files.length) : '') }
+    var h = folderGrid(folders)
+    if (folders.length && files.length) h += sectionLabel('Files', files.length)
     h += '<div class="fx-gallery">'
     files.forEach(function (f) {
       var k = keyOf(f, false), nm = displayName(f, false)
@@ -643,7 +729,7 @@
 
   // COLUMNS (Miller) — renders current folder as a single column with a preview pane.
   function renderColumns (folders, files) {
-    var h = '<div class="fx-cols"><div class="fx-col">'
+    var h = '<div class="fx-cols"><div class="fx-col">' + upEntry()
     folders.forEach(function (f) {
       h += '<button class="fx-col-row' + selClass(keyOf(f, true)) + '" data-k="' + keyOf(f, true) + '" data-id="' + f.id + '" data-folder="true" draggable="true">' + TICK + colIcon(f, true) + '<span class="fx-col-name" title="' + esc(displayName(f, true)) + '">' + esc(displayName(f, true)) + '</span><span class="fx-col-chev">' + ICON.chev + '</span></button>'
     })
@@ -1674,6 +1760,7 @@
     el.view.addEventListener('click', function (e) {
       if (e.target.closest('[data-empty-upload]')) { $('fxFileInput').click(); return }
       if (e.target.closest('[data-sortcol]')) { var c = e.target.closest('[data-sortcol]').getAttribute('data-sortcol'); cycleSort(c); return }
+      if (e.target.closest('[data-up]')) { loadFolder(parentFolderId()); return }
       if (e.target.closest('[data-kebab]')) {
         var kb = e.target.closest('[data-kebab]')
         var cardK = kb.closest('[data-k]')
@@ -1842,6 +1929,7 @@
       if (filesKeysBlocked(e)) return
       if (e.key === 'Escape') { closeSide(); closeDrawer(); clearSel(); return }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); return }
+      if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); if (upEntry()) loadFolder(parentFolderId()); return }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (!S.sel.size) return
         e.preventDefault()
@@ -1882,7 +1970,7 @@
   function folderKey (id) { return id == null || id === '' ? 'root' : String(id) }
   function dropTargetAt (node) {
     if (S.trashMode || !node || !node.closest) return null
-    var t = node.closest('.fx-tree-row, .fx-bc-item[data-fid]:not(.is-current), #fxView [data-k][data-folder="true"]')
+    var t = node.closest('.fx-tree-row, .fx-bc-item[data-fid]:not(.is-current), #fxView [data-k][data-folder="true"], #fxView [data-up]')
     if (!t) return null
     var raw = t.hasAttribute('data-k') ? t.getAttribute('data-id') : t.getAttribute('data-fid')
     var id = raw === '' || raw == null ? null : raw
@@ -2020,7 +2108,7 @@
     return false
   }
   function gridColCount () {
-    var g = el.view && el.view.querySelector('.fx-grid')
+    var g = el.view && el.view.querySelector('.fx-grid:has(> [data-k])')
     if (!g || !g.children.length) return 1
     var top = g.children[0].offsetTop, n = 1
     for (var i = 1; i < g.children.length; i++) {
@@ -2167,6 +2255,7 @@
     initManageModal()
     if (window.MusicPlayer && MusicPlayer.init) MusicPlayer.init('dashboard')
     if (window.FxPreview) FxPreview._onSaved = function () { reload({ keepSel: true }) }
+    if (desk) desk.onSyncs(onSyncs)
     if (!window.__FX_NO_AUTOLOAD__) {
       // /trash renders this same page and asks for the trash view up front, so
       // the legacy dashboard.html trash screen is no longer needed.

@@ -82,8 +82,16 @@ def _run_startup_maintenance():
         except Exception:
             pass
 
-    uploads_dir = app.config['UPLOAD_FOLDER']
     file_replication_requeue_ids = set()
+    _startup_recover_staged_files(file_replication_requeue_ids)
+    _startup_recover_staged_notes()
+    _startup_reconcile_note_state()
+    _startup_reconcile_file_disk_state(file_replication_requeue_ids)
+    _startup_requeue_file_replication(file_replication_requeue_ids)
+
+
+def _startup_recover_staged_files(file_replication_requeue_ids):
+    uploads_dir = app.config['UPLOAD_FOLDER']
     staged_recovered = 0
     staged_discarded = 0
     try:
@@ -152,6 +160,8 @@ def _run_startup_maintenance():
     if staged_discarded > 0:
         print(f'[STARTUP] Discarded {staged_discarded} uncommitted staged file(s) (DB commit had failed)')
 
+
+def _startup_recover_staged_notes():
     note_staged_recovered = 0
     note_staged_discarded = 0
     try:
@@ -210,6 +220,8 @@ def _run_startup_maintenance():
     if note_staged_discarded > 0:
         print(f'[STARTUP] Discarded {note_staged_discarded} uncommitted staged note(s) (DB commit had failed)')
 
+
+def _startup_reconcile_note_state():
     # AUDIT FIX A3: this pass used to load EVERY Note as a full ORM row and call
     # queue_note_replication() on all of them -- a SHA-256 of each note file plus
     # 1 + N_nodes queries each -- on EVERY boot, synchronously before gunicorn
@@ -305,6 +317,8 @@ def _run_startup_maintenance():
         except Exception:
             pass
 
+
+def _startup_reconcile_file_disk_state(file_replication_requeue_ids):
     # AUDIT FIX A3: this pass used to load EVERY is_e2e_encrypted row as a full
     # ORM object -- INCLUDING the undeferred LargeBinary legacy thumbnail columns
     # -- and stat() every payload on every boot. It is now split in two:
@@ -448,6 +462,8 @@ def _run_startup_maintenance():
         except Exception:
             pass
 
+
+def _startup_requeue_file_replication(file_replication_requeue_ids):
     file_replication_requeued = 0
     try:
         for idx, file_id in enumerate(sorted(file_replication_requeue_ids), start=1):
@@ -469,4 +485,3 @@ def _can_run_startup_maintenance():
     inspector = inspect(db.engine)
     table_names = set(inspector.get_table_names())
     return all(table_name in table_names for table_name in _DB_STARTUP_TABLES)
-

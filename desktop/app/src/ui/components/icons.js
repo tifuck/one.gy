@@ -35,4 +35,5 @@ export const ICONS = {
   skip: svg('<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>'),
   eye: svg('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
   dot: svg('<circle cx="12" cy="12" r="3"/>'),
+  user: svg('<circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20.5c.9-3.9 3.8-6 7.5-6s6.6 2.1 7.5 6"/>'),
 };

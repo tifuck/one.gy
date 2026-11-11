@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const { app, dialog, ipcMain, net, shell } = require('electron');
 const { openExternal, isWebUrl } = require('./security');
-const { isMainFrameOf } = require('./window');
+const { isMainFrameOf, SETTINGS_SCREENS } = require('./window');
 const { normalizeServerUrl } = require('./settings-store');
 const { isUiUrl } = require('./protocol');
 const { removeSync } = require('./remove-sync');
@@ -23,7 +23,9 @@ const {
 const { mayUnlock } = require('./sync-status');
 
 const MAX_PARAMS_BYTES = 1024 * 1024;
-const PANEL_SCREENS = new Set(['syncs', 'transfers', 'issues', 'settings']);
+const PANEL_SCREENS = new Set(['syncs', 'transfers', 'issues', 'settings', ...SETTINGS_SCREENS]);
+// Calls that can remove a sync (the engine sends no event for a removal).
+const REMOVES_SYNCS = new Set(['syncs.remove', 'issues.resolve']);
 const THEMES = new Set(['frost', 'frost-dark']);
 const TITLEBAR_COMMANDS = new Set(['back', 'forward', 'reload']);
 // What getComputedStyle reports for a colour.
@@ -81,7 +83,9 @@ function registerIpc({
     if (typeof method !== 'string' || !UI_METHODS.has(method)) throw Object.assign(new Error(`Unknown method ${method}`), { code: 'forbidden' });
     if (params !== undefined && !isPlainObject(params)) throw Object.assign(new Error('params must be an object'), { code: 'validation_failed' });
     if (params !== undefined && JSON.stringify(params).length > MAX_PARAMS_BYTES) throw Object.assign(new Error('params too large'), { code: 'validation_failed' });
-    return engine.call(method, params, SLOW_METHODS.has(method) ? { timeoutMs: SLOW_TIMEOUT_MS } : undefined);
+    const call = engine.call(method, params, SLOW_METHODS.has(method) ? { timeoutMs: SLOW_TIMEOUT_MS } : undefined);
+    if (REMOVES_SYNCS.has(method)) call.finally(() => sync.loadSyncs()).catch(() => {});
+    return call;
   });
   handle('engine:state', () => engine.state);
 
@@ -160,12 +164,12 @@ function registerIpc({
   handle('app:removeSync', (id, opts) => removeSync(
     { engine: { call: (m, p) => engine.call(m, p, { timeoutMs: SLOW_TIMEOUT_MS }) }, trash: (p) => shell.trashItem(p) },
     id, isPlainObject(opts) ? opts : {},
-  ));
+  ).finally(() => sync.loadSyncs()));
   handle('app:update:state', () => updater.state());
   handle('app:update:check', () => updater.check());
   // Installs (and restarts) in the background; state arrives as app:update events.
   handle('app:update:install', () => {
-    if (window.panelOpen) window.panelScreen = 'settings';
+    if (window.panelOpen) window.panelScreen = 'updates';
     updater.install();
     return updater.state();
   });
@@ -223,6 +227,11 @@ function registerIpc({
     if (!window.isSiteFrame(event.senderFrame)) return null;
     if (isUsername(username)) window.siteUser = username;
     return sync.forUser(window.siteUser);
+  });
+  ipcMain.handle('site:syncs', (event, username) => {
+    if (!window.isSiteFrame(event.senderFrame)) return [];
+    if (isUsername(username)) window.siteUser = username;
+    return sync.syncsForUser(window.siteUser);
   });
   ipcMain.on('site:theme', (event, theme) => {
     if (window.isSiteFrame(event.senderFrame) && THEMES.has(theme) && settings.get().theme !== theme) settings.set({ theme });

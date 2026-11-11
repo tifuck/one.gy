@@ -22,19 +22,22 @@
 .dk-rail .dk-rail-link:hover{ color:var(--text); background:var(--hover); }
 .dk-rail .dk-rail-link.is-active{ color:var(--text); background:var(--press); }
 .dk-rail .dk-rail-link.is-active svg{ color:var(--accent); }
-/* The app's sync panel is open over the page (the app sets the attribute):
-   Sync is the current place, not the page under it. */
+/* The app's panel is open over the page (the app sets the attribute to
+   "sync" or "settings"; empty from apps before bridge 3): Sync or App
+   settings is the current place, not the page under it. */
 [data-desktop-panel] .dk-rail .dk-rail-link.is-active{ color:var(--text-dim); background:none; }
 [data-desktop-panel] .dk-rail .dk-rail-link.is-active svg{ color:inherit; }
-[data-desktop-panel] .dk-rail [data-desktop-sync]{ color:var(--text); background:var(--press); }
-[data-desktop-panel] .dk-rail [data-desktop-sync] svg{ color:var(--accent); }
+[data-desktop-panel]:not([data-desktop-panel="settings"]) .dk-rail [data-desktop-sync]{ color:var(--text); background:var(--press); }
+[data-desktop-panel]:not([data-desktop-panel="settings"]) .dk-rail [data-desktop-sync] svg{ color:var(--accent); }
+[data-desktop-panel="settings"] .dk-rail [data-desktop-settings]{ color:var(--accent); background:var(--press); }
 
-/* Counts and the sync state sit on the icon's top-right corner. */
+/* Counts sit on the icon's top-right corner; the sync state dot on its
+   bottom-right, clear of the arrowheads (top-right and bottom-left). */
 .dk-rail .dk-rail-link .rd-badge, .dk-rail .rd-sync-note{ position:absolute; top:5px; left:calc(50% + 4px); margin:0;
   min-width:16px; height:16px; padding:0 5px; border-radius:999px; font-size:.62rem; font-weight:600; line-height:16px; }
 .dk-rail .rd-sync-note{ background:var(--accent); color:var(--accent-contrast); }
 .dk-rail .rd-sync-note:empty{ display:none; }
-.dk-rail .rd-sync-dot{ position:absolute; top:10px; left:calc(50% + 6px); width:8px; height:8px; box-shadow:0 0 0 2px var(--pane); }
+.dk-rail .rd-sync-dot{ position:absolute; top:24px; left:calc(50% + 5px); width:8px; height:8px; box-shadow:0 0 0 2px var(--pane); }
 .dk-rail .rd-sync-dot:has(~ .rd-sync-note:not([hidden])){ visibility:hidden; }
 
 .dk-rail-foot{ display:flex; flex-direction:column; align-items:center; gap:4px; margin-top:auto; }

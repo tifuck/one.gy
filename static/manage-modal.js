@@ -475,56 +475,6 @@ window.ManageModal = (function() {
     }
   }
 
-  // ─── Re-encryption Toast Helpers ────────────────────────────
-  function getToastEls() {
-    return {
-      toast: document.getElementById('reencryptToast'),
-      title: document.getElementById('reencryptToastTitle'),
-      close: document.getElementById('reencryptToastClose'),
-      status: document.getElementById('reencryptStatus'),
-      bar: document.getElementById('reencryptBar'),
-      percent: document.getElementById('reencryptPercent')
-    }
-  }
-
-  function showReencryptToast(titleText) {
-    const t = getToastEls()
-    if (!t.toast) return t
-    t.title.textContent = titleText
-    t.bar.style.width = '0%'
-    t.bar.style.background = ''
-    t.percent.textContent = '0%'
-    t.close.style.display = 'none'
-    t.toast.style.display = 'block'
-    return t
-  }
-
-  function updateReencryptToast(t, status, pct, fileName) {
-    if (t.status) t.status.textContent = status
-    if (t.bar) t.bar.style.width = pct + '%'
-    if (t.percent) t.percent.textContent = Math.round(pct) + '%'
-    if (fileName && t.title) t.title.textContent = fileName
-  }
-
-  function hideReencryptToast(t) {
-    if (!t.toast) return
-    t.toast.style.display = 'none'
-    t.bar.style.width = '0%'
-    t.bar.style.background = ''
-  }
-
-  function showReencryptError(t) {
-    if (!t.status) return
-    if (t.title) t.title.textContent = 'FAILED'
-    t.status.textContent = 'FAILED'
-    t.percent.textContent = 'ERROR'
-    t.bar.style.background = 'linear-gradient(90deg, #E8304A, #DE1833)'
-    t.bar.style.width = '100%'
-    t.close.style.display = 'block'
-    t.close.onclick = () => { hideReencryptToast(t) }
-    setTimeout(() => { hideReencryptToast(t) }, 3000)
-  }
-
   // ─── Expiry dropdown helpers ──────────────────────────────────
   const expiryLabels = { '30m': '30 minutes', '6h': '6 hours', '1d': '1 day', '3d': '3 days', '7d': '7 days', 'never': 'Never' }
 
@@ -1072,47 +1022,111 @@ window.ManageModal = (function() {
 
     // Async: decrypt E2EE filename and update modal display + share URL
     if (data.is_e2e && data.encrypted_name) {
-      _tryDecryptFileName(data).then(decryptedName => {
-        if (!isActive()) return
-        if (decryptedName) {
-          data.name = decryptedName
-          data._name_decrypted = true
-          _updateModalFileName(decryptedName)
-          _markTextThumb(decryptedName)
-           // Update icon if extension changed — but preserve existing thumbnail
-          const _existingThumbImg = refs.icon.querySelector('img')
-          if (_existingThumbImg) {
-            // Thumbnail already loaded (from sessionStorage or prior decrypt) — keep it
-            refs.icon.innerHTML = ''
-            refs.icon.appendChild(_existingThumbImg)
-          } else {
-            // No thumbnail yet — set icon and try async decrypt
-            refs.icon.innerHTML = `<div class="thumb-spinner"></div><span>${getFileIcon(decryptedName)}</span>`
-            _decryptEncryptedThumbnail(data, refs.icon, isActive)
-          }
-          // Keep decrypted filenames out of server-facing URLs.
-          // Preserve short-code share URLs (/s/...).
-          if (data.share_url && !data.share_url.includes('/s/')) {
-            const d = cfg.domain || window.location.host
-            data.share_url = 'https://' + d + '/f/' + data.id
-          }
-          data.download_url = '/f/' + data.id
-          if (refs.downloadBtn) refs.downloadBtn.href = data.download_url
-          // Preserve the share link's decryption fragment.
-          if (refs.shareLink && refs.shareLink.value) {
-            const hashIdx = refs.shareLink.value.indexOf('#')
-            const fragment = hashIdx >= 0 ? refs.shareLink.value.substring(hashIdx) : ''
-            refs.shareLink.value = data.share_url + fragment
-            updateWgetVisibility()
-            updateCliVisibility()
-          }
-        }
-      })
+      _decryptFileNameIntoModal(data, isActive)
     }
 
+    _markTextThumb(data.name)
+    _populateFileIcon(data, isActive)
+
+    refs.name.title = data.name
+    const _mp = _splitNameExt(data.name)
+    if (_mp.ext) {
+      refs.name.innerHTML = '<span class="file-name-base">' + _esc(_mp.base) + '</span><span class="file-name-ext">' + _esc(_mp.ext) + '</span>'
+    } else {
+      refs.name.innerHTML = '<span class="file-name-base">' + _esc(data.name) + '</span>'
+    }
+
+    updateModalBadges()
+
+    refs.details.innerHTML = _fileDetailsHtml(data)
+
+    filterExpiryForTemp(!!data.is_temp)
+    setExpiryDropdownValue(data.selected_expire || (data.is_temp ? '1d' : 'never'))
+
+    refs.shareableLabel.textContent = 'Shareable'
+    const isShareable = data.is_public || data.parent_is_browsable
+    refs.shareableToggle.checked = isShareable
+    if (data.parent_is_browsable) {
+      refs.shareableSwitch.classList.add('toggle-switch-locked')
+      refs.shareableToggle.disabled = true
+      refs.shareableHint.textContent = 'Inherited from parent folder'
+    } else {
+      refs.shareableSwitch.classList.remove('toggle-switch-locked')
+      refs.shareableToggle.disabled = false
+      refs.shareableHint.textContent = isShareable ? 'Anyone with the link can access' : 'Only you can access'
+    }
+
+    // E2E toggle
+    if (refs.e2eRow) {
+      refs.e2eRow.style.display = ''
+      refs.e2eToggle.checked = data.is_e2e
+      refs.e2eSwitch.classList.remove('toggle-switch-locked')
+      refs.e2eToggle.disabled = false
+      refs.e2eHint.textContent = data.is_e2e ? 'Only you can decrypt this file' : 'The server can read this file'
+    }
+
+    // Share section
+    if (isShareable) {
+      refs.shareSection.style.display = ''
+      _populateFileShareLink(data, isActive)
+    } else {
+      refs.shareSection.style.display = 'none'
+    }
+
+    if (refs.regenerateBtn) {
+      refs.regenerateBtn.style.display = isShareable ? '' : 'none'
+    }
+
+    updateWgetVisibility()
+    updateCliVisibility()
+
+    refs.downloadBtn.href = data.download_url
+
+    bindModalChangeHandlers()
+  }
+
+  function _decryptFileNameIntoModal(data, isActive) {
+    _tryDecryptFileName(data).then(decryptedName => {
+      if (!isActive()) return
+      if (decryptedName) {
+        data.name = decryptedName
+        data._name_decrypted = true
+        _updateModalFileName(decryptedName)
+        _markTextThumb(decryptedName)
+         // Update icon if extension changed — but preserve existing thumbnail
+        const _existingThumbImg = refs.icon.querySelector('img')
+        if (_existingThumbImg) {
+          // Thumbnail already loaded (from sessionStorage or prior decrypt) — keep it
+          refs.icon.innerHTML = ''
+          refs.icon.appendChild(_existingThumbImg)
+        } else {
+          // No thumbnail yet — set icon and try async decrypt
+          refs.icon.innerHTML = `<div class="thumb-spinner"></div><span>${getFileIcon(decryptedName)}</span>`
+          _decryptEncryptedThumbnail(data, refs.icon, isActive)
+        }
+        // Keep decrypted filenames out of server-facing URLs.
+        // Preserve short-code share URLs (/s/...).
+        if (data.share_url && !data.share_url.includes('/s/')) {
+          const d = cfg.domain || window.location.host
+          data.share_url = 'https://' + d + '/f/' + data.id
+        }
+        data.download_url = '/f/' + data.id
+        if (refs.downloadBtn) refs.downloadBtn.href = data.download_url
+        // Preserve the share link's decryption fragment.
+        if (refs.shareLink && refs.shareLink.value) {
+          const hashIdx = refs.shareLink.value.indexOf('#')
+          const fragment = hashIdx >= 0 ? refs.shareLink.value.substring(hashIdx) : ''
+          refs.shareLink.value = data.share_url + fragment
+          updateWgetVisibility()
+          updateCliVisibility()
+        }
+      }
+    })
+  }
+
+  function _populateFileIcon(data, isActive) {
     const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico']
     const ext = _getCompoundExt(data.name)
-    _markTextThumb(data.name)
 
     if (!data.is_e2e && (data.has_thumbnail || data.thumbnailable)) {
       // Build the URL via concatenation so the served JS source contains no
@@ -1160,18 +1174,10 @@ window.ManageModal = (function() {
     } else {
       refs.icon.innerHTML = `<span>${getFileIcon(data.name)}</span>`
     }
+  }
 
-    refs.name.title = data.name
-    const _mp = _splitNameExt(data.name)
-    if (_mp.ext) {
-      refs.name.innerHTML = '<span class="file-name-base">' + _esc(_mp.base) + '</span><span class="file-name-ext">' + _esc(_mp.ext) + '</span>'
-    } else {
-      refs.name.innerHTML = '<span class="file-name-base">' + _esc(data.name) + '</span>'
-    }
-
-    updateModalBadges()
-
-    refs.details.innerHTML = `
+  function _fileDetailsHtml(data) {
+    return `
       <div class="manage-modal-detail">
         <span class="manage-modal-detail-label"><strong>Size</strong></span>
         <span class="manage-modal-detail-value">${_esc(data.size_formatted)}</span>
@@ -1193,77 +1199,37 @@ window.ManageModal = (function() {
         <span class="manage-modal-detail-value manage-modal-encryption-value ${data.is_e2e ? 'manage-modal-encryption-e2e' : 'manage-modal-encryption-server'}" id="manageEncryptionValue">${data.is_e2e ? 'End-to-end' : 'Server-side'}</span>
       </div>
     `
+  }
 
-    filterExpiryForTemp(!!data.is_temp)
-    setExpiryDropdownValue(data.selected_expire || (data.is_temp ? '1d' : 'never'))
-
-    refs.shareableLabel.textContent = 'Shareable'
-    const isShareable = data.is_public || data.parent_is_browsable
-    refs.shareableToggle.checked = isShareable
-    if (data.parent_is_browsable) {
-      refs.shareableSwitch.classList.add('toggle-switch-locked')
-      refs.shareableToggle.disabled = true
-      refs.shareableHint.textContent = 'Inherited from parent folder'
+  function _populateFileShareLink(data, isActive) {
+    if (!data.is_e2e) {
+      hideShareLinkSpinner()
+      refs.shareLink.value = data.share_url
+      return
+    }
+    showShareLinkSpinner()
+    // file_key_salt indicates passphrase-wrapped key (temp/CLI uploads).
+    // Use passphrase path for those, HKDF path for master-key-wrapped files.
+    const isPassphraseFile = !!data.file_key_salt
+    const hasSessionKeys = typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys()
+    const _afterLink = () => {
+      if (!isActive()) return
+      hideShareLinkSpinner()
+      updateCliVisibility()
+    }
+    if (!isPassphraseFile && hasSessionKeys) {
+      generateE2EShareLink(data, 'file', isActive).then((linkOk) => {
+        // linkOk === false means the link key never reached the server —
+        // do NOT fall back to a bare share_url that cannot decrypt.
+        _afterLink()
+      })
     } else {
-      refs.shareableSwitch.classList.remove('toggle-switch-locked')
-      refs.shareableToggle.disabled = false
-      refs.shareableHint.textContent = isShareable ? 'Anyone with the link can access' : 'Only you can access'
+      _buildPassphraseShareLink(data, isActive).then((built) => {
+        if (!isActive()) return
+        if (!built && refs.shareLink) refs.shareLink.value = ''
+        _afterLink()
+      })
     }
-
-    // E2E toggle
-    if (refs.e2eRow) {
-      refs.e2eRow.style.display = ''
-      refs.e2eToggle.checked = data.is_e2e
-      refs.e2eSwitch.classList.remove('toggle-switch-locked')
-      refs.e2eToggle.disabled = false
-      refs.e2eHint.textContent = data.is_e2e ? 'Only you can decrypt this file' : 'The server can read this file'
-    }
-
-    // Share section
-    if (isShareable) {
-      refs.shareSection.style.display = ''
-      if (data.is_e2e) {
-        showShareLinkSpinner()
-        // file_key_salt indicates passphrase-wrapped key (temp/CLI uploads).
-        // Use passphrase path for those, HKDF path for master-key-wrapped files.
-        const isPassphraseFile = !!data.file_key_salt
-        const hasSessionKeys = typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys()
-        const _afterLink = () => {
-          if (!isActive()) return
-          hideShareLinkSpinner()
-          updateCliVisibility()
-        }
-        if (!isPassphraseFile && hasSessionKeys) {
-          generateE2EShareLink(data, 'file', isActive).then((linkOk) => {
-            // linkOk === false means the link key never reached the server —
-            // do NOT fall back to a bare share_url that cannot decrypt.
-            _afterLink()
-          })
-        } else {
-          _buildPassphraseShareLink(data, isActive).then((built) => {
-            if (!isActive()) return
-            if (!built && refs.shareLink) refs.shareLink.value = ''
-            _afterLink()
-          })
-        }
-      } else {
-        hideShareLinkSpinner()
-        refs.shareLink.value = data.share_url
-      }
-    } else {
-      refs.shareSection.style.display = 'none'
-    }
-
-    if (refs.regenerateBtn) {
-      refs.regenerateBtn.style.display = isShareable ? '' : 'none'
-    }
-
-    updateWgetVisibility()
-    updateCliVisibility()
-
-    refs.downloadBtn.href = data.download_url
-
-    bindModalChangeHandlers()
   }
 
   // ─── Decrypt encrypted folder name ──────────────────────────
@@ -1306,45 +1272,7 @@ window.ManageModal = (function() {
 
     updateModalBadges()
 
-    let encText = 'No files'
-    let encClass = ''
-    if ((data.e2e_count > 0 && data.e2e_count < data.file_count) || data.has_mixed_e2e) {
-      encText = 'Mixed'
-      encClass = 'manage-modal-encryption-mixed'
-    } else if (data.e2e_count === data.file_count && data.file_count > 0) {
-      encText = 'End-to-end'
-      encClass = 'manage-modal-encryption-e2e'
-    } else if (data.file_count > 0) {
-      encText = 'Server-side'
-      encClass = 'manage-modal-encryption-server'
-    }
-
-    refs.details.innerHTML = `
-      <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>Files</strong></span>
-        <span class="manage-modal-detail-value">${_esc(data.file_count)}</span>
-      </div>
-      <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>Size</strong></span>
-        <span class="manage-modal-detail-value">${_esc(data.folder_size_formatted)}</span>
-      </div>
-      <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>Downloads</strong></span>
-        <span class="manage-modal-detail-value"><span class="manage-modal-detail-hint">Includes owner views</span><span>${_esc(data.download_count || 0)}</span></span>
-      </div>
-      <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>Created</strong></span>
-        <span class="manage-modal-detail-value">${_esc(data.created_at)}</span>
-      </div>
-      <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>Expiration</strong></span>
-        <span class="manage-modal-detail-value">${_esc(data.expires_display)}</span>
-      </div>
-      <div class="manage-modal-detail">
-        <span class="manage-modal-detail-label"><strong>Encryption</strong></span>
-        <span class="manage-modal-detail-value manage-modal-encryption-value ${encClass}" id="manageEncryptionValue">${encText}</span>
-      </div>
-    `
+    refs.details.innerHTML = _folderDetailsHtml(data)
 
     filterExpiryForTemp(false)
     setExpiryDropdownValue(data.selected_expire || 'never')
@@ -1372,49 +1300,7 @@ window.ManageModal = (function() {
 
     if (isShareable) {
       refs.shareSection.style.display = ''
-      const ancestor = data.browsable_ancestor
-      const hasE2E = _folderHasE2EContent(data)
-      if (hasE2E && (data.is_link_shared || (ancestor && ancestor.is_link_shared))) {
-        // Folder (or ancestor) is already link-shared — derive secret via HKDF
-        showShareLinkSpinner()
-        ;(async () => {
-          try {
-            if (typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys()) {
-              const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-              if (!isActive()) return
-              if (masterKey) {
-                const effectiveToken = ancestor ? ancestor.share_token : data.share_token
-                const { linkSecret: derivedSecret } = await OneGyCrypto.deriveLinkSecret(masterKey, 'folder', effectiveToken)
-                if (!isActive()) return
-                if (refs.shareLink) {
-                  if (ancestor) {
-                    refs.shareLink.value = ancestor.share_url + '?folder=' + data.id + '#passphrase=' + derivedSecret
-                  } else {
-                    refs.shareLink.value = data.share_url + '#passphrase=' + derivedSecret
-                  }
-                }
-              }
-            }
-          } catch (e) {
-            if (!isActive()) return
-            console.error('[MANAGE MODAL] HKDF folder link derivation failed:', e)
-          }
-          if (!isActive()) return
-          hideShareLinkSpinner()
-        })()
-      } else if (hasE2E) {
-        showShareLinkSpinner()
-        generateE2EFolderShareLink(data, isActive).then((linkOk) => {
-          if (!isActive()) return
-          hideShareLinkSpinner()
-        })
-      } else if (!hasE2E && ancestor) {
-        hideShareLinkSpinner()
-        refs.shareLink.value = ancestor.share_url + '?folder=' + data.id
-      } else {
-        hideShareLinkSpinner()
-        refs.shareLink.value = data.share_url
-      }
+      _populateFolderShareLink(data, isActive)
     } else {
       refs.shareSection.style.display = 'none'
     }
@@ -1436,6 +1322,96 @@ window.ManageModal = (function() {
     }
 
     bindModalChangeHandlers()
+  }
+
+  function _folderDetailsHtml(data) {
+    let encText = 'No files'
+    let encClass = ''
+    if ((data.e2e_count > 0 && data.e2e_count < data.file_count) || data.has_mixed_e2e) {
+      encText = 'Mixed'
+      encClass = 'manage-modal-encryption-mixed'
+    } else if (data.e2e_count === data.file_count && data.file_count > 0) {
+      encText = 'End-to-end'
+      encClass = 'manage-modal-encryption-e2e'
+    } else if (data.file_count > 0) {
+      encText = 'Server-side'
+      encClass = 'manage-modal-encryption-server'
+    }
+
+    return `
+      <div class="manage-modal-detail">
+        <span class="manage-modal-detail-label"><strong>Files</strong></span>
+        <span class="manage-modal-detail-value">${_esc(data.file_count)}</span>
+      </div>
+      <div class="manage-modal-detail">
+        <span class="manage-modal-detail-label"><strong>Size</strong></span>
+        <span class="manage-modal-detail-value">${_esc(data.folder_size_formatted)}</span>
+      </div>
+      <div class="manage-modal-detail">
+        <span class="manage-modal-detail-label"><strong>Downloads</strong></span>
+        <span class="manage-modal-detail-value"><span class="manage-modal-detail-hint">Includes owner views</span><span>${_esc(data.download_count || 0)}</span></span>
+      </div>
+      <div class="manage-modal-detail">
+        <span class="manage-modal-detail-label"><strong>Created</strong></span>
+        <span class="manage-modal-detail-value">${_esc(data.created_at)}</span>
+      </div>
+      <div class="manage-modal-detail">
+        <span class="manage-modal-detail-label"><strong>Expiration</strong></span>
+        <span class="manage-modal-detail-value">${_esc(data.expires_display)}</span>
+      </div>
+      <div class="manage-modal-detail">
+        <span class="manage-modal-detail-label"><strong>Encryption</strong></span>
+        <span class="manage-modal-detail-value manage-modal-encryption-value ${encClass}" id="manageEncryptionValue">${encText}</span>
+      </div>
+    `
+  }
+
+  function _populateFolderShareLink(data, isActive) {
+    const ancestor = data.browsable_ancestor
+    const hasE2E = _folderHasE2EContent(data)
+    if (hasE2E && (data.is_link_shared || (ancestor && ancestor.is_link_shared))) {
+      // Folder (or ancestor) is already link-shared — derive secret via HKDF
+      showShareLinkSpinner()
+      _deriveFolderShareLink(data, ancestor, isActive)
+    } else if (hasE2E) {
+      showShareLinkSpinner()
+      generateE2EFolderShareLink(data, isActive).then((linkOk) => {
+        if (!isActive()) return
+        hideShareLinkSpinner()
+      })
+    } else if (!hasE2E && ancestor) {
+      hideShareLinkSpinner()
+      refs.shareLink.value = ancestor.share_url + '?folder=' + data.id
+    } else {
+      hideShareLinkSpinner()
+      refs.shareLink.value = data.share_url
+    }
+  }
+
+  async function _deriveFolderShareLink(data, ancestor, isActive) {
+    try {
+      if (typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys()) {
+        const masterKey = await OneGyCrypto.getMasterKeyFromSession()
+        if (!isActive()) return
+        if (masterKey) {
+          const effectiveToken = ancestor ? ancestor.share_token : data.share_token
+          const { linkSecret: derivedSecret } = await OneGyCrypto.deriveLinkSecret(masterKey, 'folder', effectiveToken)
+          if (!isActive()) return
+          if (refs.shareLink) {
+            if (ancestor) {
+              refs.shareLink.value = ancestor.share_url + '?folder=' + data.id + '#passphrase=' + derivedSecret
+            } else {
+              refs.shareLink.value = data.share_url + '#passphrase=' + derivedSecret
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (!isActive()) return
+      console.error('[MANAGE MODAL] HKDF folder link derivation failed:', e)
+    }
+    if (!isActive()) return
+    hideShareLinkSpinner()
   }
 
   // ─── Update modal badges ────────────────────────────────────
@@ -1686,795 +1662,43 @@ window.ManageModal = (function() {
   }
 
   // ─── E2E Toggle Handler ─────────────────────────────────────
+  // The conversion itself lives in manage-e2e.js (ManageModalE2E).
+  let _e2eConversion = null
+  function _conversion() {
+    if (!_e2eConversion) {
+      _e2eConversion = window.ManageModalE2E({
+        cfg: function() { return cfg },
+        refs: refs,
+        current: function() {
+          return { data: currentManageData, type: currentManageType, id: currentManageId }
+        },
+        setCurrent: function(data, type, id) {
+          currentManageData = data
+          currentManageType = type
+          currentManageId = id
+        },
+        beginConversion: _beginConversion,
+        endConversion: _endConversion,
+        closeInternal: _closeManageModalInternal,
+        close: closeManageModal,
+        saveManageSetting: saveManageSetting,
+        generateE2EShareLink: generateE2EShareLink,
+        tryDecryptFolderName: _tryDecryptFolderName,
+        updateModalBadges: updateModalBadges,
+        updateEncryptionStatus: updateEncryptionStatus,
+        updateE2EHint: updateE2EHint
+      })
+    }
+    return _e2eConversion
+  }
+
   async function handleE2EToggle(checked) {
     if (savingE2E || !currentManageData) return
 
     if (currentManageType === 'file') {
-      await handleFileE2EToggle(checked)
+      await _conversion().handleFileE2EToggle(checked)
     } else {
-      await handleFolderE2EToggle(checked)
-    }
-  }
-
-  // ─── File E2E Toggle (single file re-encryption) ────────────
-  async function handleFileE2EToggle(checked) {
-    const toggle = refs.e2eToggle
-    if (!toggle) return
-
-    if (!window.crypto || !window.crypto.subtle || typeof OneGyCrypto === 'undefined') {
-      toggle.checked = !checked
-      return
-    }
-
-    if (!OneGyCrypto.hasSessionKeys()) {
-      cfg.showToast('ENCRYPTION KEYS NOT AVAILABLE. PLEASE LOG IN AGAIN', 'error')
-      toggle.checked = !checked
-      return
-    }
-
-    // Pin the target BEFORE the first await. Everything after this point uses
-    // `target` only — never the module-level currentManageData, which the user
-    // could otherwise retarget by opening another file mid-conversion.
-    const target = currentManageData
-    const targetType = currentManageType
-    const targetId = currentManageId
-
-    const action = checked ? 'ENABLE E2E ENCRYPTION' : 'DISABLE E2E ENCRYPTION'
-    const warning = checked
-      ? 'THIS WILL DOWNLOAD THE FILE, ENCRYPT IT END-TO-END, AND RE-UPLOAD IT. ONLY YOU WILL BE ABLE TO DECRYPT IT.'
-      : 'THIS WILL DECRYPT THE FILE AND RE-ENCRYPT IT WITH SERVER-SIDE ENCRYPTION. THE FILE WILL BE READABLE BY THE SERVER.'
-
-    const confirmed = await cfg.showConfirm(action, warning, action, checked ? '🔐' : '🔒')
-    if (!confirmed) {
-      toggle.checked = !checked
-      return
-    }
-
-    if (history.state && history.state.manageModal) {
-      history.replaceState(null, '')
-    }
-    _closeManageModalInternal()
-
-    _beginConversion('file', target.id, target.name)
-    const t = showReencryptToast(checked ? 'ENCRYPTING' : 'DECRYPTING')
-    updateReencryptToast(t, 'PREPARING...', 0, target.name)
-
-    currentManageData = target
-    currentManageType = targetType
-    currentManageId = targetId
-
-    try {
-      if (checked) {
-        updateReencryptToast(t, 'DOWNLOADING FILE...', 10)
-
-        const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-        if (!masterKey) throw new Error('MASTER KEY NOT AVAILABLE')
-
-        const dlResp = await fetch(`/file/${target.id}/preview`)
-        if (!dlResp.ok) throw new Error('FAILED TO DOWNLOAD FILE')
-        // A Blob (not an ArrayBuffer) lets encryptFileData stream it in slices.
-        const plainData = await dlResp.blob()
-
-        updateReencryptToast(t, 'ENCRYPTING...', 30)
-
-        const fileKey = await OneGyCrypto.generateFileKey()
-        const encryptedData = await OneGyCrypto.encryptFileData(
-          plainData, fileKey,
-          (p) => { updateReencryptToast(t, 'ENCRYPTING...', 30 + p * 30) }
-        )
-        const wrappedKey = await OneGyCrypto.wrapFileKeyWithMasterKey(fileKey, masterKey)
-
-        // Generate and encrypt thumbnail from the plaintext data
-        let encryptedThumbBlob = null
-        let thumbNonce = null
-        try {
-          const plainFile = new File([plainData], target.name, { type: 'application/octet-stream' })
-          const thumbBlob = await OneGyCrypto.generateThumbnail(plainFile)
-          if (thumbBlob) {
-            const thumbData = await thumbBlob.arrayBuffer()
-            const encThumb = await OneGyCrypto.encryptThumbnail(thumbData, fileKey)
-            encryptedThumbBlob = new Blob([encThumb.data], { type: 'application/octet-stream' })
-            thumbNonce = encThumb.nonce
-          }
-        } catch (thumbErr) {
-          console.error('[MANAGE MODAL] Thumbnail generation failed (non-critical):', thumbErr)
-        }
-
-        // Encrypt filename with file key (zero-knowledge)
-        let encNameData = null
-        try {
-          const encName = await OneGyCrypto.encryptFileName(target.name, fileKey)
-          encNameData = encName
-        } catch (e) {
-          console.error('[MANAGE MODAL] Filename encryption failed:', e)
-          throw new Error('FILENAME ENCRYPTION FAILED')
-        }
-
-        updateReencryptToast(t, 'UPLOADING ENCRYPTED FILE...', 60)
-
-        const formData = new FormData()
-        // Use generic filename in multipart -- real name is in encrypted_name (zero-knowledge)
-        formData.append('file', new Blob([encryptedData], { type: 'application/octet-stream' }), 'encrypted.bin')
-        formData.append('encrypted_file_key', wrappedKey.encryptedFileKey)
-        formData.append('file_key_nonce', wrappedKey.nonce)
-        formData.append('csrf_token', cfg.getCSRFToken())
-        if (encryptedThumbBlob && thumbNonce) {
-          formData.append('encrypted_thumbnail', encryptedThumbBlob, 'thumb.enc.jpg')
-          formData.append('thumbnail_nonce', thumbNonce)
-        }
-        if (encNameData) {
-          formData.append('encrypted_name', encNameData.encryptedName)
-          formData.append('name_nonce', encNameData.nameNonce)
-          formData.append('stored_extension', OneGyCrypto.extractExtension(target.name))
-        }
-
-        const makeResp = await fetch(`/f/${target.id}/make-private`, {
-          method: 'POST',
-          headers: { 'X-Requested-With': 'XMLHttpRequest' },
-          body: formData
-        })
-        if (!makeResp.ok) {
-          const err = await makeResp.json()
-          throw new Error(err.error || 'FAILED TO ENCRYPT FILE')
-        }
-
-        const makeResult = await makeResp.json()
-        let inheritedLinkKeyFailure = null
-        let shareRestoreFailure = false
-        let shareRollbackFailure = false
-        if (makeResult.needs_link_key && makeResult.ancestor_share_token) {
-          if (!cfg.generateLinkKeysForFiles) inheritedLinkKeyFailure = { total: 1, keyed: 0 }
-          else {
-            const linkResult = await cfg.generateLinkKeysForFiles([target.id], 'folder', makeResult.ancestor_share_token)
-            if (!linkResult || linkResult.success !== true) inheritedLinkKeyFailure = linkResult || { total: 1, keyed: 0 }
-          }
-        }
-
-        target.is_e2e = true
-        target._derivedLinkSecret = null
-
-        // If the file was publicly shared before conversion, restore sharing
-        // and auto-generate a new E2E link key so the share URL works immediately
-        if (makeResult.was_public) {
-          updateReencryptToast(t, 'GENERATING SHARE LINK...', 95)
-          try {
-            await saveManageSetting('public', true, target, 'file')
-            target.is_public = true
-            const linkOk = await generateE2EShareLink(target, 'file')
-            if (linkOk !== true) throw new Error('SHARE LINK KEY UPLOAD FAILED')
-          } catch (linkErr) {
-            console.error('[MANAGE MODAL] Auto-restore share link failed:', linkErr)
-            shareRestoreFailure = true
-            try {
-              await saveManageSetting('public', false, target, 'file')
-              target.is_public = false
-            } catch (rollbackErr) {
-              console.error('[MANAGE MODAL] Failed to roll back share visibility:', rollbackErr)
-              shareRollbackFailure = true
-            }
-          }
-        }
-
-        updateReencryptToast(t, 'COMPLETE!', 100)
-        if (shareRollbackFailure) {
-          cfg.showToast('FILE ENCRYPTED, BUT SHARE-LINK KEY PROVISIONING AND VISIBILITY ROLLBACK FAILED. SHARING MAY STILL BE ENABLED', 'error')
-        } else if (shareRestoreFailure) {
-          cfg.showToast('FILE ENCRYPTED, BUT ITS SHARE LINK COULD NOT BE PROVISIONED. SHARING WAS NOT RESTORED', 'error')
-        } else if (inheritedLinkKeyFailure) {
-          cfg.showToast('FILE ENCRYPTED, BUT ITS INHERITED SHARE-LINK KEY FAILED. FOLDER RECIPIENTS CANNOT DECRYPT IT', 'error')
-        } else {
-          cfg.showToast('FILE IS NOW END-TO-END ENCRYPTED', 'success')
-        }
-
-      } else {
-        updateReencryptToast(t, 'LOADING KEYS...', 10)
-
-        const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-        if (!masterKey) throw new Error('MASTER KEY NOT AVAILABLE')
-
-        const keyResp = await fetch(`/f/${target.id}/key-info`)
-        if (!keyResp.ok) throw new Error(`FAILED TO LOAD FILE KEY (HTTP ${keyResp.status})`)
-        const keyInfo = await keyResp.json()
-        if (!keyInfo.encrypted_file_key) throw new Error('FILE KEY NOT FOUND')
-
-        // Resolve the REAL filename deterministically before touching the file.
-        // For an E2EE file `target.name` is the server-side placeholder
-        // (encrypted_<id>.<ext>); make-public writes whatever `real_name` we send
-        // straight into orig_name and then NULLs encrypted_name/name_nonce, so a
-        // placeholder here destroys the only copy of the filename forever.
-        // Never rely on populateFileModal's un-awaited background decrypt.
-        let realName = target.name
-        if (keyInfo.encrypted_name && keyInfo.name_nonce) {
-          realName = null
-          try {
-            const nameFileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(
-              keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
-            )
-            realName = await OneGyCrypto.decryptFileName(keyInfo.encrypted_name, keyInfo.name_nonce, nameFileKey)
-          } catch (nameErr) {
-            console.error('[MANAGE MODAL] Real filename decryption failed:', nameErr)
-          }
-          if (!realName) throw new Error('FILENAME COULD NOT BE DECRYPTED. CONVERSION ABORTED TO AVOID LOSING THE FILE NAME')
-        }
-
-        updateReencryptToast(t, 'DOWNLOADING ENCRYPTED FILE...', 20, realName)
-
-        const encResp = await fetch(`/f/${target.id}/encrypted`)
-        if (!encResp.ok) throw new Error('FAILED TO DOWNLOAD ENCRYPTED FILE')
-        const encData = await encResp.arrayBuffer()
-
-        updateReencryptToast(t, 'DECRYPTING...', 40)
-
-        const decrypted = await OneGyCrypto.decryptFileForDownload(
-          encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey,
-          (p) => { updateReencryptToast(t, 'DECRYPTING...', 40 + p * 20) }
-        )
-
-        updateReencryptToast(t, 'RE-ENCRYPTING ON SERVER...', 60)
-
-        const formData = new FormData()
-        formData.append('file', new Blob([decrypted], { type: 'application/octet-stream' }), realName)
-        formData.append('csrf_token', cfg.getCSRFToken())
-        // Send real filename so server can restore orig_name
-        formData.append('real_name', realName)
-
-        const makeResp = await fetch(`/f/${target.id}/make-public`, {
-          method: 'POST',
-          headers: { 'X-Requested-With': 'XMLHttpRequest' },
-          body: formData
-        })
-        if (!makeResp.ok) {
-          const err = await makeResp.json().catch(() => ({}))
-          throw new Error(err.error || 'FAILED TO DECRYPT FILE')
-        }
-
-        updateReencryptToast(t, 'COMPLETE!', 100)
-        target.is_e2e = false
-        target.name = realName
-        target.encrypted_name = null
-        target.name_nonce = null
-        cfg.showToast('FILE IS NOW USING SERVER-SIDE ENCRYPTION', 'success')
-      }
-
-      if (cfg.onRowE2EBadgeUpdate) cfg.onRowE2EBadgeUpdate(target.id, target.is_e2e)
-
-      let _e2eRefreshed = false
-      function _doPostE2ERefresh() {
-        if (_e2eRefreshed) return
-        _e2eRefreshed = true
-        // Invalidate cached E2E thumbnail for this file (encryption mode changed)
-        if (typeof _invalidateThumbCache === 'function') _invalidateThumbCache(target.id)
-        if (cfg.onAfterSave) cfg.onAfterSave()
-      }
-
-      t.close.style.display = 'block'
-      t.close.onclick = () => {
-        hideReencryptToast(t)
-        _endConversion()
-        _doPostE2ERefresh()
-      }
-      setTimeout(() => {
-        hideReencryptToast(t)
-        _endConversion()
-        // Refresh after delay so server thumbnail generation can complete
-        _doPostE2ERefresh()
-      }, 2000)
-
-    } catch (err) {
-      console.error('[MANAGE MODAL] E2E toggle error:', err)
-      cfg.showToast(err.message || 'RE-ENCRYPTION FAILED', 'error')
-      _endConversion()
-      showReencryptError(t)
-    }
-  }
-
-  // ─── Plaintext folder name restore (E2EE off) ───────────────
-  // Resolved BEFORE anything is converted, and never from populateFolderModal's
-  // un-awaited background decrypt. Returns null when the name is not encrypted.
-  async function _plainFolderNameForRestore(target) {
-    if (!target.encrypted_name) return null
-    const name = (target._name_decrypted && target.name) || await _tryDecryptFolderName(target)
-    if (!name) throw new Error('FOLDER NAME COULD NOT BE DECRYPTED. E2E WAS NOT DISABLED')
-    return name
-  }
-
-  // Must run before saveManageSetting('e2e', false): the server keeps is_e2e
-  // set while an encrypted folder name exists.
-  async function _restorePlainFolderName(target, name) {
-    if (!name) return
-    const renameForm = new FormData()
-    renameForm.append('name', name)
-    renameForm.append('csrf_token', cfg.getCSRFToken())
-    const resp = await fetch(`/folder/${target.id}/rename`, {
-      method: 'POST',
-      headers: { 'X-Requested-With': 'XMLHttpRequest' },
-      body: renameForm
-    })
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}))
-      throw new Error(err.error || `FOLDER NAME RESTORE FAILED (HTTP ${resp.status})`)
-    }
-    target.name = name
-    target.encrypted_name = null
-    target.name_nonce = null
-    target.encrypted_name_key = null
-    target.name_key_nonce = null
-    console.log(`[MANAGE MODAL] Restored plaintext folder name for folder ${target.id}`)
-  }
-
-  // ─── Folder E2E Toggle (batch re-encryption) ────────────────
-  async function handleFolderE2EToggle(checked) {
-    const toggle = refs.e2eToggle
-    if (!toggle) return
-
-    if (!window.crypto || !window.crypto.subtle || typeof OneGyCrypto === 'undefined') {
-      toggle.checked = !checked
-      return
-    }
-
-    if (!OneGyCrypto.hasSessionKeys()) {
-      cfg.showToast('ENCRYPTION KEYS NOT AVAILABLE. PLEASE LOG IN AGAIN', 'error')
-      toggle.checked = !checked
-      return
-    }
-
-    // Pin the target BEFORE the first await — see handleFileE2EToggle.
-    const target = currentManageData
-    const targetType = currentManageType
-    const targetId = currentManageId
-
-    if (checked) {
-      const nonE2ECount = target.file_count - target.e2e_count
-
-      if (nonE2ECount > 0) {
-        const confirmed = await cfg.showConfirm(
-          'ENABLE E2E ENCRYPTION',
-          `THIS WILL DOWNLOAD ${nonE2ECount} FILE${nonE2ECount > 1 ? 'S' : ''}, ENCRYPT THEM END-TO-END, AND RE-UPLOAD. ALL SUBFOLDERS WILL ALSO BE SET TO E2E. ONLY YOU WILL BE ABLE TO DECRYPT THEM.`,
-          'ENABLE E2E ENCRYPTION',
-          '🔐'
-        )
-        if (!confirmed) {
-          toggle.checked = false
-          return
-        }
-
-        if (history.state && history.state.manageModal) {
-          history.replaceState(null, '')
-        }
-        _closeManageModalInternal()
-
-        _beginConversion('folder', target.id, target.name)
-        const t = showReencryptToast('ENCRYPTING')
-
-        currentManageData = target
-        currentManageType = targetType
-        currentManageId = targetId
-
-        // Declared outside the try so the catch can report exactly how many
-        // files were already converted (i.e. the folder is in a mixed state).
-        let succeeded = 0
-        let nonE2ETotal = 0
-        let linkKeyFailures = 0
-
-        try {
-          updateReencryptToast(t, 'FETCHING FILE LIST...', 5)
-
-          const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-          if (!masterKey) throw new Error('MASTER KEY NOT AVAILABLE')
-
-          const listResp = await fetch(`/folder/${target.id}/files`)
-          if (!listResp.ok) throw new Error(`FAILED TO LOAD FOLDER FILE LIST (HTTP ${listResp.status})`)
-          const listData = await listResp.json()
-          if (!listData || !Array.isArray(listData.files)) throw new Error('FOLDER FILE LIST UNAVAILABLE')
-          const allFiles = listData.files
-          const nonE2EFiles = allFiles.filter(f => !f.is_e2e)
-          nonE2ETotal = nonE2EFiles.length
-          // The cached file_count/e2e_count said there was work to do. If the
-          // authoritative listing disagrees, only an all-E2E listing with at
-          // least one file is a verified "already fully converted" state — an
-          // empty listing must never be treated as success.
-          const alreadyFullyE2E = allFiles.length > 0 && nonE2EFiles.length === 0
-          if (!nonE2EFiles.length && !alreadyFullyE2E) {
-            throw new Error('FOLDER FILE LIST IS EMPTY. REFRESH AND TRY AGAIN')
-          }
-
-          let completed = 0
-          for (const fileInfo of nonE2EFiles) {
-            updateReencryptToast(t, `ENCRYPTING ${completed + 1}/${nonE2EFiles.length}`, 5 + (completed / nonE2EFiles.length) * 90, fileInfo.name)
-
-            const dlResp = await fetch(`/file/${fileInfo.id}/preview`)
-            if (!dlResp.ok) {
-              console.error(`[MANAGE MODAL] Failed to download ${fileInfo.name}`)
-              completed++
-              continue
-            }
-            const plainData = await dlResp.blob()
-
-            const fileKey = await OneGyCrypto.generateFileKey()
-            const encryptedData = await OneGyCrypto.encryptFileData(plainData, fileKey)
-            const wrappedKey = await OneGyCrypto.wrapFileKeyWithMasterKey(fileKey, masterKey)
-
-            // Generate and encrypt thumbnail from the plaintext data
-            let encThumbBlob = null
-            let encThumbNonce = null
-            try {
-              const plainFile = new File([plainData], fileInfo.name, { type: 'application/octet-stream' })
-              const thumbBlob = await OneGyCrypto.generateThumbnail(plainFile)
-              if (thumbBlob) {
-                const thumbData = await thumbBlob.arrayBuffer()
-                const encThumb = await OneGyCrypto.encryptThumbnail(thumbData, fileKey)
-                encThumbBlob = new Blob([encThumb.data], { type: 'application/octet-stream' })
-                encThumbNonce = encThumb.nonce
-              }
-            } catch (thumbErr) {
-              console.error(`[MANAGE MODAL] Thumbnail generation failed for ${fileInfo.name} (non-critical):`, thumbErr)
-            }
-
-            const formData = new FormData()
-            // Use generic filename in multipart -- real name is in encrypted_name (zero-knowledge)
-            formData.append('file', new Blob([encryptedData], { type: 'application/octet-stream' }), 'encrypted.bin')
-            formData.append('encrypted_file_key', wrappedKey.encryptedFileKey)
-            formData.append('file_key_nonce', wrappedKey.nonce)
-            formData.append('csrf_token', cfg.getCSRFToken())
-            if (encThumbBlob && encThumbNonce) {
-              formData.append('encrypted_thumbnail', encThumbBlob, 'thumb.enc.jpg')
-              formData.append('thumbnail_nonce', encThumbNonce)
-            }
-            const nameRes = await OneGyCrypto.encryptFileName(fileInfo.name, fileKey)
-            formData.append('encrypted_name', nameRes.encryptedName)
-            formData.append('name_nonce', nameRes.nameNonce)
-            formData.append('stored_extension', OneGyCrypto.extractExtension(fileInfo.name))
-
-            const makeResp = await fetch(`/f/${fileInfo.id}/make-private`, {
-              method: 'POST',
-              headers: { 'X-Requested-With': 'XMLHttpRequest' },
-              body: formData
-            })
-
-            if (!makeResp.ok) {
-              console.error(`[MANAGE MODAL] make-private failed for ${fileInfo.name}`)
-            } else {
-              succeeded++
-              try {
-                const makeData = await makeResp.json()
-                if (makeData.needs_link_key && makeData.ancestor_share_token) {
-                  if (!cfg.generateLinkKeysForFiles) linkKeyFailures++
-                  else {
-                    const linkResult = await cfg.generateLinkKeysForFiles([fileInfo.id], 'folder', makeData.ancestor_share_token)
-                    if (!linkResult || linkResult.success !== true) linkKeyFailures++
-                  }
-                }
-              } catch (lkErr) {
-                console.error(`[MANAGE MODAL] Inline link-key for ${fileInfo.name}:`, lkErr)
-                linkKeyFailures++
-              }
-            }
-
-            completed++
-          }
-
-          updateReencryptToast(t, 'COMPLETE!', 100)
-
-          // Only flag the folder E2EE when at least one file was actually
-          // converted, or the listing verified every file was already E2EE.
-          const fullyConverted = alreadyFullyE2E || (nonE2EFiles.length > 0 && succeeded === nonE2EFiles.length)
-
-          if (fullyConverted) {
-            // Encrypt the folder name when enabling E2EE
-            if (!target.encrypted_name && target.name && !target.name.startsWith('encrypted_folder_')) {
-              const nameKey = await OneGyCrypto.generateFolderNameKey()
-              const encName = await OneGyCrypto.encryptFolderName(target.name, nameKey)
-              const wrappedKey = await OneGyCrypto.wrapFolderNameKey(nameKey, masterKey)
-              const encFormData = new FormData()
-              encFormData.append('encrypted_name', encName.encryptedName)
-              encFormData.append('name_nonce', encName.nameNonce)
-              encFormData.append('encrypted_name_key', wrappedKey.encryptedNameKey)
-              encFormData.append('name_key_nonce', wrappedKey.nonce)
-              encFormData.append('csrf_token', cfg.getCSRFToken())
-              const encResp = await fetch(`/folder/${target.id}/encrypt-name`, {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                body: encFormData
-              })
-              if (!encResp.ok) {
-                throw new Error('FOLDER NAME ENCRYPTION FAILED')
-              }
-              console.log(`[MANAGE MODAL] Encrypted folder name for folder ${target.id}`)
-            }
-            await saveManageSetting('e2e', true, target, 'folder')
-            target.is_e2e = true
-            target.e2e_count = allFiles.length
-            target.file_count = allFiles.length
-            target.has_mixed_e2e = false
-          } else if (succeeded > 0) {
-            target.e2e_count = (target.e2e_count || 0) + succeeded
-            target.has_mixed_e2e = true
-          }
-
-          if (cfg.onRowE2EBadgeUpdate) cfg.onRowE2EBadgeUpdate(target.id, target.is_e2e)
-
-          if (linkKeyFailures > 0) {
-            cfg.showToast(`${succeeded} FILE${succeeded === 1 ? '' : 'S'} ENCRYPTED, BUT ${linkKeyFailures} INHERITED SHARE-LINK KEY${linkKeyFailures === 1 ? '' : 'S'} FAILED`, 'error')
-          } else if (alreadyFullyE2E) {
-            cfg.showToast('ALL FILES IN THIS FOLDER WERE ALREADY END-TO-END ENCRYPTED', 'success')
-          } else if (fullyConverted) {
-            cfg.showToast(`${succeeded} FILE${succeeded > 1 ? 'S' : ''} ENCRYPTED END-TO-END`, 'success')
-          } else if (succeeded > 0) {
-            cfg.showToast(`${succeeded}/${nonE2EFiles.length} FILES ENCRYPTED. ${nonE2EFiles.length - succeeded} FAILED. FOLDER IS IN A MIXED STATE`, 'error')
-          } else {
-            cfg.showToast('FAILED TO ENCRYPT FILES. CHECK CONSOLE FOR DETAILS', 'error')
-          }
-
-          let _batchEncRefreshed = false
-          function _doBatchEncRefresh() {
-            if (_batchEncRefreshed) return
-            _batchEncRefreshed = true
-            // Clear entire E2E thumbnail cache (batch conversion changes many files)
-            if (typeof _e2eThumbCache !== 'undefined') { _e2eThumbCache.forEach(u => URL.revokeObjectURL(u)); _e2eThumbCache.clear() }
-            if (cfg.onAfterSave) cfg.onAfterSave()
-          }
-          t.close.style.display = 'block'
-          t.close.onclick = () => { hideReencryptToast(t); _endConversion(); _doBatchEncRefresh() }
-          setTimeout(() => {
-            hideReencryptToast(t)
-            _endConversion()
-            _doBatchEncRefresh()
-          }, 2000)
-
-        } catch (err) {
-          console.error('[MANAGE MODAL] Folder E2E enable error:', err)
-          const baseMsg = err.message || 'RE-ENCRYPTION FAILED'
-          // Say exactly how many files were already converted so the user knows
-          // the folder is now mixed rather than untouched.
-          cfg.showToast(
-            succeeded > 0
-              ? `${baseMsg}. ${succeeded}/${nonE2ETotal} FILE${succeeded > 1 ? 'S' : ''} ALREADY ENCRYPTED, FOLDER IS IN A MIXED STATE`
-              : baseMsg,
-            'error'
-          )
-          if (succeeded > 0) {
-            target.e2e_count = (target.e2e_count || 0) + succeeded
-            target.has_mixed_e2e = true
-            if (cfg.onAfterSave) cfg.onAfterSave()
-          }
-          _endConversion()
-          showReencryptError(t)
-        }
-        return
-      }
-
-      try {
-        // Encrypt the folder name when enabling E2EE (no files to re-encrypt path)
-        if (!target.encrypted_name && target.name && !target.name.startsWith('encrypted_folder_')) {
-          const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-          if (!masterKey) throw new Error('MASTER KEY NOT AVAILABLE')
-          const nameKey = await OneGyCrypto.generateFolderNameKey()
-          const encName = await OneGyCrypto.encryptFolderName(target.name, nameKey)
-          const wrappedKey = await OneGyCrypto.wrapFolderNameKey(nameKey, masterKey)
-          const encFormData = new FormData()
-          encFormData.append('encrypted_name', encName.encryptedName)
-          encFormData.append('name_nonce', encName.nameNonce)
-          encFormData.append('encrypted_name_key', wrappedKey.encryptedNameKey)
-          encFormData.append('name_key_nonce', wrappedKey.nonce)
-          encFormData.append('csrf_token', cfg.getCSRFToken())
-          const encResp = await fetch(`/folder/${target.id}/encrypt-name`, {
-            method: 'POST',
-            headers: { 'X-Requested-With': 'XMLHttpRequest' },
-            body: encFormData
-          })
-          if (!encResp.ok) {
-            throw new Error('FOLDER NAME ENCRYPTION FAILED')
-          }
-        }
-        await saveManageSetting('e2e', true, target, 'folder')
-        target.is_e2e = true
-        target.has_mixed_e2e = false
-        updateModalBadges()
-        updateEncryptionStatus()
-        updateE2EHint()
-        if (cfg.onRowE2EBadgeUpdate) cfg.onRowE2EBadgeUpdate(target.id, true)
-        if (cfg.onAfterSave) cfg.onAfterSave()
-        closeManageModal()
-      } catch (err) {
-        cfg.showToast(err.message || 'FAILED TO UPDATE SETTINGS', 'error')
-        toggle.checked = false
-      }
-      return
-
-    } else {
-      if (target.e2e_count > 0) {
-        const confirmed = await cfg.showConfirm(
-          'DISABLE E2E ENCRYPTION',
-          `THIS WILL DECRYPT ${target.e2e_count} END-TO-END ENCRYPTED FILE${target.e2e_count > 1 ? 'S' : ''} AND RE-ENCRYPT WITH SERVER-SIDE ENCRYPTION. ALL SUBFOLDERS WILL ALSO BE CHANGED. THE FILES WILL BE READABLE BY THE SERVER.`,
-          'DISABLE E2E ENCRYPTION',
-          '🔒'
-        )
-        if (!confirmed) {
-          toggle.checked = true
-          return
-        }
-
-        if (history.state && history.state.manageModal) {
-          history.replaceState(null, '')
-        }
-        _closeManageModalInternal()
-
-        _beginConversion('folder', target.id, target.name)
-        const t = showReencryptToast('DECRYPTING')
-
-        currentManageData = target
-        currentManageType = targetType
-        currentManageId = targetId
-
-        // Declared outside the try so the catch can report exactly how many
-        // files were already converted (i.e. the folder is in a mixed state).
-        let succeeded = 0
-        let e2eTotal = 0
-
-        try {
-          updateReencryptToast(t, 'FETCHING FILE LIST...', 5)
-
-          const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-          if (!masterKey) throw new Error('MASTER KEY NOT AVAILABLE')
-          const plainFolderName = await _plainFolderNameForRestore(target)
-
-          const listResp = await fetch(`/folder/${target.id}/files`)
-          if (!listResp.ok) throw new Error(`FAILED TO LOAD FOLDER FILE LIST (HTTP ${listResp.status})`)
-          const listData = await listResp.json()
-          if (!listData || !Array.isArray(listData.files)) throw new Error('FOLDER FILE LIST UNAVAILABLE')
-          const allFiles = listData.files
-          const e2eFiles = allFiles.filter(f => f.is_e2e)
-          e2eTotal = e2eFiles.length
-          // Same vacuous-success guard as the enable path: an empty listing is
-          // never proof that every file is already server-side encrypted.
-          const alreadyFullyPlain = allFiles.length > 0 && e2eFiles.length === 0
-          if (!e2eFiles.length && !alreadyFullyPlain) {
-            throw new Error('FOLDER FILE LIST IS EMPTY. REFRESH AND TRY AGAIN')
-          }
-
-          // Pre-decrypt E2EE filenames for toast display and server restore
-          for (const fileInfo of e2eFiles) {
-            if (!fileInfo.encrypted_name || !fileInfo.name_nonce || !fileInfo.encrypted_file_key || !fileInfo.file_key_nonce) {
-              throw new Error('ENCRYPTED FILENAME METADATA MISSING')
-            }
-            const fk = await OneGyCrypto.unwrapFileKeyWithMasterKey(fileInfo.encrypted_file_key, fileInfo.file_key_nonce, masterKey)
-            const realName = await OneGyCrypto.decryptFileName(fileInfo.encrypted_name, fileInfo.name_nonce, fk)
-            if (!realName) throw new Error('FILENAME DECRYPTION FAILED')
-            fileInfo.name = realName
-          }
-
-          let completed = 0
-          for (const fileInfo of e2eFiles) {
-            updateReencryptToast(t, `DECRYPTING ${completed + 1}/${e2eFiles.length}`, 5 + (completed / e2eFiles.length) * 90, fileInfo.name)
-
-            const keyResp = await fetch(`/f/${fileInfo.id}/key-info`)
-            if (!keyResp.ok) {
-              console.error(`[MANAGE MODAL] key-info failed for ${fileInfo.name} (HTTP ${keyResp.status})`)
-              completed++
-              continue
-            }
-            const keyInfo = await keyResp.json()
-            if (!keyInfo.encrypted_file_key) {
-              console.error(`[MANAGE MODAL] No file key for ${fileInfo.name}`)
-              completed++
-              continue
-            }
-
-            const encResp = await fetch(`/f/${fileInfo.id}/encrypted`)
-            if (!encResp.ok) {
-              console.error(`[MANAGE MODAL] Failed to download ${fileInfo.name}`)
-              completed++
-              continue
-            }
-            const encData = await encResp.arrayBuffer()
-
-            const decrypted = await OneGyCrypto.decryptFileForDownload(
-              encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
-            )
-
-            const formData = new FormData()
-            formData.append('file', new Blob([decrypted], { type: 'application/octet-stream' }), fileInfo.name)
-            formData.append('csrf_token', cfg.getCSRFToken())
-            formData.append('real_name', fileInfo.name)
-
-            const makeResp = await fetch(`/f/${fileInfo.id}/make-public`, {
-              method: 'POST',
-              headers: { 'X-Requested-With': 'XMLHttpRequest' },
-              body: formData
-            })
-
-            if (!makeResp.ok) {
-              console.error(`[MANAGE MODAL] make-public failed for ${fileInfo.name}`)
-            } else {
-              succeeded++
-            }
-
-            completed++
-          }
-
-          updateReencryptToast(t, 'COMPLETE!', 100)
-
-          // Only clear the folder's E2EE flag when at least one file was really
-          // converted, or the listing verified none were E2EE to begin with.
-          const fullyConverted = alreadyFullyPlain || (e2eFiles.length > 0 && succeeded === e2eFiles.length)
-
-          if (fullyConverted) {
-            await _restorePlainFolderName(target, plainFolderName)
-            await saveManageSetting('e2e', false, target, 'folder')
-            target.is_e2e = false
-            target.e2e_count = 0
-            target.has_mixed_e2e = false
-          } else if (succeeded > 0) {
-            target.e2e_count = e2eFiles.length - succeeded
-            target.has_mixed_e2e = true
-          }
-
-          if (cfg.onRowE2EBadgeUpdate) cfg.onRowE2EBadgeUpdate(target.id, target.is_e2e)
-
-          if (alreadyFullyPlain) {
-            cfg.showToast('NO END-TO-END ENCRYPTED FILES REMAINED IN THIS FOLDER', 'success')
-          } else if (fullyConverted) {
-            cfg.showToast(`${succeeded} FILE${succeeded > 1 ? 'S' : ''} CONVERTED TO SERVER-SIDE ENCRYPTION`, 'success')
-          } else if (succeeded > 0) {
-            cfg.showToast(`${succeeded}/${e2eFiles.length} FILES CONVERTED. ${e2eFiles.length - succeeded} FAILED. FOLDER IS IN A MIXED STATE`, 'error')
-          } else {
-            cfg.showToast('FAILED TO CONVERT FILES. CHECK CONSOLE FOR DETAILS', 'error')
-          }
-
-          let _batchDecRefreshed = false
-          function _doBatchDecRefresh() {
-            if (_batchDecRefreshed) return
-            _batchDecRefreshed = true
-            // Clear entire E2E thumbnail cache (batch conversion changes many files)
-            if (typeof _e2eThumbCache !== 'undefined') { _e2eThumbCache.forEach(u => URL.revokeObjectURL(u)); _e2eThumbCache.clear() }
-            if (cfg.onAfterSave) cfg.onAfterSave()
-          }
-          t.close.style.display = 'block'
-          t.close.onclick = () => { hideReencryptToast(t); _endConversion(); _doBatchDecRefresh() }
-          setTimeout(() => {
-            hideReencryptToast(t)
-            _endConversion()
-            _doBatchDecRefresh()
-          }, 2000)
-
-        } catch (err) {
-          console.error('[MANAGE MODAL] Folder E2E disable error:', err)
-          const baseMsg = err.message || 'RE-ENCRYPTION FAILED'
-          // Say exactly how many files were already converted so the user knows
-          // the folder is now mixed rather than untouched.
-          cfg.showToast(
-            succeeded > 0
-              ? `${baseMsg}. ${succeeded}/${e2eTotal} FILE${succeeded > 1 ? 'S' : ''} ALREADY CONVERTED, FOLDER IS IN A MIXED STATE`
-              : baseMsg,
-            'error'
-          )
-          if (succeeded > 0) {
-            target.e2e_count = Math.max(0, (target.e2e_count || 0) - succeeded)
-            target.has_mixed_e2e = true
-            if (cfg.onAfterSave) cfg.onAfterSave()
-          }
-          _endConversion()
-          showReencryptError(t)
-        }
-        return
-      }
-
-      try {
-        await _restorePlainFolderName(target, await _plainFolderNameForRestore(target))
-        await saveManageSetting('e2e', false, target, 'folder')
-        target.is_e2e = false
-        target.has_mixed_e2e = false
-        updateModalBadges()
-        updateEncryptionStatus()
-        updateE2EHint()
-        if (cfg.onRowE2EBadgeUpdate) cfg.onRowE2EBadgeUpdate(target.id, false)
-        if (cfg.onAfterSave) cfg.onAfterSave()
-        closeManageModal()
-      } catch (err) {
-        cfg.showToast(err.message || 'FAILED TO UPDATE SETTINGS', 'error')
-        toggle.checked = true
-      }
-      return
+      await _conversion().handleFolderE2EToggle(checked)
     }
   }
 

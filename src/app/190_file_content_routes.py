@@ -512,6 +512,9 @@ def file_create_blank():
         _release_user_quota_lock(quota_lock)
 
 
+MAX_EDIT_SIZE = 5 * 1024 * 1024  # 5 MB limit for text editing
+
+
 @app.route('/file/<file_id>/save-content', methods=['POST'])
 @limiter.limit(upload_rate_limit)
 def file_save_content(file_id):
@@ -550,7 +553,6 @@ def file_save_content(file_id):
     if file.is_trashed:
         return jsonify({'error': 'CANNOT EDIT TRASHED FILES'}), 400
 
-    MAX_EDIT_SIZE = 5 * 1024 * 1024  # 5 MB limit for text editing
 
     # AUDIT FIX H6/S1: bound the request body BEFORE reading request.files /
     # request.get_data(). The E2EE path previously trusted the client-claimed
@@ -588,7 +590,7 @@ def file_save_content(file_id):
     if registered_owner:
         quota_lock = _acquire_user_quota_lock(registered_owner.id)
         _refresh_quota_snapshot()
-    temp_dir = None
+    work_dirs = []
     try:
         # AUDIT FIX M4 (TOCTOU vs concurrent trash/delete): the resolution and
         # trashed check above ran BEFORE the rewrite/quota locks, so a
@@ -644,297 +646,9 @@ def file_save_content(file_id):
             return _backup_read_only_error()
 
         if file.is_e2e_encrypted:
-            # E2E: client sends pre-encrypted blob + key metadata
-            if 'file' not in request.files:
-                return jsonify({'error': 'NO FILE DATA PROVIDED'}), 400
-
-            uploaded = request.files['file']
-            original_size = request.form.get('original_size', type=int)
-            encrypted_file_key = request.form.get('encrypted_file_key')
-            file_key_nonce = request.form.get('file_key_nonce')
-            new_enc_name = request.form.get('encrypted_name')
-            new_name_nonce = request.form.get('name_nonce')
-            new_link_key = request.form.get('link_encrypted_file_key')
-            new_link_nonce = request.form.get('link_file_key_nonce')
-            new_folder_link_key = request.form.get('folder_link_encrypted_file_key')
-            new_folder_link_nonce = request.form.get('folder_link_file_key_nonce')
-            existing_file_link = bool(file.link_encrypted_file_key)
-            existing_folder_link = bool(file.folder_link_encrypted_file_key)
-            needs_folder_wrap = existing_folder_link
-            if not needs_folder_wrap and file.folder_id:
-                needs_folder_wrap = bool(get_shared_ancestor_info(file.folder_id))
-
-            if original_size is None or not encrypted_file_key or not file_key_nonce:
-                return jsonify({'error': 'MISSING E2E METADATA'}), 400
-
-            if file.encrypted_name and not (new_enc_name and new_name_nonce):
-                return jsonify({'error': 'ENCRYPTED FILENAME METADATA REQUIRED'}), 400
-
-            if existing_file_link and not (new_link_key and new_link_nonce):
-                return jsonify({'error': 'LINK KEY METADATA REQUIRED'}), 400
-
-            if needs_folder_wrap and not (new_folder_link_key and new_folder_link_nonce):
-                return jsonify({'error': 'FOLDER LINK KEY METADATA REQUIRED'}), 400
-
-            _wrap_err = _e2ee_wrap_field_error((
-                ('encrypted_file_key', encrypted_file_key, 48),
-                ('file_key_nonce', file_key_nonce, 12),
-                ('encrypted_name', new_enc_name, None),
-                ('name_nonce', new_name_nonce, 12),
-                ('file_key_salt', request.form.get('file_key_salt'), 32),
-                ('link_encrypted_file_key', new_link_key, 48),
-                ('link_file_key_nonce', new_link_nonce, 12),
-                ('folder_link_encrypted_file_key', new_folder_link_key, 48),
-                ('folder_link_file_key_nonce', new_folder_link_nonce, 12),
-            ))
-            if _wrap_err:
-                return _wrap_err
-
-            if original_size > MAX_EDIT_SIZE:
-                return jsonify({'error': 'FILE TOO LARGE TO SAVE (5 MB LIMIT)'}), 413
-
-            temp_dir = create_work_dir(f'edit_e2e_{file_id}_')
-            temp_path = os.path.join(temp_dir, f'{file_id}.enc')
-            uploaded.save(temp_path)
-            _container_ok, _container_err = validate_e2ee_container(temp_path)
-            if not _container_ok:
-                print(f'[ERROR] save-content REJECTED for {file_id}: {_container_err}')
-                return jsonify({
-                    'error': f'UPLOADED DATA IS NOT A VALID ENCRYPTED FILE: {_container_err}'
-                }), 400
-
-            # Update metadata — store encrypted blob size (not plaintext) for correct
-            # Content-Length when streaming via /f/<id>/encrypted (matches initial upload behavior)
-            encrypted_size = os.path.getsize(temp_path)
-            # AUDIT FIX H6: enforce the limit on the ACTUAL uploaded blob, not the
-            # client-claimed original_size (which a malicious client can set to a
-            # tiny value while uploading a huge blob). Allow a small margin over
-            # MAX_EDIT_SIZE for AES-GCM/chunk framing overhead.
-            if encrypted_size > MAX_EDIT_SIZE + (1024 * 1024):
-                return jsonify({'error': 'FILE TOO LARGE TO SAVE (5 MB LIMIT)'}), 413
-            encrypted_hash = _sha256_file(temp_path)
-
-            # Stage the new file alongside the original (preserves original until DB commit succeeds)
-            storage.store_file_staged(file.filename, temp_path)
-
-            # Check quota: reject if the size increase would exceed the user's storage limit
-            if registered_owner:
-                size_delta = encrypted_size - _quota_bytes_for_file(file)
-                if size_delta > 0 and not registered_owner.has_storage_available(size_delta):
-                    storage.rollback_staged_file(file.filename)
-                    return jsonify({'error': f'Storage limit exceeded. You have {registered_owner.get_storage_remaining_gb():.2f}GB remaining.'}), 413
-
-            # The version keeps the old file key, so it stays decryptable after the rotation below.
-            version = _snapshot_file_version(file, encrypted_size)
-            file.size = encrypted_size
-            file.disk_size = encrypted_size
-            file.content_hash = encrypted_hash
-            file.payload_checksum = encrypted_hash
-            file.encrypted_file_key = encrypted_file_key
-            file.file_key_nonce = file_key_nonce
-            if registered_owner:
-                # New content under a new key: the sync meta is stale and undecryptable.
-                file.content_version = int(file.content_version or 1) + 1
-                file.encrypted_meta = None
-                file.meta_nonce = None
-
-            # Preserve file_key_salt for passphrase-wrapped keys (guest E2E uploads)
-            file_key_salt = request.form.get('file_key_salt')
-            if file_key_salt:
-                file.file_key_salt = file_key_salt
-
-            # Update encrypted filename (new file key requires re-encrypted name)
-            if new_enc_name and new_name_nonce:
-                file.encrypted_name = new_enc_name
-                file.name_nonce = new_name_nonce
-
-            if new_link_key and new_link_nonce:
-                file.link_encrypted_file_key = new_link_key
-                file.link_file_key_nonce = new_link_nonce
-                file.is_link_shared = True
-
-            if new_folder_link_key and new_folder_link_nonce:
-                file.folder_link_encrypted_file_key = new_folder_link_key
-                file.folder_link_file_key_nonce = new_folder_link_nonce
-                file.is_link_shared = True
-
-            # Save updated E2E encrypted thumbnail if provided
-            save_enc_thumb = request.files.get('encrypted_thumbnail')
-            save_enc_thumb_nonce = request.form.get('thumbnail_nonce')
-            has_thumb = False
-            # The new thumbnail replaces the canonical one BEFORE the commit; keep
-            # the previous bytes so a failed save can put them back to match the
-            # rolled-back key/nonce instead of leaving no usable thumbnail.
-            thumb_file_id = file.id
-            prev_e2e_thumb = None
-            if save_enc_thumb and save_enc_thumb_nonce and file.has_thumbnail:
-                try:
-                    prev_e2e_thumb = load_thumbnail_from_disk(thumb_file_id, is_e2e=True)
-                except Exception:
-                    prev_e2e_thumb = None
-
-            def _undo_thumbnail_write():
-                try:
-                    if prev_e2e_thumb:
-                        storage._local_backend.put_data_atomic('thumbnails', f'{thumb_file_id}.e2e', prev_e2e_thumb)
-                    else:
-                        delete_thumbnail_from_disk(thumb_file_id)
-                except Exception as _thumb_err:
-                    print(f'[FILE] Could not restore previous thumbnail for {thumb_file_id}: {_thumb_err}')
-
-            def _abort_e2e_rewrite(thumb_written):
-                # Roll back BEFORE any undo: delete_thumbnail_from_disk() commits,
-                # and must never persist this request's new file key/checksum
-                # while the disk still holds the old ciphertext.
-                db.session.rollback()
-                storage.rollback_staged_file(_m4_staged_name)
-                _file_version_discard(version)
-                if thumb_written:
-                    _undo_thumbnail_write()
-
-            if save_enc_thumb and save_enc_thumb_nonce:
-                try:
-                    # AUDIT FIX (upload/download integrity): bounded read so an
-                    # oversized part is rejected without being materialised.
-                    thumb_bytes, thumb_oversized = read_bounded_upload_part(
-                        save_enc_thumb, _MAX_ENCRYPTED_THUMBNAIL_BYTES)
-                    if thumb_oversized:
-                        print(f'[THUMBNAIL] E2E thumbnail for {file.id} exceeds '
-                              f'{_MAX_ENCRYPTED_THUMBNAIL_BYTES} bytes, skipping')
-                    elif thumb_bytes and save_thumbnail_to_disk(file.id, thumb_bytes, is_e2e=True):
-                        file.encrypted_thumbnail_nonce = save_enc_thumb_nonce
-                        has_thumb = True
-                except ReplicaSessionRollbackError:
-                    # AUDIT FIX H3: replica bookkeeping rolled back the shared
-                    # DB session (expunging this request's pending changes).
-                    # The canonical .e2e may already hold the new bytes (or be
-                    # gone): discard the staged rewrite, undo the thumbnail and
-                    # let the outer handler fail the request with a 500.
-                    _abort_e2e_rewrite(True)
-                    raise
-                except Exception as e:
-                    print(f'[FILE] E2E thumbnail update failed (non-critical): {e}')
-            if not has_thumb:
-                file.encrypted_thumbnail_nonce = None
-            file.has_thumbnail = has_thumb
-
-            try:
-                _prep_err = _prepare_staged_rewrite_commit(file, {
-                    'file_id': file.id,
-                    'size': encrypted_size,
-                    'disk_size': encrypted_size,
-                    'content_hash': encrypted_hash,
-                    'payload_checksum': encrypted_hash,
-                    'encrypted_name': file.encrypted_name,
-                    'name_nonce': file.name_nonce,
-                    'encrypted_file_key': encrypted_file_key,
-                    'file_key_nonce': file_key_nonce,
-                })
-                if not _prep_err:
-                    db.session.commit()
-            except Exception:
-                _abort_e2e_rewrite(has_thumb)
-                raise
-            if _prep_err:
-                _abort_e2e_rewrite(has_thumb)
-                return _prep_err
-
-            # DB commit succeeded — safe to delete old thumbnail (no new one provided)
-            if not has_thumb:
-                delete_thumbnail_from_disk(file.id)
-
-            # Write marker so crash recovery knows this was committed,
-            # then atomically replace the original file
-            storage.mark_staged_file_committed(file.filename)
-            storage.finalize_staged_file(file.filename)
-
-            _commit_file_post_finalize_state(file.id, 'E2E SAVE-CONTENT')
-            _file_version_committed(version)
-
-            print(f'[FILE] Saved edited E2E content for {file.orig_name} (plain {original_size}, encrypted {encrypted_size} bytes)')
-            return jsonify({'success': True, 'new_size': encrypted_size, 'new_size_formatted': format_bytes_for_filesize(encrypted_size), 'has_thumbnail': has_thumb})
-
+            return _save_content_e2e(file, file_id, registered_owner, _m4_staged_name, work_dirs)
         else:
-            # Server-side Fernet: client sends plaintext, server re-encrypts
-            content_length = request.content_length or 0
-            if content_length > MAX_EDIT_SIZE:
-                return jsonify({'error': 'FILE TOO LARGE TO SAVE (5 MB LIMIT)'}), 413
-
-            # Read the raw body content
-            raw_data = request.get_data()
-            if len(raw_data) > MAX_EDIT_SIZE:
-                return jsonify({'error': 'FILE TOO LARGE TO SAVE (5 MB LIMIT)'}), 413
-
-            plain_size = len(raw_data)
-            print(f'[FILE] save-content: received {plain_size} bytes for {file.orig_name}')
-
-            temp_dir = create_work_dir(f'edit_{file_id}_')
-            temp_plain_path = os.path.join(temp_dir, 'plaintext')
-            temp_encrypted_path = os.path.join(temp_dir, f'{file_id}.enc')
-
-            with open(temp_plain_path, 'wb') as f:
-                f.write(raw_data)
-
-            # Fernet-encrypt the new content (hashes computed in the same pass)
-            content_hash, payload_checksum = encrypt_file_chunked(temp_plain_path, temp_encrypted_path)
-            encrypted_disk_size = os.path.getsize(temp_encrypted_path)
-
-            # Stage the new file alongside the original (preserves original until DB commit succeeds)
-            storage.store_file_staged(file.filename, temp_encrypted_path)
-
-            # Check quota: reject if the size increase would exceed the user's storage limit
-            if registered_owner:
-                size_delta = encrypted_disk_size - _quota_bytes_for_file(file)
-                if size_delta > 0 and not registered_owner.has_storage_available(size_delta):
-                    storage.rollback_staged_file(file.filename)
-                    return jsonify({'error': f'Storage limit exceeded. You have {registered_owner.get_storage_remaining_gb():.2f}GB remaining.'}), 413
-
-            version = _snapshot_file_version(file, encrypted_disk_size)
-            # Update file size
-            file.size = plain_size
-            file.disk_size = encrypted_disk_size
-            file.content_hash = content_hash
-            file.payload_checksum = payload_checksum
-            if registered_owner:
-                file.content_version = int(file.content_version or 1) + 1
-
-            # Mark thumbnail as cleared (disk deletion deferred to after commit)
-            file.has_thumbnail = False
-            _prep_err = _prepare_staged_rewrite_commit(file, {
-                'file_id': file.id,
-                'size': plain_size,
-                'disk_size': encrypted_disk_size,
-                'content_hash': content_hash,
-                'payload_checksum': payload_checksum,
-            })
-            if _prep_err:
-                db.session.rollback()
-                _file_version_discard(version)
-                return _prep_err
-            try:
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
-                storage.rollback_staged_file(file.filename)
-                _file_version_discard(version)
-                raise
-
-            # DB commit succeeded — safe to delete old thumbnail from disk
-            delete_thumbnail_from_disk(file.id)
-
-            # Write marker so crash recovery knows this was committed,
-            # then atomically replace the original file
-            storage.mark_staged_file_committed(file.filename)
-            storage.finalize_staged_file(file.filename)
-
-            _commit_file_post_finalize_state(file.id, 'FERNET SAVE-CONTENT')
-            _file_version_committed(version)
-
-            # Regenerate thumbnail in the bounded background queue.
-            _schedule_thumbnail_bg(file_id, log_prefix='FILE')
-
-            print(f'[FILE] Saved edited content for {file.orig_name} ({plain_size} bytes)')
-            return jsonify({'success': True, 'new_size': plain_size, 'new_size_formatted': format_bytes_for_filesize(plain_size), 'has_thumbnail': False})
+            return _save_content_fernet(file, file_id, registered_owner, _m4_staged_name, work_dirs)
 
     except RequestEntityTooLarge:
         # AUDIT FIX H6/S1: the parser cap fired -- return a clean 413 with the
@@ -949,8 +663,309 @@ def file_save_content(file_id):
         # AUDIT FIX M4: release every lock on every exit path, in reverse
         # acquisition order (rewrite -> quota -> lifecycle).
         _release_lifecycle_lock(lifecycle_lock)
-        if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        for temp_dir in work_dirs:
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
         _release_user_quota_lock(quota_lock)
         _release_file_rewrite_lock(_rewrite_lock)
 
+
+def _save_content_e2e(file, file_id, registered_owner, _m4_staged_name, work_dirs):
+    """save-content for an E2EE file: validate the client-encrypted blob and key metadata,
+    stage it, commit the rotated key and finalize. Caller holds the rewrite/quota/lifecycle locks."""
+    # E2E: client sends pre-encrypted blob + key metadata
+    if 'file' not in request.files:
+        return jsonify({'error': 'NO FILE DATA PROVIDED'}), 400
+
+    uploaded = request.files['file']
+    original_size = request.form.get('original_size', type=int)
+    encrypted_file_key = request.form.get('encrypted_file_key')
+    file_key_nonce = request.form.get('file_key_nonce')
+    new_enc_name = request.form.get('encrypted_name')
+    new_name_nonce = request.form.get('name_nonce')
+    new_link_key = request.form.get('link_encrypted_file_key')
+    new_link_nonce = request.form.get('link_file_key_nonce')
+    new_folder_link_key = request.form.get('folder_link_encrypted_file_key')
+    new_folder_link_nonce = request.form.get('folder_link_file_key_nonce')
+    existing_file_link = bool(file.link_encrypted_file_key)
+    existing_folder_link = bool(file.folder_link_encrypted_file_key)
+    needs_folder_wrap = existing_folder_link
+    if not needs_folder_wrap and file.folder_id:
+        needs_folder_wrap = bool(get_shared_ancestor_info(file.folder_id))
+
+    if original_size is None or not encrypted_file_key or not file_key_nonce:
+        return jsonify({'error': 'MISSING E2E METADATA'}), 400
+
+    if file.encrypted_name and not (new_enc_name and new_name_nonce):
+        return jsonify({'error': 'ENCRYPTED FILENAME METADATA REQUIRED'}), 400
+
+    if existing_file_link and not (new_link_key and new_link_nonce):
+        return jsonify({'error': 'LINK KEY METADATA REQUIRED'}), 400
+
+    if needs_folder_wrap and not (new_folder_link_key and new_folder_link_nonce):
+        return jsonify({'error': 'FOLDER LINK KEY METADATA REQUIRED'}), 400
+
+    _wrap_err = _e2ee_wrap_field_error((
+        ('encrypted_file_key', encrypted_file_key, 48),
+        ('file_key_nonce', file_key_nonce, 12),
+        ('encrypted_name', new_enc_name, None),
+        ('name_nonce', new_name_nonce, 12),
+        ('file_key_salt', request.form.get('file_key_salt'), 32),
+        ('link_encrypted_file_key', new_link_key, 48),
+        ('link_file_key_nonce', new_link_nonce, 12),
+        ('folder_link_encrypted_file_key', new_folder_link_key, 48),
+        ('folder_link_file_key_nonce', new_folder_link_nonce, 12),
+    ))
+    if _wrap_err:
+        return _wrap_err
+
+    if original_size > MAX_EDIT_SIZE:
+        return jsonify({'error': 'FILE TOO LARGE TO SAVE (5 MB LIMIT)'}), 413
+
+    temp_dir = create_work_dir(f'edit_e2e_{file_id}_')
+    work_dirs.append(temp_dir)
+    temp_path = os.path.join(temp_dir, f'{file_id}.enc')
+    uploaded.save(temp_path)
+    _container_ok, _container_err = validate_e2ee_container(temp_path)
+    if not _container_ok:
+        print(f'[ERROR] save-content REJECTED for {file_id}: {_container_err}')
+        return jsonify({
+            'error': f'UPLOADED DATA IS NOT A VALID ENCRYPTED FILE: {_container_err}'
+        }), 400
+
+    # Update metadata — store encrypted blob size (not plaintext) for correct
+    # Content-Length when streaming via /f/<id>/encrypted (matches initial upload behavior)
+    encrypted_size = os.path.getsize(temp_path)
+    # AUDIT FIX H6: enforce the limit on the ACTUAL uploaded blob, not the
+    # client-claimed original_size (which a malicious client can set to a
+    # tiny value while uploading a huge blob). Allow a small margin over
+    # MAX_EDIT_SIZE for AES-GCM/chunk framing overhead.
+    if encrypted_size > MAX_EDIT_SIZE + (1024 * 1024):
+        return jsonify({'error': 'FILE TOO LARGE TO SAVE (5 MB LIMIT)'}), 413
+    encrypted_hash = _sha256_file(temp_path)
+
+    # Stage the new file alongside the original (preserves original until DB commit succeeds)
+    storage.store_file_staged(file.filename, temp_path)
+
+    # Check quota: reject if the size increase would exceed the user's storage limit
+    if registered_owner:
+        size_delta = encrypted_size - _quota_bytes_for_file(file)
+        if size_delta > 0 and not registered_owner.has_storage_available(size_delta):
+            storage.rollback_staged_file(file.filename)
+            return jsonify({'error': f'Storage limit exceeded. You have {registered_owner.get_storage_remaining_gb():.2f}GB remaining.'}), 413
+
+    # The version keeps the old file key, so it stays decryptable after the rotation below.
+    version = _snapshot_file_version(file, encrypted_size)
+    file.size = encrypted_size
+    file.disk_size = encrypted_size
+    file.content_hash = encrypted_hash
+    file.payload_checksum = encrypted_hash
+    file.encrypted_file_key = encrypted_file_key
+    file.file_key_nonce = file_key_nonce
+    if registered_owner:
+        # New content under a new key: the sync meta is stale and undecryptable.
+        file.content_version = int(file.content_version or 1) + 1
+        file.encrypted_meta = None
+        file.meta_nonce = None
+
+    # Preserve file_key_salt for passphrase-wrapped keys (guest E2E uploads)
+    file_key_salt = request.form.get('file_key_salt')
+    if file_key_salt:
+        file.file_key_salt = file_key_salt
+
+    # Update encrypted filename (new file key requires re-encrypted name)
+    if new_enc_name and new_name_nonce:
+        file.encrypted_name = new_enc_name
+        file.name_nonce = new_name_nonce
+
+    if new_link_key and new_link_nonce:
+        file.link_encrypted_file_key = new_link_key
+        file.link_file_key_nonce = new_link_nonce
+        file.is_link_shared = True
+
+    if new_folder_link_key and new_folder_link_nonce:
+        file.folder_link_encrypted_file_key = new_folder_link_key
+        file.folder_link_file_key_nonce = new_folder_link_nonce
+        file.is_link_shared = True
+
+    # Save updated E2E encrypted thumbnail if provided
+    save_enc_thumb = request.files.get('encrypted_thumbnail')
+    save_enc_thumb_nonce = request.form.get('thumbnail_nonce')
+    has_thumb = False
+    # The new thumbnail replaces the canonical one BEFORE the commit; keep
+    # the previous bytes so a failed save can put them back to match the
+    # rolled-back key/nonce instead of leaving no usable thumbnail.
+    thumb_file_id = file.id
+    prev_e2e_thumb = None
+    if save_enc_thumb and save_enc_thumb_nonce and file.has_thumbnail:
+        try:
+            prev_e2e_thumb = load_thumbnail_from_disk(thumb_file_id, is_e2e=True)
+        except Exception:
+            prev_e2e_thumb = None
+
+    def _undo_thumbnail_write():
+        try:
+            if prev_e2e_thumb:
+                storage._local_backend.put_data_atomic('thumbnails', f'{thumb_file_id}.e2e', prev_e2e_thumb)
+            else:
+                delete_thumbnail_from_disk(thumb_file_id)
+        except Exception as _thumb_err:
+            print(f'[FILE] Could not restore previous thumbnail for {thumb_file_id}: {_thumb_err}')
+
+    def _abort_e2e_rewrite(thumb_written):
+        # Roll back BEFORE any undo: delete_thumbnail_from_disk() commits,
+        # and must never persist this request's new file key/checksum
+        # while the disk still holds the old ciphertext.
+        db.session.rollback()
+        storage.rollback_staged_file(_m4_staged_name)
+        _file_version_discard(version)
+        if thumb_written:
+            _undo_thumbnail_write()
+
+    if save_enc_thumb and save_enc_thumb_nonce:
+        try:
+            # AUDIT FIX (upload/download integrity): bounded read so an
+            # oversized part is rejected without being materialised.
+            thumb_bytes, thumb_oversized = read_bounded_upload_part(
+                save_enc_thumb, _MAX_ENCRYPTED_THUMBNAIL_BYTES)
+            if thumb_oversized:
+                print(f'[THUMBNAIL] E2E thumbnail for {file.id} exceeds '
+                      f'{_MAX_ENCRYPTED_THUMBNAIL_BYTES} bytes, skipping')
+            elif thumb_bytes and save_thumbnail_to_disk(file.id, thumb_bytes, is_e2e=True):
+                file.encrypted_thumbnail_nonce = save_enc_thumb_nonce
+                has_thumb = True
+        except ReplicaSessionRollbackError:
+            # AUDIT FIX H3: replica bookkeeping rolled back the shared
+            # DB session (expunging this request's pending changes).
+            # The canonical .e2e may already hold the new bytes (or be
+            # gone): discard the staged rewrite, undo the thumbnail and
+            # let the outer handler fail the request with a 500.
+            _abort_e2e_rewrite(True)
+            raise
+        except Exception as e:
+            print(f'[FILE] E2E thumbnail update failed (non-critical): {e}')
+    if not has_thumb:
+        file.encrypted_thumbnail_nonce = None
+    file.has_thumbnail = has_thumb
+
+    try:
+        _prep_err = _prepare_staged_rewrite_commit(file, {
+            'file_id': file.id,
+            'size': encrypted_size,
+            'disk_size': encrypted_size,
+            'content_hash': encrypted_hash,
+            'payload_checksum': encrypted_hash,
+            'encrypted_name': file.encrypted_name,
+            'name_nonce': file.name_nonce,
+            'encrypted_file_key': encrypted_file_key,
+            'file_key_nonce': file_key_nonce,
+        })
+        if not _prep_err:
+            db.session.commit()
+    except Exception:
+        _abort_e2e_rewrite(has_thumb)
+        raise
+    if _prep_err:
+        _abort_e2e_rewrite(has_thumb)
+        return _prep_err
+
+    # DB commit succeeded — safe to delete old thumbnail (no new one provided)
+    if not has_thumb:
+        delete_thumbnail_from_disk(file.id)
+
+    # Write marker so crash recovery knows this was committed,
+    # then atomically replace the original file
+    storage.mark_staged_file_committed(file.filename)
+    storage.finalize_staged_file(file.filename)
+
+    _commit_file_post_finalize_state(file.id, 'E2E SAVE-CONTENT')
+    _file_version_committed(version)
+
+    print(f'[FILE] Saved edited E2E content for {file.orig_name} (plain {original_size}, encrypted {encrypted_size} bytes)')
+    return jsonify({'success': True, 'new_size': encrypted_size, 'new_size_formatted': format_bytes_for_filesize(encrypted_size), 'has_thumbnail': has_thumb})
+
+
+def _save_content_fernet(file, file_id, registered_owner, _m4_staged_name, work_dirs):
+    """save-content for a server-encrypted (Fernet) file: re-encrypt the plaintext body,
+    stage it, commit and finalize. Caller holds the rewrite/quota/lifecycle locks."""
+    # Server-side Fernet: client sends plaintext, server re-encrypts
+    content_length = request.content_length or 0
+    if content_length > MAX_EDIT_SIZE:
+        return jsonify({'error': 'FILE TOO LARGE TO SAVE (5 MB LIMIT)'}), 413
+
+    # Read the raw body content
+    raw_data = request.get_data()
+    if len(raw_data) > MAX_EDIT_SIZE:
+        return jsonify({'error': 'FILE TOO LARGE TO SAVE (5 MB LIMIT)'}), 413
+
+    plain_size = len(raw_data)
+    print(f'[FILE] save-content: received {plain_size} bytes for {file.orig_name}')
+
+    temp_dir = create_work_dir(f'edit_{file_id}_')
+    work_dirs.append(temp_dir)
+    temp_plain_path = os.path.join(temp_dir, 'plaintext')
+    temp_encrypted_path = os.path.join(temp_dir, f'{file_id}.enc')
+
+    with open(temp_plain_path, 'wb') as f:
+        f.write(raw_data)
+
+    # Fernet-encrypt the new content (hashes computed in the same pass)
+    content_hash, payload_checksum = encrypt_file_chunked(temp_plain_path, temp_encrypted_path)
+    encrypted_disk_size = os.path.getsize(temp_encrypted_path)
+
+    # Stage the new file alongside the original (preserves original until DB commit succeeds)
+    storage.store_file_staged(file.filename, temp_encrypted_path)
+
+    # Check quota: reject if the size increase would exceed the user's storage limit
+    if registered_owner:
+        size_delta = encrypted_disk_size - _quota_bytes_for_file(file)
+        if size_delta > 0 and not registered_owner.has_storage_available(size_delta):
+            storage.rollback_staged_file(file.filename)
+            return jsonify({'error': f'Storage limit exceeded. You have {registered_owner.get_storage_remaining_gb():.2f}GB remaining.'}), 413
+
+    version = _snapshot_file_version(file, encrypted_disk_size)
+    # Update file size
+    file.size = plain_size
+    file.disk_size = encrypted_disk_size
+    file.content_hash = content_hash
+    file.payload_checksum = payload_checksum
+    if registered_owner:
+        file.content_version = int(file.content_version or 1) + 1
+
+    # Mark thumbnail as cleared (disk deletion deferred to after commit)
+    file.has_thumbnail = False
+    _prep_err = _prepare_staged_rewrite_commit(file, {
+        'file_id': file.id,
+        'size': plain_size,
+        'disk_size': encrypted_disk_size,
+        'content_hash': content_hash,
+        'payload_checksum': payload_checksum,
+    })
+    if _prep_err:
+        db.session.rollback()
+        _file_version_discard(version)
+        return _prep_err
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        storage.rollback_staged_file(file.filename)
+        _file_version_discard(version)
+        raise
+
+    # DB commit succeeded — safe to delete old thumbnail from disk
+    delete_thumbnail_from_disk(file.id)
+
+    # Write marker so crash recovery knows this was committed,
+    # then atomically replace the original file
+    storage.mark_staged_file_committed(file.filename)
+    storage.finalize_staged_file(file.filename)
+
+    _commit_file_post_finalize_state(file.id, 'FERNET SAVE-CONTENT')
+    _file_version_committed(version)
+
+    # Regenerate thumbnail in the bounded background queue.
+    _schedule_thumbnail_bg(file_id, log_prefix='FILE')
+
+    print(f'[FILE] Saved edited content for {file.orig_name} ({plain_size} bytes)')
+    return jsonify({'success': True, 'new_size': plain_size, 'new_size_formatted': format_bytes_for_filesize(plain_size), 'has_thumbnail': False})

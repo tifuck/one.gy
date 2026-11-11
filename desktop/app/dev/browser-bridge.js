@@ -15,6 +15,7 @@
 //   GET  /events         server-sent events: engine events + app:engine/app:settings/app:panel
 //   POST /panel          {username, screen}: what the site's openSync() does (opens the panel)
 //   GET  /site-status?username=  what the site's onStatus() gets (main/sync-status.js)
+//   GET  /site-syncs?username=   what the site's onSyncs() gets
 //   GET|POST /stub       read the action log / set {pickFolder, pickFiles} answers
 'use strict';
 
@@ -165,6 +166,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/site-status') {
       return json(res, 200, sync.forUser(url.searchParams.get('username')));
+    }
+    if (req.method === 'GET' && url.pathname === '/site-syncs') {
+      return json(res, 200, sync.syncsForUser(url.searchParams.get('username')));
     }
     if (url.pathname === '/stub') {
       if (req.method === 'POST') Object.assign(stubs, await readBody(req));

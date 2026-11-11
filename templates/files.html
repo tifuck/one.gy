@@ -43,6 +43,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>
       </button>
       <div class="fx-bcrumb" id="fxBcrumb" aria-label="Breadcrumb"></div>
+      <button type="button" class="rd-pill fx-sync-chip" id="fxSyncChip" hidden></button>
       <div class="fx-spacer"></div>
       <div class="fx-tbar-actions">
         <div class="fx-search" id="fxSearchBox">
@@ -184,10 +185,23 @@
 
 {% block scripts %}
 <script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
+<script src="{{ versioned_static('manage-e2e.js') }}" defer></script>
 <script src="{{ versioned_static('manage-modal.js') }}" defer></script>
 <script src="{{ versioned_static('file-versions.js') }}" defer></script>
 <script src="{{ versioned_static('preview.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-core.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-ui.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-fullscreen.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-fx.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-session.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-e2e.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-playback.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-queue.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-sync.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-phantom.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-devices.js') }}" defer></script>
 <script src="{{ versioned_static('music-player.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">window.__FX_ROOT_NAME__ = {{ (root_folder_name or 'FILES')|tojson }};
 window.__FX_INITIAL_FOLDER__ = {{ (current_folder.id if current_folder is defined and current_folder else None)|tojson }};

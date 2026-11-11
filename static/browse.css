@@ -233,6 +233,14 @@
 .bw-view[data-view="list"] .bw-check{ left:13px; }
 .bw-view[data-view="list"] .bw-item-meta{ justify-content:center; }
 
+/* ".." (browse.js upEntry): a folder row / tile without the tick */
+.bw-up{ width:100%; border:0; background:none; font:inherit; color:inherit; text-align:left; }
+.bw-view .bw-up .bw-item-thumb{ opacity:1 !important; }
+.bw-up .bw-item-name{ font-weight:600; }
+.bw-up .bw-item-size{ color:var(--text-faint); }
+.bw-up:focus-visible{ outline:1.5px solid var(--accent); outline-offset:-1.5px; }
+.bw-view > .bw-items + .bw-sec{ margin-top:22px; }
+
 /* ---- Empty / loading ----------------------------------------------------------- */
 /* Names that could not be decrypted (link opened without its #secret) */
 .bw-locked{ margin:4px 0 14px; }

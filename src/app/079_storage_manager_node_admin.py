@@ -349,218 +349,27 @@ class _StorageManagerNodeAdmin:
         Returns dict with counts of purged items. Only removes from local disk — never remote.
         If progress_callback is provided, it is called with (phase, current, total, results_dict)
         after each item to report progress for background task tracking."""
-        purged_files = 0
-        purged_notes = 0
-        purged_thumbs = 0
-        skipped_files = 0
-        skipped_notes = 0
-        skipped_thumbs = 0
-        bytes_freed = 0
         required_remote_copies = self.LOCAL_PURGE_MIN_VERIFIED_REMOTE_COPIES
         backends, local_backend, local_node_id, _version = self._backend_state_snapshot()
+        counts = {
+            'purged_files': 0, 'purged_notes': 0, 'purged_thumbnails': 0,
+            'skipped_files': 0, 'skipped_notes': 0, 'skipped_thumbnails': 0,
+            'bytes_freed': 0, 'required_remote_copies': required_remote_copies,
+        }
 
         def _results():
-            return {'purged_files': purged_files, 'purged_notes': purged_notes,
-                    'purged_thumbnails': purged_thumbs, 'skipped_files': skipped_files,
-                    'skipped_notes': skipped_notes, 'skipped_thumbnails': skipped_thumbs,
-                    'bytes_freed': bytes_freed,
-                    'required_remote_copies': required_remote_copies}
-
-        def _verified_synced_replicas(replica_query, category, item_id, expected_size, expected_checksum):
-            verified = []
-            for replica in replica_query.all():
-                backend = backends.get(replica.node_id)
-                if not backend:
-                    continue
-                if self._verify_remote_replica_payload(
-                    replica,
-                    backend,
-                    category,
-                    item_id,
-                    expected_size,
-                    expected_checksum,
-                    'LOCAL PURGE',
-                    update_replica=True,
-                ):
-                    verified.append(replica)
-                if len(verified) >= required_remote_copies:
-                    break
-            return verified
-
-        def _remotes_still_held(replica_query, expected_checksum):
-            """AUDIT FIX (finding 5): remote redundancy was proven BEFORE the
-            per-item rewrite/publication lock was taken. remove_node can drain
-            a remote node inside that window (fence published, replica rows
-            deleted at commit), so by the time the local copy was destroyed
-            the 'verified' remotes could be gone from the DB. Called WITH the
-            lock held: re-query the replica rows fresh and require enough of
-            them to still be synced, checksum-matched, verification-not-refuted
-            and backed by a node that is still enabled and not draining."""
-            rows = replica_query.all()
-            if not rows:
-                return False
-            node_rows = StorageNode.query.filter(
-                StorageNode.id.in_([r.node_id for r in rows])
-            ).all()
-            node_map = {n.id: n for n in node_rows}
-            held = 0
-            for rep in rows:
-                n = node_map.get(rep.node_id)
-                if n is None or not n.is_enabled or n.status == 'draining':
-                    continue
-                if expected_checksum and rep.checksum != expected_checksum:
-                    continue
-                if rep.checksum_verified is False:
-                    continue
-                held += 1
-                if held >= required_remote_copies:
-                    return True
-            return False
-
-        def _local_payload_snapshot(category, item_id):
-            """Hash one stable inode and return (size, checksum, stat signature)."""
-            path = local_backend.get_path(category, item_id)
-            before = os.stat(path)
-            checksum = self._sha256_file(path)
-            after = os.stat(path)
-            before_sig = (before.st_dev, before.st_ino, before.st_size,
-                          before.st_mtime_ns, before.st_ctime_ns)
-            after_sig = (after.st_dev, after.st_ino, after.st_size,
-                         after.st_mtime_ns, after.st_ctime_ns)
-            if before_sig != after_sig:
-                raise RuntimeError('local payload changed while it was being hashed')
-            return int(after.st_size), checksum, after_sig
+            return dict(counts)
 
         # Find remote node IDs (any node that is NOT the local node)
         remote_node_ids = [nid for nid in backends if nid != local_node_id]
+        purge_args = (counts, backends, local_backend, local_node_id, remote_node_ids, required_remote_copies)
         # Purge files
         all_files = File.query.with_entities(File.id).all()
         total_files = len(all_files)
         if progress_callback:
             progress_callback('files', 0, total_files, _results())
         for i, (fid,) in enumerate(all_files):
-            filename = f'{fid}.enc'
-            if not local_backend.exists('files', filename):
-                if progress_callback:
-                    progress_callback('files', i + 1, total_files, _results())
-                continue
-            try:
-                local_size, local_checksum, local_signature = _local_payload_snapshot('files', filename)
-            except Exception as e:
-                print(f'[STORAGE] Skipping local purge for file {filename}: local snapshot failed: {e}')
-                skipped_files += 1
-                if progress_callback:
-                    progress_callback('files', i + 1, total_files, _results())
-                continue
-            # AUDIT FIX (purge verified remotes against the doomed local copy):
-            # the expected checksum used to be `local_checksum` — the hash of the
-            # very copy about to be DELETED. If the local file had drifted and the
-            # drift was replicated (easy while File.payload_checksum is NULL,
-            # because _tracked_file_checksum_hex falls back to a sibling replica's
-            # checksum), both remotes "verified" against the corrupt hash and the
-            # local copy plus its replica row were destroyed. The read path then
-            # requires checksum == File.payload_checksum, so nothing was servable:
-            # total loss. Notes already gated on note_obj.content_checksum; files
-            # now gate on the equally authoritative File.payload_checksum, and we
-            # REFUSE to purge when no authoritative checksum exists at all.
-            _file_obj = db.session.get(File, fid)
-            authoritative_checksum = _file_obj.payload_checksum if _file_obj else None
-            if not authoritative_checksum:
-                print(f'[STORAGE] Skipping local purge for file {filename}: no authoritative '
-                      f'File.payload_checksum recorded — refusing to reclaim the local copy on the '
-                      f'strength of its own hash')
-                skipped_files += 1
-                if progress_callback:
-                    progress_callback('files', i + 1, total_files, _results())
-                continue
-            if authoritative_checksum != local_checksum:
-                print(f'[STORAGE] Skipping local purge for file {filename}: local copy does not match '
-                      f'the authoritative payload checksum (local corruption or an in-flight rewrite)')
-                skipped_files += 1
-                if progress_callback:
-                    progress_callback('files', i + 1, total_files, _results())
-                continue
-            authoritative_size = int(_file_obj.disk_size) if _file_obj.disk_size is not None else local_size
-            if authoritative_size is not None and int(authoritative_size) != int(local_size):
-                print(f'[STORAGE] Skipping local purge for file {filename}: local size {local_size} '
-                      f'does not match the authoritative disk_size {authoritative_size}')
-                skipped_files += 1
-                if progress_callback:
-                    progress_callback('files', i + 1, total_files, _results())
-                continue
-            remote_synced_query = FileReplica.query.filter(
-                FileReplica.file_id == fid,
-                FileReplica.node_id.in_(remote_node_ids),
-                FileReplica.status == 'synced'
-            )
-            verified_remote = _verified_synced_replicas(
-                remote_synced_query,
-                'files',
-                filename,
-                authoritative_size,
-                authoritative_checksum,
-            )
-            if len(verified_remote) >= required_remote_copies:
-                size = local_size or 0
-                rewrite_lock = _acquire_file_rewrite_lock(fid)
-                try:
-                    # Remote verification deliberately happens before this lock.
-                    # Start a fresh transaction, then prove the DB generation and
-                    # exact local inode are still the ones verified above.
-                    db.session.rollback()
-                    fresh_file = db.session.get(File, fid)
-                    fresh_size = int(fresh_file.disk_size) if fresh_file and fresh_file.disk_size is not None else local_size
-                    final_size, final_checksum, final_signature = _local_payload_snapshot('files', filename)
-                    generation_changed = (
-                        fresh_file is None
-                        or fresh_file.payload_checksum != authoritative_checksum
-                        or int(fresh_size) != int(authoritative_size)
-                        or final_signature != local_signature
-                        or final_size != local_size
-                        or final_checksum != authoritative_checksum
-                    )
-                    if generation_changed:
-                        print(f'[STORAGE] Skipping local purge for file {filename}: payload generation changed after remote verification')
-                        skipped_files += 1
-                    elif not _remotes_still_held(remote_synced_query, authoritative_checksum):
-                        # AUDIT FIX (finding 5): the remote verification above ran
-                        # BEFORE this lock; a node removal/drain that landed in the
-                        # window deleted those replica rows. Re-checked fresh under
-                        # the lock — do not destroy the local copy on stale evidence.
-                        print(f'[STORAGE] Skipping local purge for file {filename}: '
-                              f'verified remote copies vanished or were fenced after '
-                              f'remote verification (node removal/drain race)')
-                        skipped_files += 1
-                    else:
-                        deleted_ok = local_backend.delete('files', filename)
-                        if not deleted_ok:
-                            # On-disk delete failed — do NOT erase the local replica
-                            # row, or the file becomes an untracked local orphan that
-                            # cleanup_orphaned_files will not reap (its File row still
-                            # references it). Skip this entry; it will retry next cycle.
-                            skipped_files += 1
-                        else:
-                            purged_files += 1
-                            bytes_freed += size
-                            # Remove local replica row since the local copy is gone
-                            # AUDIT FIX P2-8: commit immediately after each purge so a
-                            # crash mid-purge does not leave the DB saying the local
-                            # copy is still 'synced' when the file is already deleted.
-                            if local_node_id:
-                                local_replica = FileReplica.query.filter_by(file_id=fid, node_id=local_node_id).first()
-                                if local_replica:
-                                    db.session.delete(local_replica)
-                            db.session.commit()
-                except Exception as e:
-                    print(f'[STORAGE] Purge failed for file {filename}: {e}')
-                    try:
-                        db.session.rollback()
-                    except Exception:
-                        pass
-                finally:
-                    _release_file_rewrite_lock(rewrite_lock)
-            else:
-                skipped_files += 1
+            self._purge_local_file(fid, *purge_args)
             if progress_callback:
                 progress_callback('files', i + 1, total_files, _results())
         # Purge notes
@@ -569,110 +378,7 @@ class _StorageManagerNodeAdmin:
         if progress_callback:
             progress_callback('notes', 0, total_notes, _results())
         for i, (note_id,) in enumerate(all_notes):
-            if not local_backend.exists('notes', note_id):
-                if progress_callback:
-                    progress_callback('notes', i + 1, total_notes, _results())
-                continue
-            note_obj = db.session.get(Note, note_id)
-            if not note_obj:
-                if progress_callback:
-                    progress_callback('notes', i + 1, total_notes, _results())
-                continue
-            try:
-                note_size, local_checksum, note_signature = _local_payload_snapshot('notes', note_id)
-            except Exception as e:
-                print(f'[STORAGE] Skipping local purge for note {note_id}: local snapshot failed: {e}')
-                skipped_notes += 1
-                if progress_callback:
-                    progress_callback('notes', i + 1, total_notes, _results())
-                continue
-            expected_checksum = note_obj.content_checksum
-            if not expected_checksum:
-                print(f'[STORAGE] Skipping local purge for note {note_id}: no authoritative '
-                      f'Note.content_checksum recorded — refusing to reclaim the local copy on the '
-                      f'strength of its own hash')
-                skipped_notes += 1
-                if progress_callback:
-                    progress_callback('notes', i + 1, total_notes, _results())
-                continue
-            if expected_checksum != local_checksum:
-                print(f'[STORAGE] Skipping local purge for note {note_id}: local checksum does not match latest DB checksum')
-                skipped_notes += 1
-                if progress_callback:
-                    progress_callback('notes', i + 1, total_notes, _results())
-                continue
-            if note_size is not None and (note_obj.size is None or int(note_obj.size) != int(note_size)):
-                note_obj.size = int(note_size)
-            note_version = int(note_obj.content_version or 1)
-            remote_synced_query = NoteReplica.query.filter(
-                NoteReplica.note_id == note_id,
-                NoteReplica.node_id.in_(remote_node_ids),
-                NoteReplica.status == 'synced',
-                NoteReplica.synced_version == note_version,
-                NoteReplica.checksum == expected_checksum,
-                db.or_(
-                    NoteReplica.target_version.is_(None),
-                    NoteReplica.target_version == 0,
-                    NoteReplica.target_version == note_version,
-                ),
-            )
-            verified_remote = _verified_synced_replicas(
-                remote_synced_query,
-                'notes',
-                note_id,
-                note_size,
-                expected_checksum,
-            )
-            if len(verified_remote) >= required_remote_copies:
-                note_lock = _acquire_note_rewrite_lock(note_id)
-                try:
-                    db.session.rollback()
-                    fresh_note = db.session.get(Note, note_id)
-                    final_size, final_checksum, final_signature = _local_payload_snapshot('notes', note_id)
-                    generation_changed = (
-                        fresh_note is None
-                        or int(fresh_note.content_version or 1) != note_version
-                        or fresh_note.content_checksum != expected_checksum
-                        or final_signature != note_signature
-                        or final_size != note_size
-                        or final_checksum != expected_checksum
-                    )
-                    if generation_changed:
-                        print(f'[STORAGE] Skipping local purge for note {note_id}: content generation changed after remote verification')
-                        skipped_notes += 1
-                    elif not _remotes_still_held(remote_synced_query, expected_checksum):
-                        # AUDIT FIX (finding 5): same window as the file loop —
-                        # re-verify remote redundancy fresh, under the lock.
-                        print(f'[STORAGE] Skipping local purge for note {note_id}: '
-                              f'verified remote copies vanished or were fenced after '
-                              f'remote verification (node removal/drain race)')
-                        skipped_notes += 1
-                    else:
-                        if fresh_note.size is None or int(fresh_note.size) != final_size:
-                            fresh_note.size = final_size
-                        deleted_ok = local_backend.delete('notes', note_id)
-                        if not deleted_ok:
-                            skipped_notes += 1
-                        else:
-                            purged_notes += 1
-                            bytes_freed += note_size or 0
-                            # Remove local replica row since the local copy is gone
-                            # AUDIT FIX P2-8: commit immediately after each purge.
-                            if local_node_id:
-                                local_replica = NoteReplica.query.filter_by(note_id=note_id, node_id=local_node_id).first()
-                                if local_replica:
-                                    db.session.delete(local_replica)
-                            db.session.commit()
-                except Exception as e:
-                    print(f'[STORAGE] Purge failed for note {note_id}: {e}')
-                    try:
-                        db.session.rollback()
-                    except Exception:
-                        pass
-                finally:
-                    _release_note_rewrite_lock(note_lock)
-            else:
-                skipped_notes += 1
+            self._purge_local_note(note_id, *purge_args)
             if progress_callback:
                 progress_callback('notes', i + 1, total_notes, _results())
         # Purge thumbnails
@@ -681,108 +387,7 @@ class _StorageManagerNodeAdmin:
             progress_callback('thumbnails', 0, total_thumbs, _results())
         for i, (fid,) in enumerate(all_files):
             for thumb_type, ext in [('jpg', '.jpg'), ('e2e', '.e2e')]:
-                thumb_id = f'{fid}{ext}'
-                if not local_backend.exists('thumbnails', thumb_id):
-                    continue
-                try:
-                    thumb_size, thumb_checksum, thumb_signature = _local_payload_snapshot('thumbnails', thumb_id)
-                except Exception as e:
-                    print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: local snapshot failed: {e}')
-                    skipped_thumbs += 1
-                    continue
-                # AUDIT FIX (purge verified remotes against the doomed local
-                # copy): same defect as the file loop above. save_thumbnail()
-                # records File.thumbnail_checksum / thumbnail_e2e_checksum at
-                # generation time, independent of any replica or the local disk —
-                # that is the authority. E2E thumbnails cannot be regenerated
-                # server-side, so with no authoritative checksum we refuse to
-                # reclaim the local copy rather than trust its own hash.
-                _thumb_file_obj = db.session.get(File, fid)
-                authoritative_thumb_checksum = None
-                if _thumb_file_obj is not None:
-                    authoritative_thumb_checksum = (
-                        _thumb_file_obj.thumbnail_e2e_checksum if thumb_type == 'e2e'
-                        else _thumb_file_obj.thumbnail_checksum
-                    )
-                if not authoritative_thumb_checksum:
-                    print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: no authoritative '
-                          f'thumbnail checksum recorded on the File row')
-                    skipped_thumbs += 1
-                    continue
-                if authoritative_thumb_checksum != thumb_checksum:
-                    print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: local copy does not '
-                          f'match the authoritative thumbnail checksum')
-                    skipped_thumbs += 1
-                    continue
-                thumb_checksum = authoritative_thumb_checksum
-                remote_synced_query = ThumbnailReplica.query.filter(
-                    ThumbnailReplica.file_id == fid,
-                    ThumbnailReplica.thumb_type == thumb_type,
-                    ThumbnailReplica.node_id.in_(remote_node_ids),
-                    ThumbnailReplica.status == 'synced'
-                )
-                verified_remote = _verified_synced_replicas(
-                    remote_synced_query,
-                    'thumbnails',
-                    thumb_id,
-                    thumb_size,
-                    thumb_checksum,
-                )
-                if len(verified_remote) >= required_remote_copies:
-                    size = thumb_size or 0
-                    publication_lock = _acquire_thumbnail_publication_lock(fid, thumb_type)
-                    try:
-                        db.session.rollback()
-                        fresh_thumb_file = db.session.get(File, fid)
-                        fresh_thumb_checksum = None
-                        if fresh_thumb_file is not None:
-                            fresh_thumb_checksum = (
-                                fresh_thumb_file.thumbnail_e2e_checksum if thumb_type == 'e2e'
-                                else fresh_thumb_file.thumbnail_checksum
-                            )
-                        final_size, final_checksum, final_signature = _local_payload_snapshot('thumbnails', thumb_id)
-                        generation_changed = (
-                            fresh_thumb_checksum != authoritative_thumb_checksum
-                            or final_signature != thumb_signature
-                            or final_size != thumb_size
-                            or final_checksum != authoritative_thumb_checksum
-                        )
-                        if generation_changed:
-                            print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: generation changed after remote verification')
-                            skipped_thumbs += 1
-                        elif not _remotes_still_held(remote_synced_query, authoritative_thumb_checksum):
-                            # AUDIT FIX (finding 5): same window as the file
-                            # loop — re-verify remote redundancy under the lock.
-                            print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: '
-                                  f'verified remote copies vanished or were fenced after '
-                                  f'remote verification (node removal/drain race)')
-                            skipped_thumbs += 1
-                        else:
-                            deleted_ok = local_backend.delete('thumbnails', thumb_id)
-                            if not deleted_ok:
-                                skipped_thumbs += 1
-                            else:
-                                purged_thumbs += 1
-                                bytes_freed += size
-                                # Remove local replica row since the local copy is gone
-                                # AUDIT FIX P2-8: commit immediately after each purge.
-                                if local_node_id:
-                                    local_replica = ThumbnailReplica.query.filter_by(
-                                        file_id=fid, thumb_type=thumb_type, node_id=local_node_id
-                                    ).first()
-                                    if local_replica:
-                                        db.session.delete(local_replica)
-                                db.session.commit()
-                    except Exception as e:
-                        print(f'[STORAGE] Purge failed for thumbnail {thumb_id}: {e}')
-                        try:
-                            db.session.rollback()
-                        except Exception:
-                            pass
-                    finally:
-                        _release_thumbnail_publication_lock(publication_lock)
-                else:
-                    skipped_thumbs += 1
+                self._purge_local_thumbnail(fid, thumb_type, ext, *purge_args)
             if progress_callback:
                 progress_callback('thumbnails', i + 1, total_thumbs, _results())
         # Commit replica row deletions from the purge above
@@ -794,6 +399,416 @@ class _StorageManagerNodeAdmin:
         # Live-object caches may be the only recoverable copy.
         if progress_callback:
             progress_callback('cleanup', 0, 0, _results())
+        counts['bytes_freed'] += self._purge_stale_temp_files()
+        purged_files = counts['purged_files']
+        purged_notes = counts['purged_notes']
+        purged_thumbs = counts['purged_thumbnails']
+        skipped_files = counts['skipped_files']
+        skipped_notes = counts['skipped_notes']
+        skipped_thumbs = counts['skipped_thumbnails']
+        bytes_freed = counts['bytes_freed']
+        total = purged_files + purged_notes + purged_thumbs
+        if total > 0:
+            mb_freed = bytes_freed / (1024 * 1024)
+            print(f'[STORAGE] Purged {purged_files} files, {purged_notes} notes, {purged_thumbs} thumbnails from local disk ({mb_freed:.1f} MB freed)')
+        else:
+            print(
+                f'[STORAGE] No local copies to purge '
+                f'(skipped {skipped_files} files, {skipped_notes} notes, {skipped_thumbs} thumbnails without {required_remote_copies} verified remote mirrors)'
+            )
+        return {
+            'purged_files': purged_files, 'purged_notes': purged_notes, 'purged_thumbnails': purged_thumbs,
+            'skipped_files': skipped_files, 'skipped_notes': skipped_notes, 'skipped_thumbnails': skipped_thumbs,
+            'bytes_freed': bytes_freed,
+            'required_remote_copies': required_remote_copies,
+        }
+
+    def _purge_verified_remote_replicas(self, backends, required_remote_copies, replica_query, category, item_id,
+                                        expected_size, expected_checksum):
+        verified = []
+        for replica in replica_query.all():
+            backend = backends.get(replica.node_id)
+            if not backend:
+                continue
+            if self._verify_remote_replica_payload(
+                replica,
+                backend,
+                category,
+                item_id,
+                expected_size,
+                expected_checksum,
+                'LOCAL PURGE',
+                update_replica=True,
+            ):
+                verified.append(replica)
+            if len(verified) >= required_remote_copies:
+                break
+        return verified
+
+    def _purge_remotes_still_held(self, required_remote_copies, replica_query, expected_checksum):
+        """AUDIT FIX (finding 5): remote redundancy was proven BEFORE the
+        per-item rewrite/publication lock was taken. remove_node can drain
+        a remote node inside that window (fence published, replica rows
+        deleted at commit), so by the time the local copy was destroyed
+        the 'verified' remotes could be gone from the DB. Called WITH the
+        lock held: re-query the replica rows fresh and require enough of
+        them to still be synced, checksum-matched, verification-not-refuted
+        and backed by a node that is still enabled and not draining."""
+        rows = replica_query.all()
+        if not rows:
+            return False
+        node_rows = StorageNode.query.filter(
+            StorageNode.id.in_([r.node_id for r in rows])
+        ).all()
+        node_map = {n.id: n for n in node_rows}
+        held = 0
+        for rep in rows:
+            n = node_map.get(rep.node_id)
+            if n is None or not n.is_enabled or n.status == 'draining':
+                continue
+            if expected_checksum and rep.checksum != expected_checksum:
+                continue
+            if rep.checksum_verified is False:
+                continue
+            held += 1
+            if held >= required_remote_copies:
+                return True
+        return False
+
+    def _purge_local_payload_snapshot(self, local_backend, category, item_id):
+        """Hash one stable inode and return (size, checksum, stat signature)."""
+        path = local_backend.get_path(category, item_id)
+        before = os.stat(path)
+        checksum = self._sha256_file(path)
+        after = os.stat(path)
+        before_sig = (before.st_dev, before.st_ino, before.st_size,
+                      before.st_mtime_ns, before.st_ctime_ns)
+        after_sig = (after.st_dev, after.st_ino, after.st_size,
+                     after.st_mtime_ns, after.st_ctime_ns)
+        if before_sig != after_sig:
+            raise RuntimeError('local payload changed while it was being hashed')
+        return int(after.st_size), checksum, after_sig
+
+    def _purge_local_file(self, fid, counts, backends, local_backend, local_node_id, remote_node_ids, required_remote_copies):
+        """Delete one local file payload once enough verified remote copies hold it."""
+        filename = f'{fid}.enc'
+        if not local_backend.exists('files', filename):
+            return
+        try:
+            local_size, local_checksum, local_signature = self._purge_local_payload_snapshot(local_backend, 'files', filename)
+        except Exception as e:
+            print(f'[STORAGE] Skipping local purge for file {filename}: local snapshot failed: {e}')
+            counts['skipped_files'] += 1
+            return
+        # AUDIT FIX (purge verified remotes against the doomed local copy):
+        # the expected checksum used to be `local_checksum` — the hash of the
+        # very copy about to be DELETED. If the local file had drifted and the
+        # drift was replicated (easy while File.payload_checksum is NULL,
+        # because _tracked_file_checksum_hex falls back to a sibling replica's
+        # checksum), both remotes "verified" against the corrupt hash and the
+        # local copy plus its replica row were destroyed. The read path then
+        # requires checksum == File.payload_checksum, so nothing was servable:
+        # total loss. Notes already gated on note_obj.content_checksum; files
+        # now gate on the equally authoritative File.payload_checksum, and we
+        # REFUSE to purge when no authoritative checksum exists at all.
+        _file_obj = db.session.get(File, fid)
+        authoritative_checksum = _file_obj.payload_checksum if _file_obj else None
+        if not authoritative_checksum:
+            print(f'[STORAGE] Skipping local purge for file {filename}: no authoritative '
+                  f'File.payload_checksum recorded — refusing to reclaim the local copy on the '
+                  f'strength of its own hash')
+            counts['skipped_files'] += 1
+            return
+        if authoritative_checksum != local_checksum:
+            print(f'[STORAGE] Skipping local purge for file {filename}: local copy does not match '
+                  f'the authoritative payload checksum (local corruption or an in-flight rewrite)')
+            counts['skipped_files'] += 1
+            return
+        authoritative_size = int(_file_obj.disk_size) if _file_obj.disk_size is not None else local_size
+        if authoritative_size is not None and int(authoritative_size) != int(local_size):
+            print(f'[STORAGE] Skipping local purge for file {filename}: local size {local_size} '
+                  f'does not match the authoritative disk_size {authoritative_size}')
+            counts['skipped_files'] += 1
+            return
+        remote_synced_query = FileReplica.query.filter(
+            FileReplica.file_id == fid,
+            FileReplica.node_id.in_(remote_node_ids),
+            FileReplica.status == 'synced'
+        )
+        verified_remote = self._purge_verified_remote_replicas(backends, required_remote_copies,
+            remote_synced_query,
+            'files',
+            filename,
+            authoritative_size,
+            authoritative_checksum,
+        )
+        if len(verified_remote) >= required_remote_copies:
+            size = local_size or 0
+            rewrite_lock = _acquire_file_rewrite_lock(fid)
+            try:
+                # Remote verification deliberately happens before this lock.
+                # Start a fresh transaction, then prove the DB generation and
+                # exact local inode are still the ones verified above.
+                db.session.rollback()
+                fresh_file = db.session.get(File, fid)
+                fresh_size = int(fresh_file.disk_size) if fresh_file and fresh_file.disk_size is not None else local_size
+                final_size, final_checksum, final_signature = self._purge_local_payload_snapshot(local_backend, 'files', filename)
+                generation_changed = (
+                    fresh_file is None
+                    or fresh_file.payload_checksum != authoritative_checksum
+                    or int(fresh_size) != int(authoritative_size)
+                    or final_signature != local_signature
+                    or final_size != local_size
+                    or final_checksum != authoritative_checksum
+                )
+                if generation_changed:
+                    print(f'[STORAGE] Skipping local purge for file {filename}: payload generation changed after remote verification')
+                    counts['skipped_files'] += 1
+                elif not self._purge_remotes_still_held(required_remote_copies, remote_synced_query, authoritative_checksum):
+                    # AUDIT FIX (finding 5): the remote verification above ran
+                    # BEFORE this lock; a node removal/drain that landed in the
+                    # window deleted those replica rows. Re-checked fresh under
+                    # the lock — do not destroy the local copy on stale evidence.
+                    print(f'[STORAGE] Skipping local purge for file {filename}: '
+                          f'verified remote copies vanished or were fenced after '
+                          f'remote verification (node removal/drain race)')
+                    counts['skipped_files'] += 1
+                else:
+                    deleted_ok = local_backend.delete('files', filename)
+                    if not deleted_ok:
+                        # On-disk delete failed — do NOT erase the local replica
+                        # row, or the file becomes an untracked local orphan that
+                        # cleanup_orphaned_files will not reap (its File row still
+                        # references it). Skip this entry; it will retry next cycle.
+                        counts['skipped_files'] += 1
+                    else:
+                        counts['purged_files'] += 1
+                        counts['bytes_freed'] += size
+                        # Remove local replica row since the local copy is gone
+                        # AUDIT FIX P2-8: commit immediately after each purge so a
+                        # crash mid-purge does not leave the DB saying the local
+                        # copy is still 'synced' when the file is already deleted.
+                        if local_node_id:
+                            local_replica = FileReplica.query.filter_by(file_id=fid, node_id=local_node_id).first()
+                            if local_replica:
+                                db.session.delete(local_replica)
+                        db.session.commit()
+            except Exception as e:
+                print(f'[STORAGE] Purge failed for file {filename}: {e}')
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+            finally:
+                _release_file_rewrite_lock(rewrite_lock)
+        else:
+            counts['skipped_files'] += 1
+
+    def _purge_local_note(self, note_id, counts, backends, local_backend, local_node_id, remote_node_ids, required_remote_copies):
+        """Delete one local note payload once enough verified remote copies hold its current version."""
+        if not local_backend.exists('notes', note_id):
+            return
+        note_obj = db.session.get(Note, note_id)
+        if not note_obj:
+            return
+        try:
+            note_size, local_checksum, note_signature = self._purge_local_payload_snapshot(local_backend, 'notes', note_id)
+        except Exception as e:
+            print(f'[STORAGE] Skipping local purge for note {note_id}: local snapshot failed: {e}')
+            counts['skipped_notes'] += 1
+            return
+        expected_checksum = note_obj.content_checksum
+        if not expected_checksum:
+            print(f'[STORAGE] Skipping local purge for note {note_id}: no authoritative '
+                  f'Note.content_checksum recorded — refusing to reclaim the local copy on the '
+                  f'strength of its own hash')
+            counts['skipped_notes'] += 1
+            return
+        if expected_checksum != local_checksum:
+            print(f'[STORAGE] Skipping local purge for note {note_id}: local checksum does not match latest DB checksum')
+            counts['skipped_notes'] += 1
+            return
+        if note_size is not None and (note_obj.size is None or int(note_obj.size) != int(note_size)):
+            note_obj.size = int(note_size)
+        note_version = int(note_obj.content_version or 1)
+        remote_synced_query = NoteReplica.query.filter(
+            NoteReplica.note_id == note_id,
+            NoteReplica.node_id.in_(remote_node_ids),
+            NoteReplica.status == 'synced',
+            NoteReplica.synced_version == note_version,
+            NoteReplica.checksum == expected_checksum,
+            db.or_(
+                NoteReplica.target_version.is_(None),
+                NoteReplica.target_version == 0,
+                NoteReplica.target_version == note_version,
+            ),
+        )
+        verified_remote = self._purge_verified_remote_replicas(backends, required_remote_copies,
+            remote_synced_query,
+            'notes',
+            note_id,
+            note_size,
+            expected_checksum,
+        )
+        if len(verified_remote) >= required_remote_copies:
+            note_lock = _acquire_note_rewrite_lock(note_id)
+            try:
+                db.session.rollback()
+                fresh_note = db.session.get(Note, note_id)
+                final_size, final_checksum, final_signature = self._purge_local_payload_snapshot(local_backend, 'notes', note_id)
+                generation_changed = (
+                    fresh_note is None
+                    or int(fresh_note.content_version or 1) != note_version
+                    or fresh_note.content_checksum != expected_checksum
+                    or final_signature != note_signature
+                    or final_size != note_size
+                    or final_checksum != expected_checksum
+                )
+                if generation_changed:
+                    print(f'[STORAGE] Skipping local purge for note {note_id}: content generation changed after remote verification')
+                    counts['skipped_notes'] += 1
+                elif not self._purge_remotes_still_held(required_remote_copies, remote_synced_query, expected_checksum):
+                    # AUDIT FIX (finding 5): same window as the file loop —
+                    # re-verify remote redundancy fresh, under the lock.
+                    print(f'[STORAGE] Skipping local purge for note {note_id}: '
+                          f'verified remote copies vanished or were fenced after '
+                          f'remote verification (node removal/drain race)')
+                    counts['skipped_notes'] += 1
+                else:
+                    if fresh_note.size is None or int(fresh_note.size) != final_size:
+                        fresh_note.size = final_size
+                    deleted_ok = local_backend.delete('notes', note_id)
+                    if not deleted_ok:
+                        counts['skipped_notes'] += 1
+                    else:
+                        counts['purged_notes'] += 1
+                        counts['bytes_freed'] += note_size or 0
+                        # Remove local replica row since the local copy is gone
+                        # AUDIT FIX P2-8: commit immediately after each purge.
+                        if local_node_id:
+                            local_replica = NoteReplica.query.filter_by(note_id=note_id, node_id=local_node_id).first()
+                            if local_replica:
+                                db.session.delete(local_replica)
+                        db.session.commit()
+            except Exception as e:
+                print(f'[STORAGE] Purge failed for note {note_id}: {e}')
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+            finally:
+                _release_note_rewrite_lock(note_lock)
+        else:
+            counts['skipped_notes'] += 1
+
+    def _purge_local_thumbnail(self, fid, thumb_type, ext, counts, backends, local_backend, local_node_id, remote_node_ids, required_remote_copies):
+        """Delete one local thumbnail variant once enough verified remote copies hold it."""
+        thumb_id = f'{fid}{ext}'
+        if not local_backend.exists('thumbnails', thumb_id):
+            return
+        try:
+            thumb_size, thumb_checksum, thumb_signature = self._purge_local_payload_snapshot(local_backend, 'thumbnails', thumb_id)
+        except Exception as e:
+            print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: local snapshot failed: {e}')
+            counts['skipped_thumbnails'] += 1
+            return
+        # AUDIT FIX (purge verified remotes against the doomed local
+        # copy): same defect as the file loop above. save_thumbnail()
+        # records File.thumbnail_checksum / thumbnail_e2e_checksum at
+        # generation time, independent of any replica or the local disk —
+        # that is the authority. E2E thumbnails cannot be regenerated
+        # server-side, so with no authoritative checksum we refuse to
+        # reclaim the local copy rather than trust its own hash.
+        _thumb_file_obj = db.session.get(File, fid)
+        authoritative_thumb_checksum = None
+        if _thumb_file_obj is not None:
+            authoritative_thumb_checksum = (
+                _thumb_file_obj.thumbnail_e2e_checksum if thumb_type == 'e2e'
+                else _thumb_file_obj.thumbnail_checksum
+            )
+        if not authoritative_thumb_checksum:
+            print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: no authoritative '
+                  f'thumbnail checksum recorded on the File row')
+            counts['skipped_thumbnails'] += 1
+            return
+        if authoritative_thumb_checksum != thumb_checksum:
+            print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: local copy does not '
+                  f'match the authoritative thumbnail checksum')
+            counts['skipped_thumbnails'] += 1
+            return
+        thumb_checksum = authoritative_thumb_checksum
+        remote_synced_query = ThumbnailReplica.query.filter(
+            ThumbnailReplica.file_id == fid,
+            ThumbnailReplica.thumb_type == thumb_type,
+            ThumbnailReplica.node_id.in_(remote_node_ids),
+            ThumbnailReplica.status == 'synced'
+        )
+        verified_remote = self._purge_verified_remote_replicas(backends, required_remote_copies,
+            remote_synced_query,
+            'thumbnails',
+            thumb_id,
+            thumb_size,
+            thumb_checksum,
+        )
+        if len(verified_remote) >= required_remote_copies:
+            size = thumb_size or 0
+            publication_lock = _acquire_thumbnail_publication_lock(fid, thumb_type)
+            try:
+                db.session.rollback()
+                fresh_thumb_file = db.session.get(File, fid)
+                fresh_thumb_checksum = None
+                if fresh_thumb_file is not None:
+                    fresh_thumb_checksum = (
+                        fresh_thumb_file.thumbnail_e2e_checksum if thumb_type == 'e2e'
+                        else fresh_thumb_file.thumbnail_checksum
+                    )
+                final_size, final_checksum, final_signature = self._purge_local_payload_snapshot(local_backend, 'thumbnails', thumb_id)
+                generation_changed = (
+                    fresh_thumb_checksum != authoritative_thumb_checksum
+                    or final_signature != thumb_signature
+                    or final_size != thumb_size
+                    or final_checksum != authoritative_thumb_checksum
+                )
+                if generation_changed:
+                    print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: generation changed after remote verification')
+                    counts['skipped_thumbnails'] += 1
+                elif not self._purge_remotes_still_held(required_remote_copies, remote_synced_query, authoritative_thumb_checksum):
+                    # AUDIT FIX (finding 5): same window as the file
+                    # loop — re-verify remote redundancy under the lock.
+                    print(f'[STORAGE] Skipping local purge for thumbnail {thumb_id}: '
+                          f'verified remote copies vanished or were fenced after '
+                          f'remote verification (node removal/drain race)')
+                    counts['skipped_thumbnails'] += 1
+                else:
+                    deleted_ok = local_backend.delete('thumbnails', thumb_id)
+                    if not deleted_ok:
+                        counts['skipped_thumbnails'] += 1
+                    else:
+                        counts['purged_thumbnails'] += 1
+                        counts['bytes_freed'] += size
+                        # Remove local replica row since the local copy is gone
+                        # AUDIT FIX P2-8: commit immediately after each purge.
+                        if local_node_id:
+                            local_replica = ThumbnailReplica.query.filter_by(
+                                file_id=fid, thumb_type=thumb_type, node_id=local_node_id
+                            ).first()
+                            if local_replica:
+                                db.session.delete(local_replica)
+                        db.session.commit()
+            except Exception as e:
+                print(f'[STORAGE] Purge failed for thumbnail {thumb_id}: {e}')
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+            finally:
+                _release_thumbnail_publication_lock(publication_lock)
+        else:
+            counts['skipped_thumbnails'] += 1
+
+    def _purge_stale_temp_files(self):
+        """Remove old temp/cache files left in the local payload dirs. Returns bytes freed."""
+        freed = 0
         _temp_prefixes = ('.cache_', '.remote_', 'repl_')
         _temp_suffixes = ('.sftp_tmp', '.tmp')
         _temp_max_age = 600  # 10 minutes
@@ -826,26 +841,12 @@ class _StorageManagerNodeAdmin:
                                 continue
                         sz = fstat.st_size
                         os.remove(fpath)
-                        bytes_freed += sz
+                        freed += sz
                     except Exception:
                         pass
             except Exception:
                 pass
-        total = purged_files + purged_notes + purged_thumbs
-        if total > 0:
-            mb_freed = bytes_freed / (1024 * 1024)
-            print(f'[STORAGE] Purged {purged_files} files, {purged_notes} notes, {purged_thumbs} thumbnails from local disk ({mb_freed:.1f} MB freed)')
-        else:
-            print(
-                f'[STORAGE] No local copies to purge '
-                f'(skipped {skipped_files} files, {skipped_notes} notes, {skipped_thumbs} thumbnails without {required_remote_copies} verified remote mirrors)'
-            )
-        return {
-            'purged_files': purged_files, 'purged_notes': purged_notes, 'purged_thumbnails': purged_thumbs,
-            'skipped_files': skipped_files, 'skipped_notes': skipped_notes, 'skipped_thumbnails': skipped_thumbs,
-            'bytes_freed': bytes_freed,
-            'required_remote_copies': required_remote_copies,
-        }
+        return freed
 
     def _lock_storage_node_rows(self):
         """AUDIT FIX (finding 8): cross-process primary/row fencing.

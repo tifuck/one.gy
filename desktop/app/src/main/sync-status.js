@@ -25,6 +25,33 @@ function bridgeStatus({ engineState, account, status, issueCount }, username) {
   return out(PASS_THROUGH.has(s) ? s : 'syncing');
 }
 
+// One sync's state for the website (site-bridge.md onSyncs).
+function syncState(s, account) {
+  if (account.locked) return 'locked';
+  if (s.paused) return 'paused';
+  if (s.stats && s.stats.issues > 0) return 'issues';
+  if (s.state === 'scanning' || s.state === 'syncing') return 'syncing';
+  if (s.state === 'up_to_date' || s.state === 'offline') return s.state;
+  return 'error';
+}
+
+// This computer's syncs for a website page signed in as `username`: only the
+// one.gy side (no local paths or names), and none for another account.
+function bridgeSyncs({ engineState, account, syncs }, username) {
+  if (engineState !== 'connected' || !account || !account.signed_in || !sameUser(account.username, username)) return [];
+  return [...syncs.values()].map((s) => {
+    const st = s.stats || {};
+    return {
+      id: s.id,
+      folder_id: s.remote_folder_id ?? null,
+      type: s.type,
+      state: syncState(s, account),
+      pending: (st.pending_up || 0) + (st.pending_down || 0),
+      issues: st.issues || 0,
+    };
+  });
+}
+
 // Whether a website page signed in as `username` may get this computer's
 // master key: only a page of the account this computer is authorized for, so
 // another account's page never stores (and encrypts with) the wrong key.
@@ -58,6 +85,7 @@ class SyncStatus extends EventEmitter {
     this.account = null;
     this.status = null;
     this.issues = new Set();
+    this.syncs = new Map();
     engine.on('state', (s) => {
       this.engineState = s;
       if (s === 'connected') this.refresh();
@@ -78,8 +106,24 @@ class SyncStatus extends EventEmitter {
     return bridgeStatus(this, username);
   }
 
+  syncsForUser(username) {
+    return bridgeSyncs(this, username);
+  }
+
   async refresh() {
-    await Promise.all([this.loadAccount(), this.loadIssues()]);
+    await Promise.all([this.loadAccount(), this.loadIssues(), this.loadSyncs()]);
+  }
+
+  // Also after a sync is removed: the engine sends no event for that.
+  async loadSyncs() {
+    try {
+      const list = await this.engine.call('syncs.list');
+      this.syncs = new Map((Array.isArray(list) ? list : []).map((s) => [s.id, s]));
+    } catch (err) {
+      this.syncs = new Map();
+      if (err.code !== 'not_signed_in') console.error(`[SYNC] syncs.list failed: ${err.message}`);
+    }
+    this.emit('change');
   }
 
   async loadAccount() {
@@ -110,6 +154,9 @@ class SyncStatus extends EventEmitter {
       // Sign-in, sign-out, lock and issue changes all show up as state changes.
       if (was !== d.state) this.refresh();
       this.emit('change');
+    } else if (ev.type === 'sync' && d.id) {
+      this.syncs.set(d.id, d);
+      this.emit('change');
     } else if (ev.type === 'account') {
       this.account = d;
       this.emit('change');
@@ -121,4 +168,6 @@ class SyncStatus extends EventEmitter {
   }
 }
 
-module.exports = { SyncStatus, bridgeStatus, sameUser, mayUnlock, appLocked, throttle };
+module.exports = {
+  SyncStatus, bridgeStatus, bridgeSyncs, sameUser, mayUnlock, appLocked, throttle,
+};
