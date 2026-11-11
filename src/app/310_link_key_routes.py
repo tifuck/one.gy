@@ -91,6 +91,11 @@ def regenerate_file_link(file_id):
         _old_local_targets = []
         try:
             sync_owner = _sync_file_owner(file)
+            # Same row-lock order as the sync routes and the flush listener (user
+            # row, then file row): the UPDATE below locks the file row and the
+            # seq bump needs the user row, which deadlocked a device rename.
+            if sync_owner:
+                _sync_lock_user_row(sync_owner)
             db.session.execute(
                 db.text('UPDATE file SET id = :new_id, filename = :new_filename WHERE id = :old_id'),
                 {'new_id': new_id, 'new_filename': new_filename, 'old_id': old_id}

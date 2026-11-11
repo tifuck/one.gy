@@ -110,7 +110,14 @@ def apiv1_device_unlock():
         return _sync_error(400, 'bad_request', 'Invalid request')
     pin_proof = data.get('pin_proof') or ''
     auth_token = data.get('auth_token') or ''
-    device, user = g.device, g.api_user
+    # Current read under the device row lock: concurrent wrong PINs must each
+    # count (a read-modify-write on a snapshot let a burst cost one failure).
+    device_id = g.device.id
+    db.session.rollback()
+    device = Device.query.filter_by(id=device_id, is_active=True).populate_existing().with_for_update().first()
+    if device is None:
+        return _sync_error(401, 'device_revoked', 'This device was removed')
+    user = g.api_user
 
     if not pin_proof and not auth_token:
         if device.pin_strict:
@@ -316,11 +323,16 @@ def apiv1_sync_tree_keys():
     never wrap children under different folder keys; on a mismatch that folder
     (and its name-key wrap) is skipped and reported in conflicts."""
     data = _sync_json_body()
-    folders = data.get('folders', []) if data else None
-    files = data.get('files', []) if data else None
+    folders = data.get('folders', []) if data is not None else None
+    files = data.get('files', []) if data is not None else None
     if not isinstance(folders, list) or not isinstance(files, list) or len(folders) + len(files) > TREE_KEYS_MAX_ITEMS:
         return _sync_error(400, 'bad_request', f'folders and files: lists of at most {TREE_KEYS_MAX_ITEMS} items')
     uid = g.api_user.id
+    # The if_tree_key_wrap compare-and-set needs current reads under locks, in
+    # the sync lock order (user row, then folder rows); otherwise two devices
+    # both see no wrap and both write one.
+    db.session.rollback()
+    _sync_lock_user_row(uid)
     out_folders, out_files, conflicts = [], [], []
 
     def parent_ref(item, key):
@@ -330,7 +342,7 @@ def apiv1_sync_tree_keys():
     for item in folders:
         if not isinstance(item, dict) or not isinstance(item.get('id'), int):
             return _sync_error(400, 'bad_request', 'folder items need an id')
-        folder = Folder.query.filter_by(id=item['id'], user_id=uid).first()
+        folder = _sync_load_owned_folder(item['id'], for_update=True)
         if folder is None:
             return _sync_error(404, 'not_found', f'Folder {item["id"]} not found')
         if not _tree_scope_allows(folder.id):

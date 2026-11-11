@@ -634,6 +634,21 @@ class Note(db.Model):
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
+class NoteVersion(db.Model):
+    """Earlier content of a note (ciphertext under the same note key), kept so
+    the owner can restore it. Written by notes_update_note() just before a save
+    replaces the content; pruned to NOTES_VERSION_KEEP per note.
+
+    No FK to note: rows are removed with their note by the permanent-delete
+    routes and by _cleanup_note_versions() (cleanup_job) for every other path."""
+    id = db.Column(db.Integer, primary_key=True)
+    note_id = db.Column(db.String(36), nullable=False, index=True)
+    user_id = db.Column(db.Integer, nullable=False, index=True)
+    # LONGTEXT: snapshots hold up to NOTES_VERSION_MAX_BYTES; TEXT caps at 64 KiB.
+    encrypted_content = db.Column(db.Text().with_variant(LONGTEXT(), 'mysql', 'mariadb'), nullable=False)
+    size = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))  # when this content was saved
+
 class PendingNote(db.Model):
     """Pending note sent from another user, awaiting acceptance."""
     id = db.Column(db.Integer, primary_key=True)

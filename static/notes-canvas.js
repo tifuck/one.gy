@@ -93,6 +93,32 @@
     return wrap.innerHTML
   }
 
+  function imageFiles (files) { return Array.prototype.slice.call(files || []).filter(function (file) { return file && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type || '') }) }
+  // Pictures are stored inside the note body and every save re-uploads the body, so a photo is capped on its longest
+  // side and re-encoded before it goes in. Resolves to a data: URL (the original when shrinking would not help).
+  var IMAGE_MAX_SIDE = 1600
+  function shrinkImage (file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader()
+      reader.onerror = reject
+      reader.onload = function () {
+        var original = String(reader.result || ''), image = new Image()
+        if (/^image\/gif$/i.test(file.type)) { resolve(original); return } // re-encoding would drop the animation
+        image.onerror = function () { resolve(original) }
+        image.onload = function () {
+          var scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(image.naturalWidth, image.naturalHeight, 1))
+          if (scale === 1 && file.size < 300 * 1024) { resolve(original); return }
+          var canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(image.naturalWidth * scale)); canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+          canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height)
+          var small = canvas.toDataURL(/^image\/jpeg$/i.test(file.type) ? 'image/jpeg' : 'image/webp', 0.85) // webp keeps transparency (Safari answers with PNG)
+          resolve(small.length < original.length && safeUrl(small, true) ? small : original)
+        }
+        image.src = original
+      }
+      reader.readAsDataURL(file)
+    })
+  }
+
   function mount (container, opts) {
     opts = opts || {}
     var source = opts.data && typeof opts.data === 'object' ? clone(opts.data) : { blocks: [] }
@@ -111,6 +137,7 @@
     var popover = null, savedRange = null, imageInsertPoint = null, longPress = null
     var provisionalText = {}, growingText = {}, blockClipboard = SHARED_BLOCK_CLIPBOARD, imageReplaceId = null, dirtyPending = false
     var ac = new AbortController(), signal = ac.signal
+    var penMode = 'pen', lineMode = 'arrow', inkId = null // inkId: the block the pen's strokes are joining
 
     function normalize (block) {
       var b = block && typeof block === 'object' ? clone(block) : {}
@@ -142,8 +169,17 @@
     if (!readonly) { bar.appendChild(toolGroup()); bar.appendChild(colorGroup()); bar.appendChild(actionGroup()) }
     var coarse = !!(window.matchMedia && window.matchMedia('(pointer:coarse)').matches)
     var hint = el('div', 'fxc-hint', (coarse ? 'Tap' : 'Click') + ' anywhere to start typing')
-    imageInput.onchange = addSelectedImage
-    vp.appendChild(hint); if (!readonly) root.appendChild(bar); root.appendChild(vp); root.appendChild(imageInput); container.appendChild(root)
+    imageInput.onchange = addSelectedImage; imageInput.multiple = true
+    // Options for the tool in hand: pen / highlighter / eraser, or line / arrow / rectangle / ellipse, plus the stroke width.
+    var optbar = el('div', 'fxc-opts'); optbar.hidden = true
+    vp.appendChild(hint); if (!readonly) root.appendChild(bar); root.appendChild(vp); if (!readonly) root.appendChild(optbar); root.appendChild(imageInput); container.appendChild(root)
+    function renderOpts () {
+      var modes = tool === 'pen' ? [['pen', 'Pen'], ['marker', 'Highlighter'], ['eraser', 'Eraser']] : tool === 'line' ? [['line', 'Line'], ['arrow', 'Arrow'], ['rect', 'Rectangle'], ['ellipse', 'Ellipse']] : null
+      optbar.hidden = !modes; optbar.innerHTML = ''; if (!modes) return
+      modes.forEach(function (mode) { optbar.appendChild(controlButton(mode[1], function () { if (tool === 'pen') penMode = mode[0]; else lineMode = mode[0]; vp.dataset.mode = mode[0]; renderOpts() }, mode[0] === (tool === 'pen' ? penMode : lineMode))) })
+      var width = document.createElement('input'); width.type = 'range'; width.min = 1; width.max = 24; width.value = stroke; width.title = 'Stroke width'; width.setAttribute('aria-label', 'Stroke width')
+      width.oninput = function () { stroke = +width.value }; optbar.appendChild(width)
+    }
 
     function toolGroup () {
       var group = el('div', 'fxc-tools')
@@ -222,7 +258,8 @@
     function setTool (next) {
       if (next === 'image') { imageInput.value = ''; imageInput.click(); return }
       tool = next; bar.querySelectorAll('.fxc-tool').forEach(function (button) { var active = button.dataset.tool === next; button.classList.toggle('is-active', active); button.setAttribute('aria-pressed', active ? 'true' : 'false') })
-      vp.dataset.tool = next; if (next !== 'select') selectBlock(null)
+      vp.dataset.tool = next; vp.dataset.mode = next === 'pen' ? penMode : next === 'line' ? lineMode : ''; inkId = null; renderOpts()
+      if (next !== 'select') selectBlock(null)
     }
     function zoomBy (factor, clientX, clientY) {
       var rect = vp.getBoundingClientRect(), cx = clientX == null ? rect.left + rect.width / 2 : clientX, cy = clientY == null ? rect.top + rect.height / 2 : clientY
@@ -239,6 +276,7 @@
       if (destroyed) return
       if (gestureFrame) { cancelAnimationFrame(gestureFrame); gestureFrame = 0 }
       world.style.transform = 'scale(' + zoom + ')'
+      world.dataset.bg = /^(ruled|grid|dots)$/.test(source.background) ? source.background : ''
       world.innerHTML = ''
       blocks.slice().sort(function (a, b) { return a.zIndex - b.zIndex }).forEach(function (block) { world.appendChild(renderBlock(block)) })
       world.querySelectorAll('.fxc-text-content, .fxc-table-card td').forEach(function (node) { inkHighlights(node) })
@@ -262,6 +300,7 @@
       if (destroyed) return
       world.style.transform = 'scale(' + zoom + ')'; syncZoomLabel()
       var g = gesture
+      if (g && g.type === 'rotate') { var turned = byId(g.id), turnedNode = turned && blockNode(turned.id); if (turnedNode) turnedNode.style.transform = blockTransform(turned) }
       if (g && (g.type === 'move' || g.type === 'resize' || g.type === 'colresize')) {
         (g.type === 'move' ? g.originals.map(function (original) { return byId(original.id) }) : [byId(g.id)]).forEach(function (block) {
           var node = block && blockNode(block.id); if (!node) return
@@ -301,9 +340,7 @@
       if (!readonly) { node.tabIndex = 0; node.setAttribute('aria-label', (block.type || 'block') + ' block'); node.setAttribute('aria-selected', isSelected(block.id) ? 'true' : 'false') }
       if (!isAutoHeight(block)) node.style.height = block.h + 'px'
       node.style.zIndex = block.zIndex == null ? 1 : block.zIndex
-      var transform = 'rotate(' + (block.rotation || 0) + 'deg)'
-      if (block.type === 'image' && block.effects) { if (block.effects.flipH) transform += ' scaleX(-1)'; if (block.effects.flipV) transform += ' scaleY(-1)' }
-      node.style.transform = transform
+      node.style.transform = blockTransform(block)
       if (!readonly && block.type !== 'draw' && block.type !== 'line' && block.type !== 'image') {
         var grip = el('button', 'fxc-grip', '<span></span><span></span><span></span>'); grip.type = 'button'; grip.title = 'Drag to move'
         grip.addEventListener('pointerdown', function (event) { beginMove(event, block) }); node.appendChild(grip)
@@ -318,11 +355,16 @@
       })
       return node
     }
+    function blockTransform (block) {
+      var transform = 'rotate(' + (block.rotation || 0) + 'deg)'
+      if (block.type === 'image' && block.effects) { if (block.effects.flipH) transform += ' scaleX(-1)'; if (block.effects.flipV) transform += ' scaleY(-1)' }
+      return transform
+    }
     function isEmptyTextContent (html) { return !String(html || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim() }
     function renderText (block) {
       // A fresh, still-empty container shows only the caret — the outline/chrome appears once it has content.
       var node = el('div', 'fxc-block fxc-text' + (isSelected(block.id) ? ' is-sel' : '') + (isEmptyTextContent(block.content) ? ' is-empty' : ''))
-      var content = el('div', 'fxc-text-content'); content.contentEditable = readonly ? 'false' : 'true'; content.spellcheck = false; content.appendChild(sanitizeToFragment(block.content))
+      var content = el('div', 'fxc-text-content'); content.contentEditable = readonly ? 'false' : 'true'; content.spellcheck = true; content.appendChild(sanitizeToFragment(block.content))
       if (block.style && block.style.bgColor && block.style.bgColor !== 'transparent') node.style.background = block.style.bgColor
       content.addEventListener('pointerdown', function (event) { if (readonly) return; if (event.ctrlKey || event.metaKey) { event.preventDefault(); event.stopPropagation(); selectBlock(block.id, true); vp.focus() } else selectBlock(block.id) })
       content.addEventListener('beforeinput', snapshotTyping)
@@ -350,6 +392,10 @@
         bindRichDrop(input)
         input.oninput = function () { item.text = input.innerText.replace(/\n$/, ''); syncBlockHeight(block, node); renderOverlay(); scheduleCommit() }
         input.onkeydown = function (event) {
+          if (!readonly && event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) { // OneNote: Alt+Up/Down moves the item
+            var to = index + (event.key === 'ArrowUp' ? -1 : 1); event.preventDefault(); if (to < 0 || to >= block.items.length) return
+            snapshot(); block.items.splice(to, 0, block.items.splice(index, 1)[0]); render(); commit(); focusTodoItem(block.id, to, true); return
+          }
           if (readonly || event.key !== 'Enter' || event.shiftKey) return
           event.preventDefault()
           snapshot()
@@ -381,10 +427,17 @@
       var node = el('div', 'fxc-block fxc-card fxc-code' + (isSelected(block.id) ? ' is-sel' : ''))
       var header = el('div', 'fxc-code-head'), language = document.createElement('select'), copy = el('button', 'fxc-code-copy', 'Copy')
       ;[['Plain text', ''], ['Bash', 'bash'], ['Python', 'python'], ['JavaScript', 'javascript'], ['TypeScript', 'typescript'], ['Go', 'go'], ['Rust', 'rust'], ['C', 'c'], ['C++', 'cpp'], ['Java', 'java'], ['HTML', 'html'], ['CSS', 'css'], ['SQL', 'sql'], ['JSON', 'json'], ['YAML', 'yaml']].forEach(function (choice) { var option = document.createElement('option'); option.textContent = choice[0]; option.value = choice[1]; option.selected = block.lang === choice[1]; language.appendChild(option) })
-      language.disabled = readonly; language.onchange = function () { snapshot(); block.lang = language.value; commit() }; copy.type = 'button'; copy.onclick = function () { navigator.clipboard.writeText(block.code || '').then(function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy' }, 1200) }) }
+      language.disabled = readonly; language.onchange = function () { snapshot(); block.lang = language.value; highlight(); commit() }; copy.type = 'button'; copy.onclick = function () { navigator.clipboard.writeText(block.code || '').then(function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy' }, 1200) }) }
       header.appendChild(language); header.appendChild(copy); node.appendChild(header)
       var area = document.createElement('textarea'); area.value = block.code || block.content || ''; area.readOnly = readonly; area.spellcheck = false
-      area.addEventListener('beforeinput', snapshotTyping); area.oninput = function () { block.code = area.value; syncBlockHeight(block, node); renderOverlay(); scheduleCommit() }; area.onkeydown = function (event) { if (event.key === 'Tab' && !readonly) { event.preventDefault(); snapshotTyping(); var start = area.selectionStart; area.setRangeText('  ', start, area.selectionEnd, 'end'); area.oninput() } }; node.appendChild(area); return node
+      area.addEventListener('beforeinput', snapshotTyping); area.oninput = function () { block.code = area.value; highlight(); syncBlockHeight(block, node); renderOverlay(); scheduleCommit() }; area.onkeydown = function (event) { if (event.key === 'Tab' && !readonly) { event.preventDefault(); snapshotTyping(); var start = area.selectionStart; area.setRangeText('  ', start, area.selectionEnd, 'end'); area.oninput() } }
+      // Colours come from a <pre> painted under the (then transparent) textarea; without highlight.js the textarea shows its own text.
+      var edit = el('div', 'fxc-code-edit'), paint = el('pre', 'fxc-code-hl'); paint.setAttribute('aria-hidden', 'true')
+      function highlight () {
+        var lang = window.hljs && block.lang && window.hljs.getLanguage(block.lang) ? block.lang : ''
+        edit.classList.toggle('has-hl', !!lang); paint.innerHTML = lang ? window.hljs.highlight(area.value, { language: lang, ignoreIllegals: true }).value + '\n' : ''
+      }
+      edit.appendChild(paint); edit.appendChild(area); node.appendChild(edit); highlight(); return node
     }
     function colWidthsPct (block) {
       var cols = Math.max(1, +block.cols || 1)
@@ -517,17 +570,26 @@
     function renderSvg (block) {
       var node = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); node.setAttribute('class', 'fxc-block fxc-svg' + (isSelected(block.id) ? ' is-sel' : ''))
       node.setAttribute('viewBox', '0 0 ' + block.w + ' ' + block.h); node.setAttribute('width', block.w); node.setAttribute('height', block.h)
+      if (block.shape) {
+        var shape = document.createElementNS('http://www.w3.org/2000/svg', block.shape === 'ellipse' ? 'ellipse' : 'rect')
+        if (block.shape === 'ellipse') { shape.setAttribute('cx', block.w / 2); shape.setAttribute('cy', block.h / 2); shape.setAttribute('rx', block.w / 2); shape.setAttribute('ry', block.h / 2) } else { shape.setAttribute('width', block.w); shape.setAttribute('height', block.h) }
+        shape.setAttribute('fill', 'none'); shape.setAttribute('stroke', block.strokeColor || '#0e8fd6'); shape.setAttribute('stroke-width', +block.strokeWidth || 3); shape.setAttribute('vector-effect', 'non-scaling-stroke')
+        node.appendChild(shape); return node
+      }
       if (block.type === 'draw' && Array.isArray(block.paths) && block.paths.length) {
         block.paths.forEach(function (part, index) {
           if (!part) return
           if (part.lineData) {
             var line = document.createElementNS('http://www.w3.org/2000/svg', 'line'), markerBlock = { id: block.id + '-' + index, strokeColor: part.strokeColor }
-            line.setAttribute('x1', part.lineData.x1); line.setAttribute('y1', part.lineData.y1); line.setAttribute('x2', part.lineData.x2); line.setAttribute('y2', part.lineData.y2); line.setAttribute('stroke', part.strokeColor || '#0e8fd6'); line.setAttribute('stroke-width', +part.strokeWidth || 3); line.setAttribute('stroke-linecap', 'round')
+            line.setAttribute('x1', part.lineData.x1); line.setAttribute('y1', part.lineData.y1); line.setAttribute('x2', part.lineData.x2); line.setAttribute('y2', part.lineData.y2); line.setAttribute('stroke', part.strokeColor || '#0e8fd6'); line.setAttribute('stroke-width', +part.strokeWidth || 3); line.setAttribute('stroke-linecap', 'round'); line.setAttribute('data-part', index)
             if (part.arrowMode === 'end' || part.arrowMode === 'both') { node.appendChild(arrowMarker(markerBlock, 'end')); line.setAttribute('marker-end', 'url(#fxc-arrow-end-' + markerBlock.id + ')') }
             if (part.arrowMode === 'both') { node.appendChild(arrowMarker(markerBlock, 'start')); line.setAttribute('marker-start', 'url(#fxc-arrow-start-' + markerBlock.id + ')') }
             node.appendChild(line)
           } else if (part.d) {
-            var partPath = document.createElementNS('http://www.w3.org/2000/svg', 'path'); partPath.setAttribute('d', part.d); partPath.setAttribute('fill', 'none'); partPath.setAttribute('stroke', part.strokeColor || '#0e8fd6'); partPath.setAttribute('stroke-width', +part.strokeWidth || 3); partPath.setAttribute('stroke-linecap', 'round'); partPath.setAttribute('stroke-linejoin', 'round'); node.appendChild(partPath)
+            var partPath = document.createElementNS('http://www.w3.org/2000/svg', 'path'); partPath.setAttribute('d', part.d); partPath.setAttribute('fill', 'none'); partPath.setAttribute('stroke', part.strokeColor || '#0e8fd6'); partPath.setAttribute('stroke-width', +part.strokeWidth || 3); partPath.setAttribute('stroke-linecap', 'round'); partPath.setAttribute('stroke-linejoin', 'round'); partPath.setAttribute('data-part', index)
+            if (part.strokeOpacity) partPath.setAttribute('stroke-opacity', +part.strokeOpacity || 1)
+            if (part.dx || part.dy) partPath.setAttribute('transform', 'translate(' + (+part.dx || 0) + ' ' + (+part.dy || 0) + ')')
+            node.appendChild(partPath)
           }
         })
         return node
@@ -550,15 +612,21 @@
         var marquee = el('div', 'fxc-marquee'), area = marqueeArea(gesture)
         marquee.style.left = (area.x * zoom) + 'px'; marquee.style.top = (area.y * zoom) + 'px'; marquee.style.width = (area.w * zoom) + 'px'; marquee.style.height = (area.h * zoom) + 'px'; overlay.appendChild(marquee)
       }
+      if (gesture && gesture.guides) ['x', 'y'].forEach(function (axis) { if (gesture.guides[axis] == null) return; var guide = el('div', 'fxc-guide fxc-guide-' + axis); guide.style[axis === 'x' ? 'left' : 'top'] = (gesture.guides[axis] * zoom) + 'px'; overlay.appendChild(guide) })
       if (!selectedIds.length || readonly) return
       selectedBlocks().forEach(function (block) {
         if (provisionalText[block.id]) return // untyped text containers get no selection box or handles
         var v = visibleRect(block), box = el('div', 'fxc-selbox' + (selectedIds.length > 1 ? ' is-multi' : '')); box.dataset.selectionId = block.id; box.style.left = (v.x * zoom) + 'px'; box.style.top = (v.y * zoom) + 'px'; box.style.width = (v.w * zoom) + 'px'; box.style.height = (v.h * zoom) + 'px'
         // Rotate about the block's own centre, which sits off-centre in a cropped picture's box.
         box.style.transform = 'rotate(' + (block.rotation || 0) + 'deg)'; box.style.transformOrigin = ((block.x + block.w / 2 - v.x) * zoom) + 'px ' + ((block.y + block.h / 2 - v.y) * zoom) + 'px'
-        if (selectedIds.length === 1 && block.type !== 'draw' && block.type !== 'line') {
+        if (selectedIds.length === 1 && ((block.type !== 'draw' && block.type !== 'line') || block.shape)) {
           var handles = isAutoHeight(block) || block.type === 'attachment' ? ['e'] : ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
           handles.forEach(function (name) { var handle = el('div', 'fxc-handle fxc-h-' + name); handle.dataset.handle = name; handle.setAttribute('role', 'button'); handle.setAttribute('aria-label', 'Resize ' + name); handle.addEventListener('pointerdown', function (event) { event.stopPropagation(); event.preventDefault(); startResize(event, block, name) }); box.appendChild(handle) })
+        }
+        if (selectedIds.length === 1 && (block.type === 'image' || block.type === 'draw' || block.type === 'line')) {
+          var turn = el('div', 'fxc-rot'); turn.title = 'Drag to rotate (Shift: 15° steps)'; turn.setAttribute('role', 'button'); turn.setAttribute('aria-label', 'Rotate')
+          turn.addEventListener('pointerdown', function (event) { event.stopPropagation(); event.preventDefault(); vp.setPointerCapture(event.pointerId); var point = toWorld(event.clientX, event.clientY); gesture = { type: 'rotate', pointerId: event.pointerId, id: block.id, sx: point.x, sy: point.y, before: false } })
+          box.appendChild(turn)
         }
         overlay.appendChild(box)
       })
@@ -580,6 +648,9 @@
       if (!next) selectedIds = []
       else if (additive) { var index = selectedIds.indexOf(next); if (index >= 0) selectedIds.splice(index, 1); else selectedIds.push(next) }
       else if (!isSelected(next) || selectedIds.length !== 1) selectedIds = [next]
+      // Grouped blocks are selected (and so moved, copied, deleted) together.
+      var groups = selectedBlocks().map(function (block) { return block.group }).filter(Boolean)
+      if (groups.length) blocks.forEach(function (block) { if (groups.indexOf(block.group) >= 0 && !isSelected(block.id)) selectedIds.unshift(block.id) })
       selected = selectedIds[selectedIds.length - 1] || null
       paintSelection()
     }
@@ -631,31 +702,30 @@
       render(); selectBlock(block.id); if (kind !== 'text') commit(); setTool('select'); focusBlock(block.id)
     }
     function addSelectedImage () {
-      var file = imageInput.files && imageInput.files[0]; if (!file) return
-      insertImageFile(file, imageInsertPoint, imageReplaceId)
+      var files = imageFiles(imageInput.files); if (!files.length) return
+      insertImageFiles(files, imageInsertPoint, imageReplaceId)
       imageInsertPoint = null; imageReplaceId = null
     }
-    function insertImageFile (file, point, replaceId) {
+    function insertImageFiles (files, point, replaceId) { files.forEach(function (file, index) { insertImageFile(file, point && { x: point.x + index * 24, y: point.y + index * 24 }, index ? null : replaceId, index * 24) }) }
+    function insertImageFile (file, point, replaceId, nudge) {
       if (!file || !/^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type || '')) { window.showToast && window.showToast('UNSUPPORTED IMAGE TYPE', 'error'); return }
       if (file.size > 10 * 1024 * 1024) { window.showToast && window.showToast('IMAGE TOO LARGE (MAX 10MB)', 'error'); return }
-      var reader = new FileReader()
-      reader.onload = function () {
+      shrinkImage(file).then(function (src) {
         if (destroyed) return
         var image = new Image()
         image.onload = function () {
           if (destroyed) return
           var width = Math.min(420, image.naturalWidth || 320), height = Math.max(80, Math.round((image.naturalHeight || 220) * width / (image.naturalWidth || 320)))
-          var rect = vp.getBoundingClientRect(), insertPoint = point || toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)
+          var rect = vp.getBoundingClientRect(), centre = toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2), insertPoint = point || { x: centre.x + (nudge || 0), y: centre.y + (nudge || 0) }
           var block = byId(replaceId), replacing = !!block && block.type === 'image'
-          if (!fitsLimits(replacing ? blocks.map(function (b) { return b === block ? { id: b.id, type: 'image', src: reader.result } : b }) : blocks.concat([{ id: id(), type: 'image', src: reader.result }]))) return
+          if (!fitsLimits(replacing ? blocks.map(function (b) { return b === block ? { id: b.id, type: 'image', src: src } : b }) : blocks.concat([{ id: id(), type: 'image', src: src }]))) return
           snapshot()
-          if (replacing) { block.src = reader.result; block.alt = file.name || block.alt || ''; if (!block.w || !block.h) { block.w = width; block.h = height } }
-          else block = addBlock({ type: 'image', x: insertPoint.x - width / 2, y: insertPoint.y - height / 2, w: width, h: height, src: reader.result, alt: file.name || '', effects: { opacity: 100, radius: 0, flipH: false, flipV: false } })
+          if (replacing) { block.src = src; block.alt = file.name || block.alt || ''; if (!block.w || !block.h) { block.w = width; block.h = height } }
+          else block = addBlock({ type: 'image', x: insertPoint.x - width / 2, y: insertPoint.y - height / 2, w: width, h: height, src: src, alt: file.name || '', effects: { opacity: 100, radius: 0, flipH: false, flipV: false } })
           render(); selectBlock(block.id); commit(); setTool('select')
         }
-        image.src = reader.result
-      }
-      reader.readAsDataURL(file)
+        image.src = src
+      }, function () { window.showToast && window.showToast('COULD NOT READ IMAGE', 'error') })
     }
 
     function menuItem (label, action, hint, danger) { return { label: label, action: action, hint: hint || '', danger: !!danger } }
@@ -743,6 +813,8 @@
       openMenu(x, y, selectedIds.length + ' items selected', [
         menuItem('Cut', function () { cutBlocks(selectedBlocks()) }, 'Ctrl+X'), menuItem('Copy', function () { copyBlocks(selectedBlocks()) }, 'Ctrl+C'), menuItem('Duplicate', function () { duplicateBlocks(selectedBlocks()) }, 'Ctrl+D'), null,
         menuItem('Bring to front', function () { changeSelectedZ(true) }), menuItem('Send to back', function () { changeSelectedZ(false) }), null,
+        menuItem('Group', function () { var group = id(); snapshot(); selectedBlocks().forEach(function (block) { block.group = group }); commit() }),
+        menuItem('Ungroup', function () { snapshot(); selectedBlocks().forEach(function (block) { delete block.group }); commit() }), null,
         menuItem('Delete', removeSelected, 'Del', true)
       ])
     }
@@ -813,8 +885,14 @@
         menuItem('To-do list', function () { createAt('todo', { x: point.x - 120, y: point.y - 50 }) }, 'O'),
         menuItem('Table', function () { createAt('table', { x: point.x - 180, y: point.y - 75 }) }, 'B'),
         menuItem('Code block', function () { createAt('code', { x: point.x - 160, y: point.y - 80 }) }, 'C'), null,
-        menuItem('Free draw', function () { setTool('pen') }, 'P'), menuItem('Line / arrow', function () { setTool('line') }, 'L')
+        menuItem('Free draw', function () { setTool('pen') }, 'P'), menuItem('Line / arrow', function () { setTool('line') }, 'L'), null,
+        menuItem('Page background…', function () { showBackgroundMenu(x, y) })
       ])
+    }
+    function showBackgroundMenu (x, y) {
+      openMenu(x, y, 'Page background', [['', 'Plain'], ['ruled', 'Ruled lines'], ['grid', 'Grid'], ['dots', 'Dots']].map(function (choice) {
+        return menuItem(choice[1], function () { source.background = choice[0]; render(); commit() }, (source.background || '') === choice[0] ? '✓' : '')
+      }))
     }
     function tableStyleSwatch (name, active, action) {
       var button = el('button', 'fxc-style-swatch' + (active ? ' is-active' : '')); button.type = 'button'; button.title = name.charAt(0).toUpperCase() + name.slice(1)
@@ -885,6 +963,17 @@
       }
       toolButton('B', 'Bold', 'bold', null, 'font-weight:700'); toolButton('I', 'Italic', 'italic', null, 'font-style:italic'); toolButton('U', 'Underline', 'underline', null, 'text-decoration:underline'); toolButton('S', 'Strikethrough', 'strikeThrough', null, 'text-decoration:line-through')
       toolSep()
+      function toolSelect (title, choices, cmd) {
+        var select = document.createElement('select'); select.className = 'fxc-tt-select'; select.title = title; select.setAttribute('aria-label', title)
+        choices.forEach(function (choice) { var option = document.createElement('option'); option.textContent = choice[0]; option.value = choice[1]; select.appendChild(option) })
+        select.onchange = function () { if (select.value) command(cmd, select.value); select.selectedIndex = 0 }; popover.appendChild(select)
+      }
+      toolSelect('Font', [['Font', ''], ['Default', 'inherit'], ['Arial', 'Arial'], ['Georgia', 'Georgia'], ['Times New Roman', 'Times New Roman'], ['Courier New', 'Courier New'], ['Verdana', 'Verdana']], 'fontName')
+      toolSelect('Font size', [['Size', ''], ['8', '1'], ['10', '2'], ['11', '3'], ['14', '4'], ['18', '5'], ['24', '6'], ['36', '7']], 'fontSize')
+      ;[['justifyLeft', 'Align left', 'M4 6h16M4 10.5h10M4 15h16M4 19.5h10'], ['justifyCenter', 'Centre', 'M4 6h16M7 10.5h10M4 15h16M7 19.5h10'], ['justifyRight', 'Align right', 'M4 6h16M10 10.5h10M4 15h16M10 19.5h10']].forEach(function (align) {
+        toolButton('', align[1], align[0]); popover.lastChild.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="' + align[2] + '"/></svg>'
+      })
+      toolSep()
       toolButton('H1', 'Heading 1', 'formatBlock', 'h1'); toolButton('H2', 'Heading 2', 'formatBlock', 'h2'); toolButton('H3', 'Heading 3', 'formatBlock', 'h3')
       toolSep()
       toolButton('• List', 'Bulleted list', 'insertUnorderedList'); toolButton('1. List', 'Numbered list', 'insertOrderedList'); toolButton('❝', 'Quote', 'formatBlock', 'blockquote')
@@ -933,7 +1022,8 @@
     function marqueeArea (state) { return { x: Math.min(state.sx, state.x), y: Math.min(state.sy, state.y), w: Math.abs(state.x - state.sx), h: Math.abs(state.y - state.sy) } }
     function startDraw (event, point) {
       vp.setPointerCapture(event.pointerId); snapshot()
-      draw = { pointerId: event.pointerId, type: tool === 'pen' ? 'draw' : 'line', points: [[point.x, point.y], [point.x, point.y]], strokeColor: color, strokeWidth: stroke }
+      var marker = tool === 'pen' && penMode === 'marker'
+      draw = { pointerId: event.pointerId, type: tool === 'pen' ? 'draw' : 'line', mode: tool === 'pen' ? penMode : lineMode, points: [[point.x, point.y], [point.x, point.y]], strokeColor: color, strokeWidth: marker ? Math.max(12, stroke * 4) : stroke, strokeOpacity: marker ? 0.4 : 0 }
     }
 
     function beginLongPress (event) {
@@ -963,6 +1053,7 @@
       if (Object.keys(pointers).length === 2) { var values = Object.keys(pointers).map(function (key) { return pointers[key] }), between = toWorld((values[0].x + values[1].x) / 2, (values[0].y + values[1].y) / 2); pinch = { distance: distance(values[0], values[1]), zoom: zoom, wx: between.x, wy: between.y }; gesture = null; draw = null; return }
       if (readonly) return // native scroll + text selection
       if (event.button === 1 || spaceHeld) { event.preventDefault(); startScrollDrag(event); return }
+      if (tool === 'pen' && penMode === 'eraser') { if (event.button !== 0) return; event.preventDefault(); vp.setPointerCapture(event.pointerId); gesture = { type: 'erase', pointerId: event.pointerId, before: false }; eraseAt(event); return }
       if (event.target.closest('.fxc-block,.fxc-handle,.fxc-colgrip')) return
       var point = toWorld(event.clientX, event.clientY)
       if (tool === 'select') {
@@ -984,12 +1075,16 @@
       if (draw && draw.pointerId === event.pointerId) { var drawPoint = toWorld(event.clientX, event.clientY); if (draw.type === 'draw') draw.points.push([drawPoint.x, drawPoint.y]); else draw.points[1] = [drawPoint.x, drawPoint.y]; drawLive(); return }
       if (!gesture || gesture.pointerId !== event.pointerId) return
       if (gesture.type === 'tap') return
+      if (gesture.type === 'erase') { eraseAt(event); return }
       if (gesture.type === 'scrollpan') { vp.scrollLeft = gesture.scrollLeft - (event.clientX - gesture.clientX); vp.scrollTop = gesture.scrollTop - (event.clientY - gesture.clientY); return }
       if (gesture.type === 'marquee') { var marqueePoint = toWorld(event.clientX, event.clientY); gesture.x = marqueePoint.x; gesture.y = marqueePoint.y; gesture.moved = gesture.moved || Math.hypot(gesture.x - gesture.sx, gesture.y - gesture.sy) >= 4; if (gesture.moved) { var area = marqueeArea(gesture), hits = blocks.filter(function (item) { return item.x < area.x + area.w && item.x + item.w > area.x && item.y < area.y + area.h && item.y + item.h > area.y }).map(function (item) { return item.id }); selectedIds = gesture.additive ? gesture.originalSelection.concat(hits.filter(function (item) { return gesture.originalSelection.indexOf(item) < 0 })) : hits; selected = selectedIds[selectedIds.length - 1] || null; scheduleGesturePaint() }; return }
       var point = toWorld(event.clientX, event.clientY), block = byId(gesture.id); if (!block) return
       var dx = point.x - gesture.sx, dy = point.y - gesture.sy
       if (!gesture.before) { if (Math.hypot(dx, dy) * zoom < 3) return; snapshot(); gesture.before = true }
-      if (gesture.type === 'colresize') {
+      if (gesture.type === 'rotate') {
+        var turnTo = Math.round(Math.atan2(point.y - (block.y + block.h / 2), point.x - (block.x + block.w / 2)) * 180 / Math.PI) + 90
+        block.rotation = ((event.shiftKey ? Math.round(turnTo / 15) * 15 : turnTo) % 360 + 360) % 360
+      } else if (gesture.type === 'colresize') {
         var widths = gesture.widths.slice()
         if (gesture.col < widths.length - 1) {
           // Interior border: shift space between the two adjacent columns; table width stays fixed.
@@ -1002,7 +1097,7 @@
         }
         block.w = widths.reduce(function (sum, width) { return sum + width }, 0)
         block.colWidths = widths.map(function (width) { return width / block.w * 100 })
-      } else if (gesture.type === 'move') { gesture.originals.forEach(function (original) { var target = byId(original.id); if (!target || target.isBackground) return; target.x = original.x + dx; target.y = original.y + dy; clampBlockY(target) }) }
+      } else if (gesture.type === 'move') { gesture.originals.forEach(function (original) { var target = byId(original.id); if (!target || target.isBackground) return; target.x = original.x + dx; target.y = original.y + dy; clampBlockY(target) }); snapMove(block, gesture, event.altKey) }
       else { resizeBlock(block, gesture, dx, dy) }
       scheduleGesturePaint()
     })
@@ -1046,10 +1141,50 @@
       var content = event.target.closest('.fxc-text-content,td'), blockNode = event.target.closest('.fxc-block'), block = blockNode && byId(blockNode.dataset.id)
       if (content && block && selectedRangeIn(content)) maybeShowTextTools(content, block)
     })
-    vp.addEventListener('dragover', function (event) { if (!readonly && firstImageFile(event.dataTransfer && event.dataTransfer.files)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } })
-    vp.addEventListener('drop', function (event) { var file = firstImageFile(event.dataTransfer && event.dataTransfer.files); if (!file || readonly) return; event.preventDefault(); insertImageFile(file, toWorld(event.clientX, event.clientY)) })
-    vp.addEventListener('paste', function (event) { var file = firstImageFile(event.clipboardData && event.clipboardData.files); if (!file || readonly || event.target.closest('input,textarea,[contenteditable="true"]')) return; event.preventDefault(); var rect = vp.getBoundingClientRect(); insertImageFile(file, toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)) })
-    function firstImageFile (files) { return Array.prototype.slice.call(files || []).filter(function (file) { return file && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type || '') })[0] || null }
+    // The file list is empty until the drop itself, so dragover goes by the drag's types.
+    function dragsFiles (event) { return !readonly && event.dataTransfer && Array.prototype.indexOf.call(event.dataTransfer.types || [], 'Files') >= 0 }
+    vp.addEventListener('dragover', function (event) { if (dragsFiles(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } })
+    vp.addEventListener('drop', function (event) { if (!dragsFiles(event)) return; event.preventDefault(); insertImageFiles(imageFiles(event.dataTransfer.files), toWorld(event.clientX, event.clientY)) })
+    vp.addEventListener('paste', function (event) {
+      if (readonly || event.target.closest('input,textarea,[contenteditable="true"]')) return
+      var data = event.clipboardData, files = imageFiles(data && data.files), rect = vp.getBoundingClientRect(), centre = toWorld(rect.left + rect.width / 2, rect.top + rect.height / 2)
+      if (files.length) { event.preventDefault(); insertImageFiles(files, centre); return }
+      // OneNote: text pasted onto the page (not into a container) lands in a new container.
+      var html = data && data.getData('text/html'), content = html ? safeHtml(html) : esc((data && data.getData('text/plain')) || '').replace(/\n/g, '<br>')
+      if (isEmptyTextContent(content)) return
+      event.preventDefault()
+      var spec = { id: id(), type: 'text', x: Math.max(0, centre.x - 180), y: Math.max(0, centre.y - 40), w: 360, h: 40, content: content, style: { bgColor: 'transparent' } }
+      if (!fitsLimits(blocks.concat([spec]))) return
+      snapshot(); var pasted = addBlock(spec); render(); selectBlock(pasted.id); commit()
+    })
+    // Stroke eraser: whatever stroke is under (or right beside) the pointer goes; a block's last stroke takes the block with it.
+    function eraseAt (event) {
+      var hit = null
+      ;[[0, 0], [5, 0], [-5, 0], [0, 5], [0, -5]].some(function (offset) { var at = document.elementFromPoint(event.clientX + offset[0], event.clientY + offset[1]), holder = at && at.closest && at.closest('.fxc-svg'); if (holder && at !== holder && world.contains(holder)) hit = at; return !!hit })
+      var block = hit && byId(hit.closest('.fxc-svg').dataset.id); if (!block) return
+      if (!gesture.before) { snapshot(); gesture.before = true }
+      var part = hit.getAttribute('data-part')
+      if (part != null && Array.isArray(block.paths) && block.paths.length > 1) block.paths.splice(+part, 1)
+      else blocks = blocks.filter(function (item) { return item !== block })
+      render()
+    }
+    // Edges and centres of the dragged block catch those of the blocks it passes (hold Alt to move freely).
+    function snapMove (block, state, free) {
+      state.guides = null; if (free) return
+      var slop = 6 / zoom, moving = state.originals.map(function (original) { return original.id }), best = { x: null, y: null }
+      blocks.forEach(function (other) {
+        if (moving.indexOf(other.id) >= 0 || provisionalText[other.id]) return
+        ;[['x', 'w'], ['y', 'h']].forEach(function (axis) {
+          [0, 0.5, 1].forEach(function (mine) { [0, 0.5, 1].forEach(function (theirs) {
+            var line = other[axis[0]] + other[axis[1]] * theirs, gap = line - (block[axis[0]] + block[axis[1]] * mine)
+            if (Math.abs(gap) <= slop && (!best[axis[0]] || Math.abs(gap) < Math.abs(best[axis[0]].gap))) best[axis[0]] = { gap: gap, line: line }
+          }) })
+        })
+      })
+      if (!best.x && !best.y) return
+      state.originals.forEach(function (original) { var target = byId(original.id); if (!target || target.isBackground) return; if (best.x) target.x += best.x.gap; if (best.y) target.y += best.y.gap; clampBlockY(target) })
+      state.guides = { x: best.x && best.x.line, y: best.y && best.y.line }
+    }
     // Touch has no mouseup: the formatting bar follows the selection once it settles, and sits below it,
     // clear of the system copy/paste bubble.
     var touchSeen = false, selectionTimer = null
@@ -1086,7 +1221,11 @@
     function distance (a, b) { return Math.hypot(a.x - b.x, a.y - b.y) }
     function drawLive () {
       overlay.innerHTML = ''; var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('class', 'fxc-live'); svg.style.left = '0px'; svg.style.top = '0px'
-      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), d = draw.points.map(function (p, index) { return (index ? 'L' : 'M') + p[0] * zoom + ' ' + p[1] * zoom }).join(' ')
+      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), a = [draw.points[0][0] * zoom, draw.points[0][1] * zoom], b = [draw.points[1][0] * zoom, draw.points[1][1] * zoom], rx = Math.abs(b[0] - a[0]) / 2, ry = Math.abs(b[1] - a[1]) / 2, d
+      if (draw.mode === 'rect') d = 'M' + a[0] + ' ' + a[1] + ' H' + b[0] + ' V' + b[1] + ' H' + a[0] + ' Z'
+      else if (draw.mode === 'ellipse') d = 'M' + Math.min(a[0], b[0]) + ' ' + (a[1] + b[1]) / 2 + ' a' + rx + ' ' + ry + ' 0 1 0 ' + rx * 2 + ' 0 a' + rx + ' ' + ry + ' 0 1 0 ' + -rx * 2 + ' 0'
+      else d = draw.points.map(function (p, index) { return (index ? 'L' : 'M') + p[0] * zoom + ' ' + p[1] * zoom }).join(' ')
+      if (draw.strokeOpacity) path.setAttribute('stroke-opacity', draw.strokeOpacity)
       path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', draw.strokeColor); path.setAttribute('stroke-width', draw.strokeWidth * zoom); path.setAttribute('stroke-linecap', 'round'); svg.appendChild(path); overlay.appendChild(svg)
     }
     function finishDraw () {
@@ -1094,12 +1233,31 @@
       var xs = current.points.map(function (p) { return p[0] }), ys = current.points.map(function (p) { return p[1] }), minX = Math.min.apply(null, xs), minY = Math.min.apply(null, ys), maxX = Math.max.apply(null, xs), maxY = Math.max.apply(null, ys)
       var spec
       minY = Math.max(0, minY); maxY = Math.min(CANVAS_MAX_Y, maxY)
-      if (current.type === 'draw') { var pathData = current.points.map(function (p, index) { return (index ? 'L' : 'M') + (p[0] - minX) + ',' + (Math.max(0, Math.min(CANVAS_MAX_Y, p[1])) - minY) }).join(' '); spec = { type: 'draw', x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), pathData: pathData, strokeColor: current.strokeColor, strokeWidth: current.strokeWidth } }
-      else spec = { type: 'line', x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), lx1: current.points[0][0] - minX, ly1: Math.max(0, Math.min(CANVAS_MAX_Y, current.points[0][1])) - minY, lx2: current.points[1][0] - minX, ly2: Math.max(0, Math.min(CANVAS_MAX_Y, current.points[1][1])) - minY, strokeColor: current.strokeColor, strokeWidth: current.strokeWidth, arrowMode: 'end' }
+      if (current.type === 'draw') { var pathData = current.points.map(function (p, index) { return (index ? 'L' : 'M') + (p[0] - minX) + ',' + (Math.max(0, Math.min(CANVAS_MAX_Y, p[1])) - minY) }).join(' '); if (mergeInk(current, pathData, minX, minY, maxX, maxY)) return; spec = { type: 'draw', x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), paths: [inkPart(current, pathData)], strokeColor: current.strokeColor, strokeWidth: current.strokeWidth } }
+      else if (current.mode === 'rect' || current.mode === 'ellipse') spec = { type: 'draw', shape: current.mode, x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), strokeColor: current.strokeColor, strokeWidth: current.strokeWidth }
+      else spec = { type: 'line', x: minX, y: minY, w: Math.max(4, maxX - minX), h: Math.max(4, maxY - minY), lx1: current.points[0][0] - minX, ly1: Math.max(0, Math.min(CANVAS_MAX_Y, current.points[0][1])) - minY, lx2: current.points[1][0] - minX, ly2: Math.max(0, Math.min(CANVAS_MAX_Y, current.points[1][1])) - minY, strokeColor: current.strokeColor, strokeWidth: current.strokeWidth, arrowMode: current.mode === 'line' ? 'none' : 'end' }
       spec.id = id()
       if (!fitsLimits(blocks.concat([spec]))) { if (undo.length) undo.pop(); render(); return } // drop startDraw's snapshot
       var block = addBlock(spec)
-      render(); selectBlock(block.id); commit(); if (current.type === 'line') setTool('select')
+      render(); if (current.type === 'line') { selectBlock(block.id); commit(); setTool('select') } else { inkId = block.id; commit() }
+    }
+    function inkPart (stroke, d) { var part = { d: d, strokeColor: stroke.strokeColor, strokeWidth: stroke.strokeWidth }; if (stroke.strokeOpacity) part.strokeOpacity = stroke.strokeOpacity; return part }
+    // Handwriting: a stroke drawn near the pen's previous one joins that block (a block per stroke ran a page of writing
+    // into the block limit). Each stroke keeps its own origin as dx/dy, so growing the block never rewrites path data.
+    function mergeInk (stroke, d, minX, minY, maxX, maxY) {
+      var reach = 120, joinable = function (block) {
+        return block && block.type === 'draw' && !block.shape && !block.rotation && Array.isArray(block.paths) && block.paths.length < 1500 && !block.paths.some(function (part) { return part && part.lineData }) &&
+          minX <= block.x + block.w + reach && maxX >= block.x - reach && minY <= block.y + block.h + reach && maxY >= block.y - reach
+      }
+      // The block the pen last wrote to, else any ink within reach (going back to dot an i).
+      var ink = [byId(inkId)].concat(blocks).filter(joinable)[0]; if (!ink) return false
+      inkId = ink.id
+      var left = Math.min(ink.x, minX), top = Math.min(ink.y, minY), shiftX = ink.x - left, shiftY = ink.y - top
+      var paths = ink.paths.map(function (old) { return Object.assign({}, old, { dx: (+old.dx || 0) + shiftX, dy: (+old.dy || 0) + shiftY }) })
+      paths.push(Object.assign(inkPart(stroke, d), { dx: minX - left, dy: minY - top }))
+      var grown = Object.assign({}, ink, { x: left, y: top, w: Math.max(ink.x + ink.w, maxX) - left, h: Math.max(ink.y + ink.h, maxY) - top, paths: paths })
+      if (!fitsLimits(blocks.map(function (block) { return block === ink ? grown : block }))) { if (undo.length) undo.pop() } else { Object.assign(ink, grown); commit() }
+      render(); return true
     }
 
     // Undo history: image data URLs (up to 16MB each) are stored once and
@@ -1184,5 +1342,5 @@
     return { getData: getData, flush: flush, focusStart: focusStart, destroy: function () { flush(false); destroyed = true; closePopover(); if (longPress) clearTimeout(longPress.timer); ac.abort(); clearTimeout(changeTimer); clearTimeout(editSnapshotTimer); clearTimeout(selectionTimer); container.innerHTML = '' } }
   }
 
-  window.FxCanvas = { mount: mount, inkHighlights: inkHighlights }
+  window.FxCanvas = { mount: mount, inkHighlights: inkHighlights, shrinkImage: shrinkImage }
 })()

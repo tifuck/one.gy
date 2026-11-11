@@ -610,9 +610,16 @@ def _device_request_folder_targets():
     file_folder(view_args.get('file_id'))
     if 'folder_id' in view_args:
         targets.append(_scope_folder_value(view_args['folder_id']))
-    if request.mimetype == 'application/json':
+    # is_json, not mimetype == 'application/json': routes parse +json bodies too.
+    if request.is_json:
         body = request.get_json(silent=True)
     elif request.mimetype in ('multipart/form-data', 'application/x-www-form-urlencoded'):
+        # Before the first body read, or the route's truncation check counts 0 bytes.
+        _install_request_body_counter()
+        # Parsing the form here reads the whole body, so the route's own cap
+        # would come too late. The one-shot upload is the sync API's only form
+        # route: apply its cap (raises RequestEntityTooLarge).
+        _set_request_upload_cap(SYNC_SMALL_UPLOAD_MAX + _MAX_ENCRYPTED_THUMBNAIL_BYTES)
         body = request.form
     else:
         body = None
@@ -699,7 +706,12 @@ def device_auth_required(f):
         g.device = device
         g.device_unlocked = not device.lock_enabled or _request_has_device_grant(device)
         if not g.device_unlocked:
-            scope_error = _device_scope_error()
+            from werkzeug.exceptions import RequestEntityTooLarge
+            try:
+                scope_error = _device_scope_error()
+            except RequestEntityTooLarge:
+                # Same answer as apiv1_sync_upload_file gives an unlocked device.
+                return _sync_error(400, 'bad_request', 'File too large for a one-shot upload; use an upload session', field='file')
             if scope_error:
                 return scope_error
         return f(*args, **kwargs)

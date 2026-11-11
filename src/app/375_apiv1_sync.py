@@ -686,6 +686,8 @@ def _sync_parse_range(header, size):
         return None
     if match.group(1):
         start = int(match.group(1))
+        if match.group(2) and int(match.group(2)) < start:
+            return None  # invalid range: ignored (RFC 9110 14.1.1), not unsatisfiable
         end = min(int(match.group(2)) if match.group(2) else size - 1, size - 1)
     else:
         suffix = int(match.group(2))

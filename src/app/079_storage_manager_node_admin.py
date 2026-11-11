@@ -83,6 +83,7 @@ class _StorageManagerNodeAdmin:
         removal_committed = False
         original_enabled = None
         original_status = None
+        removed_backend = None
         try:
             node = db.session.get(StorageNode, node_id)
             if not node:
@@ -215,8 +216,24 @@ class _StorageManagerNodeAdmin:
             node.status = 'draining'
             db.session.commit()
 
-            drain_lock = self._acquire_node_drain_lock(
-                node_id, self.REMOVE_NODE_DRAIN_TIMEOUT_SECONDS)
+            # Wait for in-flight puts WITHOUT the state lock. Holding it here
+            # froze replication setup/finalize, health checks, scrub and cleanup
+            # in this worker for the whole drain wait. The committed fence (not
+            # this lock) is what keeps new writes off the node, and everything
+            # below is re-read under the row locks once the lock is back.
+            self._state_lock.release()
+            lock_acquired = False
+            try:
+                drain_lock = self._acquire_node_drain_lock(
+                    node_id, self.REMOVE_NODE_DRAIN_TIMEOUT_SECONDS)
+            finally:
+                lock_acquired = self._state_lock.acquire(
+                    timeout=self.REMOVE_NODE_LOCK_TIMEOUT_SECONDS)
+            if not lock_acquired:
+                raise ValueError(
+                    'STORAGE SUBSYSTEM IS BUSY: the storage state lock could not be '
+                    're-acquired after the write drain. No replica or node rows were removed; '
+                    'the node was restored and removal was refused.')
             if not drain_lock:
                 raise ValueError(
                     'NODE DRAIN TIMED OUT: one or more storage writes are still in flight after '
@@ -234,6 +251,8 @@ class _StorageManagerNodeAdmin:
             # commit — either way the promote below cannot race a demote into
             # two primaries.
             _locked_for_delete = self._lock_storage_node_rows()
+            if not any(r.id == node_id for r in _locked_for_delete):
+                raise ValueError(f'Node {node_id} not found (removed concurrently)')
             if not force:
                 # The exclusivity verdict above was computed with the state lock
                 # released and before these row locks, so a concurrent removal
@@ -294,14 +313,11 @@ class _StorageManagerNodeAdmin:
             published_version = self._read_backends_version()
             with self._backends_lock:
                 updated_backends = dict(self._backends)
-                backend = updated_backends.pop(node_id, None)
+                removed_backend = updated_backends.pop(node_id, None)
                 self._backends = updated_backends
                 if self._local_node_id == node_id:
                     self._local_node_id = None
                 self._backends_version = published_version
-            # Shared SSH operations hold the backend operation RLock, so close
-            # waits for an active use without holding either storage state lock.
-            self._close_backend_set({node_id: backend} if backend else {})
             print(f'[STORAGE] Removed node: {node_name} ({node_type}) — remote bytes on that node were left untouched')
         finally:
             if drain_started and not removal_committed:
@@ -323,6 +339,10 @@ class _StorageManagerNodeAdmin:
             self._release_storage_write_lock(drain_lock)
             if lock_acquired:
                 self._state_lock.release()
+        # Shared SSH operations hold the backend operation RLock, so this close
+        # waits for an active use: it runs only after both storage locks are gone.
+        if removed_backend is not None:
+            self._close_backend_set({node_id: removed_backend})
 
     def purge_local_copies(self, progress_callback=None):
         """Delete local files/notes/thumbnails only after multiple verified remote replicas exist.

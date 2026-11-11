@@ -122,9 +122,11 @@ def safe_zip_entry_name(name):
     any dot-only name to 'unnamed' so several distinct entries collided into one.
     A leading dot is NOT a traversal; only the segments `.` and `..` are.
 
-    AUDIT FIX (residual): each segment additionally has any Windows drive prefix
-    (`C:`) stripped -- 'C:/Windows/x' and 'C:evil' both become plain relative
-    names instead of absolute/drive-relative paths on a Windows extractor -- and
+    AUDIT FIX (residual): a segment starting with a Windows drive prefix has its
+    colon replaced (`C:evil` -> `C_evil`, `C:/Windows/x` -> `C_/Windows/x`), so
+    it is a plain relative name on a Windows extractor instead of an
+    absolute/drive-relative path, and a name such as 'S:1 report.txt' keeps its
+    first letter instead of losing it -- and
     Windows reserved device names (CON, NUL, AUX, PRN, COM1-9, LPT1-9, with or
     without an extension) are rewritten with a leading underscore so the entry
     can never resolve to a device. Ordinary Unix/Windows file names are
@@ -141,14 +143,12 @@ def safe_zip_entry_name(name):
     for part in name.split('/'):
         part = part.strip()
         # 'C:...' is a Windows drive prefix (absolute when it ends up followed
-        # by a separator, drive-relative when not). Strip it so only the
-        # remainder travels as a relative name.
-        # Loop: stripping 'C:' from 'C:C:x' would otherwise expose a new prefix.
-        while _WINDOWS_DRIVE_RE.match(part):
-            part = part[2:].lstrip('/')
-        # '' comes from an absolute path, a doubled separator or a bare 'C:';
-        # '.' and '..' are the actual traversal segments. Everything else is a
-        # real name.
+        # by a separator, drive-relative when not). Replace the colon so the
+        # whole name travels as a relative one.
+        if _WINDOWS_DRIVE_RE.match(part):
+            part = part[0] + '_' + part[2:]
+        # '' comes from an absolute path or a doubled separator; '.' and '..'
+        # are the actual traversal segments. Everything else is a real name.
         if not part or part == '.' or part == '..':
             continue
         # Windows reserved device names apply to the basename with or without
@@ -235,6 +235,12 @@ def sanitize_plaintext_name(name, max_length=255):
         return ''
     name = name.replace('/', '_').replace('\\', '_')
     name = name.replace('..', '_')
+    if len(name) <= max_length:
+        return name
+    # Cut the stem, not the extension: 'long….docx' must stay a .docx.
+    stem, dot, ext = name.rpartition('.')
+    if stem and len(ext) <= min(16, max_length - 2):
+        return stem[:max_length - len(dot + ext)] + dot + ext
     return name[:max_length]
 
 

@@ -175,6 +175,11 @@ _RESTORE_STRING_FIELDS = ('encrypted_name', 'name_nonce', 'link_encrypted_file_k
                           'encrypted_meta', 'meta_nonce')
 
 
+def _restore_needs_folder_link(live):
+    """The live file has (or, in a shared folder, needs) a folder-link wrap of its key."""
+    return bool(live.folder_link_encrypted_file_key or (live.folder_id and get_shared_ancestor_info(live.folder_id)))
+
+
 def _restore_key_error(live, body):
     """When the version's file key differs from the live one (a website edit
     rotated it), restore installs the version's key, so the live name and link
@@ -184,7 +189,7 @@ def _restore_key_error(live, body):
         pairs.append(('encrypted_name', 'name_nonce', None))
     if live.link_encrypted_file_key:
         pairs.append(('link_encrypted_file_key', 'link_file_key_nonce', 48))
-    if live.folder_link_encrypted_file_key or (live.folder_id and get_shared_ancestor_info(live.folder_id)):
+    if _restore_needs_folder_link(live):
         pairs.append(('folder_link_encrypted_file_key', 'folder_link_file_key_nonce', 48))
     for value_field, nonce_field, _size in pairs:
         if not body.get(value_field) or not body.get(nonce_field):
@@ -195,6 +200,29 @@ def _restore_key_error(live, body):
     for value_field, nonce_field, size in pairs:
         fields += [(value_field, body[value_field], size), (nonce_field, body[nonce_field], 12)]
     return _sync_wrap_field_error(fields)
+
+
+def _restore_check(user_id, live, version, body, base_version):
+    """Whether version may become live's content right now. Returns (error
+    response or None, same_key). Runs once before the payload is staged (cheap
+    refusals first) and again under the locks, where its answer is final."""
+    if _backup_read_only(live.folder_id):
+        return _backup_read_only_error(), None
+    if base_version is not None and base_version != int(live.content_version or 1):
+        return _sync_error(409, 'conflict', 'The file changed on the server', current=_sync_file_node(live)), None
+    if bool(version.is_e2e_encrypted) != bool(live.is_e2e_encrypted):
+        return _sync_error(400, 'bad_request', 'This version uses another encryption mode'), None
+    same_key = not live.is_e2e_encrypted or version.encrypted_file_key == live.encrypted_file_key
+    if not same_key:
+        error = _restore_key_error(live, body)
+        if error:
+            return error, None
+    if not live.is_e2e_encrypted and body.get('encrypted_meta'):
+        return _sync_error(400, 'bad_request', 'encrypted_meta requires an E2EE file', field='encrypted_meta'), None
+    delta = int(version.disk_size or 0) - _quota_bytes_for_file(live)
+    if delta > 0 and not db.session.get(User, user_id).has_storage_available(delta):
+        return _sync_error(413, 'quota_exceeded', 'Storage limit exceeded'), None
+    return None, same_key
 
 
 def _restore_file_version(user_id, file_id, version_id, body, label):
@@ -219,6 +247,32 @@ def _restore_file_version(user_id, file_id, version_id, body, label):
     rewrite_lock = _acquire_file_rewrite_lock(file_id)
     quota_lock = lifecycle_lock = new_version = work_dir = None
     try:
+        # Stage the version's payload under the rewrite lock alone. Fetching,
+        # copying and hashing a whole file while holding the owner's quota and
+        # lifecycle locks and the user row stalled every other change of that
+        # user for as long as the copy ran. A version's row and payload only
+        # change under this rewrite lock, and the checks run again below under
+        # the full locks.
+        db.session.rollback()
+        live = _versions_live_file(user_id, file_id)
+        version = _versions_load(live.id, version_id) if live else None
+        if not version:
+            return _sync_error(404, 'not_found', 'Version not found'), None
+        error, _same_key = _restore_check(user_id, live, version, body, base_version)
+        if error:
+            return error, None
+        staged = (version.filename, version.disk_size, version.payload_checksum)
+        src = storage.get_file_path(staged[0])
+        if not src or not _payload_disk_size_matches(src, staged[1]):
+            print(f'[ERROR] [VERSIONS] Payload of version {version_id} missing or wrong size; restore refused')
+            return _sync_error(500, 'integrity_error', 'The stored version failed an integrity check'), None
+        work_dir = create_work_dir('version_restore_')
+        payload = os.path.join(work_dir, 'payload')
+        shutil.copyfile(src, payload)
+        if staged[2] and _sha256_file(payload) != staged[2]:
+            print(f'[ERROR] [VERSIONS] Checksum mismatch on version {version_id}; restore refused')
+            return _sync_error(500, 'integrity_error', 'The stored version failed an integrity check'), None
+
         quota_lock = _acquire_finalize_quota_lock(user_id)
         if quota_lock is None:
             return _sync_busy(), None
@@ -228,33 +282,11 @@ def _restore_file_version(user_id, file_id, version_id, body, label):
         version = _versions_load(live.id, version_id) if live else None
         if not version:
             return _sync_error(404, 'not_found', 'Version not found'), None
-        if _backup_read_only(live.folder_id):
-            return _backup_read_only_error(), None
-        if base_version is not None and base_version != int(live.content_version or 1):
-            return _sync_error(409, 'conflict', 'The file changed on the server', current=_sync_file_node(live)), None
-        if bool(version.is_e2e_encrypted) != bool(live.is_e2e_encrypted):
-            return _sync_error(400, 'bad_request', 'This version uses another encryption mode'), None
-        same_key = not live.is_e2e_encrypted or version.encrypted_file_key == live.encrypted_file_key
-        if not same_key:
-            error = _restore_key_error(live, body)
-            if error:
-                return error, None
-        if not live.is_e2e_encrypted and body.get('encrypted_meta'):
-            return _sync_error(400, 'bad_request', 'encrypted_meta requires an E2EE file', field='encrypted_meta'), None
-        delta = int(version.disk_size or 0) - _quota_bytes_for_file(live)
-        if delta > 0 and not db.session.get(User, user_id).has_storage_available(delta):
-            return _sync_error(413, 'quota_exceeded', 'Storage limit exceeded'), None
-
-        src = storage.get_file_path(version.filename)
-        if not src or not _payload_disk_size_matches(src, version.disk_size):
-            print(f'[ERROR] [VERSIONS] Payload of version {version.id} missing or wrong size; restore refused')
-            return _sync_error(500, 'integrity_error', 'The stored version failed an integrity check'), None
-        work_dir = create_work_dir('version_restore_')
-        payload = os.path.join(work_dir, 'payload')
-        shutil.copyfile(src, payload)
-        if version.payload_checksum and _sha256_file(payload) != version.payload_checksum:
-            print(f'[ERROR] [VERSIONS] Checksum mismatch on version {version.id}; restore refused')
-            return _sync_error(500, 'integrity_error', 'The stored version failed an integrity check'), None
+        if (version.filename, version.disk_size, version.payload_checksum) != staged:
+            return _sync_busy('The version changed while it was being restored, try again'), None
+        error, same_key = _restore_check(user_id, live, version, body, base_version)
+        if error:
+            return error, None
 
         new_version = _snapshot_file_version(live, version.disk_size)
         filename = live.filename
@@ -281,7 +313,8 @@ def _restore_file_version(user_id, file_id, version_id, body, label):
                 if live.link_encrypted_file_key:
                     live.link_encrypted_file_key = body['link_encrypted_file_key']
                     live.link_file_key_nonce = body['link_file_key_nonce']
-                if body.get('folder_link_encrypted_file_key'):
+                # Only the pair _restore_key_error() required (and validated).
+                if _restore_needs_folder_link(live):
                     live.folder_link_encrypted_file_key = body['folder_link_encrypted_file_key']
                     live.folder_link_file_key_nonce = body['folder_link_file_key_nonce']
                     live.is_link_shared = True

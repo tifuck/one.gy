@@ -217,6 +217,11 @@ def apiv1_upload():
                 'management_token': record.management_token,
             }
 
+        def _api_upload_busy():
+            resp = jsonify({'error': 'Upload busy. Please retry shortly.'})
+            resp.headers['Retry-After'] = '30'
+            return resp, 503
+
         # A retry of an upload that already committed must get that file back
         # even when the commit used up the remaining quota. Only a header key can
         # be resolved before the body is parsed against that quota.
@@ -262,8 +267,20 @@ def apiv1_upload():
         if client_upload_id:
             upload_key = client_upload_id if len(client_upload_id) <= 64 else hashlib.sha256(client_upload_id.encode('utf-8')).hexdigest()
             upload_scope = _build_upload_idempotency_scope(upload_key, registered_user_id=user.id)
-            upload_idempotency_lock = _acquire_upload_idempotency_lock(upload_scope)
-            upload_idempotency_database_lock = _acquire_upload_idempotency_database_lock(upload_scope)
+            # Bounded waits, like /upload: retries of one upload_id must not park
+            # every worker thread behind the request that is still encrypting.
+            upload_idempotency_lock, upload_idempotency_database_lock, _locks_busy = \
+                _acquire_upload_key_locks(upload_scope)
+            if _locks_busy:
+                return _api_upload_busy()
+            # The snapshot opened by the auth and quota reads above predates the
+            # wait; without a fresh one the winner's committed row is invisible
+            # and this retry would encrypt and store the whole upload again.
+            _api_user_id = user.id
+            db.session.rollback()
+            user = db.session.get(User, _api_user_id)
+            if user is None:
+                return jsonify({'error': 'Invalid or revoked API key'}), 401
             existing_upload = _find_existing_upload_by_key(upload_key, registered_user_id=user.id)
             if existing_upload:
                 print(f'[API] Reused existing upload for idempotency key: {upload_key}')
@@ -350,8 +367,16 @@ def apiv1_upload():
                 f'apiv1:{user.id}:{folder_id if folder_id is not None else "root"}:{orig_name}:{api_content_hash}'.encode('utf-8')
             ).hexdigest()
             upload_scope = _build_upload_idempotency_scope(upload_key, registered_user_id=user.id)
-            upload_idempotency_lock = _acquire_upload_idempotency_lock(upload_scope)
-            upload_idempotency_database_lock = _acquire_upload_idempotency_database_lock(upload_scope)
+            upload_idempotency_lock, upload_idempotency_database_lock, _locks_busy = \
+                _acquire_upload_key_locks(upload_scope)
+            if _locks_busy:
+                return _api_upload_busy()
+            # Fresh snapshot: an identical upload may have committed during the encrypt above.
+            _api_user_id = user.id
+            db.session.rollback()
+            user = db.session.get(User, _api_user_id)
+            if user is None:
+                return jsonify({'error': 'Invalid or revoked API key'}), 401
             existing_upload = _find_existing_upload_by_key(upload_key, registered_user_id=user.id)
             if existing_upload:
                 print(f'[API] Reused existing upload for implicit idempotency key: {upload_key}')

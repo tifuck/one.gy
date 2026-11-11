@@ -87,6 +87,15 @@ func TestMatrixPreconditions(t *testing.T) {
 	if mv.RemoteSeq != 10 || mv.RemoteName != "b.txt" || mv.ParentPath != "" {
 		t.Errorf("move %+v", mv)
 	}
+	// one.gy went v1 -> v3 back to the synced content (edit + revert elsewhere):
+	// a local edit must replace against v3, not the base row's stale v1.
+	for _, typ := range []string{"two_way", "backup"} {
+		w = newWorld().bf("a.txt", "u1", "L1", "h1", 1).lf("a.txt", "L1", "h2").rf("u1", "root", "a.txt", "h1", 3, 12)
+		w.cfg.Type = typ
+		if up := opOf(t, w.plan(t), Upload); up.ContentVersion != 3 {
+			t.Errorf("%s: replace CAS %d, want the current version 3", typ, up.ContentVersion)
+		}
+	}
 }
 
 func TestCreatedOnBothSides(t *testing.T) {

@@ -279,6 +279,14 @@
 .nt-ed-body th{ background:var(--surface); font-weight:600; }
 .nt-ed-body img{ display:block; max-width:100%; height:auto; margin:.9em 0; border-radius:8px; }
 .nt-ed-body input[type="checkbox"]{ width:15px; height:15px; margin:0 .45em 0 0; vertical-align:-2px; accent-color:var(--accent); }
+/* A ticked checklist line reads as done (same look as a canvas to-do) */
+.nt-ed-body :is(div, p, li):has(> input[type="checkbox"]:checked){ color:var(--text-dim); text-decoration:line-through; text-decoration-color:var(--text-faint); }
+/* A picture with a caption (picture menu > Add caption): the figure takes the picture's place and alignment */
+.nt-ed-body figure{ width:fit-content; max-width:100%; margin:.9em 0; }
+.nt-ed-body figure img{ margin:0; }
+.nt-ed-body figcaption{ margin-top:.4em; font-size:.84em; line-height:1.45; color:var(--text-dim); }
+.nt-ed-body :is([style*="text-align:center"], [style*="text-align: center"], [align="center"]) > figure, .nt-ed-body figure:is([style*="text-align:center"], [style*="text-align: center"]){ margin-left:auto; margin-right:auto; }
+.nt-ed-body :is([style*="text-align:right"], [style*="text-align: right"], [align="right"]) > figure, .nt-ed-body figure:is([style*="text-align:right"], [style*="text-align: right"]){ margin-left:auto; }
 /* A picture is a block, so it takes the alignment of its line through its margins (Word centres a picture with its paragraph) */
 .nt-ed-body [style*="text-align:center"] > img, .nt-ed-body [style*="text-align: center"] > img, .nt-ed-body [align="center"] > img{ margin-left:auto; margin-right:auto; }
 .nt-ed-body [style*="text-align:right"] > img, .nt-ed-body [style*="text-align: right"] > img, .nt-ed-body [align="right"] > img{ margin-left:auto; }
@@ -298,6 +306,12 @@
   position:absolute; right:-1px; bottom:-1px; width:14px; height:14px; box-sizing:border-box; border:1.5px solid var(--accent); border-radius:4px 0 8px 0;
   background:var(--bg); cursor:nwse-resize; pointer-events:auto; touch-action:none;
 }
+/* Picture options (notes.js imageMenu), in the frame's top right corner */
+.nt-img-more{
+  position:absolute; top:6px; right:6px; width:26px; height:26px; padding:0; display:grid; place-items:center;
+  border:0; border-radius:7px; background:var(--raise); color:var(--text); box-shadow:var(--shadow-pop); cursor:pointer; pointer-events:auto;
+}
+.nt-img-more svg{ width:16px; height:16px; fill:currentColor; }
 
 /* Canvas note mount fills the editor area below the header */
 .nt-canvas-mount{ flex:1 1 auto; min-width:0; min-height:0; display:flex; overflow:hidden; }
@@ -364,16 +378,19 @@
   .nt-ed-actions .rd-btn{ padding:0 10px; }
   .nt-ed-actions .rd-btn + .rd-btn{ margin-left:4px; }
   .nt-ro{ padding:8px 12px; }
-  /* Ten buttons to a row (the font picker spans four, the size picker two), so the whole bar is three even rows; zoom is a pinch on phones */
+  /* Eleven buttons to a row (the font picker spans four, the size picker two), so the whole bar is three even rows; zoom is a pinch on phones */
   .nt-toolbar{ padding:4px 6px; gap:0; }
-  .nt-toolbar .nt-tb-btn, .nt-toolbar .nt-tb-color{ flex:0 0 10%; min-width:0; }
-  .nt-toolbar .nt-tb-font{ flex:0 0 40%; width:auto; min-width:0; }
-  .nt-toolbar .nt-tb-size{ flex:0 0 20%; width:auto; min-width:0; }
+  .nt-toolbar .nt-tb-btn, .nt-toolbar .nt-tb-color{ flex:0 0 calc(100% / 11); min-width:0; padding:0; }
+  .nt-toolbar .nt-tb-font{ flex:0 0 calc(400% / 11); width:auto; min-width:0; }
+  .nt-toolbar .nt-tb-size{ flex:0 0 calc(200% / 11); width:auto; min-width:0; }
   .nt-tb-sep, .nt-tb-zoom{ display:none; }
   /* Back takes a cell from the font picker so the bar stays three rows; the canvas tools share back's row */
-  .nt-toolbar .nt-back{ flex:0 0 10%; width:auto; margin-left:0; }
-  .nt-toolbar .nt-back ~ .nt-tb-font{ flex-basis:30%; }
-  .fxc-bar > .nt-back + .fxc-tools{ flex:1 1 0; }
+  .nt-toolbar .nt-back{ flex:0 0 calc(100% / 11); width:auto; margin-left:0; }
+  .nt-toolbar .nt-back ~ .nt-tb-font{ flex-basis:calc(300% / 11); }
+  /* 92px: back (36) + the note menu (36) + the two 10px gaps; the tools fill the rest of that row */
+  .fxc-bar > .nt-back + .fxc-tools{ flex:1 1 calc(100% - 92px); min-width:0; }
+  /* The note's own menu rides the tools' row, at its right end (it is last in the bar on wider screens) */
+  .fxc-bar > .nt-back{ order:-3; } .fxc-bar > .fxc-tools{ order:-2; } .fxc-bar > [data-menu]{ order:-1; flex:none; }
   /* No room for "Saved" in a full bar: only the conflict / export button shows */
   .nt-toolbar > .nt-savestate, .fxc-bar > .nt-savestate{ display:none; }
   .nt-toolbar > .nt-savestate:has(button), .fxc-bar > .nt-savestate:has(button){ display:inline-flex; max-width:none; margin-left:auto; }
@@ -391,6 +408,7 @@
   .nt-tb-select{ height:36px; }
   .nt-ed-body input[type="checkbox"]{ width:20px; height:20px; vertical-align:-4px; }
   .nt-img-handle{ width:26px; height:26px; }
+  .nt-img-more{ width:34px; height:34px; }
   .ui-v2 .rd-cmenu-swatches{ gap:8px; }
   .ui-v2 .rd-cmenu-sw{ width:24px; height:24px; }
   .nt-ed-actions .rd-icon-btn{ width:38px; height:38px; }

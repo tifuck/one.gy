@@ -24,7 +24,6 @@ def music_page():
 def music_stream(song_id):
     """Stream audio.opus for a song with Range request support."""
     from flask import Response
-    import re as _re
     from werkzeug.utils import secure_filename as _sf_music
     # Sanitize song_id to prevent path traversal, then verify it exists in the
     # known-good set (which was populated by scanning the actual filesystem).
@@ -38,23 +37,17 @@ def music_stream(song_id):
     file_size = os.path.getsize(audio_path)
     range_header = request.headers.get('Range')
     if range_header:
-        m = _re.search(r'bytes=(\d*)-(\d*)', range_header)
-        if m and (m.group(1) or m.group(2)):
-            if m.group(1):
-                start = int(m.group(1))
-                end = int(m.group(2)) if m.group(2) else file_size - 1
-            else:
-                # Suffix form "bytes=-N": the last N bytes (N=0 is unsatisfiable).
-                start = max(file_size - int(m.group(2)), 0) if int(m.group(2)) else file_size
-                end = file_size - 1
-            end = min(end, file_size - 1)
-            # AUDIT FIX L9: per RFC 9110, an unsatisfiable range must return
-            # 416 with a Content-Range header indicating the resource size.
-            if start >= file_size or start > end:
-                from flask import Response
-                resp = Response(status=416, mimetype='audio/ogg')
-                resp.headers['Content-Range'] = f'bytes */{file_size}'
-                return resp
+        # Same parser as sync content: malformed, multi-range or invalid
+        # (last < first) ranges are ignored and the full file is served.
+        byte_range = _sync_parse_range(range_header, file_size)
+        # AUDIT FIX L9: per RFC 9110, an unsatisfiable range must return
+        # 416 with a Content-Range header indicating the resource size.
+        if byte_range == 'unsatisfiable':
+            resp = Response(status=416, mimetype='audio/ogg')
+            resp.headers['Content-Range'] = f'bytes */{file_size}'
+            return resp
+        if byte_range:
+            start, end = byte_range
             length = end - start + 1
             def generate():
                 with open(audio_path, 'rb') as f:

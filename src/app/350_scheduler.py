@@ -77,6 +77,8 @@ def cleanup_job():
                 ('sync_upload_sessions',   _cleanup_expired_sync_upload_sessions),
                 # File versions past retention or whose live file is gone.
                 ('file_versions',          _cleanup_file_versions),
+                # Note versions whose note was deleted.
+                ('note_versions',          _cleanup_note_versions),
                 # AUDIT FIX A16: pick up songs added to / removed from disk without a restart.
                 ('music_library_rescan',   maybe_rescan_available_songs),
             ):
@@ -140,9 +142,13 @@ def metrics_snapshot_job():
             except Exception:
                 pass
 
+# One timer and one loaded flag per job: the two jobs fire on the same tick in
+# separate pool threads, and a shared flag let one job gate on a timer the other
+# had not loaded yet, then have its own fresh value overwritten by that load.
 _last_health_check_time = 0.0
 _last_integrity_scrub_time = 0.0
-_job_timestamps_loaded = False
+_health_check_time_loaded = False
+_integrity_scrub_time_loaded = False
 
 @_skip_if_already_running
 def health_check_job():
@@ -157,25 +163,21 @@ def health_check_job():
     the 60s health-check ticks exactly when node up/down detection mattered. The
     scrub now lives in its own scheduler job (integrity_scrub_job) so the two
     cannot block each other."""
-    global _last_health_check_time, _last_integrity_scrub_time, _job_timestamps_loaded
+    global _last_health_check_time, _health_check_time_loaded
     import time as _time
     with app.app_context():
         if not _scheduler_started or not _scheduler_owns_lease():
             print('[HEALTH] Skipping tick: scheduler lease not owned by this worker')
             return
         now = _time.time()
-        # AUDIT FIX F5: seed the last-run timers from persisted AppSetting values
-        # once per process. Without this, the module globals reset to 0.0 on every
+        # AUDIT FIX F5: seed the last-run timer from its persisted AppSetting value
+        # once per process. Without this, the module global resets to 0.0 on every
         # restart, so a health check fired on the first 60s tick after each
         # restart. The timestamp is wall-clock epoch (same basis as _time.time()),
         # so elapsed time is measured correctly across restarts.
-        if not _job_timestamps_loaded:
-            _job_timestamps_loaded = True
-            try:
-                _last_health_check_time = _load_job_timestamp('last_health_check_at')
-                _last_integrity_scrub_time = _load_job_timestamp('last_integrity_scrub_at')
-            except Exception:
-                pass
+        if not _health_check_time_loaded:
+            _last_health_check_time = _load_job_timestamp('last_health_check_at')
+            _health_check_time_loaded = True
         # Health check gate
         try:
             interval = get_numeric_setting('health_check_interval')
@@ -199,20 +201,16 @@ def integrity_scrub_job():
     scheduler job from health_check_job (AUDIT FIX M8) with its own
     max_instances=1, so a slow scrub pass can never starve health checks. Each
     pass is also bounded by a wall-clock budget (integrity_scrub_max_seconds)."""
-    global _last_health_check_time, _last_integrity_scrub_time, _job_timestamps_loaded
+    global _last_integrity_scrub_time, _integrity_scrub_time_loaded
     import time as _time
     with app.app_context():
         if not _scheduler_started or not _scheduler_owns_lease():
             print('[SCRUB] Skipping tick: scheduler lease not owned by this worker')
             return
         now = _time.time()
-        if not _job_timestamps_loaded:
-            _job_timestamps_loaded = True
-            try:
-                _last_health_check_time = _load_job_timestamp('last_health_check_at')
-                _last_integrity_scrub_time = _load_job_timestamp('last_integrity_scrub_at')
-            except Exception:
-                pass
+        if not _integrity_scrub_time_loaded:
+            _last_integrity_scrub_time = _load_job_timestamp('last_integrity_scrub_at')
+            _integrity_scrub_time_loaded = True
         try:
             scrub_interval = get_numeric_setting('integrity_scrub_interval')
             if scrub_interval > 0 and now - _last_integrity_scrub_time >= scrub_interval:
@@ -267,9 +265,12 @@ def integrity_scrub_job():
 #     (or the whole process) stalls and stops heart-beating for longer than the
 #     lease timeout, another worker takes over. This detects HANGS, which flock
 #     cannot.
-#   * The flock is kept only as a fast-path: holding it proves no other LIVE
-#     process owns the scheduler, so a clean restart/crash fails over instantly
-#     instead of waiting out the lease timeout.
+#   * A lease is only ever stolen once its heartbeat is stale (a flock-only
+#     steal let a hung owner take a fresh lease back). A worker that exits
+#     cleanly marks its own lease stale (_scheduler_release_lease), so a restart
+#     fails over on the next worker's first pass instead of waiting out the
+#     lease timeout; after a crash the timeout applies. The flock only labels
+#     the takeover in the log.
 _scheduler = None
 _scheduler_started = False
 _scheduler_shutting_down = False  # set once the worker begins shutting down (see shutdown_scheduler_for_exit)
@@ -307,6 +308,12 @@ def _build_and_start_scheduler_jobs():
     scheduler.start()
     _scheduler = scheduler
     _scheduler_started = True
+    # SIGTERM can land while the scheduler was being built: its handler then saw
+    # nothing to stop. Both sides write their own flag before reading the
+    # other's, so at least one of them sees the other and stops the jobs.
+    if _scheduler_shutting_down:
+        _stop_scheduler_jobs()
+        return
     print('[SCHEDULER] Jobs started: cleanup(5m) + replication(10s) + metrics(5m) + health check(60s tick, default 5m) + integrity scrub(60s tick, default 15m) (coalesce=True, max_instances=1, misfire_grace_time=3600s)')
 
 def _stop_scheduler_jobs():
@@ -381,6 +388,11 @@ def _scheduler_acquire_or_refresh_lease():
     have_flock = _scheduler_try_flock()
     try:
         row = db.session.query(AppSetting).filter_by(key=_SCHEDULER_LEASE_KEY).with_for_update().first()
+        if _scheduler_shutting_down:
+            # Checked under the row lock: a heartbeat racing the exit hook must
+            # not write a fresh lease for a worker that is going away.
+            db.session.rollback()
+            return False
         if row is None:
             db.session.add(AppSetting(key=_SCHEDULER_LEASE_KEY, value=f'{_SCHEDULER_INSTANCE_ID}:{now}'))
             db.session.commit()
@@ -414,6 +426,30 @@ def _scheduler_acquire_or_refresh_lease():
             pass
         print(f'[SCHEDULER] Lease acquire/refresh error: {e}')
         return None
+
+def _scheduler_release_lease():
+    """Mark this instance's lease stale so the next worker takes over on its
+    first watchdog pass. Without it every clean restart ran without background
+    jobs until the dead worker's heartbeat aged past SCHEDULER_LEASE_TIMEOUT.
+    Runs at interpreter exit, after the jobs have stopped. Best effort."""
+    try:
+        table = AppSetting.__table__
+        with app.app_context():
+            with db.engine.begin() as conn:
+                released = conn.execute(table.update().where(
+                    table.c.key == _SCHEDULER_LEASE_KEY,
+                    table.c.value.startswith(f'{_SCHEDULER_INSTANCE_ID}:', autoescape=True),
+                ).values(value=f'{_SCHEDULER_INSTANCE_ID}:0')).rowcount
+        if released:
+            print('[SCHEDULER] Released the scheduler lease for the next worker')
+    except Exception as e:
+        print(f'[SCHEDULER] Could not release the scheduler lease at exit: {e}')
+
+def _scheduler_exit_hook():
+    """atexit: stop the jobs (the dev-server path has no signal hooks), then
+    hand the lease over."""
+    shutdown_scheduler_for_exit('atexit')
+    _scheduler_release_lease()
 
 def _scheduler_owns_lease():
     """BUG FIX M6 (scheduler split-brain): read-only lease check for job
@@ -502,10 +538,11 @@ def start_scheduler():
           f'lease_timeout={SCHEDULER_LEASE_TIMEOUT}s, heartbeat={SCHEDULER_HEARTBEAT_INTERVAL}s)')
     # Fallback for the dev-server __main__ path (no gunicorn worker hooks). For
     # gunicorn workers the SIGTERM/SIGINT handlers wired in gunicorn.conf.py stop
-    # the scheduler earlier, while the interpreter is still fully alive.
+    # the scheduler earlier, while the interpreter is still fully alive; the
+    # lease release is a DB write and so always waits for this exit hook.
     try:
         import atexit as _atexit
-        _atexit.register(shutdown_scheduler_for_exit, 'atexit')
+        _atexit.register(_scheduler_exit_hook)
     except Exception:
         pass
 

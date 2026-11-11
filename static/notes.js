@@ -13,7 +13,7 @@
     noteKey: null, meta: null, ver: null, titles: {}, dirty: false, saveTimer: null,
     currentType: null, canvas: null, isSaving: false, saveAgain: false,
     editRevision: 0, openSeq: 0, pendingOpenId: null, saveFailures: 0, query: '',
-    trashCount: 0, editorReady: false, saveBlocked: false
+    trashCount: 0, editorReady: false, saveBlocked: false, forceVersion: false
   }
   var $ = function (id) { return document.getElementById(id) }
   var listEl, editorEl
@@ -91,7 +91,7 @@
         else if (name === 'rel') node.setAttribute('rel', 'noopener noreferrer')
         else if (name === 'class') { var classes = value.split(/\s+/).filter(function (className) { return SAFE_NOTE_CLASSES[className] }); if (classes.length) node.className = classes.join(' '); else node.removeAttribute('class') }
         else if (name === 'style') {
-          var safe = value.split(';').map(function (part) { var pair = part.split(':'); if (pair.length < 2) return ''; var prop = pair.shift().trim().toLowerCase(), val = pair.join(':').trim(); if (!/^(color|background-color|font-weight|font-style|text-align)$/.test(prop) || /url\s*\(|expression\s*\(|javascript\s*:/i.test(val)) return ''; return prop + ':' + val }).filter(Boolean).join(';')
+          var safe = value.split(';').map(function (part) { var pair = part.split(':'); if (pair.length < 2) return ''; var prop = pair.shift().trim().toLowerCase(), val = pair.join(':').trim(); if (!/^(color|background-color|font-weight|font-style|text-align|margin-left)$/.test(prop) || /url\s*\(|expression\s*\(|javascript\s*:/i.test(val) || (prop === 'margin-left' && !/^\d{1,3}px$/.test(val))) return ''; return prop + ':' + val }).filter(Boolean).join(';')
           if (safe) node.setAttribute('style', safe); else node.removeAttribute('style')
         } else if ((name.indexOf('data-') === 0 && !SAFE_NOTE_DATA_ATTRS[name]) || (name.indexOf('data-') !== 0 && !GLOBAL_ATTRS[name] && !(TAG_ATTRS[tag] && TAG_ATTRS[tag][name]))) node.removeAttribute(attr.name)
       })
@@ -161,11 +161,17 @@
   async function masterKey () { try { return await OneGyCrypto.getMasterKeyFromSession() } catch (e) { return null } }
 
   // ---- Crypto (reuse) ------------------------------------------------------
+  // Tags: an encrypted JSON array of {name}, under the note key like the title.
+  async function decTags (n, nk) {
+    try { var list = JSON.parse(await OneGyCrypto.decryptFileName(n.encrypted_tags, n.tags_nonce, nk)); return Array.isArray(list) ? list.map(function (t) { return String((t && t.name) || '').slice(0, 40) }).filter(Boolean).slice(0, 20) : [] } catch (e) { return [] }
+  }
+  // Also fills n._tags, from the same unwrapped key.
   async function decTitle (n, mk) {
+    n._tags = []
     try {
       var nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
-      var t = await OneGyCrypto.decryptFileName(n.encrypted_title, n.title_nonce, nk)
-      return t
+      if (n.encrypted_tags && n.tags_nonce) n._tags = await decTags(n, nk)
+      return n.encrypted_title ? await OneGyCrypto.decryptFileName(n.encrypted_title, n.title_nonce, nk) : null
     } catch (e) { return null }
   }
   async function decNotebookName (nb, mk) {
@@ -216,11 +222,14 @@
       S.trashCount = loaded[1] ? (loaded[1].notes || []).length : (nbData.trash_count || 0)
       var v = !restored && lsGet(LS_VIEW)
       if (v && (['all', 'unfiled', 'trash'].indexOf(v) >= 0 || S.notebooks.some(function (nb) { return String(nb.id) === v }))) S.view = v
+      // A link to a note (/notes#n=<id>, made by "Link to a note" or "Copy link to note") opens that note.
+      var linked = !restored && noteLinkId(location.href)
+      if (linked) { S.view = 'all'; history.replaceState(history.state, '', location.pathname) }
       await loadNotes()
       if (!restored) {
         restored = true
-        var open = lsGet(LS_OPEN)
-        if (open && S.notes.some(function (n) { return n.id === open })) openNote(open)
+        var open = linked || lsGet(LS_OPEN)
+        if (open && S.notes.some(function (n) { return n.id === open })) { openNote(open); if (linked) showEditorMobile() }
         else { lsSet(LS_OPEN, null); showList() }
       }
     } catch (e) { listItemsEl().innerHTML = errState('Could not load notebooks.') }
@@ -244,7 +253,7 @@
       var d = await apiGet(url)
       if (seq !== loadNotesSeq) return
       var notes = d.notes || []
-      await Promise.all(notes.map(async function (n) { if (n.encrypted_title) { var t = await decTitle(n, mk); S.titles[n.id] = t || 'Untitled'; n._title = S.titles[n.id] } else n._title = n.title || 'Untitled' }))
+      await Promise.all(notes.map(async function (n) { var t = await decTitle(n, mk); if (n.encrypted_title) { S.titles[n.id] = t || 'Untitled'; n._title = S.titles[n.id] } else n._title = n.title || 'Untitled' }))
       if (seq !== loadNotesSeq) return
       S.notes = notes
       loadedView = S.view
@@ -253,6 +262,53 @@
       if (!S.noteId && (!editorEl.firstElementChild || editorEl.querySelector('.nt-empty-editor'))) editorEl.innerHTML = emptyEditor()
     } catch (e) { if (seq === loadNotesSeq) listItemsEl().innerHTML = errState('Could not load notes.') }
   }
+
+  // ---- Search inside notes ---------------------------------------------------
+  // The decrypted text of each note, held in memory only (never on disk: see the zero-knowledge note further down) and
+  // read the first time a search runs.
+  // ponytail: one GET per note per page load; keep an encrypted text digest with each note if libraries get large.
+  var bodyText = {}, indexing = 0
+  function plainText (type, body) {
+    var text = function (html) { var t = document.createElement('template'); t.innerHTML = String(html || '').replace(/</g, ' <'); return t.content.textContent }
+    if (type !== 'canvas') return text(body)
+    try {
+      return (JSON.parse(body || '{}').blocks || []).map(function (b) {
+        return [text(b.content), b.code || '', (b.items || []).map(function (item) { return (item && item.text) || '' }).join(' '), (b.cells || []).map(function (row) { return (row || []).map(text).join(' ') }).join(' '), b.fileName || ''].join(' ')
+      }).join(' ')
+    } catch (e) { return '' }
+  }
+  function setBodyText (id, type, body) { var text = plainText(type, body).replace(/\s+/g, ' ').trim(); bodyText[id] = { text: text, low: text.toLowerCase() } }
+  async function indexBodies () {
+    var mk = await masterKey(), todo = S.notes.filter(function (n) { return !bodyText[n.id] })
+    if (!mk || !todo.length || indexing) return
+    indexing = todo.length; renderList()
+    var worker = async function () {
+      for (var n = todo.shift(); n; n = todo.shift()) {
+        try {
+          var d = await apiGet('/notes/api/notes/' + encodeURIComponent(n.id)), nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(d.encrypted_note_key, d.note_key_nonce, mk)
+          setBodyText(n.id, d.note_type, d.encrypted_content ? await decContent(d.encrypted_content, nk) : '')
+        } catch (e) { bodyText[n.id] = { text: '', low: '' } }
+      }
+    }
+    await Promise.all([worker(), worker(), worker(), worker()])
+    indexing = 0
+    if (S.query) { renderList(); indexBodies() } // the view may have changed meanwhile
+  }
+  // Where the search matched in the text (not for title matches, which the row already shows).
+  function snippet (n, q) {
+    var body = bodyText[n.id], at = q && body && (n._title || '').toLowerCase().indexOf(q) < 0 ? body.low.indexOf(q) : -1
+    return at < 0 ? '' : (at > 24 ? '…' : '') + body.text.slice(Math.max(0, at - 24), at + q.length + 48)
+  }
+
+  // ---- Links between notes ---------------------------------------------------
+  function noteLinkId (url) {
+    try { var parsed = new URL(url, location.origin), m = parsed.origin === location.origin && parsed.pathname === '/notes' && /^#n=([\w-]{1,64})$/.exec(parsed.hash); return m ? m[1] : null } catch (e) { return null }
+  }
+  async function openNoteLink (id) {
+    if (!S.notes.some(function (n) { return n.id === id })) { S.view = 'all'; await loadNotes() }
+    if (S.notes.some(function (n) { return n.id === id })) { openNote(id); showEditorMobile() } else toast('THAT NOTE IS NO LONGER THERE', 'error')
+  }
+  function followLink (url) { var id = noteLinkId(url); if (id) openNoteLink(id); else window.open(url, '_blank', 'noopener,noreferrer') }
 
   var TRASH_PATH = 'M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2'
 
@@ -287,7 +343,7 @@
     if (query != null) S.query = query
     var notes = S.notes.slice()
     var q = S.query.toLowerCase()
-    if (q) notes = notes.filter(function (n) { return (n._title || '').toLowerCase().indexOf(q) >= 0 })
+    if (q) notes = notes.filter(function (n) { return (n._title || '').toLowerCase().indexOf(q) >= 0 || (bodyText[n.id] ? bodyText[n.id].low : '').indexOf(q) >= 0 || (n._tags || []).join(' ').toLowerCase().indexOf(q) >= 0 })
     notes.sort(function (a, b) { return (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0) || ((b.updated_at || '') < (a.updated_at || '') ? -1 : 1) })
     var pinned = S.view === 'trash' ? 0 : notes.filter(function (n) { return n.is_pinned }).length
     var items = notes.map(function (n, i) {
@@ -297,7 +353,8 @@
         (col ? ' style="--nt-color:' + col + '"' : '') + '>' +
         '<span class="nt-item-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (canvas ? NI.canvas : NI.doc) + '</svg></span>' +
         '<span class="nt-item-main"><span class="nt-item-row"><span class="nt-item-title">' + (n.is_pinned && !pinned ? '<svg class="nt-pin" viewBox="0 0 24 24" fill="currentColor"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg>' : '') + '<span class="nt-item-name">' + esc(n._title || 'Untitled') + '</span></span></span>' +
-        '<span class="nt-item-meta"><span>' + esc(fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' + nbTag(n) +
+        '<span class="nt-item-meta"><span>' + esc(snippet(n, q) || fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' + nbTag(n) +
+        (n._tags || []).slice(0, 3).map(function (tag) { return '<span class="nt-badge">#' + esc(tag) + '</span>' }).join('') +
         (canvas ? '<span class="nt-badge">Canvas</span>' : '') + '</span></span></button>'
     }).join('')
     listItemsEl().innerHTML = items || listEmpty(S.query.trim())
@@ -312,7 +369,7 @@
   }
   function sectionLabel (label, count) { return '<div class="nt-section">' + label + '<span>' + count + '</span></div>' }
   function listEmpty (q) {
-    var copy = q ? ['No matches', 'No note titles contain “' + esc(q) + '”.']
+    var copy = q ? (indexing ? ['Searching…', 'Looking through the text of your notes.'] : ['No matches', 'No notes contain “' + esc(q) + '”.'])
       : S.view === 'trash' ? ['Trash is empty', 'Notes you move to the trash show up here.']
       : S.view === 'all' ? ['No notes yet', 'Notes and canvases you create show up here.']
       : S.view === 'unfiled' ? ['No unfiled notes', 'Notes that are not in a notebook show up here.']
@@ -335,7 +392,7 @@
   // the key material means saveNote() can no longer pass its preconditions.
   function resetOpenState (html) {
     clearTimeout(S.saveTimer); S.saveTimer = null
-    S.saveAgain = false; S.saveBlocked = false
+    S.saveAgain = false; S.saveBlocked = false; S.forceVersion = false
     S.editRevision++
     S.dirty = false
     destroyCanvas()
@@ -423,7 +480,7 @@
       '<select class="nt-tb-select nt-tb-font" data-cmd="fontName" title="Font" aria-label="Font"><option value="inherit">Default</option>' + FONT_FACES.map(function (face) { return '<option>' + face + '</option>' }).join('') + '</select>' +
       '<select class="nt-tb-select nt-tb-size" data-cmd="fontSize" title="Font size" aria-label="Font size">' + FONT_SIZES.map(function (size, i) { return '<option value="' + (i + 1) + '"' + (i === 2 ? ' selected' : '') + '>' + size + '</option>' }).join('') + '</select>' +
       '<span class="nt-tb-sep"></span>' +
-      tbtn('bold', 'B', 'Bold', 'font-weight:700') + tbtn('italic', 'I', 'Italic', 'font-style:italic') + tbtn('underline', 'U', 'Underline', 'text-decoration:underline;text-underline-offset:2px') + tbtn('strikeThrough', 'S', 'Strikethrough', 'text-decoration:line-through') +
+      tbtn('bold', 'B', 'Bold', 'font-weight:700') + tbtn('italic', 'I', 'Italic', 'font-style:italic') + tbtn('underline', 'U', 'Underline', 'text-decoration:underline;text-underline-offset:2px') + tbtn('strikeThrough', 'S', 'Strikethrough', 'text-decoration:line-through') + menuBtn('fmt', 'x²', 'More formatting') +
       '<span class="nt-tb-sep"></span>' +
       tbtn2('formatBlock', 'H1', 'Heading 1', '<h1>') + tbtn2('formatBlock', 'H2', 'Heading 2', '<h2>') + tbtn2('formatBlock', 'H3', 'Heading 3', '<h3>') + tbtn2('formatBlock', ico(TB.quote), 'Quote', '<blockquote>') + tbtn2('formatBlock', ico(TB.code), 'Code block', '<pre>') +
       '<span class="nt-tb-sep"></span>' +
@@ -433,14 +490,14 @@
       Object.keys(ALIGN).map(function (key) { return tbtn(ALIGN[key][0], ico(ALIGN[key][2]), ALIGN[key][1] + ' (Ctrl+Shift+' + key.toUpperCase() + ')') }).join('') +
       '<span class="nt-tb-sep"></span>' +
       '<button type="button" class="nt-tb-btn" data-link title="Insert link (Ctrl+K)" aria-label="Insert link">' + ico(TB.link) + '</button><button type="button" class="nt-tb-btn" data-image title="Insert image" aria-label="Insert image">' + ico(TB.image) + '</button>' +
-      '<button type="button" class="nt-tb-btn" data-table title="Table" aria-label="Table" aria-haspopup="menu">' + ico(TB.table) + '</button>' +
+      '<button type="button" class="nt-tb-btn" data-table title="Table" aria-label="Table" aria-haspopup="menu">' + ico(TB.table) + '</button>' + menuBtn('insert', ico('<path d="M12 5.5v13M5.5 12h13"/>'), 'Insert') +
       '<label class="nt-tb-color" title="Text colour">' + ico(TB.color) + '<input type="color" data-color="foreColor" value="#d8231b" aria-label="Text colour"></label><label class="nt-tb-color" title="Highlight">' + ico(TB.mark) + '<input type="color" data-color="hiliteColor" value="#faef5a" aria-label="Highlight colour"></label>' +
-      tbtn('removeFormat', ico(TB.clear), 'Clear formatting') +
+      tbtn('removeFormat', ico(TB.clear), 'Clear formatting') + MORE_BTN +
       '<span class="nt-tb-zoom"><button type="button" class="nt-tb-btn" data-zoom="-1" title="Zoom out" aria-label="Zoom out">' + ico(TB.zoomOut) + '</button>' +
       '<button type="button" class="nt-tb-btn nt-tb-zoomlevel" id="ntZoomLevel" data-zoom="0" title="Reset zoom" aria-label="Reset zoom">100%</button>' +
       '<button type="button" class="nt-tb-btn" data-zoom="1" title="Zoom in" aria-label="Zoom in">' + ico(TB.zoomIn) + '</button></span>' +
       SAVE_STATE +
-      '<input type="file" id="ntImageInput" accept="image/*" hidden>' +
+      '<input type="file" id="ntImageInput" accept="image/*" multiple hidden>' +
       '</div>'
     editorEl.innerHTML = editorHead(title, 'Untitled note', readonly) + tools +
       '<div class="nt-ed-body" id="ntBody" ' + (readonly ? '' : 'contenteditable="true"') + ' spellcheck="true"></div>'
@@ -464,7 +521,7 @@
       try { S.canvas = FxCanvas.mount($('ntCanvas'), { data: data, readonly: readonly, zoom: canvasZoom, onZoom: function (z) { canvasZoom = z }, onDirty: function () { if (!readonly) markDirty() }, validate: function (d) { return !!validateCanvasData(d, NOTES_INLINE_BUDGET_BYTES) } }) } catch (e) { S.canvas = null }
     }
     var bar = $('ntCanvas').querySelector('.fxc-bar')
-    if (bar && !readonly) { bar.insertAdjacentHTML('afterbegin', BACK_BTN); bar.insertAdjacentHTML('beforeend', SAVE_STATE) } else if (!readonly) editorEl.insertAdjacentHTML('afterbegin', '<div class="nt-ed-head nt-ed-head-bare">' + BACK_BTN + '</div>')
+    if (bar && !readonly) { bar.insertAdjacentHTML('afterbegin', BACK_BTN); bar.insertAdjacentHTML('beforeend', MORE_BTN + SAVE_STATE) } else if (!readonly) editorEl.insertAdjacentHTML('afterbegin', '<div class="nt-ed-head nt-ed-head-bare">' + BACK_BTN + '</div>')
     var rb = editorEl.querySelector('[data-restore]'); if (rb) rb.onclick = restoreNote
     var dp = editorEl.querySelector('[data-delete-perm]'); if (dp) dp.onclick = function () { deleteNote(true) }
     // If the canvas engine never mounted there is no #ntBody either, so a save
@@ -538,6 +595,10 @@
     r: ['justifyRight', 'Align right', '<path d="M4 6h16M10 10.5h10M4 15h16M10 19.5h10"/>'],
     j: ['justifyFull', 'Justify', '<path d="M4 6h16M4 10.5h16M4 15h16M4 19.5h16"/>']
   }
+  // Toolbar buttons that drop a menu: "fmt" and "insert" (documents), "more" (the open note's own menu, both note types).
+  function menuBtn (kind, label, title) { return '<button type="button" class="nt-tb-btn" data-menu="' + kind + '" title="' + title + '" aria-label="' + title + '" aria-haspopup="menu">' + label + '</button>' }
+  var MORE_BTN = menuBtn('more', '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></svg>', 'Note options')
+  var MARK_COLORS = [{ color: null, label: 'No highlight' }, { color: '#FAEF5A', label: 'Yellow' }, { color: '#A6F0A0', label: 'Green' }, { color: '#9FE3FF', label: 'Blue' }, { color: '#FFB8D2', label: 'Pink' }, { color: '#FFD08A', label: 'Orange' }, { color: '#D9C7FF', label: 'Purple' }]
   function ico (paths) { return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>' }
   function tbtn (cmd, label, title, style) { return '<button type="button" class="nt-tb-btn" data-cmd="' + cmd + '" title="' + title + '" aria-label="' + title + '"' + (style ? ' style="' + style + '"' : '') + '>' + label + '</button>' }
   function tbtn2 (cmd, label, title, arg) { return '<button type="button" class="nt-tb-btn" data-cmd="' + cmd + '" data-arg="' + esc(arg) + '" title="' + title + '" aria-label="' + title + '">' + label + '</button>' }
@@ -550,6 +611,7 @@
     }
     editorEl.querySelectorAll('.nt-tb-btn').forEach(function (b) {
       b.onmousedown = function (e) { e.preventDefault() }
+      if (b.hasAttribute('data-menu')) return // wire(): one delegated handler, shared with the canvas bar
       if (b.hasAttribute('data-image')) b.onclick = function () { $('ntImageInput').click() }
       else if (b.hasAttribute('data-link')) b.onclick = insertLink
       else if (b.hasAttribute('data-check')) b.onclick = toggleChecklist
@@ -567,14 +629,31 @@
       // The picker leaves focus on its input, where typing went nowhere: go back to the text, with the colour armed for what is typed next.
       input.onchange = function () { $('ntBody').focus(); if (window.getSelection().isCollapsed) document.execCommand(input.dataset.color, false, input.value) }
     })
+    // A swatch menu first (a phone's native colour wheel is slow going); "Custom colour" still opens the picker.
+    editorEl.querySelectorAll('.nt-tb-color').forEach(function (label) {
+      var input = label.querySelector('input'), cmd = input.dataset.color, custom = false
+      label.onmousedown = function (e) { e.preventDefault() }
+      label.onclick = function (e) {
+        if (custom || !hasMenu()) { custom = false; return }
+        e.preventDefault()
+        var caret = keepCaret(), rect = label.getBoundingClientRect()
+        RdMenu.open(rect.left, rect.bottom + 4, [
+          { header: cmd === 'hiliteColor' ? 'Highlight' : 'Text colour' },
+          { swatches: cmd === 'hiliteColor' ? MARK_COLORS : NOTE_COLORS.slice(1), onPick: function (c) { if (!caret()) return; document.execCommand(cmd, false, c || 'transparent'); inkHighlights($('ntBody')); markDirty() } },
+          { label: 'Custom colour…', icon: TB.color, action: function () { caret(); custom = true; input.click() } }
+        ])
+      }
+    })
     editorEl.querySelectorAll('.nt-tb-select').forEach(function (select) {
       select.onchange = function () { $('ntBody').focus(); document.execCommand(select.getAttribute('data-cmd'), false, select.value); markDirty(); syncToolbar() }
     })
     wireTitle()
     // Ticking a checkbox must not move focus onto it: typing then went nowhere and Space unticked it again.
-    $('ntBody').addEventListener('mousedown', function (e) { if (e.target.nodeName === 'INPUT') e.preventDefault() })
+    $('ntBody').addEventListener('mousedown', function (e) { if (e.target.nodeName === 'INPUT' || colBorderAt(e)) e.preventDefault() })
     $('ntBody').addEventListener('keydown', bodyKeydown)
-    $('ntBody').addEventListener('pointerdown', function (e) { tapType = e.pointerType })
+    $('ntBody').addEventListener('pointerdown', function (e) { tapType = e.pointerType; startColResize(e) })
+    $('ntBody').addEventListener('pointermove', function (e) { this.style.cursor = !e.buttons && colBorderAt(e) ? 'col-resize' : '' })
+    $('ntBody').addEventListener('contextmenu', function (e) { if (e.target.nodeName !== 'IMG' || !hasMenu()) return; e.preventDefault(); frameImage(e.target); imageMenu(e.target, e.clientX, e.clientY) })
     $('ntBody').addEventListener('click', bodyClick)
     $('ntBody').addEventListener('input', markDirty)
     $('ntBody').addEventListener('input', placeImageFrame)
@@ -591,7 +670,7 @@
     $('ntBody').addEventListener('dragend', function () { ownDrag = false })
     $('ntBody').addEventListener('dragover', function (event) { event.preventDefault() })
     $('ntBody').addEventListener('drop', documentDrop)
-    $('ntImageInput').onchange = function () { var file = firstImageFile(this.files); if (file) insertDocumentImage(file); this.value = '' }
+    $('ntImageInput').onchange = function () { insertDocumentImages(imageFiles(this.files)); this.value = '' }
     S.editorReady = true
   }
   // ---- Document editing behaviour ------------------------------------------
@@ -631,6 +710,8 @@
     if (e.isComposing) return
     var el = selEl(); if (!el) return
     var mod = e.ctrlKey || e.metaKey
+    if ((e.key === ' ' || e.key === 'Enter') && !mod && !e.altKey) { autoLink(); el = selEl() || el }
+    if (e.key === ' ' && !mod && !e.altKey && !e.shiftKey && autoFormat(el)) { e.preventDefault(); return }
     if (mod && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === '1')) { e.preventDefault(); if (e.key === 'k') insertLink(); else toggleChecklist(); return }
     var align = mod && e.shiftKey && !e.altKey && ALIGN[String(e.key).toLowerCase()]
     if (align) { e.preventDefault(); document.execCommand(align[0]); markDirty(); syncToolbar(); return }
@@ -687,12 +768,12 @@
   function bodyClick (e) {
     var body = $('ntBody'), link = e.target.closest && e.target.closest('a[href]')
     var url = link && safeUrl(link.getAttribute('href'), false)
-    if (url && (e.ctrlKey || e.metaKey)) { window.open(url, '_blank', 'noopener,noreferrer'); return }
-    // Touch has no Ctrl+click: a tap on a link offers to open it, as Word does on phones.
-    if (url && (e.pointerType || tapType) === 'touch' && hasMenu()) {
+    if (url && (e.ctrlKey || e.metaKey)) { followLink(url); return }
+    // A click or tap on a link offers to open, edit or remove it (Ctrl+click opens it straight away).
+    if (url && hasMenu()) {
       RdMenu.open(e.clientX, e.clientY, [
         { header: url.replace(/^https?:\/\//, '').replace(/\/$/, '').slice(0, 34) },
-        { label: 'Open link', icon: NI.open, action: function () { window.open(url, '_blank', 'noopener,noreferrer') } },
+        { label: noteLinkId(url) ? 'Open note' : 'Open link', icon: NI.open, action: function () { followLink(url) } },
         { label: 'Edit link', icon: NI.rename, action: insertLink },
         { label: 'Remove link', icon: NI.trash, danger: true, action: function () { if (!link.isConnected) return; window.getSelection().selectAllChildren(link); document.execCommand('unlink'); markDirty() } }
       ])
@@ -729,6 +810,95 @@
     markDirty()
   }
 
+  // ---- Menus over the text ---------------------------------------------------
+  // A menu or dialog takes the focus: this puts the caret (or selection) back where it was, ready for an edit.
+  function keepCaret () {
+    var body = $('ntBody'), sel = window.getSelection(), range = selEl() ? sel.getRangeAt(0).cloneRange() : null
+    return function () { if (!body || $('ntBody') !== body || !S.editorReady) return false; body.focus(); if (range) { sel.removeAllRanges(); sel.addRange(range) } return true }
+  }
+  function editAt (caret, fn) { return function () { if (caret()) { fn(); markDirty(); syncToolbar() } } }
+  function toggleInlineCode () {
+    var el = selEl(), code = el && el.closest('code'), sel = window.getSelection()
+    if (code && !code.closest('pre')) swapNode(code, esc(code.textContent))
+    else if (!sel.isCollapsed) document.execCommand('insertHTML', false, '<code>' + esc(String(sel)) + '</code>')
+  }
+  // Indents the line by a step (lists use their own levels). A margin, so the text stays one block.
+  function indentLine (dir) {
+    if (selEl() && selEl().closest('li')) { document.execCommand(dir > 0 ? 'indent' : 'outdent'); return }
+    if (!lineBlock(selEl())) document.execCommand('formatBlock', false, '<div>')
+    var block = lineBlock(selEl()); if (!block) return
+    // ponytail: set on the line itself (re-inserting an empty line merged it into its neighbour), so Ctrl+Z does not
+    // take an indent back; "Decrease indent" does.
+    var step = Math.max(0, Math.min(400, (parseInt(block.style.marginLeft) || 0) + dir * 40))
+    block.style.marginLeft = step ? step + 'px' : ''
+    if (!block.getAttribute('style')) block.removeAttribute('style')
+  }
+  function formatMenu () {
+    var caret = keepCaret(), pre = selEl() && selEl().closest('pre')
+    var items = [
+      { label: 'Subscript', action: editAt(caret, function () { document.execCommand('subscript') }) },
+      { label: 'Superscript', action: editAt(caret, function () { document.execCommand('superscript') }) },
+      { label: 'Inline code', icon: TB.code, action: editAt(caret, toggleInlineCode) },
+      { sep: true },
+      { label: 'Increase indent', icon: '<path d="M4 6h16M11 12h9M4 18h16M4 9.5l3 2.5-3 2.5"/>', action: editAt(caret, function () { indentLine(1) }) },
+      { label: 'Decrease indent', icon: '<path d="M4 6h16M11 12h9M4 18h16M7 9.5 4 12l3 2.5"/>', action: editAt(caret, function () { indentLine(-1) }) }
+    ]
+    if (pre) items.push({ sep: true }, { label: 'Copy code block', icon: NI.duplicate, action: function () { navigator.clipboard.writeText(blockText(pre)).then(function () { toast('CODE COPIED', 'success') }, function () { toast('COULD NOT COPY', 'error') }) } })
+    return items
+  }
+  function insertMenu () {
+    var caret = keepCaret()
+    // OneNote's note tags: a marker at the start of the line, which search then finds.
+    var mark = function (label, sign) { return { label: label, hint: sign, action: editAt(caret, function () { window.getSelection().modify('move', 'backward', 'lineboundary'); document.execCommand('insertText', false, sign + ' ') }) } }
+    return [
+      { header: 'Insert' },
+      { label: 'Horizontal line', icon: '<path d="M4 12h16"/>', action: editAt(caret, function () { document.execCommand('insertHorizontalRule') }) },
+      { label: 'Date and time', icon: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>', action: editAt(caret, function () { document.execCommand('insertText', false, new Date().toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })) }) },
+      { label: 'Link to a note…', icon: TB.link, action: function () { noteLinkMenu(caret) } },
+      { header: 'Mark this line' }, mark('Important', '⭐'), mark('Question', '❓'), mark('Idea', '💡')
+    ]
+  }
+  // ponytail: offers the notes of the view on screen (first 40); a search box if people link across notebooks a lot.
+  function noteLinkMenu (caret) {
+    var others = S.notes.filter(function (n) { return n.id !== S.noteId && !n.is_trashed }).slice(0, 40)
+    RdMenu.open(S.menuX, S.menuY, [{ header: 'Link to a note' }].concat(others.length ? others.map(function (n) {
+      return { label: n._title || 'Untitled', icon: n.note_type === 'canvas' ? NI.canvas : NI.doc, action: editAt(caret, function () {
+        var url = location.origin + '/notes#n=' + n.id
+        if (window.getSelection().isCollapsed) document.execCommand('insertHTML', false, '<a href="' + esc(url) + '">' + esc(n._title || 'Untitled') + '</a>')
+        else document.execCommand('createLink', false, url)
+      }) }
+    }) : [{ label: 'No other notes in this view', disabled: true }]))
+  }
+  // Markdown-style shortcuts, typed at the start of a line and followed by a space.
+  var AUTO_FORMAT = { '-': ['insertUnorderedList'], '*': ['insertUnorderedList'], '1.': ['insertOrderedList'], '#': ['formatBlock', '<h1>'], '##': ['formatBlock', '<h2>'], '###': ['formatBlock', '<h3>'], '>': ['formatBlock', '<blockquote>'], '[]': ['check'] }
+  function autoFormat (el) {
+    var sel = window.getSelection(), range = sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : null, node = range && range.startContainer
+    if (!node || node.nodeType !== 3 || el.closest('pre,li,h1,h2,h3,blockquote,td,th,a')) return false
+    var typed = node.nodeValue.slice(0, range.startOffset), rule = AUTO_FORMAT.hasOwnProperty(typed) && AUTO_FORMAT[typed], block = lineBlock(el), head = document.createRange()
+    if (!rule || (!block && node.previousSibling)) return false
+    if (block) head.selectNodeContents(block); else head.selectNode(node)
+    head.setEnd(node, range.startOffset)
+    if (head.toString() !== typed) return false // not at the start of the line
+    head.setStart(node, 0); sel.removeAllRanges(); sel.addRange(head); document.execCommand('delete')
+    if (rule[0] === 'check') toggleChecklist(); else document.execCommand(rule[0], false, rule[1] || null)
+    markDirty(); syncToolbar()
+    return true
+  }
+  // A typed address becomes a link when its word ends (space or Enter), as in Word and OneNote.
+  function autoLink () {
+    var sel = window.getSelection(), range = sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : null, node = range && range.startContainer
+    if (!node || node.nodeType !== 3 || node.parentNode.closest('a,pre,code')) return
+    var m = /(?:https?:\/\/|www\.)[^\s<>"']+$/i.exec(node.nodeValue.slice(0, range.startOffset)); if (!m) return
+    var word = m[0].replace(/[.,;:!?)]+$/, ''), url = safeUrl(/^www\./i.test(word) ? 'https://' + word : word, false); if (!url || word.length < 5) return
+    var link = document.createRange(); link.setStart(node, m.index); link.setEnd(node, m.index + word.length)
+    sel.removeAllRanges(); sel.addRange(link); document.execCommand('createLink', false, url)
+    // Carry on typing after the link (and after any full stop that followed the address), not inside it.
+    var made = selEl() && selEl().closest('a'), after = document.createRange()
+    if (made) { after.setStartAfter(made); after.collapse(true); sel.removeAllRanges(); sel.addRange(after) } else sel.collapseToEnd()
+    for (var i = word.length; i < m[0].length; i++) sel.modify('move', 'forward', 'character')
+    markDirty()
+  }
+
   // ---- Tables and pictures -------------------------------------------------
   // Swaps one element for new markup (or nothing) as a single undo step, and returns the element that took its place.
   function swapNode (node, html) {
@@ -742,7 +912,7 @@
   }
   // Row and column edits of the table around `cell`; `col` overrides the column the caret lands in.
   // ponytail: counts cells, not grid columns, so a pasted table with merged cells shifts; map colspans if that matters.
-  function tableEdit (cell, op, col) {
+  function tableEdit (cell, op, col, value) {
     var table = cell.closest('table'), r = cell.parentNode.rowIndex, c = col == null ? cell.cellIndex : col
     var copy = table.cloneNode(true), width = copy.rows[r].cells.length
     var eachRow = function (fn) { Array.prototype.forEach.call(copy.rows, fn) }
@@ -751,26 +921,68 @@
     else if (op === 'colLeft' || op === 'colRight') { if (op === 'colRight') c++; eachRow(function (row) { blank(row, c) }) }
     else if (op === 'delRow') { copy.deleteRow(r); r = Math.min(r, copy.rows.length - 1) }
     else if (op === 'delCol') { eachRow(function (row) { if (row.cells[c]) row.deleteCell(c) }); c = Math.min(c, width - 2) }
+    else if (op === 'header') Array.prototype.slice.call(copy.rows[0].cells).forEach(function (old) { var swap = document.createElement(old.tagName === 'TH' ? 'td' : 'th'); swap.innerHTML = old.innerHTML; if (old.getAttribute('style')) swap.setAttribute('style', old.getAttribute('style')); old.replaceWith(swap) })
+    else if (op === 'shade') { copy.rows[r].cells[c].style.backgroundColor = value || ''; copy.rows[r].cells[c].style.color = '' } // the ink is worked out again for the new fill
     var gone = op === 'delTable' || !copy.rows.length || !copy.rows[0].cells.length
     var fresh = swapNode(table, gone ? '' : copy.outerHTML), target = fresh && fresh.rows[r] && (fresh.rows[r].cells[c] || fresh.rows[r].cells[0])
     if (target) window.getSelection().collapse(target, 0)
     markDirty()
   }
   // Outside a table the button inserts one; inside it offers the row and column commands (touch has no Tab key or right-click).
+  function insertTable (cols, rows) {
+    var row = '<tr>' + new Array(cols + 1).join('<td><br></td>') + '</tr>'
+    insertSanitizedHtml('<table><tbody>' + new Array(rows + 1).join(row) + '</tbody></table><div><br></div>')
+    var here = selEl(), table = here && (here.closest('table') || (lineBlock(here) || {}).previousElementSibling) // the caret is now in the line after the table
+    if (table && table.tagName === 'TABLE') window.getSelection().collapse(table.rows[0].cells[0], 0)
+    markDirty()
+  }
   function tableButton (button) {
-    var cell = selEl() && selEl().closest('td,th')
-    if (!cell || !hasMenu()) {
-      var row = '<tr>' + new Array(4).join('<td><br></td>') + '</tr>'
-      insertSanitizedHtml('<table><tbody>' + new Array(4).join(row) + '</tbody></table><div><br></div>')
-      var here = selEl(), table = here && (here.closest('table') || (lineBlock(here) || {}).previousElementSibling) // the caret is now in the line after the table
-      if (table && table.tagName === 'TABLE') window.getSelection().collapse(table.rows[0].cells[0], 0)
-      markDirty(); return
+    var cell = selEl() && selEl().closest('td,th'), rect = button.getBoundingClientRect()
+    if (!hasMenu()) { if (!cell) insertTable(3, 3); return }
+    if (!cell) {
+      var caret = keepCaret()
+      RdMenu.open(rect.left, rect.bottom + 4, [{ header: 'Insert table (columns × rows)' }].concat([[2, 2], [3, 3], [4, 4], [5, 3], [3, 6]].map(function (size) {
+        return { label: size[0] + ' × ' + size[1], icon: TB.table, action: function () { if (caret()) insertTable(size[0], size[1]) } }
+      })))
+      return
     }
-    var rect = button.getBoundingClientRect(), item = function (label, op, danger) { return { label: label, danger: danger, action: function () { if (cell.isConnected) { $('ntBody').focus(); tableEdit(cell, op) } } } }
+    var item = function (label, op, danger) { return { label: label, danger: danger, action: function () { if (cell.isConnected) { $('ntBody').focus(); tableEdit(cell, op) } } } }
     RdMenu.open(rect.left, rect.bottom + 4, [
       item('Insert row above', 'rowAbove'), item('Insert row below', 'rowBelow'), item('Insert column left', 'colLeft'), item('Insert column right', 'colRight'), { sep: true },
+      item(cell.closest('table').rows[0].cells[0].tagName === 'TH' ? 'Remove header row' : 'Make first row a header', 'header'),
+      { header: 'Cell colour' },
+      { swatches: NOTE_COLORS.map(function (c) { return { color: c.color, label: c.label } }), onPick: function (c) { if (cell.isConnected) { $('ntBody').focus(); tableEdit(cell, 'shade', null, c); inkHighlights($('ntBody')) } } },
+      { sep: true },
       item('Delete row', 'delRow', true), item('Delete column', 'delCol', true), item('Delete table', 'delTable', true)
     ])
+  }
+  // Word: drag the border between two columns. Widths are kept as <col> percentages. Mouse and pen only.
+  // ponytail: goes by the first row's cells, so a pasted table with merged cells resizes oddly.
+  function colBorderAt (e) {
+    var cell = e.pointerType !== 'touch' && e.target.closest && e.target.closest('td,th')
+    return cell && cell.nextElementSibling && cell.getBoundingClientRect().right - e.clientX <= 5 ? cell : null
+  }
+  function startColResize (e) {
+    var cell = S.editorReady && colBorderAt(e); if (!cell) return
+    var table = cell.closest('table'), i = cell.cellIndex, had = table.querySelector('colgroup'), before = had && had.innerHTML, moved = false
+    var start = Array.prototype.map.call(table.rows[0].cells, function (c) { return c.getBoundingClientRect().width })
+    if (start[i + 1] == null) return
+    e.preventDefault()
+    var move = function (m) {
+      var dx = Math.max(30 - start[i], Math.min(start[i + 1] - 30, m.clientX - e.clientX)), widths = start.slice(), total = start.reduce(function (sum, w) { return sum + w }, 0)
+      widths[i] += dx; widths[i + 1] -= dx; moved = true
+      var group = table.querySelector('colgroup') || table.insertBefore(document.createElement('colgroup'), table.firstChild)
+      group.innerHTML = widths.map(function (w) { return '<col width="' + (w / total * 100).toFixed(2) + '%">' }).join('')
+    }
+    var up = function () {
+      window.removeEventListener('pointermove', move)
+      if (!moved || !table.isConnected) return
+      // Put the old widths back, then make the change as an edit, so that Ctrl+Z undoes the resize.
+      var copy = table.cloneNode(true), group = table.querySelector('colgroup')
+      if (had) group.innerHTML = before; else group.remove()
+      swapNode(table, copy.outerHTML); markDirty()
+    }
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up, { once: true })
   }
   // Word: clicking a picture selects it and shows a frame; dragging the frame's corner resizes it in proportion.
   // The frame lives outside the note body (so it is never saved), in a layer clipped to the body's box.
@@ -780,9 +992,59 @@
     imgFrame = null
     if (!img || !S.editorReady) return
     var range = document.createRange(), sel = window.getSelection(); range.selectNode(img); sel.removeAllRanges(); sel.addRange(range) // Delete, copy and typing act on the picture
-    imgFrame = document.createElement('div'); imgFrame.className = 'nt-img-layer'; imgFrame.innerHTML = '<div class="nt-img-frame"><span class="nt-img-handle" title="Drag to resize"></span></div>'
+    imgFrame = document.createElement('div'); imgFrame.className = 'nt-img-layer'; imgFrame.innerHTML = '<div class="nt-img-frame"><button type="button" class="nt-img-more" title="Picture options" aria-label="Picture options" aria-haspopup="menu">' + ico('<circle cx="5.5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="18.5" cy="12" r="1"/>') + '</button><span class="nt-img-handle" title="Drag to resize"></span></div>'
     imgFrame.img = img; editorEl.appendChild(imgFrame); placeImageFrame()
     imgFrame.querySelector('.nt-img-handle').addEventListener('pointerdown', resizeImage)
+    var more = imgFrame.querySelector('.nt-img-more')
+    more.onmousedown = function (e) { e.preventDefault() }
+    more.onclick = function () { var rect = more.getBoundingClientRect(); imageMenu(img, rect.left, rect.bottom + 4) }
+  }
+  function dataUrlBlob (url) {
+    var m = /^data:([^;,]+);base64,(.*)$/.exec(url || ''); if (!m) return null
+    var bin = atob(m[2]), bytes = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return new Blob([bytes], { type: m[1] })
+  }
+  // Picture options: the frame's button, or a right-click on the picture.
+  function imageMenu (img, x, y) {
+    if (!hasMenu() || !img.isConnected) return
+    var live = function (fn) { return function () { if (img.isConnected && S.editorReady) { $('ntBody').focus(); fn() } } }
+    var figure = img.closest('figure'), blob = function () { return dataUrlBlob(img.getAttribute('src')) }
+    var replace = function (copy) { var fresh = swapNode(img, copy.outerHTML); frameImage(fresh); markDirty() }
+    var align = function (label, key) {
+      return { label: label, icon: ALIGN[key][2], action: live(function () {
+        var range = document.createRange(), sel = window.getSelection(); range.selectNode(figure || img); sel.removeAllRanges(); sel.addRange(range)
+        document.execCommand(ALIGN[key][0]); markDirty(); frameImage(img.isConnected ? img : null)
+      }) }
+    }
+    RdMenu.open(x, y, [
+      { header: 'Picture' }, align('Align left', 'l'), align('Centre', 'e'), align('Align right', 'r'), { sep: true },
+      { label: 'Rotate 90°', icon: NI.restore, action: live(function () {
+        var canvas = document.createElement('canvas'), ctx = canvas.getContext('2d'), copy = img.cloneNode(false)
+        canvas.width = img.naturalHeight; canvas.height = img.naturalWidth; ctx.translate(canvas.width, 0); ctx.rotate(Math.PI / 2); ctx.drawImage(img, 0, 0)
+        copy.setAttribute('src', canvas.toDataURL(/^data:image\/jpeg/i.test(img.getAttribute('src')) ? 'image/jpeg' : 'image/webp', 0.9))
+        copy.removeAttribute('height'); copy.setAttribute('width', Math.round(img.getBoundingClientRect().height / docZoom))
+        if (documentInlineSize() + copy.getAttribute('src').length - img.getAttribute('src').length > NOTES_INLINE_BUDGET_BYTES) { budgetToast(); return }
+        replace(copy)
+      }) },
+      { label: 'Alt text…', icon: NI.rename, action: live(async function () {
+        var alt = await openPrompt('Alt text', 'Describe the picture', img.getAttribute('alt') || ''); if (alt == null || !img.isConnected || !S.editorReady) return
+        var copy = img.cloneNode(false); copy.setAttribute('alt', alt.trim()); $('ntBody').focus(); replace(copy)
+      }) },
+      { label: figure ? 'Remove caption' : 'Add caption', icon: TB.quote, action: live(function () {
+        if (figure) { frameImage(swapNode(figure, img.outerHTML)); markDirty(); return }
+        var made = swapNode(img, '<figure>' + img.outerHTML + '<figcaption>Caption</figcaption></figure>'), caption = made && made.querySelector('figcaption')
+        frameImage(null); if (caption) window.getSelection().selectAllChildren(caption); markDirty()
+      }) },
+      { sep: true },
+      { label: 'Open full size', icon: NI.open, action: function () { var data = blob(); if (data) window.open(URL.createObjectURL(data), '_blank', 'noopener') } },
+      { label: 'Download picture', icon: NI.save, action: function () {
+        var data = blob(); if (!data) return
+        var a = document.createElement('a'), url = URL.createObjectURL(data); a.href = url; a.download = fileStem(img.getAttribute('alt') || 'picture') + '.' + (data.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url) }, 30000)
+      } },
+      { sep: true },
+      { label: 'Delete picture', icon: NI.trash, danger: true, action: live(function () { swapNode(figure || img, ''); frameImage(null); markDirty() }) }
+    ])
   }
   function placeImageFrame () {
     if (!imgFrame) return
@@ -823,25 +1085,24 @@
     clearTimeout(S.saveTimer); S.saveTimer = setTimeout(saveNote, 1100)
   }
   function setSaveState (t) { var e = $('ntSaveState'); if (e) e.textContent = t }
-  function firstImageFile (files) { return Array.prototype.slice.call(files || []).filter(function (file) { return file && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type) })[0] || null }
+  function imageFiles (files) { return Array.prototype.slice.call(files || []).filter(function (file) { return file && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type) }) }
+  function firstImageFile (files) { return imageFiles(files)[0] || null }
   function hasImageFile (files) { return !!firstImageFile(files) }
   function documentInlineSize () { var el = $('ntBody'); return el ? (el.innerHTML || '').length : 0 }
   function budgetToast () { toast('NOTE IS FULL (LIMIT ' + mbLabel(NOTES_INLINE_BUDGET_BYTES) + '). REMOVE AN IMAGE FIRST', 'error') }
-  function insertDocumentImage (file) {
+  // One after the other, so several pictures land in the order they were picked.
+  async function insertDocumentImages (files) { for (var i = 0; i < files.length; i++) await insertDocumentImage(files[i]) }
+  async function insertDocumentImage (file) {
     if (!file || file.size > NOTES_IMAGE_MAX_BYTES) { toast('IMAGE TOO LARGE (MAX ' + mbLabel(NOTES_IMAGE_MAX_BYTES) + ')', 'error'); return }
+    var sourceId = S.noteId, sourceSeq = S.openSeq, sourceBody = $('ntBody'), dataUrl = ''
+    // Shrunk first (FxCanvas.shrinkImage): the picture is stored in the note body, which every save uploads whole.
+    try { dataUrl = await FxCanvas.shrinkImage(file) } catch (e) {}
+    if (S.noteId !== sourceId || S.openSeq !== sourceSeq || !sourceBody || !sourceBody.isConnected || sourceBody !== $('ntBody')) return
+    if (!dataUrl) { toast('COULD NOT READ IMAGE', 'error'); return }
     // A per-image cap with no total budget lets a note grow past the server
     // limit one image at a time, and every save after that is a hard 413.
-    // base64 costs 4 bytes per 3, plus the data: URL prefix.
-    if (documentInlineSize() + Math.ceil(file.size / 3) * 4 + 64 > NOTES_INLINE_BUDGET_BYTES) { budgetToast(); return }
-    var reader = new FileReader(), sourceId = S.noteId, sourceSeq = S.openSeq, sourceBody = $('ntBody')
-    reader.onload = function () {
-      if (S.noteId !== sourceId || S.openSeq !== sourceSeq || !sourceBody || !sourceBody.isConnected || sourceBody !== $('ntBody')) return
-      var dataUrl = String(reader.result || '')
-      if (!dataUrl || documentInlineSize() + dataUrl.length > NOTES_INLINE_BUDGET_BYTES) { budgetToast(); return }
-      insertSanitizedHtml('<img src="' + esc(dataUrl) + '" alt="' + esc(file.name || 'Image') + '">'); markDirty()
-    }
-    reader.onerror = function () { if (S.noteId === sourceId) toast('COULD NOT READ IMAGE', 'error') }
-    reader.readAsDataURL(file)
+    if (documentInlineSize() + dataUrl.length > NOTES_INLINE_BUDGET_BYTES) { budgetToast(); return }
+    insertSanitizedHtml('<img src="' + esc(dataUrl) + '" alt="' + esc(file.name || 'Image') + '">'); markDirty()
   }
   // Through execCommand, so a paste or drop is one undo step (direct DOM edits
   // are invisible to the browser's undo stack and corrupt it).
@@ -852,9 +1113,14 @@
     else document.execCommand('insertText', false, text || '')
   }
   function documentPaste (event) {
-    var file = firstImageFile(event.clipboardData && event.clipboardData.files)
-    if (file) { event.preventDefault(); insertDocumentImage(file); return }
-    event.preventDefault(); insertSanitizedHtml(event.clipboardData && event.clipboardData.getData('text/html'), event.clipboardData && event.clipboardData.getData('text/plain')); markDirty()
+    var data = event.clipboardData, files = imageFiles(data && data.files)
+    event.preventDefault()
+    if (files.length) { insertDocumentImages(files); return }
+    // A pasted address is a link: over a selection it links that text, as in Word.
+    var html = data && data.getData('text/html'), text = (data && data.getData('text/plain')) || '', url = !html && /^https?:\/\/\S+$/i.test(text.trim()) && safeUrl(text.trim(), false)
+    if (url && selEl() && !window.getSelection().isCollapsed) document.execCommand('createLink', false, url)
+    else insertSanitizedHtml(url ? '<a href="' + esc(url) + '">' + esc(text.trim()) + '</a>' : html, text)
+    markDirty()
   }
   // Dragging the note's own text or picture is the browser's native move. Handling that drop here re-inserted the
   // content without removing it from where it came from.
@@ -867,8 +1133,8 @@
     var pos = !at && document.caretPositionFromPoint && document.caretPositionFromPoint(event.clientX, event.clientY) // Firefox
     if (pos) { at = document.createRange(); at.setStart(pos.offsetNode, pos.offset); at.collapse(true) }
     if (at) { var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(at) }
-    var file = firstImageFile(event.dataTransfer && event.dataTransfer.files)
-    if (file) { insertDocumentImage(file); return }
+    var files = imageFiles(event.dataTransfer && event.dataTransfer.files)
+    if (files.length) { insertDocumentImages(files); return }
     insertSanitizedHtml(event.dataTransfer && event.dataTransfer.getData('text/html'), event.dataTransfer && event.dataTransfer.getData('text/plain'))
     markDirty()
   }
@@ -888,12 +1154,13 @@
     var titleEl = $('ntTitle')
     var title = titleEl ? titleValue(titleEl) : S.titles[S.noteId] || 'Untitled'
     var isCanvas = S.currentType === 'canvas'
-    var stem = title.replace(/[^A-Za-z0-9 _-]+/g, '').trim().replace(/\s+/g, '-').slice(0, 60) || 'note'
+    var stem = fileStem(title)
     return {
       text: isCanvas ? body : '<!doctype html>\n<meta charset="utf-8">\n<title>' + esc(title) + '</title>\n' + body,
       name: 'onegy-unsaved-' + stem + '-' + Date.now() + (isCanvas ? '.json' : '.html')
     }
   }
+  function fileStem (title) { return String(title).replace(/[^A-Za-z0-9 _-]+/g, '').trim().replace(/\s+/g, '-').slice(0, 60) || 'note' }
   function downloadRescue (payload) {
     try {
       var url = URL.createObjectURL(new Blob([payload.text], { type: 'text/plain;charset=utf-8' }))
@@ -1035,8 +1302,10 @@
         if (!snapshotIsCurrent(snap)) return null
         var r = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(snap.id), {
           encrypted_title: titleEnc.encryptedName, title_nonce: titleEnc.nameNonce,
-          encrypted_content: contentEnc, content_nonce: contentNonceOf(contentEnc), expected_content_version: snap.ver
+          encrypted_content: contentEnc, content_nonce: contentNonceOf(contentEnc), expected_content_version: snap.ver,
+          force_version: S.forceVersion ? true : undefined // restoring a version: the server keeps what this save replaces
         })
+        S.forceVersion = false
         // Inside the queue, so the next queued write already sends this version.
         applyMetadataVersion(snap.id, { content_version: r.content_version || (snap.ver + 1) })
         return r
@@ -1047,6 +1316,7 @@
       S.saveFailures = 0
       S.saveBlocked = false
       S.titles[snap.id] = title
+      setBodyText(snap.id, snap.type, body)
       if (n) { n._title = title; n.updated_at = resp.updated_at || new Date().toISOString() }
       if (S.editRevision === saveRevision) { S.dirty = false; setSaveState('Saved'); setTimeout(function () { if (!S.dirty) setSaveState('') }, 1400) }
       else { S.dirty = true; S.saveAgain = true; setSaveState('Unsaved') }
@@ -1147,7 +1417,8 @@
   // The editor-header actions above all operate on S.noteId. These variants
   // take an explicit id so the list context menu can act on any note without
   // opening it first.
-  function noteById (id) { return S.notes.filter(function (x) { return x.id === id })[0] || null }
+  // The open note can be outside the list on screen (another notebook's view): its fetched copy stands in.
+  function noteById (id) { return S.notes.filter(function (x) { return x.id === id })[0] || (S.meta && S.meta.id === id ? S.meta : null) }
 
   function noteVersion (id) {
     if (S.noteId === id && S.ver) return S.ver
@@ -1234,6 +1505,128 @@
       renderList()
       toast('NOTE RENAMED', 'success')
     } catch (e) { toast('COULD NOT RENAME NOTE', 'error') }
+  }
+
+  async function editTagsById (id) {
+    var n = noteById(id); if (!n) return
+    var mk = await masterKey(); if (!mk) { toast('UNLOCK YOUR KEYS FIRST', 'error'); return }
+    var typed = await openPrompt('Tags (separate with commas)', 'work, ideas, to read', (n._tags || []).join(', ')); if (typed == null) return
+    var tags = typed.split(',').map(function (tag) { return tag.trim().replace(/^#/, '').slice(0, 40) }).filter(function (tag, i, all) { return tag && all.indexOf(tag) === i }).slice(0, 20)
+    try {
+      var nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
+      var enc = await OneGyCrypto.encryptFileName(JSON.stringify(tags.map(function (tag) { return { name: tag } })), nk)
+      await putMetadata(id, { encrypted_tags: enc.encryptedName, tags_nonce: enc.nameNonce })
+      S.notes.concat(S.meta && S.meta.id === id ? [S.meta] : []).forEach(function (x) { if (x.id === id) x._tags = tags })
+      renderList(); toast('TAGS UPDATED', 'success')
+    } catch (e) { toast('COULD NOT UPDATE TAGS', 'error') }
+  }
+
+  // ---- Version history -------------------------------------------------------
+  // The server keeps what a save replaces (360_notes.py _notes_snapshot_version); restoring loads one of those into the
+  // editor and saves it as a normal edit, so the content it replaces becomes a version too.
+  async function versionMenu () {
+    var id = S.noteId, x = S.menuX, y = S.menuY
+    try {
+      var list = (await apiGet('/notes/api/notes/' + encodeURIComponent(id) + '/versions')).versions || []
+      if (S.noteId !== id) return
+      RdMenu.open(x, y, [{ header: 'Version history' }].concat(list.length ? list.map(function (v) {
+        var when = new Date(v.created_at), label = when.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) + ', ' + when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        return { label: label, icon: NI.restore, action: function () { restoreVersion(id, v.id, label) } }
+      }) : [{ label: 'No earlier versions yet', disabled: true }]))
+    } catch (e) { toast('COULD NOT LOAD VERSIONS', 'error') }
+  }
+  async function restoreVersion (id, versionId, label) {
+    if (!(await confirmDanger('Restore this version?', 'The note goes back to how it was on ' + label + '. What it holds now is kept as a version.', 'Restore'))) return
+    try {
+      var d = await apiGet('/notes/api/notes/' + encodeURIComponent(id) + '/versions/' + versionId)
+      if (S.noteId !== id || !S.noteKey || !S.editorReady) return
+      var content = await decContent(d.encrypted_content, S.noteKey)
+      if (S.noteId !== id || !S.editorReady) return
+      if (S.currentType === 'canvas') {
+        var data = validateCanvasData(JSON.parse(content || '{"blocks":[]}'), NOTES_INLINE_BUDGET_BYTES); if (!data) throw new Error('BAD CANVAS')
+        var title = titleValue($('ntTitle')); destroyCanvas(); renderCanvasNote(title, data, false)
+      } else { var body = $('ntBody'); body.innerHTML = ''; body.appendChild(sanitizeToFragment(content)); inkHighlights(body) }
+      S.forceVersion = true; markDirty(); saveNow(); toast('VERSION RESTORED', 'success')
+    } catch (e) { toast('COULD NOT RESTORE THAT VERSION', 'error') }
+  }
+
+  // ---- Export, print, find, outline (the open note) ----------------------------
+  function toMarkdown (root) {
+    var out = ''
+    Array.prototype.forEach.call(root.childNodes, function (node) {
+      if (node.nodeType === 3) { out += node.nodeValue.replace(/\u00a0/g, ' '); return }
+      if (node.nodeType !== 1) return
+      var tag = node.tagName.toLowerCase(), inner = function () { return toMarkdown(node) }
+      if (/^h[1-6]$/.test(tag)) out += '\n\n' + '######'.slice(0, +tag[1]) + ' ' + inner().trim() + '\n\n'
+      else if (tag === 'b' || tag === 'strong') out += '**' + inner() + '**'
+      else if (tag === 'i' || tag === 'em') out += '*' + inner() + '*'
+      else if (tag === 's' || tag === 'strike' || tag === 'del') out += '~~' + inner() + '~~'
+      else if (tag === 'pre') out += '\n\n```\n' + blockText(node).replace(/\n$/, '') + '\n```\n\n'
+      else if (tag === 'code') out += '`' + inner() + '`'
+      else if (tag === 'a') out += '[' + inner() + '](' + (node.getAttribute('href') || '') + ')'
+      else if (tag === 'img') out += '![' + (node.getAttribute('alt') || 'image') + '](' + (node.getAttribute('src') || '') + ')'
+      else if (tag === 'br') out += '\n'
+      else if (tag === 'hr') out += '\n\n---\n\n'
+      else if (tag === 'input') out += node.checked ? '- [x]' : '- [ ]'
+      else if (tag === 'li') out += (node.parentNode.tagName === 'OL' ? (Array.prototype.indexOf.call(node.parentNode.children, node) + 1) + '. ' : '- ') + inner().trim().replace(/\n/g, '\n  ') + '\n'
+      else if (tag === 'blockquote') out += '\n' + inner().trim().split('\n').map(function (line) { return '> ' + line }).join('\n') + '\n'
+      else if (tag === 'tr') out += '| ' + Array.prototype.map.call(node.cells, function (cell) { return toMarkdown(cell).trim().replace(/\n+/g, ' ') }).join(' | ') + ' |\n' + (node.rowIndex ? '' : '|' + new Array(node.cells.length + 1).join(' --- |') + '\n')
+      else if (tag === 'ul' || tag === 'ol' || tag === 'table') out += '\n' + inner() + '\n'
+      else if (tag === 'div' || tag === 'p' || tag === 'figure' || tag === 'figcaption') out += '\n' + inner() + '\n'
+      else out += inner()
+    })
+    return out
+  }
+  // Through a hidden frame holding just the note, so the app around it is not printed. "Save as PDF" is the browser's.
+  // ponytail: a canvas wider than the paper is cut off at the right edge; scale it to fit if that comes up.
+  function printNote (title) {
+    var content
+    if (S.currentType === 'canvas') {
+      var world = editorEl.querySelector('.fxc-world'); if (!world) return
+      var copy = world.cloneNode(true), areas = world.querySelectorAll('textarea')
+      copy.style.transform = ''; copy.style.position = 'relative'
+      copy.querySelectorAll('.fxc-grip, .fxc-colgrip').forEach(function (grip) { grip.remove() })
+      copy.querySelectorAll('textarea').forEach(function (area, i) { area.textContent = areas[i].value })
+      copy.querySelectorAll('input[type="checkbox"]').forEach(function (box) { if (box.checked) box.setAttribute('checked', ''); else box.removeAttribute('checked') })
+      content = copy.outerHTML
+    } else { content = readEditorBody('document'); if (content == null) return; content = '<h1>' + esc(title) + '</h1>' + content }
+    var frame = document.createElement('iframe'), done = false
+    frame.setAttribute('aria-hidden', 'true'); frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'
+    document.body.appendChild(frame)
+    var go = function () { if (done) return; done = true; frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(function () { frame.remove() }, 1000) }
+    var links = Array.prototype.map.call(document.querySelectorAll('link[rel="stylesheet"]'), function (link) { return link.outerHTML }).join('')
+    var doc = frame.contentDocument; doc.open()
+    doc.write('<!doctype html><html data-theme="frost"><head><meta charset="utf-8"><title>' + esc(title) + '</title>' + links +
+      '<style>html,body{height:auto;overflow:visible;background:var(--bg)}.nt-ed-body{display:block;overflow:visible;padding:0}</style></head>' +
+      '<body class="ui-v2"><div class="nt-ed-body">' + content + '</div></body></html>')
+    doc.close()
+    frame.contentWindow.addEventListener('load', go); setTimeout(go, 2500) // the stylesheets load first
+  }
+  function exportMenu () {
+    var title = titleValue($('ntTitle')), doc = S.currentType === 'document' && $('ntBody')
+    var save = function (text, ext) { if (!downloadRescue({ text: text, name: fileStem(title) + ext })) toast('COULD NOT EXPORT THE NOTE', 'error') }
+    RdMenu.open(S.menuX, S.menuY, [{ header: 'Export' }].concat(doc ? [
+      { label: 'Web page (.html)', icon: NI.save, action: function () { save('<!doctype html>\n<meta charset="utf-8">\n<title>' + esc(title) + '</title>\n<h1>' + esc(title) + '</h1>\n' + sanitizeHtml(doc.innerHTML), '.html') } },
+      { label: 'Markdown (.md)', icon: NI.save, action: function () { save('# ' + title + '\n\n' + toMarkdown(doc).replace(/\n{3,}/g, '\n\n').trim() + '\n', '.md') } }
+    ] : [], [{ label: 'Print or save as PDF', icon: NI.print, action: function () { printNote(title) } }]))
+  }
+  // Replaces every match as an edit (selection + insertText), so Ctrl+Z takes each one back. Finding alone is the browser's Ctrl+F.
+  async function findReplace () {
+    var body = $('ntBody'); if (!body) return
+    var find = await openPrompt('Find', 'Text to find', String(window.getSelection()).slice(0, 80)); if (!find) return
+    var repl = await openPrompt('Replace “' + find.slice(0, 40) + '” with', 'Leave empty to remove it', ''); if (repl == null || $('ntBody') !== body || !S.editorReady) return
+    var sel = window.getSelection(), count = 0
+    body.focus(); sel.collapse(body, 0)
+    while (count < 5000 && window.find(find, false, false, false) && sel.anchorNode && body.contains(sel.anchorNode)) { if (repl) document.execCommand('insertText', false, repl); else document.execCommand('delete'); count++ }
+    if (!body.contains(sel.anchorNode)) sel.collapse(body, 0)
+    if (count) markDirty()
+    toast(count ? count + (count === 1 ? ' MATCH REPLACED' : ' MATCHES REPLACED') : 'NO MATCHES', count ? 'success' : 'error')
+  }
+  function outlineMenu () {
+    var heads = Array.prototype.slice.call($('ntBody').querySelectorAll('h1,h2,h3')).filter(function (h) { return h.textContent.trim() })
+    RdMenu.open(S.menuX, S.menuY, [{ header: 'Outline' }].concat(heads.length ? heads.map(function (h) {
+      return { label: new Array(+h.tagName[1]).join('\u2003') + h.textContent.trim().slice(0, 60), action: function () { if (h.isConnected) h.scrollIntoView({ block: 'start', behavior: 'smooth' }) } }
+    }) : [{ label: 'No headings in this note', disabled: true }]))
   }
 
   async function duplicateNoteById (id) {
@@ -1360,7 +1753,13 @@
     notebook: '<path d="M5.5 18.5v-13a2 2 0 0 1 2-2h11v13h-11a2 2 0 0 0-2 2zm0 0a2 2 0 0 0 2 2h11"/><path d="M9.5 7.5h5"/>',
     back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
     all: '<rect x="4.5" y="3.5" width="15" height="17" rx="2.5"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4"/>',
-    unfiled: '<path d="M4 13.5V6.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/>'
+    unfiled: '<path d="M4 13.5V6.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/>',
+    tag: '<path d="M3.5 12.5V5A1.5 1.5 0 0 1 5 3.5h7.5l8 8-9 9z"/><circle cx="8" cy="8" r="1.2"/>',
+    history: '<path d="M4 12a8 8 0 1 0 2.6-5.9L4 8.5"/><path d="M4 4.5v4h4M12 8v4.5l3 1.8"/>',
+    save: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
+    print: '<path d="M7 9V4.5h10V9M7 17H5a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 5 9h14a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 19 17h-2"/><path d="M7 14h10v5.5H7z"/>',
+    find: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/>',
+    outline: '<path d="M5 6.5h14M8 12h11M11 17.5h8"/>'
   }
   function hasMenu () { return typeof window.RdMenu !== 'undefined' }
 
@@ -1369,19 +1768,30 @@
     return { swatches: NOTE_COLORS.map(function (c) { return { color: c.color, label: c.label, active: normColor(c.color) === current } }), onPick: onPick }
   }
 
+  // S.menuEd: opened from the open note's own toolbar button, which adds what works on the note in the editor.
   function noteMenu (n) {
-    return [
-      { label: 'Open', icon: NI.open, action: function () { openNote(n.id); showEditorMobile() } },
+    var ed = S.menuEd && n.id === S.noteId && S.editorReady, doc = ed && S.currentType === 'document'
+    return (ed ? [] : [{ label: 'Open', icon: NI.open, action: function () { openNote(n.id); showEditorMobile() } }]).concat([
       { label: 'Rename', icon: NI.rename, action: function () { renameNoteById(n.id) } },
       { label: 'Duplicate', icon: NI.duplicate, action: function () { duplicateNoteById(n.id) } },
       { sep: true },
       { label: n.is_pinned ? 'Unpin' : 'Pin to top', icon: NI.pin, action: function () { togglePinById(n.id) } },
       { label: 'Move to notebook…', icon: NI.move, action: function () { openMoveMenu(S.menuX, S.menuY, n) } },
+      { label: 'Tags…', icon: NI.tag, hint: (n._tags || []).length ? String(n._tags.length) : '', action: function () { editTagsById(n.id) } },
       { header: 'Colour' },
       colorRow(n.color, function (c) { setNoteColorById(n.id, c) }),
+      { sep: true }
+    ], doc ? [
+      { label: 'Find and replace…', icon: NI.find, action: findReplace },
+      { label: 'Outline', icon: NI.outline, action: outlineMenu }
+    ] : [], ed ? [
+      { label: 'Version history', icon: NI.history, action: versionMenu },
+      { label: 'Export or print…', icon: NI.save, action: exportMenu }
+    ] : [], [
+      { label: 'Copy link to note', icon: TB.link, action: function () { navigator.clipboard.writeText(location.origin + '/notes#n=' + n.id).then(function () { toast('LINK COPIED', 'success') }, function () { toast('COULD NOT COPY THE LINK', 'error') }) } },
       { sep: true },
       { label: 'Move to trash', icon: NI.trash, danger: true, action: function () { trashNoteById(n.id) } }
-    ]
+    ])
   }
   function trashNoteMenu (n) {
     return [
@@ -1489,10 +1899,10 @@
     RdMenu.open(x, y, items)
   }
 
-  function openNoteMenu (x, y, id) {
+  function openNoteMenu (x, y, id, fromEditor) {
     if (!hasMenu()) return
     var n = noteById(id); if (!n) return
-    S.menuX = x; S.menuY = y
+    S.menuX = x; S.menuY = y; S.menuEd = !!fromEditor
     RdMenu.open(x, y, S.view === 'trash' ? trashNoteMenu(n) : noteMenu(n))
   }
 
@@ -1583,7 +1993,16 @@
     document.addEventListener('visibilitychange', function () { if (document.hidden) saveNow() })
     // Phones: the browser/system back button returns from the editor to the list.
     window.addEventListener('popstate', function (e) { $('ntPanes') && $('ntPanes').classList.toggle('nt-show-editor', !!(e.state && e.state.ntEditor)) })
-    listEl.addEventListener('input', function (e) { if (e.target.id === 'ntSearch') renderList(e.target.value) })
+    listEl.addEventListener('input', function (e) { if (e.target.id !== 'ntSearch') return; renderList(e.target.value); if (S.query.trim().length > 1) indexBodies() })
+    // The toolbar's menu buttons, in either note type: more formatting, insert, and the open note's own menu.
+    editorEl.addEventListener('click', function (e) {
+      var button = e.target.closest('[data-menu]'); if (!button || !hasMenu() || !S.noteId || !S.editorReady) return
+      var rect = button.getBoundingClientRect(), kind = button.getAttribute('data-menu')
+      S.menuX = rect.left; S.menuY = rect.bottom + 4
+      if (kind === 'more') openNoteMenu(S.menuX, S.menuY, S.noteId, true)
+      else RdMenu.open(S.menuX, S.menuY, kind === 'insert' ? insertMenu() : formatMenu())
+    })
+    window.addEventListener('hashchange', function () { var id = noteLinkId(location.href); if (!id) return; history.replaceState(history.state, '', location.pathname); openNoteLink(id) })
     document.addEventListener('click', function (e) { if (e.target.closest('#ntBackBtn')) hideEditorMobile() })
     // Notebook modal
     editorEl.addEventListener('click', function (e) { var nb = e.target.closest('[data-new]'); if (nb) createNote(nb.getAttribute('data-new')) })

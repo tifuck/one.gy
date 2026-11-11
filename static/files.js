@@ -239,7 +239,9 @@
     $('fxTrashBtn').classList.remove('is-active')
     var restoreAllBtn = $('restoreAllBtn'); if (restoreAllBtn) restoreAllBtn.hidden = true
     $('fxNewFolder').hidden = false; $('fxUploadBtn').hidden = false
-    if (!opts.keepSel) resetSelState()
+    // clearSel, not resetSelState: the selection bar must close now, not stay
+    // up with a dead count until the listing lands (or forever if it fails).
+    if (!opts.keepSel) clearSel()
     var url = (id == null) ? '/files/list' : '/files/list/' + id
     try {
       var r = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -295,7 +297,7 @@
     if (nav) resetSearchBox()
     searchIndex = null
     S.searchQ = ''
-    S.trashMode = true; resetSelState()
+    S.trashMode = true; clearSel()
     $('fxNewFolder').hidden = true; $('fxUploadBtn').hidden = true
     try {
       var r = await fetch('/trash/list', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -517,8 +519,7 @@
     var fn = { grid: renderGrid, list: renderList, gallery: renderGallery, columns: renderColumns }[S.view] || renderGrid
     fn(folders, files)
     observeThumbs()
-    var cur = S.view === 'columns' && infoFromKey(S.lastFocus)
-    if (cur) columnPreview(cur.item, cur.isFolder)
+    columnPreview()
   }
 
   // E2EE is the default, so it gets no badge; only exceptions are flagged.
@@ -528,6 +529,8 @@
     if (item.expires) b += '<span class="fx-badge is-exp">' + item.expires.value + item.expires.unit + '</span>'
     return b
   }
+
+  var TICK = '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>'
 
   // GRID
   function renderGrid (folders, files) {
@@ -547,7 +550,7 @@
       ? (item.file_count || 0) + ' item' + ((item.file_count === 1) ? '' : 's')
       : (item.size_formatted || '')
     return '<div class="fx-item' + (isFolder ? ' is-folder' : '') + selClass(k) + '" data-k="' + k + '" data-id="' + item.id + '" data-folder="' + isFolder + '" draggable="true">' +
-      '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>' +
+      TICK +
       thumb +
       '<div class="fx-item-body"><div class="fx-item-top">' +
       '<span class="fx-item-name" title="' + esc(nm) + '">' + esc(nm) + '</span>' +
@@ -608,7 +611,7 @@
     var rowIco = cached ? '<span class="fx-row-thumb">' + cached + '</span>'
       : (!isFolder && canThumb(item)) ? '<span class="fx-row-thumb" data-thumb="' + item.id + '">' + ico + '</span>' : ico
     return '<div class="fx-row' + selClass(k) + '" data-k="' + k + '" data-id="' + item.id + '" data-folder="' + isFolder + '" draggable="true">' +
-      '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>' +
+      TICK +
       '<div class="fx-row-name">' + rowIco +
       '<span class="fx-name">' + esc(nm) + '</span></div>' +
       '<span class="fx-meta fx-list-type">' + esc(type) + '</span>' +
@@ -630,7 +633,7 @@
         : canThumb(f) ? '<div class="fx-gal-thumb" data-thumb="' + f.id + '"><div class="fx-gal-ph">' + docIcon(f) + '</div></div>'
           : '<div class="fx-gal-ph">' + docIcon(f) + '</div>'
       h += '<a class="fx-gal-item' + selClass(k) + '" data-k="' + k + '" data-id="' + f.id + '" data-folder="false" draggable="true">' +
-        '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>' +
+        TICK +
         inner +
         '<span class="fx-gal-cap"><span class="fx-name" title="' + esc(nm) + '">' + esc(nm) + '</span></span></a>'
     })
@@ -642,18 +645,28 @@
   function renderColumns (folders, files) {
     var h = '<div class="fx-cols"><div class="fx-col">'
     folders.forEach(function (f) {
-      h += '<button class="fx-col-row' + selClass(keyOf(f, true)) + '" data-k="' + keyOf(f, true) + '" data-id="' + f.id + '" data-folder="true" draggable="true">' + colIcon(f, true) + '<span class="fx-col-name" title="' + esc(displayName(f, true)) + '">' + esc(displayName(f, true)) + '</span><span class="fx-col-chev">' + ICON.chev + '</span></button>'
+      h += '<button class="fx-col-row' + selClass(keyOf(f, true)) + '" data-k="' + keyOf(f, true) + '" data-id="' + f.id + '" data-folder="true" draggable="true">' + TICK + colIcon(f, true) + '<span class="fx-col-name" title="' + esc(displayName(f, true)) + '">' + esc(displayName(f, true)) + '</span><span class="fx-col-chev">' + ICON.chev + '</span></button>'
     })
     files.forEach(function (f) {
-      h += '<button class="fx-col-row' + selClass(keyOf(f, false)) + '" data-k="' + keyOf(f, false) + '" data-id="' + f.id + '" data-folder="false" draggable="true">' + colIcon(f, false) + '<span class="fx-col-name" title="' + esc(displayName(f, false)) + '">' + esc(displayName(f, false)) + '</span></button>'
+      h += '<button class="fx-col-row' + selClass(keyOf(f, false)) + '" data-k="' + keyOf(f, false) + '" data-id="' + f.id + '" data-folder="false" draggable="true">' + TICK + colIcon(f, false) + '<span class="fx-col-name" title="' + esc(displayName(f, false)) + '">' + esc(displayName(f, false)) + '</span></button>'
     })
-    h += '</div><div class="fx-col fx-col-preview" id="fxColPreview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M6 21a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2z"/></svg><p class="fx-meta">Select an item to preview it</p></div></div>'
+    h += '</div><div class="fx-col fx-col-preview" id="fxColPreview"></div></div>'
     el.view.innerHTML = h
   }
   function colIcon (item, isFolder) { return itemIcon(item, isFolder).replace('class="fx-ico"', 'class="fx-ico fx-col-ico"') }
   function itemCount (f) { var n = f.file_count || 0; return n + (n === 1 ? ' item' : ' items') }
-  function columnPreview (item, isFolder) {
+  // The columns preview pane follows the focused item (S.lastFocus); called on
+  // every render and selection change, so it cannot outlive a deselect.
+  function columnPreview () {
     var p = $('fxColPreview'); if (!p) return
+    var cur = infoFromKey(S.lastFocus), k = cur ? S.lastFocus : ''
+    if (p.getAttribute('data-for') === k) return
+    p.setAttribute('data-for', k)
+    if (!cur) {
+      p.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M6 21a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8l6 6v10a2 2 0 0 1-2 2z"/></svg><p class="fx-meta">Select an item to preview it</p>'
+      return
+    }
+    var item = cur.item, isFolder = cur.isFolder
     var nm = displayName(item, isFolder)
     var cached = isFolder ? '' : cachedThumb(item)
     var thumbAttr = (!cached && !isFolder && canThumb(item)) ? ' data-thumb="' + item.id + '"' : ''
@@ -831,6 +844,7 @@
       n.classList.toggle('is-checked', on && S.multi)
       n.classList.toggle('is-focus', k === S.lastFocus)
     })
+    columnPreview()
   }
   function updateSelbar () {
     var bar = $('fxSelbar'), n = S.sel.size
@@ -867,6 +881,9 @@
     var i = keys.indexOf(from), j = keys.indexOf(to)
     if (j < 0) { selectOnly(to); return }
     if (i < 0) i = j
+    // Pin the anchor: without one, each further Shift+click measured from the
+    // previous range end instead of from where the range started.
+    S.anchor = keys[i]
     if (i > j) { var t = i; i = j; j = t }
     S.sel = new Set(keys.slice(i, j + 1))
     S.multi = S.sel.size > 0
@@ -1671,16 +1688,17 @@
         return
       }
       var card = e.target.closest('[data-k]')
-      if (!card) { if (S.sel.size) clearSel(); return }
-      if (e.detail > 1) return
+      if (!card) { if (!e.target.closest('.fx-col-preview')) clearSel(); return }
       var info = itemFrom(card)
       if (!info.item) return
       var k = card.getAttribute('data-k')
-      if (isCoarsePointer()) { if (S.multi && S.sel.size) toggleSel(k, false); else openItem(info); return }
+      // Touch counts quick taps on neighbouring items as a double tap
+      // (detail 2): those must still toggle, only a repeated open is dropped.
+      if (isCoarsePointer()) { if (S.multi && S.sel.size) toggleSel(k, false); else if (e.detail < 2) openItem(info); return }
+      if (e.detail > 1) return
       if (e.shiftKey) { selectRange(S.anchor || S.lastFocus || k, k); return }
       if (e.ctrlKey || e.metaKey) { toggleSel(k, false); return }
       selectOnly(k)
-      if (S.view === 'columns') columnPreview(info.item, info.isFolder)
     })
     el.view.addEventListener('dblclick', function (e) {
       if (e.target.closest('.fx-check') || e.target.closest('[data-kebab]') || e.target.closest('[data-sortcol]')) return
@@ -1702,6 +1720,9 @@
       } else if (typeof RdMenu !== 'undefined') { RdMenu.open(e.clientX, e.clientY, S.trashMode ? trashEmptyMenu() : emptyMenu()) }
     })
     wireDrag()
+    // The focus ring is a keyboard cursor: any pointer use retires it, so a
+    // mouse deselect does not leave an outline on the row.
+    document.addEventListener('pointerdown', function () { el.view.classList.remove('is-kbd') })
     // Right-click a folder in the sidebar tree.
     $('fxTree').addEventListener('contextmenu', function (e) {
       var row = e.target.closest('.fx-tree-row'); if (!row) return
@@ -1815,7 +1836,7 @@
     // Global: ESC (RdMenu dismisses itself), arrows, Enter, Space, Delete, Ctrl+A
     document.addEventListener('keydown', function (e) {
       if (filesKeysBlocked(e)) return
-      if (e.key === 'Escape') { closeSide(); closeDrawer(); if (S.sel.size) clearSel(); return }
+      if (e.key === 'Escape') { closeSide(); closeDrawer(); clearSel(); return }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); return }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (!S.sel.size) return
@@ -1832,6 +1853,7 @@
       if (e.key === ' ') {
         if (!S.lastFocus) return
         e.preventDefault()
+        el.view.classList.add('is-kbd')
         toggleSel(S.lastFocus, true)
         return
       }
@@ -2006,6 +2028,7 @@
   function moveFocus (e) {
     var keys = listedKeys()
     if (!keys.length) return
+    el.view.classList.add('is-kbd')
     var idx = S.lastFocus ? keys.indexOf(S.lastFocus) : -1
     if (idx < 0) idx = 0
     else {
@@ -2022,10 +2045,6 @@
     else selectOnly(k)
     var node = el.view && el.view.querySelector('[data-k="' + k + '"]')
     if (node && node.scrollIntoView) node.scrollIntoView({ block: 'nearest' })
-    if (S.view === 'columns') {
-      var inf = infoFromKey(k)
-      if (inf) columnPreview(inf.item, inf.isFolder)
-    }
   }
   function selectAll () {
     S.sel = new Set()

@@ -209,37 +209,44 @@
   padding:1px 4px; border-radius:3px; background:color-mix(in srgb,var(--k) 58%,var(--glyph-shade)); color:var(--on-media); font-size:.56rem; font-weight:700; letter-spacing:.04em;
   line-height:1.35; text-transform:uppercase; white-space:nowrap; }
 
-/* Selection tick — hover to reveal (tests rely on display:none until hover) */
+/* Selection tick. Flat rows (list rows, folder tiles, column rows) keep a
+   leading gutter (--fx-gut) for it, so the icon never moves; thumbnails carry
+   it in their top-left corner. Hidden via visibility (tests rely on it) until
+   the item is hovered or ticked, or a multi-selection is under way. */
+.fx-view{ --fx-gut:24px; }
 .fx-check{
   position:absolute; top:12px; left:12px; z-index:3; width:18px; height:18px; box-sizing:border-box;
-  display:none; align-items:center; justify-content:center; border-radius:50%; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; border-radius:50%; cursor:pointer;
   border:1.5px solid rgba(255,255,255,.85); background:rgba(0,0,0,.28); box-shadow:0 1px 3px rgba(0,0,0,.3);
-  transition:background .12s, border-color .12s, transform .12s;
+  opacity:0; visibility:hidden; transition:opacity .12s, visibility 0s .12s, background .12s, border-color .12s;
 }
-.fx-check:hover{ transform:scale(1.08); }
-.fx-check svg{ width:10px; height:10px; color:var(--accent-contrast); opacity:0; }
-.fx-item:hover .fx-check, .fx-row:hover .fx-check, .fx-gal-item:hover .fx-check,
-.fx-item.is-checked .fx-check, .fx-row.is-checked .fx-check, .fx-gal-item.is-checked .fx-check{ display:flex; }
-.fx-item.is-checked .fx-check svg, .fx-row.is-checked .fx-check svg, .fx-gal-item.is-checked .fx-check svg{ opacity:1; }
-/* On flat rows the tick replaces the leading icon */
-.fx-row .fx-check, .fx-item.is-folder .fx-check{ top:50%; left:14px; margin-top:-9px; border-color:var(--text-faint); background:var(--bg); box-shadow:none; }
-.fx-item.is-folder .fx-check{ left:16px; }
-.fx-item.is-checked .fx-check, .fx-row.is-checked .fx-check, .fx-gal-item.is-checked .fx-check{ background:var(--accent); border-color:var(--accent); }
-.fx-row:hover .fx-row-ico, .fx-row.is-checked .fx-row-ico, .fx-row:hover .fx-row-thumb, .fx-row.is-checked .fx-row-thumb,
-.fx-item.is-folder:hover .fx-thumb, .fx-item.is-folder.is-checked .fx-thumb{ opacity:0; }
+/* Forgiving hit area: a near miss would replace the whole selection */
+.fx-check::after{ content:""; position:absolute; inset:-8px; border-radius:50%; }
+.fx-check svg{ width:10px; height:10px; color:var(--accent-contrast); opacity:0; transform:scale(.4); transition:opacity .1s, transform .18s cubic-bezier(.3,1.4,.5,1); }
+:is(.fx-row, .fx-col-row, .fx-item.is-folder) > .fx-check{ top:50%; width:16px; height:16px; margin-top:-8px; border-color:var(--text-faint); background:none; box-shadow:none; }
+.fx-col-row > .fx-check{ left:8px; }
+.fx-view.is-selecting .fx-check{ opacity:.6; visibility:visible; transition-delay:0s; }
+:is(.fx-item, .fx-row, .fx-gal-item, .fx-col-row):hover > .fx-check, .fx-view .is-checked > .fx-check{ opacity:1; visibility:visible; transition-delay:0s; }
+.fx-view .fx-check:hover{ border-color:var(--accent); }
+.fx-view .is-checked > .fx-check{ background:var(--accent); border-color:var(--accent); }
+.is-checked > .fx-check svg{ opacity:1; transform:none; }
 
 /* Kebab — quiet, appears with hover */
 .fx-view .fx-item-kebab, .fx-view .fx-row-kebab{ flex:none; width:24px; height:24px; display:inline-flex; align-items:center; justify-content:center;
   padding:0; border:0; border-radius:6px; background:none; color:var(--text-dim); cursor:pointer; opacity:0; transition:opacity .12s, background .12s; }
 .fx-item-kebab svg, .fx-row-kebab svg{ width:15px; height:15px; }
 .fx-view .fx-item-kebab:hover, .fx-view .fx-row-kebab:hover{ color:var(--text); background:var(--press); }
-.fx-item:hover .fx-item-kebab, .fx-item:focus-within .fx-item-kebab, .fx-item.is-sel .fx-item-kebab,
-.fx-row:hover .fx-row-kebab, .fx-row.is-sel .fx-row-kebab{ opacity:1; }
+/* Shown on hover and on a single selection; ticked items use the selection
+   bar. :focus-visible, not :focus-within: a mouse click must not pin it. */
+.fx-item:hover .fx-item-kebab, .fx-item.is-sel:not(.is-checked) .fx-item-kebab,
+.fx-row:hover .fx-row-kebab, .fx-row.is-sel:not(.is-checked) .fx-row-kebab,
+.fx-view .fx-item-kebab:focus-visible, .fx-view .fx-row-kebab:focus-visible{ opacity:1; }
 
 .fx-item, .fx-row, .fx-gal-item, .fx-col-row{ user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent; }
-.fx-item.is-focus:not(.is-sel), .fx-row.is-focus:not(.is-sel), .fx-gal-item.is-focus:not(.is-sel), .fx-col-row.is-focus:not(.is-sel){
-  box-shadow:inset 0 0 0 1.5px rgba(var(--accent-rgb),.6);
-}
+/* Keyboard cursor: only while the keyboard drives (.is-kbd, files.js) and only
+   where the selection fill does not already mark it. An outline, because an
+   inset shadow would sit under the gallery image. */
+.fx-view.is-kbd .is-focus:not(.is-sel), .fx-view.is-kbd.is-selecting .is-focus{ outline:1.5px solid var(--accent); outline-offset:-1.5px; }
 
 /* ---- Drag & drop ----------------------------------------------------------- */
 .fx-item.is-dragging, .fx-row.is-dragging, .fx-gal-item.is-dragging, .fx-col-row.is-dragging{ opacity:.35; transform:scale(.97); }
@@ -272,7 +279,7 @@
   position:relative; display:flex; flex-direction:column; gap:7px; padding:6px 6px 7px; border-radius:12px; cursor:default;
   transition:background .12s, box-shadow .12s, transform .18s cubic-bezier(.2,.8,.2,1), opacity .18s;
 }
-.fx-item:hover{ background:var(--hover); }
+@media (hover:hover){ .fx-item:hover{ background:var(--hover); } }
 .fx-item.is-sel{ background:var(--sel); }
 .fx-thumb{
   position:relative; aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; overflow:hidden;
@@ -291,8 +298,8 @@
 .fx-item-sub{ display:flex; align-items:center; gap:6px; min-height:16px; }
 
 /* Folder tiles: compact rows of icon + name + count */
-.fx-item.is-folder{ flex-direction:row; align-items:center; gap:10px; padding:9px 34px 9px 12px; border-radius:10px; background:var(--surface); }
-.fx-item.is-folder:hover{ background:var(--surface-2); }
+.fx-item.is-folder{ flex-direction:row; align-items:center; gap:10px; padding:9px 34px 9px calc(12px + var(--fx-gut)); border-radius:10px; background:var(--surface); }
+@media (hover:hover){ .fx-item.is-folder:hover{ background:var(--surface-2); } }
 .fx-item.is-folder.is-sel{ background:var(--sel); }
 .fx-item.is-folder .fx-thumb{ width:28px; height:28px; aspect-ratio:auto; flex:none; overflow:visible; border-radius:0; background:none; box-shadow:none; }
 .fx-item.is-folder .fx-thumb::after{ display:none; }
@@ -305,14 +312,15 @@
 .fx-view[data-view="list"]{ padding-top:0; padding-left:12px; padding-right:12px; }
 .fx-list{ display:flex; flex-direction:column; }
 .fx-list-head, .fx-row{
-  display:grid; grid-template-columns:minmax(0,1fr) 150px 96px 120px 28px; align-items:center; gap:12px; padding:0 8px 0 12px;
+  display:grid; grid-template-columns:minmax(0,1fr) 150px 96px 120px 28px; align-items:center; gap:12px; padding:0 8px 0 calc(12px + var(--fx-gut));
 }
 .fx-list-head{
   position:sticky; top:0; z-index:2; height:34px; margin-bottom:4px; background:var(--bg);
   border-bottom:1px solid var(--line); font-size:.76rem; font-weight:500; color:var(--text-dim);
 }
 .fx-list-head [data-sortcol="size"]{ justify-self:end; }
-.fx-list-head button, .fx-list-head span{ display:inline-flex; align-items:center; gap:4px; padding:0; border:0; background:none; font:inherit; color:inherit; cursor:pointer; text-align:left; }
+.fx-list-head button, .fx-list-head span{ display:inline-flex; align-items:center; gap:4px; padding:0; border:0; background:none; font:inherit; color:inherit; text-align:left; }
+.fx-list-head button{ cursor:pointer; }
 .fx-list-head button:hover{ color:var(--text); }
 .fx-list-head button.is-sorted{ color:var(--text); }
 .fx-sort-ind{ width:11px; height:11px; transition:transform .16s; }
@@ -321,8 +329,9 @@
   position:relative; height:34px; border-radius:7px; cursor:default;
   transition:background .1s, box-shadow .12s, opacity .18s, transform .2s;
 }
-.fx-row:nth-child(even of .fx-row){ background:color-mix(in srgb,var(--hover) 45%,transparent); }
-.fx-row:hover{ background:var(--hover); }
+/* :where keeps the stripe below the hover and selection fills */
+.fx-row:where(:nth-child(even of .fx-row)){ background:color-mix(in srgb,var(--hover) 45%,transparent); }
+@media (hover:hover){ .fx-row:hover{ background:var(--hover); } }
 .fx-row.is-sel{ background:var(--sel); }
 .fx-row-name{ display:flex; align-items:center; gap:10px; min-width:0; }
 .fx-row-ico{ width:20px; height:20px; }
@@ -341,7 +350,7 @@
 }
 .fx-gal-thumb{ display:block; width:100%; min-height:110px; background:var(--surface); }
 .fx-gal-thumb img{ display:block; width:100%; animation:fxFade .25s ease both; transition:transform .4s cubic-bezier(.2,.8,.2,1); }
-.fx-gal-item:hover .fx-gal-thumb img{ transform:scale(1.025); }
+@media (hover:hover){ .fx-gal-item:hover .fx-gal-thumb img{ transform:scale(1.025); } }
 .fx-gal-ph{ aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; background:var(--surface); }
 .fx-gal-cap{
   position:absolute; left:0; right:0; bottom:0; display:flex; align-items:center; gap:6px; padding:28px 10px 8px;
@@ -359,13 +368,11 @@
 .fx-col{ flex:0 0 280px; display:flex; flex-direction:column; gap:1px; padding:6px; overflow-y:auto; border-right:1px solid var(--line); }
 .fx-col:last-child{ border-right:0; }
 .fx-col-row{
-  display:flex; align-items:center; gap:8px; height:30px; padding:0 8px; flex:none; border:0; border-radius:6px;
+  position:relative; display:flex; align-items:center; gap:8px; height:30px; padding:0 8px 0 calc(8px + var(--fx-gut)); flex:none; border:0; border-radius:6px;
   background:none; color:var(--text); font:inherit; text-align:left; cursor:default; transition:background .1s, opacity .18s, transform .2s;
 }
-.fx-col-row:hover{ background:var(--hover); }
-.fx-col-row.is-sel, .fx-col-row.is-active{ background:var(--press); }
-.fx-col-row.is-checked{ background:var(--accent); color:var(--accent-contrast); }
-.fx-col-row.is-checked .fx-col-chev{ color:inherit; }
+@media (hover:hover){ .fx-col-row:hover{ background:var(--hover); } }
+.fx-col-row.is-sel{ background:var(--sel); }
 .fx-col-ico{ width:18px; height:18px; flex:none; }
 .fx-col-name{ flex:1 1 auto; min-width:0; font-size:.84rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .fx-col-chev{ display:inline-flex; flex:none; color:var(--text-faint); }
@@ -559,21 +566,19 @@
 /* Touch: no hover, so ticks only appear in selection mode (.is-selecting,
    entered via the item menu's Select or a long-press); taps then toggle. */
 @media (pointer:coarse){
-  .fx-view:not(.is-selecting) .fx-check{ display:none; }
-  .fx-view.is-selecting .fx-check{ display:flex; }
+  .fx-view:not(.is-selecting){ --fx-gut:0px; }
+  .fx-view:not(.is-selecting) .fx-check{ opacity:0; visibility:hidden; }
+  .fx-view.is-selecting .fx-check{ opacity:1; }
+  .fx-check::after{ inset:-12px; }
   .fx-view .fx-item-kebab, .fx-view .fx-row-kebab{ opacity:1; width:32px; height:32px; }
   .fx-view.is-selecting .fx-item-kebab, .fx-view.is-selecting .fx-row-kebab{ visibility:hidden; }
   .fx-gal-cap{ opacity:1; }
   .fx-tree .rd-side-row{ min-height:38px; }
   .fx-tree-toggle, .fx-tree-link{ height:38px; }
-  .fx-view.is-selecting .fx-row .fx-row-name{ padding-left:30px; }
-  .fx-view.is-selecting .fx-item.is-folder{ padding-left:44px; }
-  .fx-row:hover .fx-row-ico, .fx-row.is-checked .fx-row-ico, .fx-row:hover .fx-row-thumb, .fx-row.is-checked .fx-row-thumb,
-  .fx-item.is-folder:hover .fx-thumb, .fx-item.is-folder.is-checked .fx-thumb{ opacity:1; }
 }
 
 @media (prefers-reduced-motion:reduce){
   .fx-view.is-enter > *, .fx-skel, .fx-skel-card, .fx-tree.is-anim .fx-tree-row, .fx-tree-row.is-reveal,
   .fx-tree-row.is-closing, .fx-bc-in, .fx-thumb img, .fx-gal-thumb img, .fx-dpreview img, .fx-drop-inner{ animation:none !important; }
-  .fx-drawer, .fx-selbar, .fx-uptray, .fx-side, .fx-item, .fx-row, .fx-fold .fx-fold-front{ transition:none !important; }
+  .fx-drawer, .fx-selbar, .fx-uptray, .fx-side, .fx-item, .fx-row, .fx-fold .fx-fold-front, .fx-check, .fx-check svg{ transition:none !important; }
 }

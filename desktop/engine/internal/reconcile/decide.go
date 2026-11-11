@@ -175,8 +175,8 @@ func (r *run) twoWay(it *item, lc, rc, lm, rm bool) {
 	switch {
 	case lc && rc:
 		r.contentConflict(it, final)
-	case lc:
-		r.upload(it, final, it.b.RemoteContentVersion, "changed on this computer")
+	case lc: // !rc: the one.gy content is the base content, maybe under a newer version
+		r.upload(it, final, n.ContentVersion, "changed on this computer")
 	case rc:
 		r.download(n, final, expect(it.l), it.b, "changed on one.gy")
 	default:
@@ -286,7 +286,7 @@ func (r *run) upOnly(it *item, lc, rc, lm, rm bool) {
 			Actions: []string{"keep_local", "keep_remote", "ignore"}})
 		r.stallPath(final)
 	case lc:
-		r.upload(it, final, it.b.RemoteContentVersion, "changed on this computer")
+		r.upload(it, final, n.ContentVersion, "changed on this computer")
 	default:
 		r.modes(it, final)
 	}

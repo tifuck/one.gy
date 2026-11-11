@@ -3,7 +3,7 @@
    Token-driven; only notes.html loads it (tests also mount it bare, without
    themes.css, so nothing here may depend on a token for layout).
    ========================================================================== */
-.fxc-root{ display:flex; flex-direction:column; height:100%; min-height:0; flex:1 1 auto; min-width:0; width:100%; }
+.fxc-root{ position:relative; display:flex; flex-direction:column; height:100%; min-height:0; flex:1 1 auto; min-width:0; width:100%; }
 
 /* ---- Toolbar -------------------------------------------------------------- */
 /* Wraps onto a second row when the pane is narrow: nothing is ever clipped or hidden behind a scroll */
@@ -53,7 +53,24 @@
 }
 .fxc-vp[data-tool="text"],.fxc-vp[data-tool="todo"],.fxc-vp[data-tool="table"],.fxc-vp[data-tool="code"],.fxc-vp[data-tool="pen"],.fxc-vp[data-tool="line"]{ cursor:crosshair; }
 .fxc-vp[data-tool="pen"],.fxc-vp[data-tool="line"]{ touch-action:none; }
+.fxc-vp[data-tool="pen"][data-mode="eraser"]{ cursor:cell; }
+/* Drawing starts anywhere, also on top of what is already there; only the eraser has to find the strokes under it */
+.fxc-vp[data-tool="pen"]:not([data-mode="eraser"]) .fxc-block, .fxc-vp[data-tool="line"] .fxc-block{ pointer-events:none; }
 .fxc-vp.is-pan-ready{ cursor:grab; }
+/* Options of the tool in hand (pen / line), floating over the foot of the page */
+.fxc-opts{
+  position:absolute; left:50%; bottom:14px; z-index:410; transform:translateX(-50%); display:flex; align-items:center; gap:4px;
+  max-width:calc(100% - 16px); padding:4px 8px 4px 4px; border-radius:10px; background:var(--raise); box-shadow:var(--shadow-pop);
+}
+.fxc-opts[hidden]{ display:none; }
+.fxc-opts .fxc-mini{ background:none; }
+.fxc-opts .fxc-mini:hover{ background:var(--press); }
+.fxc-opts .fxc-mini.is-active{ background:var(--accent-soft); }
+.fxc-opts input[type="range"]{ width:84px; min-width:48px; flex:0 1 84px; margin-left:4px; accent-color:var(--accent); }
+/* Page backgrounds (insert menu > Page background) */
+.fxc-world[data-bg="ruled"]{ background-image:linear-gradient(to bottom, transparent 27px, var(--line-strong) 27px); background-size:100% 28px; }
+.fxc-world[data-bg="grid"]{ background-image:linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size:24px 24px; }
+.fxc-world[data-bg="dots"]{ background-image:radial-gradient(var(--line-strong) 1px, transparent 1.5px); background-size:24px 24px; }
 /* Editing surfaces show a caret, not a focus ring (ui-v2.css rings every :focus-visible) */
 .fxc-vp:focus-visible, .fxc-text-content:focus-visible, .fxc-todo-input:focus-visible, .fxc-table-card td:focus-visible, .fxc-code textarea:focus-visible{ outline:none; }
 /* The page is borderless and fills the whole editor; it scrolls forever downward. */
@@ -123,9 +140,28 @@
 .fxc-code-copy{ padding:0 .55rem; }
 .fxc-code-head select:hover, .fxc-code-copy:hover{ opacity:1; background:rgba(255,255,255,.08); }
 .fxc-code textarea{
-  flex:none; width:100%; min-height:90px; resize:none; border:0; border-radius:0 0 10px 10px; outline:0;
+  flex:none; display:block; width:100%; min-height:90px; resize:none; border:0; border-radius:0 0 10px 10px; outline:0;
   padding:.7rem .8rem; background:var(--code-bg); color:var(--code-fg); font:13px/1.55 var(--font-mono);
 }
+/* Syntax colours: a <pre> painted under the textarea, whose own text turns transparent (notes-canvas.js highlight) */
+.fxc-code-edit{
+  position:relative;
+  /* Same recipe as the API docs' syntax palette, pulled toward the code ink (the code card is dark in both themes) */
+  --syn-key:color-mix(in srgb,var(--kind-pdf) 78%,var(--code-fg)); --syn-str:color-mix(in srgb,var(--kind-sheet) 70%,var(--code-fg));
+  --syn-fn:color-mix(in srgb,var(--kind-code) 78%,var(--code-fg)); --syn-num:color-mix(in srgb,var(--kind-doc) 75%,var(--code-fg));
+  --syn-cmd:color-mix(in srgb,var(--kind-archive) 70%,var(--code-fg));
+}
+.fxc-code-hl{
+  position:absolute; inset:0; margin:0; padding:.7rem .8rem; overflow:hidden; pointer-events:none; border:0; background:none;
+  white-space:pre-wrap; overflow-wrap:break-word; color:var(--code-fg); font:13px/1.55 var(--font-mono);
+}
+.fxc-code-edit.has-hl textarea{ position:relative; background:transparent; color:transparent; caret-color:var(--code-fg); }
+.fxc-code-hl :is(.hljs-comment, .hljs-quote, .hljs-punctuation){ opacity:.6; }
+.fxc-code-hl :is(.hljs-keyword, .hljs-doctag, .hljs-type, .hljs-meta .hljs-keyword, .hljs-variable.language_){ color:var(--syn-key); }
+.fxc-code-hl :is(.hljs-string, .hljs-regexp, .hljs-meta .hljs-string, .hljs-char.escape_){ color:var(--syn-str); }
+.fxc-code-hl :is(.hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section){ color:var(--syn-fn); }
+.fxc-code-hl :is(.hljs-number, .hljs-literal, .hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-operator, .hljs-meta){ color:var(--syn-num); }
+.fxc-code-hl :is(.hljs-built_in, .hljs-symbol){ color:var(--syn-cmd); }
 /* A table draws its own borders from its style preset (none = invisible layout table), so no card frame. */
 .fxc-table-card{ height:auto; overflow:visible; border:0; box-shadow:none; background:transparent; }
 .fxc-table-card::after{ content:''; position:absolute; inset:0; border:var(--fxc-round-edge, 0); border-radius:inherit; pointer-events:none; }
@@ -190,6 +226,10 @@
 @keyframes fxcPop{ from{ opacity:0; transform:translateY(4px) scale(.98); } }
 .fxc-text-tools .fxc-mini{ flex:none; min-width:28px; height:28px; padding:0 7px; background:none; line-height:28px; text-align:center; color:var(--text); }
 .fxc-text-tools .fxc-mini:hover{ background:var(--press); }
+.fxc-text-tools .fxc-mini svg{ width:15px; height:15px; vertical-align:-3px; }
+.fxc-tt-select{ flex:none; height:28px; max-width:76px; padding:0 2px 0 4px; border:0; border-radius:6px; background:none; color:var(--text); font:500 .78rem var(--font-body); cursor:pointer; }
+.fxc-tt-select:hover{ background:var(--press); }
+.fxc-tt-select option{ background:var(--raise); color:var(--text); }
 .fxc-tt-sep{ flex:none; width:1px; height:18px; background:var(--line-strong); margin:0 4px; }
 .fxc-tt-color{ flex:none; display:inline-flex; align-items:center; gap:4px; height:28px; padding:0 6px; border-radius:6px; cursor:pointer; transition:background .12s; }
 .fxc-tt-color:hover{ background:var(--press); }
@@ -212,6 +252,11 @@
 .fxc-h-se{ right:-6px; bottom:-6px; cursor:nwse-resize; }
 .fxc-h-s{ left:50%; bottom:-6px; transform:translateX(-50%); cursor:ns-resize; }
 .fxc-h-w{ left:-6px; top:50%; transform:translateY(-50%); cursor:ew-resize; }
+/* Rotate handle above the box; alignment guides while a block is dragged */
+.fxc-rot{ position:absolute; left:50%; top:-28px; width:12px; height:12px; margin-left:-6px; box-sizing:border-box; border:1.5px solid var(--accent); border-radius:50%; background:var(--bg); cursor:grab; pointer-events:auto; touch-action:none; }
+.fxc-guide{ position:absolute; background:var(--accent); pointer-events:none; }
+.fxc-guide-x{ top:0; bottom:0; width:1px; }
+.fxc-guide-y{ left:0; right:0; height:1px; }
 
 /* Empty-page hint */
 .fxc-hint{
@@ -250,6 +295,9 @@
   .fxc-h-nw, .fxc-h-n, .fxc-h-ne{ top:-10px; } .fxc-h-sw, .fxc-h-s, .fxc-h-se{ bottom:-10px; }
   .fxc-h-nw, .fxc-h-w, .fxc-h-sw{ left:-10px; } .fxc-h-ne, .fxc-h-e, .fxc-h-se{ right:-10px; }
   .fxc-text-tools .fxc-mini{ min-width:36px; height:36px; line-height:36px; }
+  .fxc-tt-select{ height:36px; }
+  .fxc-opts .fxc-mini{ min-height:36px; line-height:36px; }
+  .fxc-rot{ top:-38px; width:22px; height:22px; margin-left:-11px; }
   .fxc-popover .rd-cmenu-item{ min-height:40px; }
 }
 @media (prefers-reduced-motion:reduce){

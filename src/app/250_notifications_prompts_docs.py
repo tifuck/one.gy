@@ -196,30 +196,33 @@ def prompts_catalog():
         'categories': categories,
     })
 
-_PROMPT_ID_CACHE = {'mtime': None, 'ids': frozenset()}
+# (mtime, ids), replaced whole so a reader never pairs a new mtime with old ids.
+_PROMPT_ID_CACHE = (None, frozenset())
 
 def _prompt_catalog_ids():
+    global _PROMPT_ID_CACHE
+    cached_mtime, cached_ids = _PROMPT_ID_CACHE
     path = os.path.join(app.static_folder, 'prompts-catalog.json')
     try:
         mtime = os.path.getmtime(path)
     except OSError:
-        return _PROMPT_ID_CACHE['ids']
-    if _PROMPT_ID_CACHE['mtime'] == mtime:
-        return _PROMPT_ID_CACHE['ids']
+        return cached_ids
+    if cached_mtime == mtime:
+        return cached_ids
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except Exception:
-        return _PROMPT_ID_CACHE['ids']
+        return cached_ids
     ids = set()
     for cat in data.get('categories') or []:
         for p in cat.get('prompts') or []:
             pid = p.get('id')
             if pid:
                 ids.add(str(pid))
-    _PROMPT_ID_CACHE['mtime'] = mtime
-    _PROMPT_ID_CACHE['ids'] = frozenset(ids)
-    return _PROMPT_ID_CACHE['ids']
+    ids = frozenset(ids)
+    _PROMPT_ID_CACHE = (mtime, ids)
+    return ids
 
 def _prompts_feedback_ip_hash():
     ip = (get_real_ip() or '').strip()

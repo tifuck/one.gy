@@ -4,6 +4,12 @@ NOTES_PENDING_PER_SENDER_LIMIT = 20
 NOTES_PENDING_MAX_CONTENT_SIZE = 25 * 1024 * 1024
 NOTES_PENDING_AGGREGATE_MAX_BYTES = 100 * 1024 * 1024
 NOTES_NOTE_CONTENT_MAX_BYTES = 100 * 1024 * 1024
+# Version history: the content a save replaces is kept as a NoteVersion row.
+# ponytail: snapshots live in the DB and do not count toward quota, so they are
+# small and few; move them to notes/ payloads if picture-heavy notes need history.
+NOTES_VERSION_MAX_BYTES = 2 * 1024 * 1024
+NOTES_VERSION_KEEP = 10
+NOTES_VERSION_MIN_INTERVAL = 600
 # These fields live in MariaDB TEXT columns (max 65,535 bytes, strict mode
 # rejects more), so the limits must not exceed that: 64 * 1024 was one byte
 # over and 128 KiB tags could never be stored.
@@ -207,6 +213,41 @@ def _notes_normalize_system_key(system_key):
 
 def _notes_is_system_notebook(notebook):
     return bool(notebook and notebook.system_key == NOTES_SHARED_INBOX_KEY)
+
+def _notes_snapshot_version(n, force=False):
+    """Add the note's CURRENT content to the session as a NoteVersion (caller
+    commits it with the save that replaces it). Never raises: history must not
+    block a save."""
+    try:
+        old_size = int(n.size or 0)
+        if old_size <= 0 or old_size > NOTES_VERSION_MAX_BYTES:
+            return
+        if not force:
+            last = NoteVersion.query.with_entities(NoteVersion.created_at).filter_by(note_id=n.id).order_by(NoteVersion.id.desc()).first()
+            saved_at = n.updated_at
+            if last and last[0] and saved_at and (saved_at - last[0]).total_seconds() < NOTES_VERSION_MIN_INTERVAL:
+                return
+        old_content = storage.read_note(n.id)
+        if not old_content:
+            return
+        note_id, owner_id, saved_at = n.id, n.user_id, n.updated_at
+        # Savepoint: a failed insert must leave the session usable for the save itself.
+        with db.session.begin_nested():
+            db.session.add(NoteVersion(note_id=note_id, user_id=owner_id, encrypted_content=old_content,
+                                       size=old_size, created_at=saved_at))
+            db.session.flush()
+            stale = NoteVersion.query.with_entities(NoteVersion.id).filter_by(note_id=note_id).order_by(NoteVersion.id.desc()).offset(NOTES_VERSION_KEEP).all()
+            if stale:
+                NoteVersion.query.filter(NoteVersion.id.in_([row[0] for row in stale])).delete(synchronize_session=False)
+    except Exception as e:
+        print(f'[NOTES] Warning: could not snapshot note {n.id} before save: {e}')
+
+def _cleanup_note_versions():
+    """Drop versions whose note is gone (account/admin deletion, notebook purge)."""
+    removed = NoteVersion.query.filter(~NoteVersion.note_id.in_(db.session.query(Note.id))).delete(synchronize_session=False)
+    db.session.commit()
+    if removed:
+        print(f'[CLEANUP] Removed {removed} note version(s) of deleted notes')
 
 @app.route('/notes')
 @login_required
@@ -772,6 +813,9 @@ def notes_update_note(note_id):
                 storage.rollback_staged_note(n.id, staging_id=staging_id)
                 return jsonify({'error': 'STORAGE LIMIT EXCEEDED'}), 413
 
+            # The old payload is still on disk here (the staged one replaces it after the commit).
+            _notes_snapshot_version(n, force=bool(data.get('force_version')))
+
             new_version = expected_version + 1
             now = datetime.now(timezone.utc)
             update_values = {
@@ -1006,6 +1050,7 @@ def notes_delete_note(note_id):
             if not n.is_trashed:
                 return jsonify({'error': 'NOTE MUST BE IN TRASH BEFORE PERMANENT DELETION'}), 409
             note_local_targets = storage.stage_payload_deletes([_note_payload_delete_key(note_id)])
+            NoteVersion.query.filter_by(note_id=note_id).delete(synchronize_session=False)
             db.session.delete(n)
             db.session.commit()
             print(f'[NOTES] User {user_id} permanently deleted note {note_id}')
@@ -1020,6 +1065,30 @@ def notes_delete_note(note_id):
     if permanent:
         _purge_staged_locals_with_note_locks(note_local_targets)
     return jsonify({'success': True})
+
+def _notes_version_time(value):
+    return (value.isoformat() + ('' if value.tzinfo else 'Z')) if value else None
+
+@app.route('/notes/api/notes/<string:note_id>/versions', methods=['GET'])
+@login_required
+def notes_list_versions(note_id):
+    """List the saved earlier versions of a note (no content)."""
+    user_id = session['logged_in_user_id']
+    if not Note.query.filter_by(id=note_id, user_id=user_id).first():
+        return jsonify({'error': 'NOTE NOT FOUND'}), 404
+    rows = NoteVersion.query.with_entities(NoteVersion.id, NoteVersion.size, NoteVersion.created_at).filter_by(
+        note_id=note_id, user_id=user_id).order_by(NoteVersion.id.desc()).all()
+    return jsonify({'versions': [{'id': r[0], 'size': r[1] or 0, 'created_at': _notes_version_time(r[2])} for r in rows]})
+
+@app.route('/notes/api/notes/<string:note_id>/versions/<int:version_id>', methods=['GET'])
+@login_required
+def notes_get_version(note_id, version_id):
+    """One earlier version's encrypted content; the client decrypts it with the note key."""
+    user_id = session['logged_in_user_id']
+    v = NoteVersion.query.filter_by(id=version_id, note_id=note_id, user_id=user_id).first()
+    if not v:
+        return jsonify({'error': 'VERSION NOT FOUND'}), 404
+    return jsonify({'id': v.id, 'encrypted_content': v.encrypted_content, 'created_at': _notes_version_time(v.created_at)})
 
 @app.route('/notes/api/notes/<string:note_id>/restore', methods=['POST'])
 @login_required
@@ -1066,6 +1135,8 @@ def notes_empty_trash():
         for n in trashed_notes:
             note_ids.add(n.id)
             db.session.delete(n)
+        if note_ids:
+            NoteVersion.query.filter(NoteVersion.note_id.in_(note_ids)).delete(synchronize_session=False)
         trashed_notebooks = Notebook.query.filter_by(user_id=user_id, is_trashed=True).all()
     # AUDIT FIX D6: a trashed notebook can still hold LIVE notes -- they were
     # never listed in the trash view, so destroying them here was silent data
