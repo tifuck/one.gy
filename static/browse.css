@@ -57,16 +57,26 @@
   margin-left:-6px; padding:0; border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer; }
 .bw-side-toggle:hover{ background:var(--hover); color:var(--text); }
 .bw-side-toggle svg{ width:18px; height:18px; }
-.bw-bcrumb{ display:flex; align-items:center; gap:2px; flex:0 1 auto; min-width:0; height:var(--bw-ctl-h);
-  overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
-.bw-bcrumb::-webkit-scrollbar{ display:none; }
+/* Up a level (browse.js renderCrumbs); a back arrow on phones */
+.bw-bc-up{ display:inline-flex; align-items:center; justify-content:center; flex:none; width:var(--bw-ctl-h); height:var(--bw-ctl-h);
+  margin-left:-4px; padding:0; border:0; border-radius:8px; background:none; color:var(--text); cursor:pointer; transition:background .12s; }
+.bw-bc-up:hover:not(:disabled){ background:var(--hover); }
+.bw-bc-up:disabled{ color:var(--text-faint); opacity:.5; cursor:default; }
+.bw-bc-up svg{ width:17px; height:17px; }
+.bw-bc-up .bw-bc-back-arrow{ display:none; }
+/* Never scrolls or clips mid-word: fitCrumbs() folds the middle into "…" */
+.bw-bcrumb{ display:flex; align-items:center; gap:2px; flex:0 1 auto; min-width:0; height:var(--bw-ctl-h); overflow:hidden; }
 .bw-bcrumb-item{
   flex:none; display:block; max-width:22ch; height:26px; padding:0 7px; line-height:26px;
   border:0; border-radius:6px; background:none; color:var(--text-dim); font:inherit; font-size:.86rem; font-weight:500;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; transition:background .12s, color .12s;
 }
 .bw-bcrumb-item:hover{ color:var(--text); background:var(--hover); }
-.bw-bcrumb-item.is-current{ max-width:32ch; color:var(--text); font-size:.98rem; font-weight:600; letter-spacing:-.01em; cursor:default; background:none; }
+.bw-bcrumb-item.is-current{ flex:0 1 auto; min-width:4ch; max-width:32ch; color:var(--text); font-size:.98rem; font-weight:600; letter-spacing:-.01em; cursor:default; background:none; }
+.bw-bcrumb.is-fitting .bw-bcrumb-item.is-current{ flex:none; }
+.bw-bcrumb-item.is-folded, .bw-bcrumb-sep.is-folded{ display:none; }
+.bw-bcrumb-more{ flex:none; height:26px; padding:0 7px; border:0; border-radius:6px; background:none; color:var(--text-dim); font:inherit; font-size:.86rem; font-weight:500; cursor:pointer; }
+.bw-bcrumb-more:hover{ color:var(--text); background:var(--hover); }
 .bw-bcrumb-sep{ flex:none; display:inline-flex; color:var(--text-faint); }
 .bw-bcrumb-sep svg{ width:12px; height:12px; }
 .bw-spacer{ flex:1 1 auto; min-width:8px; }
@@ -233,12 +243,6 @@
 .bw-view[data-view="list"] .bw-check{ left:13px; }
 .bw-view[data-view="list"] .bw-item-meta{ justify-content:center; }
 
-/* ".." (browse.js upEntry): a folder row / tile without the tick */
-.bw-up{ width:100%; border:0; background:none; font:inherit; color:inherit; text-align:left; }
-.bw-view .bw-up .bw-item-thumb{ opacity:1 !important; }
-.bw-up .bw-item-name{ font-weight:600; }
-.bw-up .bw-item-size{ color:var(--text-faint); }
-.bw-up:focus-visible{ outline:1.5px solid var(--accent); outline-offset:-1.5px; }
 .bw-view > .bw-items + .bw-sec{ margin-top:22px; }
 
 /* ---- Empty / loading ----------------------------------------------------------- */
@@ -310,9 +314,13 @@
 }
 @media (max-width:620px){
   .bw-toolbar{ --bw-ctl-h:36px; gap:4px; padding:0 10px; }
-  .bw-bcrumb{ flex:1 1 auto; overflow:hidden; }
-  /* Too narrow for a path: the current folder only, ellipsized */
-  .bw-bcrumb-item:not(.is-current), .bw-bcrumb-sep{ display:none; }
+  .bw-bcrumb{ flex:1 1 auto; }
+  /* Too narrow for a path: a back arrow and the current folder, ellipsized */
+  .bw-bcrumb-item:not(.is-current), .bw-bcrumb-sep, .bw-bcrumb-more{ display:none; }
+  .bw-bc-up{ margin-left:-2px; }
+  .bw-bc-up:disabled{ display:none; }
+  .bw-bc-up .bw-bc-up-arrow{ display:none; }
+  .bw-bc-up .bw-bc-back-arrow{ display:block; width:19px; height:19px; }
   .bw-bcrumb-item.is-current{ flex:0 1 auto; min-width:0; max-width:100%; padding-left:2px; }
   .bw-spacer, .bw-sort-wrap{ display:none; }
   .bw-tbar-actions{ gap:2px; }

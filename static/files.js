@@ -382,7 +382,7 @@
     bc.appendChild(home)
     if (S.trashMode || S.searchQ) {
       home.classList.remove('is-current')
-      bc.appendChild(sep(isNew(1))); var t = document.createElement('span'); t.className = 'fx-bc-item is-current' + (isNew(1) ? ' fx-bc-in' : ''); t.textContent = S.trashMode ? 'Trash' : 'Search results'; bc.appendChild(t); prevCrumbKeys = keys; tail(); return
+      bc.appendChild(sep(isNew(1))); var t = document.createElement('span'); t.className = 'fx-bc-item is-current' + (isNew(1) ? ' fx-bc-in' : ''); t.textContent = S.trashMode ? 'Trash' : 'Search results'; bc.appendChild(t); prevCrumbKeys = keys; renderUp(); fitCrumbs(); return
     }
     S.breadcrumbs.forEach(function (b, i) {
       var anim = isNew(i + 1)
@@ -396,10 +396,66 @@
       bc.appendChild(btn)
     })
     prevCrumbKeys = keys
-    tail()
+    renderUp()
+    fitCrumbs()
     function sep (anim) { var s = document.createElement('span'); s.className = 'fx-bc-sep' + (anim ? ' fx-bc-in' : ''); s.setAttribute('aria-hidden', 'true'); s.innerHTML = ICON.chev; return s }
-    // The bar is a single row now — keep the current folder in view when the path is long
-    function tail () { requestAnimationFrame(function () { bc.scrollLeft = bc.scrollWidth }) }
+  }
+  // Up a level (a back arrow on phones, where the path shows only the current
+  // folder). Disabled at the root, in Trash and in search. Takes drops.
+  function canGoUp () { return S.folderId != null && !S.trashMode && !S.searchQ }
+  function renderUp () {
+    var b = $('fxUp'), can = canGoUp(), p = can ? parentFolderId() : null
+    var label = can ? 'Up to ' + folderLabel(p) : 'Up a level'
+    b.disabled = !can
+    b.title = can ? label + ' (Alt+\u2191)' : label
+    b.setAttribute('aria-label', label)
+    if (can) b.setAttribute('data-fid', p == null ? '' : p)
+    else b.removeAttribute('data-fid')
+  }
+  // A path too long for the bar folds folders into a "…" crumb that lists
+  // them: the middle ones first, then the root, then the parent, so the
+  // current folder is the last thing cut short. If even that leaves it cut,
+  // the toolbar goes .is-tight (New folder / Upload drop their labels) and
+  // the path is fitted again. Runs after every render and whenever the
+  // toolbar's room changes.
+  var FOLDER_PATH = '<path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/>'
+  function fitCrumbs () {
+    var bc = $('fxBcrumb'); if (!bc) return
+    bc.parentNode.classList.remove('is-tight')
+    if (foldCrumbs(bc)) { bc.parentNode.classList.add('is-tight'); foldCrumbs(bc) }
+  }
+  // Returns true when the current folder still doesn't fit.
+  function foldCrumbs (bc) {
+    bc.querySelectorAll('.fx-bc-more, .fx-bc-more-sep').forEach(function (n) { n.remove() })
+    bc.querySelectorAll('.is-folded').forEach(function (n) { n.classList.remove('is-folded') })
+    var crumbs = bc.querySelectorAll('.fx-bc-item'), n = crumbs.length, order = [], more = null
+    for (var i = 1; i < n - 2; i++) order.push(i)
+    if (n > 1) order.push(0)
+    if (n > 2) order.push(n - 2)
+    bc.classList.add('is-fitting')
+    // +1: the bar is sized to its content, so sub-pixel rounding alone can
+    // make scrollWidth exceed clientWidth by one.
+    for (var k = 0; k < order.length && bc.scrollWidth > bc.clientWidth + 1; k++) {
+      if (!more) {
+        more = document.createElement('button')
+        more.type = 'button'; more.className = 'fx-bc-item fx-bc-more'; more.textContent = '\u2026'
+        more.title = 'Show the hidden folders'; more.setAttribute('aria-label', 'Show the hidden folders')
+        more.onclick = function () {
+          var r = this.getBoundingClientRect()
+          RdMenu.open(r.left, r.bottom + 4, Array.prototype.filter.call(crumbs, function (c) { return c.classList.contains('is-folded') }).map(function (c) {
+            var fid = c.getAttribute('data-fid')
+            return { label: c.textContent, icon: FOLDER_PATH, action: function () { loadFolder(fid === '' ? null : fid) } }
+          }))
+        }
+        var s = crumbs[1].previousSibling.cloneNode(true); s.classList.add('fx-bc-more-sep'); s.classList.remove('fx-bc-in')
+        bc.insertBefore(more, crumbs[1]); bc.insertBefore(s, crumbs[1])
+      }
+      var c = crumbs[order[k]]
+      c.classList.add('is-folded'); c.nextSibling.classList.add('is-folded')
+    }
+    var cut = bc.scrollWidth > bc.clientWidth + 1
+    bc.classList.remove('is-fitting')
+    return cut
   }
 
   function renderSidebar (animate) {
@@ -495,9 +551,9 @@
 
   // ---- Desktop app: this computer's syncs (site-bridge.md onSyncs) ----------
   // Inside ONE.GY Desktop a folder this computer syncs gets a sync mark after
-  // its name (tree and listing, coloured by state), and the toolbar says how
-  // the open folder syncs, also anywhere below a sync's folder; it opens the
-  // app's sync panel. In a browser there is no onSyncs, so none of this shows.
+  // its name (tree and listing, coloured by state), and an icon after the
+  // toolbar path shows how the open folder syncs, also anywhere below a sync's
+  // folder (details in its tooltip); it opens the app's sync panel. In a browser there is no onSyncs, so none of this shows.
   var desk = window.onegyDesktop && typeof window.onegyDesktop.onSyncs === 'function' ? window.onegyDesktop : null
   var syncByFolder = {}
   var SYNC_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 0 1-13.7 5.6M4 12a8 8 0 0 1 13.7-5.6"/><path d="M18 3v3.6h-3.6M6 21v-3.6h3.6"/></svg>'
@@ -548,12 +604,14 @@
       s = s || syncFor(null)
     }
     chip.hidden = !s
+    fitCrumbs()
     if (!s) return
     chip.className = 'rd-pill fx-sync-chip' + (SYNC_TONE[s.state] || '')
     chip.setAttribute('data-sync-state', s.state)
-    chip.innerHTML = SYNC_ICON + '<span>' + esc((SYNC_KIND[s.type] || SYNC_KIND.two_way) + ' · ' + syncStateText(s)) + '</span>'
-    chip.title = syncLabel(s) + '. Open in Sync.'
-    chip.setAttribute('aria-label', syncLabel(s) + '. Open in Sync')
+    chip.innerHTML = SYNC_ICON
+    var said = (SYNC_KIND[s.type] || SYNC_KIND.two_way) + ', ' + syncStateText(s) + '. ' + (SYNC_WITH[s.type] || SYNC_WITH.two_way) + '. Open in Sync'
+    chip.title = said + '.'
+    chip.setAttribute('aria-label', said)
     chip.onclick = function () {
       var u = document.querySelector('[data-desktop-sync][data-username]')
       if (u && typeof desk.openSync === 'function') desk.openSync({ username: u.getAttribute('data-username'), screen: s.issues ? 'issues' : 'syncs' })
@@ -583,7 +641,7 @@
     var files = sortItems(S.files, false)
     // Failed loads leave the listing empty, so the error is derived here: a
     // later sort / view change must not repaint it as "Trash is empty".
-    if (!folders.length && !files.length) { el.view.innerHTML = S.loadFailed ? errorState(S.loadError) : (S.view === 'list' ? upEntry() : folderGrid([])) + emptyState(); paintSyncs(); return }
+    if (!folders.length && !files.length) { el.view.innerHTML = S.loadFailed ? errorState(S.loadError) : emptyState(); paintSyncs(); return }
     var fn = { grid: renderGrid, list: renderList, gallery: renderGallery, columns: renderColumns }[S.view] || renderGrid
     fn(folders, files)
     observeThumbs()
@@ -599,22 +657,10 @@
     return b
   }
 
-  // ".." back to the parent folder (the only way up on phones, where the
-  // breadcrumb shows just the current folder). Not an item: without data-k,
-  // selection, Ctrl+A, arrow keys, menus and drag skip it; it takes drops.
   function parentFolderId () { var b = S.breadcrumbs; return b.length > 1 ? b[b.length - 2].id : null }
-  function upEntry (tile) {
-    if (S.folderId == null || S.trashMode || S.searchQ || S.loadFailed) return ''
-    var p = parentFolderId(), to = esc(folderLabel(p))
-    var label = tile
-      ? '<span class="fx-item-body"><span class="fx-item-top"><span class="fx-item-name">..</span></span><span class="fx-item-sub"><span class="fx-meta">' + to + '</span></span></span>'
-      : '<span class="fx-name">..</span><span class="fx-meta">' + to + '</span>'
-    return '<button type="button" class="fx-up" data-up data-fid="' + (p == null ? '' : p) + '" title="Up to ' + to + '" aria-label="Up to ' + to + '">' + itemIcon(null, true) + label + '</button>'
-  }
   function folderGrid (folders) {
-    var up = upEntry(true)
-    if (!folders.length) return up && '<div class="fx-grid">' + up + '</div>'
-    return sectionLabel('Folders', folders.length) + '<div class="fx-grid">' + up + folders.map(function (f) { return gridCard(f, true) }).join('') + '</div>'
+    if (!folders.length) return ''
+    return sectionLabel('Folders', folders.length) + '<div class="fx-grid">' + folders.map(function (f) { return gridCard(f, true) }).join('') + '</div>'
   }
 
   var TICK = '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>'
@@ -681,7 +727,7 @@
         (on ? '<svg class="fx-sort-ind' + (desc ? ' is-desc' : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>' : '') + '</button>'
     }
     var h = '<div class="fx-list"><div class="fx-list-head">' +
-      head('name', 'Name') + '<span>Kind</span>' + head('size', 'Size') + head('date', 'Modified') + '<span></span></div>' + upEntry()
+      head('name', 'Name') + '<span>Kind</span>' + head('size', 'Size') + head('date', 'Modified') + '<span></span></div>'
     folders.forEach(function (f) { h += listRow(f, true) })
     files.forEach(function (f) { h += listRow(f, false) })
     h += '</div>'
@@ -729,7 +775,7 @@
 
   // COLUMNS (Miller) — renders current folder as a single column with a preview pane.
   function renderColumns (folders, files) {
-    var h = '<div class="fx-cols"><div class="fx-col">' + upEntry()
+    var h = '<div class="fx-cols"><div class="fx-col">'
     folders.forEach(function (f) {
       h += '<button class="fx-col-row' + selClass(keyOf(f, true)) + '" data-k="' + keyOf(f, true) + '" data-id="' + f.id + '" data-folder="true" draggable="true">' + TICK + colIcon(f, true) + '<span class="fx-col-name" title="' + esc(displayName(f, true)) + '">' + esc(displayName(f, true)) + '</span><span class="fx-col-chev">' + ICON.chev + '</span></button>'
     })
@@ -1753,6 +1799,8 @@
   }
   function wire () {
     el.view = $('fxView')
+    $('fxUp').addEventListener('click', function () { if (canGoUp()) loadFolder(parentFolderId()) })
+    new ResizeObserver(fitCrumbs).observe(document.querySelector('.fx-toolbar'))
 
     // View region — click selects, double-click opens (folder / preview).
     // Checkbox, Ctrl/Cmd+click and Shift+click build a multi-selection.
@@ -1760,7 +1808,6 @@
     el.view.addEventListener('click', function (e) {
       if (e.target.closest('[data-empty-upload]')) { $('fxFileInput').click(); return }
       if (e.target.closest('[data-sortcol]')) { var c = e.target.closest('[data-sortcol]').getAttribute('data-sortcol'); cycleSort(c); return }
-      if (e.target.closest('[data-up]')) { loadFolder(parentFolderId()); return }
       if (e.target.closest('[data-kebab]')) {
         var kb = e.target.closest('[data-kebab]')
         var cardK = kb.closest('[data-k]')
@@ -1929,7 +1976,7 @@
       if (filesKeysBlocked(e)) return
       if (e.key === 'Escape') { closeSide(); closeDrawer(); clearSel(); return }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); return }
-      if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); if (upEntry()) loadFolder(parentFolderId()); return }
+      if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); if (canGoUp()) loadFolder(parentFolderId()); return }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (!S.sel.size) return
         e.preventDefault()
@@ -1960,8 +2007,9 @@
   // ---- Drag & drop ---------------------------------------------------------
   // One pipeline for both kinds of drag: items being moved (`drag` is set at
   // dragstart) and files coming from the desktop (types include 'Files').
-  // Targets: folder tiles / rows in the view, sidebar tree rows and breadcrumb
-  // ancestors. A collapsed tree branch springs open after a short hover.
+  // Targets: folder tiles / rows in the view, sidebar tree rows, breadcrumb
+  // ancestors and the up button. A collapsed tree branch springs open after a
+  // short hover.
   var drag = null            // { items, keys, raw, blocked } while moving items
   var dropEl = null          // element currently highlighted as the target
   var springTimer = null, springKey = null
@@ -1970,7 +2018,7 @@
   function folderKey (id) { return id == null || id === '' ? 'root' : String(id) }
   function dropTargetAt (node) {
     if (S.trashMode || !node || !node.closest) return null
-    var t = node.closest('.fx-tree-row, .fx-bc-item[data-fid]:not(.is-current), #fxView [data-k][data-folder="true"], #fxView [data-up]')
+    var t = node.closest('.fx-tree-row, .fx-bc-item[data-fid]:not(.is-current), #fxView [data-k][data-folder="true"], #fxUp[data-fid]')
     if (!t) return null
     var raw = t.hasAttribute('data-k') ? t.getAttribute('data-id') : t.getAttribute('data-fid')
     var id = raw === '' || raw == null ? null : raw

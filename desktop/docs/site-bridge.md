@@ -129,9 +129,10 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
     (rendered `hidden`), "App settings"; click → `openSettings({ username })`.
 - Files page (`files.js`, with `onSyncs`): a folder this computer syncs gets
   a sync mark after its name in the tree and the listing, coloured by
-  `state`; the toolbar shows a chip ("Backup · Up to date") in a sync's
-  folder and anywhere below it, which opens the sync panel (Issues when the
-  sync has some). The tooltip says what the type means ("Backup of this
+  `state`; the toolbar shows a sync icon after the path, coloured by state,
+  in a sync's folder and anywhere below it, which opens the sync panel
+  (Issues when the sync has some). Its tooltip and label give the type,
+  state and what the type means ("Backup, Up to date. Backup of this
   computer, read-only on one.gy").
 - The username is read from a `data-username` attribute rendered by the
   template, never from the URL.

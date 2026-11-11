@@ -299,6 +299,46 @@
         '" data-folder-id="' + c.id + '" title="' + esc(c.name) + '">' + esc(c.name) + '</button>')
     })
     el('bwBcrumb').innerHTML = out.join('')
+    var up = el('bwUp'), atRoot = S.folderId === S.rootId
+    var to = atRoot ? '' : (S.crumbs.length > 1 ? S.crumbs[S.crumbs.length - 2].name : S.rootName)
+    up.disabled = atRoot
+    up.title = atRoot ? 'Up a level' : 'Up to ' + to
+    up.setAttribute('aria-label', up.title)
+    fitCrumbs()
+  }
+  // A path too long for the bar folds folders into a "…" crumb that lists
+  // them: the middle ones first, then the root, then the parent, so the
+  // current folder is the last thing cut short.
+  function fitCrumbs () {
+    var bc = el('bwBcrumb')
+    bc.querySelectorAll('.bw-bcrumb-more, .bw-bcrumb-more-sep').forEach(function (n) { n.remove() })
+    bc.querySelectorAll('.is-folded').forEach(function (n) { n.classList.remove('is-folded') })
+    var crumbs = bc.querySelectorAll('.bw-bcrumb-item'), n = crumbs.length, order = [], more = null
+    for (var i = 1; i < n - 2; i++) order.push(i)
+    if (n > 1) order.push(0)
+    if (n > 2) order.push(n - 2)
+    bc.classList.add('is-fitting')
+    // +1: the bar is sized to its content, so sub-pixel rounding alone can
+    // make scrollWidth exceed clientWidth by one.
+    for (var k = 0; k < order.length && bc.scrollWidth > bc.clientWidth + 1; k++) {
+      if (!more) {
+        more = document.createElement('button')
+        more.type = 'button'; more.className = 'bw-bcrumb-more'; more.textContent = '\u2026'
+        more.title = 'Show the hidden folders'; more.setAttribute('aria-label', 'Show the hidden folders')
+        more.onclick = function () {
+          var r = this.getBoundingClientRect()
+          RdMenu.open(r.left, r.bottom + 4, Array.prototype.filter.call(crumbs, function (c) { return c.classList.contains('is-folded') }).map(function (c) {
+            var fid = c.dataset.folderId
+            return { label: c.textContent, icon: '<path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/>', action: function () { load(fid === String(S.rootId) ? null : fid) } }
+          }))
+        }
+        var s = crumbs[1].previousSibling.cloneNode(true); s.classList.add('bw-bcrumb-more-sep')
+        bc.insertBefore(more, crumbs[1]); bc.insertBefore(s, crumbs[1])
+      }
+      var c = crumbs[order[k]]
+      c.classList.add('is-folded'); c.nextSibling.classList.add('is-folded')
+    }
+    bc.classList.remove('is-fitting')
   }
 
   function renderTree () {
@@ -407,25 +447,13 @@
   // Column labels for the list view (one sticky head above every section)
   var LIST_HEAD = '<div class="bw-list-head" aria-hidden="true"><span></span><span>Name</span><span></span><span class="is-num">Size</span><span>Modified</span><span></span></div>'
 
-  // ".." back to the parent folder (phones show only the current crumb).
-  // No checkbox and no data-folder-id, so selection never sees it.
   function parentId () { return S.crumbs.length > 1 ? S.crumbs[S.crumbs.length - 2].id : null }
-  function upEntry () {
-    if (S.folderId === S.rootId) return ''
-    var p = parentId(), to = esc(p == null ? S.rootName : S.crumbs[S.crumbs.length - 2].name)
-    return '<button type="button" class="bw-item is-folder bw-up" data-up title="Up to ' + to + '" aria-label="Up to ' + to + '">' +
-      '<span class="bw-item-thumb">' + ICO.folder + '</span><span class="bw-item-name">..</span><span class="bw-item-meta"></span>' +
-      '<span class="bw-item-size">' + to + '</span></button>'
-  }
 
   function renderItems () {
     var view = el('bwView')
     view.dataset.view = S.view
-    var up = upEntry()
-
     if (!S.folders.length && !S.files.length) {
-      view.innerHTML = (up && '<div class="bw-items has-folders">' + up + '</div>') +
-        emptyState(ICO.folderLine, 'This folder is empty', 'Nothing has been shared here yet.')
+      view.innerHTML = emptyState(ICO.folderLine, 'This folder is empty', 'Nothing has been shared here yet.')
       return
     }
 
@@ -435,8 +463,7 @@
       html += '<div class="rd-callout is-warn bw-locked">' + ICO.lock + '<div>Some names could not be decrypted. ' +
         'Open the full share link, including the part after #, to see them.</div></div>'
     }
-    if (S.folders.length) html += section('Folders', S.folders.length, up + sortItems(S.folders, false).map(folderCard).join(''), 'has-folders')
-    else if (up) html += '<div class="bw-items has-folders">' + up + '</div>'
+    if (S.folders.length) html += section('Folders', S.folders.length, sortItems(S.folders, false).map(folderCard).join(''), 'has-folders')
     if (S.files.length) html += section('Files', S.files.length, sortItems(S.files, true).map(fileCard).join(''))
     view.innerHTML = html
   }
@@ -1056,6 +1083,7 @@
   }
 
   // ═══ EVENTS ══════════════════════════════════════════════════════════════
+  new ResizeObserver(fitCrumbs).observe(document.querySelector('.bw-toolbar'))
   document.addEventListener('click', function (e) {
     // Tree expand/collapse
     var twist = e.target.closest('[data-twist]')
@@ -1066,7 +1094,7 @@
       renderTree()
       return
     }
-    if (e.target.closest('[data-up]')) { load(parentId()); return }
+    if (e.target.closest('#bwUp')) { if (S.folderId !== S.rootId) load(parentId()); return }
     // Tree / breadcrumb navigation
     var nav = e.target.closest('.bw-tree-link, .bw-bcrumb-item')
     if (nav && !nav.classList.contains('is-current')) {
