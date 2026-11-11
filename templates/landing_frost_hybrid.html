@@ -44,20 +44,24 @@
         </div>
         <div class="fh-app-body">
           <div class="fh-app-side">
+            <span class="fh-side-head">Library</span>
             <span class="fh-tree is-on"><svg class="fh-chev is-open" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></svg><svg class="fh-tree-ico" viewBox="0 0 24 24"><path d="M3.5 13.5 6 6.2A2 2 0 0 1 7.9 5h8.2a2 2 0 0 1 1.9 1.2l2.5 7.3"/><rect x="3.5" y="13.5" width="17" height="5.5" rx="1.8"/></svg>Files</span>
             {% for name, kids in [('Archive', false), ('Documents', false), ('Photos', true), ('Projects', true)] %}
             <span class="fh-tree is-sub">{% if kids %}<svg class="fh-chev" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></svg>{% else %}<i class="fh-chev"></i>{% endif %}<svg class="fh-tree-ico" viewBox="0 0 24 24"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg>{{ name }}</span>
             {% endfor %}
             <span class="fh-side-foot">
-              <span class="fh-tree"><i class="fh-chev"></i><svg class="fh-tree-ico" viewBox="0 0 24 24"><path d="M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2"/></svg>Trash</span>
+              <span class="fh-trash"><svg viewBox="0 0 24 24"><path d="M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2"/></svg></span>
+              <span class="fh-storage"><span>Storage</span><b>5.4 GB of 25 GB</b></span>
               <span class="fh-meter"><i></i></span>
             </span>
           </div>
           <div class="fh-app-main">
             <div class="fh-app-bar">
+              <span class="fh-app-toggle"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9 4.5v15"/></svg></span>
               <b class="fh-app-crumb">Files</b>
               <span class="fh-app-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg><span>Search</span></span>
               <span class="fh-app-seg"><i class="is-on"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/></svg></i><i><svg viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11M4.8 6.5h.01M4.8 12h.01M4.8 17.5h.01"/></svg></i><i><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="9.5" r="1.6"/><path d="m20.5 16-4.8-4.8L7 19.5"/></svg></i><i><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="M9.2 4.5v15M14.8 4.5v15"/></svg></i></span>
+              <span class="fh-app-sort">Name A–Z<svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg></span>
               <span class="fh-app-btn"><svg viewBox="0 0 24 24"><path d="M3.5 18V6.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M12 10.5v6M9 13.5h6"/></svg><span>New folder</span></span>
               <span class="fh-app-btn is-primary"><svg viewBox="0 0 24 24"><path d="M12 15.5V4.5M7 9.5l5-5 5 5M5 19.5h14"/></svg><span>Upload</span></span>
             </div>

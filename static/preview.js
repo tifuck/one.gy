@@ -5,7 +5,10 @@
    window.OneGyCrypto (never re-implemented). Save mirrors the legacy
    /file/<id>/save-content flow (E2E: new file key + re-encrypted name +
    re-wrapped link key; plain: raw bytes).
-   Exposes window.FxPreview = { open(fileItem), close() }.
+   Text opens full screen (or windowed; the choice is saved per browser).
+   Images opened with opts.list get prev/next and a filmstrip of that list.
+   Exposes window.FxPreview = { open(fileItem, opts), close() }, where
+   opts = { list: [image items in view order], thumb: fn(node with data-thumb) }.
    ========================================================================== */
 (function () {
   'use strict'
@@ -33,7 +36,40 @@
   var _openGeneration = 0
   var _previewAbort = null
   var _historyOpen = false
+  var LS_LAYOUT = 'onegy_preview_layout'  // 'full' (default) | 'window'
+  var LS_WRAP = 'onegy_preview_wrap'      // '1' | '0'; default on for phones
+  var LS_STRIP = 'onegy_preview_strip'    // '1' (default) | '0'
+  // Wrapped rows are measured per line in a hidden div; above this many lines
+  // the gutter keeps one number per row and can drift on wrapped lines.
+  var WRAP_MEASURE_MAX = 20000
+  var _gallery = null  // { list, thumb } while an image is browsed in a list
+  var _current = null
+  var _zoomed = false
+  var _stripObs = null
+  var _vpMeta = null
+  var IOS = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  var SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+  var ICON = {
+    save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/>',
+    wrap: '<path d="M3 6h18M3 12h15a3 3 0 0 1 0 6h-4"/><path d="m16 16-2 2 2 2"/><path d="M3 18h7"/>',
+    full: '<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>',
+    window: '<path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/>',
+    strip: '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M3 20h4M10 20h4M17 20h4"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    more: '<circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="19" cy="12" r="1.2" fill="currentColor"/>',
+    undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+    redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+    indent: '<path d="M3 12h12"/><path d="m11 8 4 4-4 4"/><path d="M21 5v14"/>',
+    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
+  }
   function $ (id) { return document.getElementById(id) }
+  function pref (k, def) { try { var v = localStorage.getItem(k); return v == null ? def : v } catch (e) { return def } }
+  function setPref (k, v) { try { localStorage.setItem(k, v) } catch (e) {} }
+  function iconBtn (label, icon) {
+    var b = document.createElement('button'); b.type = 'button'; b.className = 'pv-btn'
+    b.title = label; b.setAttribute('aria-label', label); b.innerHTML = SVG + ICON[icon] + '</svg>'
+    return b
+  }
   function esc (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] }) }
   function csrf () { var m = document.querySelector('meta[name="csrf-token"]'); return m ? m.getAttribute('content') : (document.querySelector('input[name="csrf_token"]') || {}).value || '' }
   function toast (m, c) { if (window.showToast) window.showToast(m, c) }
@@ -65,7 +101,14 @@
     _previewAbort = null
   }
 
-  function open (item) {
+  function open (item, opts) {
+    if (!$('previewModal') || !item) return
+    _gallery = opts && opts.list && opts.list.length > 1 && IMG.indexOf(extOf(item)) >= 0 ? opts : null
+    buildStrip()
+    show(item, false)
+  }
+
+  function show (item, nav) {
     var modal = $('previewModal'); if (!modal || !item) return
     if (!modal.classList.contains('preview-visible')) {
       history.pushState(Object.assign({}, history.state || {}, { fxPreview: true }), '', window.location.href)
@@ -73,6 +116,7 @@
     }
     var opening = beginOpen()
     var body = $('previewBody'), nameEl = $('previewFileName'), dl = $('previewDownloadBtn'), resEl = $('previewResolution')
+    _current = item
     _editorDirty = false
     revoke()
     detachZoom()
@@ -80,23 +124,124 @@
     if (nameEl) nameEl.textContent = item.name || 'Preview'
     if (resEl) { resEl.textContent = ''; resEl.classList.remove('visible') }
     if (dl) { dl.removeAttribute('href'); dl.removeAttribute('download') }
-    body.innerHTML = '<div class="preview-loading">' + (item.is_e2e ? 'DECRYPTING PREVIEW…' : 'LOADING PREVIEW…') + '</div>'
+    $('previewActions').innerHTML = ''
+    modal.classList.remove('pv-text', 'pv-window')
+    if (TXT.indexOf(extOf(item)) >= 0) setTextMode(modal); else lockZoom(false)
+    syncGallery(item)
+    // Stepping through images keeps the previous one (dimmed) until the next
+    // has loaded, instead of flashing an empty stage.
+    var old = nav && body.firstElementChild
+    if (old && old.classList.contains('preview-image')) old.classList.add('is-stale')
+    else body.innerHTML = '<div class="preview-loading">' + (item.is_e2e ? 'Decrypting preview…' : 'Loading preview…') + '</div>'
     modal.classList.add('preview-visible')
     document.documentElement.style.overflow = 'hidden'
     render(item, body, dl, resEl, opening.generation, opening.signal)
   }
 
+  function setTextMode (modal) {
+    modal.classList.add('pv-text')
+    modal.classList.toggle('pv-window', pref(LS_LAYOUT, 'full') === 'window')
+    lockZoom(true)
+    fitViewport()
+  }
+  // iOS zooms the page into any focused field under 16px and never zooms back;
+  // maximum-scale stops that (iOS still allows pinch zoom).
+  function lockZoom (on) {
+    var m = IOS && document.querySelector('meta[name="viewport"]'); if (!m) return
+    if (on && _vpMeta == null) { _vpMeta = m.content; m.content = _vpMeta + ', maximum-scale=1' }
+    if (!on && _vpMeta != null) { m.content = _vpMeta; _vpMeta = null }
+  }
+  // With the on-screen keyboard up the editor shrinks to the visible area, so
+  // the caret line and the status bar stay above the keyboard.
+  function fitViewport () {
+    var modal = $('previewModal'), vv = window.visualViewport; if (!modal) return
+    var on = !!vv && modal.classList.contains('preview-visible') && modal.classList.contains('pv-text') && vv.scale < 1.05 && vv.height < window.innerHeight - 1
+    modal.style.top = on ? vv.offsetTop + 'px' : ''
+    modal.style.height = on ? vv.height + 'px' : ''
+    modal.style.bottom = on ? 'auto' : ''
+  }
+
+  // ---- Image gallery (prev/next + filmstrip) -------------------------------
+  function galleryIndex (item) {
+    if (!_gallery || !item) return -1
+    for (var i = 0; i < _gallery.list.length; i++) if (String(_gallery.list[i].id) === String(item.id)) return i
+    return -1
+  }
+  function syncGallery (item) {
+    var modal = $('previewModal'), prev = $('previewPrev'), next = $('previewNext'), count = $('previewCount')
+    var idx = galleryIndex(item), n = _gallery ? _gallery.list.length : 0
+    modal.classList.toggle('pv-gallery', idx >= 0)
+    prev.hidden = next.hidden = idx < 0
+    prev.disabled = idx <= 0; next.disabled = idx < 0 || idx >= n - 1
+    count.textContent = idx >= 0 ? (idx + 1) + ' of ' + n : ''
+    if (idx >= 0) {
+      var tb = iconBtn('Thumbnails', 'strip'); tb.setAttribute('data-strip', '')
+      tb.addEventListener('click', function () { setPref(LS_STRIP, pref(LS_STRIP, '1') === '1' ? '0' : '1'); syncStrip() })
+      $('previewActions').appendChild(tb)
+    }
+    syncStrip()
+  }
+  function syncStrip () {
+    var modal = $('previewModal'), strip = $('previewStrip')
+    var idx = galleryIndex(_current), on = idx >= 0 && pref(LS_STRIP, '1') === '1'
+    strip.hidden = !on
+    modal.classList.toggle('pv-has-strip', on)
+    var tb = $('previewActions').querySelector('[data-strip]'); if (tb) tb.setAttribute('aria-pressed', String(on))
+    for (var i = 0; i < strip.children.length; i++) {
+      strip.children[i].classList.toggle('is-active', i === idx)
+      if (i === idx) strip.children[i].setAttribute('aria-current', 'true'); else strip.children[i].removeAttribute('aria-current')
+    }
+    var cur = on && strip.children[idx]
+    if (cur) {
+      var smooth = !(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)
+      strip.scrollTo({ left: cur.offsetLeft - (strip.clientWidth - cur.offsetWidth) / 2, behavior: smooth ? 'smooth' : 'auto' })
+    }
+  }
+  function buildStrip () {
+    var strip = $('previewStrip'); if (!strip) return
+    if (_stripObs) { _stripObs.disconnect(); _stripObs = null }
+    strip.innerHTML = ''
+    if (!_gallery) return
+    var gallery = _gallery
+    function load (node) { if (gallery.thumb) gallery.thumb(node) }
+    if ('IntersectionObserver' in window) {
+      _stripObs = new IntersectionObserver(function (ents) {
+        ents.forEach(function (en) { if (en.isIntersecting) { _stripObs.unobserve(en.target); load(en.target) } })
+      }, { root: strip, rootMargin: '0px 320px' })
+    }
+    gallery.list.forEach(function (f) {
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'pv-thumb'
+      b.title = f.name || ''; b.setAttribute('aria-label', f.name || 'Image')
+      var t = document.createElement('span'); t.className = 'pv-thumb-img'; t.setAttribute('data-thumb', f.id)
+      b.appendChild(t)
+      b.addEventListener('click', function () { go(f) })
+      strip.appendChild(b)
+      if (_stripObs) _stripObs.observe(t); else load(t)
+    })
+  }
+  function go (f) { if (f && (!_current || String(f.id) !== String(_current.id))) show(f, true) }
+  function step (d) { var i = galleryIndex(_current); if (i >= 0) go(_gallery.list[i + d]) }
+
   function close (fromHistory) {
     if (_historyOpen && !fromHistory) { history.back(); return }
     cancelOpen()
     var modal = $('previewModal'); if (!modal) return
-    modal.classList.remove('preview-visible')
+    modal.classList.remove('preview-visible', 'pv-text', 'pv-window', 'pv-gallery', 'pv-has-strip')
     document.documentElement.style.overflow = ''
     _editorDirty = false
     revoke()
     detachZoom()
     var body = $('previewBody'); if (body) { if (body.__fxWheel) { body.removeEventListener('wheel', body.__fxWheel); body.__fxWheel = null } body.innerHTML = '' }
     var badge = $('previewZoomBadge'); if (badge) { badge.textContent = ''; badge.classList.remove('visible') }
+    $('previewActions').innerHTML = ''
+    $('previewCount').textContent = ''
+    $('previewPrev').hidden = $('previewNext').hidden = true
+    _gallery = null
+    _current = null
+    buildStrip()
+    $('previewStrip').hidden = true
+    lockZoom(false)
+    fitViewport()
     _historyOpen = false
   }
   // Close on X / Esc / click-outside — but guard unsaved editor changes. While
@@ -163,7 +308,7 @@
       var text = typeof source === 'function' ? source() : source
       if (!lang || !h.getLanguage(lang) || !isCurrent(generation) || text.length > HL_MAX) return null
       try { codeEl.innerHTML = h.highlight(text, { language: lang, ignoreIllegals: true }).value } catch (e) { return null }
-      return lang
+      return h.getLanguage(lang).name || lang
     })
   }
 
@@ -251,7 +396,7 @@
         var url = blob(mimeI)
         var img = new Image(); img.className = 'preview-image'; img.alt = item.name || ''
         img.onload = function () { if (!isCurrent(generation)) return; body.innerHTML = ''; body.appendChild(img); if (resEl) { resEl.textContent = img.naturalWidth + ' × ' + img.naturalHeight; resEl.classList.add('visible') } attachZoom(img, body, generation) }
-        img.onerror = function () { if (isCurrent(generation)) body.innerHTML = '<div class="preview-error">COULD NOT DISPLAY IMAGE</div>' }
+        img.onerror = function () { if (isCurrent(generation)) body.innerHTML = '<div class="preview-error">Could not display this image</div>' }
         img.src = url
       } else if (TXT.indexOf(ext) >= 0 || (!known && bytes && looksLikeText(bytes))) {
         blob('text/plain')
@@ -259,10 +404,13 @@
         decoded.eol = detectEol(decoded.text)
         var text = decoded.text
         body.innerHTML = ''
+        setTextMode($('previewModal'))
         if ((bytes.byteLength || 0) > EDITOR_MAX) {
+          var ro = document.createElement('div'); ro.className = 'preview-ro'
           var pre = document.createElement('pre'); pre.className = 'preview-text'; pre.textContent = text.slice(0, 50000)
-          var note = document.createElement('div'); note.className = 'preview-ro-note'; note.textContent = 'FILE TOO LARGE TO EDIT: READ-ONLY'
-          body.appendChild(note); body.appendChild(pre)
+          var foot = document.createElement('div'); foot.className = 'preview-ed-foot'
+          foot.innerHTML = '<span class="preview-ed-status preview-ro-note">Too large to edit. Showing the first 50,000 characters, read-only.</span>'
+          ro.appendChild(pre); ro.appendChild(foot); body.appendChild(ro)
           highlightInto(pre, pre.textContent, ext, generation)
         } else {
           body.appendChild(buildEditor(text, ext, item, decoded, generation))
@@ -289,7 +437,7 @@
           '<a class="rd-btn rd-btn-primary" href="' + fileUrl + '" download="' + esc(item.name || 'file') + '">Download</a></div>'
       }
     } catch (e) {
-      if (isCurrent(generation) && (!e || e.name !== 'AbortError')) body.innerHTML = '<div class="preview-error">' + (String(e.message).indexOf('KEYS') >= 0 ? 'UNLOCK YOUR KEYS TO PREVIEW' : 'PREVIEW FAILED') + '</div>'
+      if (isCurrent(generation) && (!e || e.name !== 'AbortError')) body.innerHTML = '<div class="preview-error">' + (String(e.message).indexOf('KEYS') >= 0 ? 'Unlock your keys to preview this file' : 'Preview failed. Download the file to open it.') + '</div>'
     }
   }
 
@@ -302,6 +450,7 @@
       img.style.transformOrigin = 'center center'
       img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')'
       img.style.cursor = scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'default'
+      _zoomed = scale > 1
       if (badge) { badge.textContent = Math.round(scale * 100) + '%'; badge.classList.toggle('visible', scale !== 1) }
     }
     if (stage.__fxWheel) stage.removeEventListener('wheel', stage.__fxWheel)
@@ -325,6 +474,7 @@
     function onMove (e) { if (!isCurrent(generation) || !dragging) return; tx = e.clientX - sx; ty = e.clientY - sy; apply() }
     function onUp () { if (isCurrent(generation) && dragging) { dragging = false; apply() } }
     detachZoom()
+    _zoomed = false
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
     _zoomCleanup = function () { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
@@ -333,28 +483,115 @@
 
   // ---- Text editor ---------------------------------------------------------
   function buildEditor (text, ext, item, encInfo, generation) {
+    var modal = $('previewModal')
     var wrap = document.createElement('div'); wrap.className = 'preview-ed'
+    var enc = (encInfo.enc === 'utf-16le' ? 'UTF-16 LE' : encInfo.enc === 'utf-16be' ? 'UTF-16 BE' : 'UTF-8') + (encInfo.bom ? ' with BOM' : '')
+    var eol = encInfo.eol === '\r\n' ? 'CRLF' : encInfo.eol === '\r' ? 'CR' : 'LF'
     wrap.innerHTML =
-      '<div class="preview-ed-head"><span class="preview-ed-lang">' + esc((ext || 'txt').toUpperCase()) + '</span>' +
-      '<span class="preview-ed-status" data-status></span>' +
-      '<button class="preview-ed-save" data-save disabled><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>Save</button></div>' +
-      '<div class="preview-ed-body"><div class="preview-ed-gutter" data-gutter></div>' +
-      '<div class="preview-ed-code"><pre class="preview-ed-hl" aria-hidden="true"><code></code></pre><textarea class="preview-ed-ta" spellcheck="false" wrap="off"></textarea></div></div>'
+      '<div class="preview-ed-body"><div class="preview-ed-gutter" data-gutter aria-hidden="true"></div>' +
+      '<div class="preview-ed-code"><pre class="preview-ed-hl" aria-hidden="true"><code></code></pre>' +
+      '<textarea class="preview-ed-ta" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="File contents"></textarea>' +
+      '<div class="preview-ed-measure" aria-hidden="true"></div></div></div>' +
+      '<div class="preview-ed-foot"><span class="preview-ed-status" data-status role="status"></span>' +
+      '<span data-lang>' + esc(['txt', 'log', ''].indexOf(ext) >= 0 ? 'Plain text' : ext.toUpperCase()) + '</span>' +
+      '<span class="pv-foot-wide">' + enc + '</span><span class="pv-foot-wide">' + eol + '</span>' +
+      '<span class="preview-ed-pos" data-pos></span></div>'
     var ta = wrap.querySelector('.preview-ed-ta')
     var codeBox = wrap.querySelector('.preview-ed-code')
     var hl = wrap.querySelector('.preview-ed-hl')
     var hlCode = hl.firstChild
+    var measure = wrap.querySelector('.preview-ed-measure')
     var gutter = wrap.querySelector('[data-gutter]')
-    var saveBtn = wrap.querySelector('[data-save]')
     var status = wrap.querySelector('[data-status]')
+    var langEl = wrap.querySelector('[data-lang]')
+    var posEl = wrap.querySelector('[data-pos]')
+
+    // Bar actions. Save keeps one label and width in every state; the state
+    // itself is shown in the status bar, so nothing in the bar moves.
+    var wrapBtn = iconBtn('Wrap lines', 'wrap'); wrapBtn.classList.add('pv-only-wide')
+    var layoutBtn = iconBtn('Windowed view', 'window'); layoutBtn.classList.add('pv-only-wide')
+    // Narrow screens: wrap and download move into a labelled menu (no hover
+    // tooltips on touch, and the filename keeps its room).
+    var moreBtn = iconBtn('More options', 'more'); moreBtn.classList.add('pv-only-narrow')
+    var saveBtn = document.createElement('button'); saveBtn.type = 'button'; saveBtn.className = 'preview-ed-save'
+    saveBtn.disabled = true; saveBtn.title = 'Save (Ctrl+S)'; saveBtn.innerHTML = SVG + ICON.save + '</svg>Save'
+    var actions = $('previewActions')
+    actions.appendChild(wrapBtn); actions.appendChild(layoutBtn); actions.appendChild(moreBtn); actions.appendChild(saveBtn)
+
+    // Touch: open read-only so a tap while reading does not raise the
+    // keyboard. Edit (in Save's slot) unlocks it and shows the key bar.
+    var touch = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches)
+    var editBtn = null
+    if (touch) {
+      wrap.classList.add('is-touch')
+      ta.readOnly = true
+      saveBtn.hidden = true
+      editBtn = document.createElement('button'); editBtn.type = 'button'; editBtn.className = 'preview-ed-save pv-ed-edit'
+      editBtn.innerHTML = SVG + ICON.edit + '</svg>Edit'
+      actions.appendChild(editBtn)
+      var keys = document.createElement('span'); keys.className = 'pv-keys'
+      ;[['Undo', 'undo'], ['Redo', 'redo'], ['Indent', 'indent']].forEach(function (k) {
+        var b = iconBtn(k[0], k[1])
+        // Keep focus (and the keyboard) in the textarea while tapping keys.
+        b.addEventListener('pointerdown', function (e) { e.preventDefault() })
+        b.addEventListener('mousedown', function (e) { e.preventDefault() })
+        b.addEventListener('click', function () {
+          if (document.activeElement !== ta) ta.focus({ preventScroll: true })
+          if (k[1] === 'indent') insertIndent(); else document.execCommand(k[1])
+        })
+        keys.appendChild(b)
+      })
+      wrap.querySelector('.preview-ed-foot').insertBefore(keys, status)
+    }
+
     ta.value = text
+    ta.setSelectionRange(0, 0)
+    var clean = text  // what the server holds; dirty = the textarea differs
+    var savedOnce = false
     var dirty = false
     var editRevision = 0
     var saving = false
     var hlOn = false
     var hlTimer = null
-    function updGutter () { var n = ta.value.split('\n').length; var s = ''; for (var i = 1; i <= n; i++) s += i + '\n'; gutter.textContent = s }
+    var gutterTimer = null
+    var posFrame = 0
+    var narrow = !!(window.matchMedia && matchMedia('(max-width: 640px)').matches)
+    var wrapOn = pref(LS_WRAP, narrow ? '1' : '0') === '1'
+
+    function updGutter () {
+      gutterTimer = null
+      if (!isCurrent(generation)) return
+      var lines = ta.value.split('\n'), n = lines.length, s = '', i
+      wrap.style.setProperty('--pv-digits', String(String(n).length))
+      if (wrapOn && n <= WRAP_MEASURE_MAX && ta.clientWidth) {
+        // One number per visual row: measure each line wrapped at the
+        // textarea's width, pad the gutter with blank rows to match.
+        measure.style.width = ta.clientWidth + 'px'
+        var h = ''
+        for (i = 0; i < n; i++) h += '<div>' + esc(lines[i]) + '</div>'
+        measure.innerHTML = h
+        var lh = parseFloat(getComputedStyle(ta).lineHeight) || 20
+        for (i = 0; i < n; i++) s += (i + 1) + '\n'.repeat(Math.max(1, Math.round(measure.children[i].offsetHeight / lh)))
+        measure.innerHTML = ''
+      } else {
+        for (i = 1; i <= n; i++) s += i + '\n'
+      }
+      gutter.textContent = s
+      syncScroll()
+    }
+    function scheduleGutter () {
+      clearTimeout(gutterTimer)
+      if (ta.value.length <= HL_SYNC_MAX) updGutter(); else gutterTimer = setTimeout(updGutter, 150)
+    }
     function syncScroll () { gutter.scrollTop = ta.scrollTop; hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft }
+    function updPos () {
+      posFrame = 0
+      var v = ta.value, p = ta.selectionStart, ln = 1, i = -1
+      while ((i = v.indexOf('\n', i + 1)) !== -1 && i < p) ln++
+      var col = p - (p > 0 ? v.lastIndexOf('\n', p - 1) : -1)
+      posEl.innerHTML = '<span class="pv-foot-wide">Ln </span>' + ln + '<span class="pv-foot-wide">, Col </span><span class="pv-foot-narrow">:</span>' + col
+    }
+    function schedPos () { if (!posFrame) posFrame = requestAnimationFrame(updPos) }
     // The transparent textarea sits on top of the highlighted <pre>. A trailing
     // newline is a real (empty) last line in a textarea but not in a <pre>.
     function hlSource () { var v = ta.value; return v.slice(-1) === '\n' ? v + ' ' : v }
@@ -362,6 +599,7 @@
       hlTimer = null
       highlightInto(hlCode, hlSource, ext, generation).then(function (lang) {
         hlOn = !!lang
+        if (lang) langEl.textContent = lang
         codeBox.classList.toggle('is-hl', hlOn)
         syncScroll()
       })
@@ -373,19 +611,86 @@
       hlCode.textContent = hlSource()
       hlTimer = setTimeout(paintHl, 200)
     }
-    function mark () { if (!isCurrent(generation)) return; editRevision++; dirty = true; _editorDirty = true; if (!saving) saveBtn.disabled = false; status.textContent = 'Modified'; status.className = 'preview-ed-status is-mod' }
-    ta.addEventListener('input', function () { updGutter(); repaintHl(); mark() })
-    ta.addEventListener('scroll', syncScroll)
-    ta.addEventListener('keydown', function (e) {
-      if (e.key === 'Tab') { e.preventDefault(); var s = ta.selectionStart, en = ta.selectionEnd; ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en); ta.selectionStart = ta.selectionEnd = s + 2; repaintHl(); mark() }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); doSave() }
+    function setStatus (cls, msg) { status.textContent = msg; status.className = 'preview-ed-status' + (cls ? ' ' + cls : '') }
+    // Undoing back to the saved text is not an unsaved change.
+    function mark () {
+      if (!isCurrent(generation)) return
+      editRevision++
+      dirty = ta.value !== clean; _editorDirty = dirty
+      if (!saving) saveBtn.disabled = !dirty
+      if (saving) return
+      if (dirty) setStatus('is-mod', 'Unsaved changes'); else setStatus(savedOnce ? 'is-saved' : '', savedOnce ? 'Saved' : '')
+    }
+    function insertIndent () {
+      // insertText keeps the browser's undo stack; setRangeText is the fallback.
+      if (!document.execCommand || !document.execCommand('insertText', false, '  ')) {
+        ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end')
+        ta.dispatchEvent(new Event('input'))
+      }
+    }
+    function startEditing () {
+      if (!editBtn) return
+      // Put the caret on the first line in view, so focusing does not jump
+      // the scroll back to the top of the file.
+      var lh = parseFloat(getComputedStyle(ta).lineHeight) || 20
+      var rows = gutter.textContent.split('\n'), row = Math.min(rows.length - 1, Math.max(0, Math.ceil(ta.scrollTop / lh)))
+      while (row > 0 && !rows[row]) row--
+      var line = parseInt(rows[row], 10) || 1, at = 0
+      for (var i = 1; i < line && at !== -1; i++) at = ta.value.indexOf('\n', at) + 1 || -1
+      ta.readOnly = false
+      editBtn.remove(); editBtn = null
+      saveBtn.hidden = false
+      wrap.classList.add('is-editing')
+      var top = ta.scrollTop
+      ta.focus({ preventScroll: true })
+      ta.setSelectionRange(Math.max(0, at), Math.max(0, at))
+      ta.scrollTop = top
+      schedPos()
+    }
+    if (editBtn) editBtn.addEventListener('click', startEditing)
+    moreBtn.addEventListener('click', function () {
+      if (!window.RdMenu) return
+      var r = moreBtn.getBoundingClientRect(), dl = $('previewDownloadBtn')
+      RdMenu.open(r.right, r.bottom + 6, [
+        { label: 'Wrap long lines', icon: ICON.wrap, hint: wrapOn ? 'On' : 'Off', action: function () { wrapBtn.click() } },
+        { label: 'Download', icon: ICON.download, disabled: !dl || !dl.getAttribute('href'), action: function () { dl.click() } }
+      ])
     })
+    function paintWrap () {
+      wrap.classList.toggle('is-wrap', wrapOn)
+      ta.setAttribute('wrap', wrapOn ? 'soft' : 'off')
+      wrapBtn.setAttribute('aria-pressed', String(wrapOn))
+      scheduleGutter()
+    }
+    function paintLayout () {
+      var win = modal.classList.contains('pv-window'), label = win ? 'Full screen' : 'Windowed view'
+      layoutBtn.innerHTML = SVG + ICON[win ? 'full' : 'window'] + '</svg>'
+      layoutBtn.title = label; layoutBtn.setAttribute('aria-label', label)
+    }
+    wrapBtn.addEventListener('click', function () { wrapOn = !wrapOn; setPref(LS_WRAP, wrapOn ? '1' : '0'); paintWrap() })
+    layoutBtn.addEventListener('click', function () {
+      var win = !modal.classList.contains('pv-window')
+      setPref(LS_LAYOUT, win ? 'window' : 'full')
+      modal.classList.toggle('pv-window', win)
+      paintLayout()
+    })
+    ta.addEventListener('input', function () { scheduleGutter(); repaintHl(); mark() })
+    ta.addEventListener('scroll', syncScroll)
+    ;['keyup', 'mouseup', 'touchend', 'focus', 'input', 'select'].forEach(function (ev) { ta.addEventListener(ev, schedPos) })
+    ta.addEventListener('keydown', function (e) {
+      if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !ta.readOnly) { e.preventDefault(); insertIndent() }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (!editBtn) doSave() }
+    })
+    if (window.ResizeObserver) {
+      var ro = new ResizeObserver(function () { if (!isCurrent(generation)) { ro.disconnect(); return } if (wrapOn) scheduleGutter() })
+      ro.observe(codeBox)
+    }
     async function doSave () {
       if (!dirty || saving || !isCurrent(generation)) return
       saving = true; _saving = true
       var submittedText = ta.value
       var submittedRevision = editRevision
-      saveBtn.disabled = true; status.textContent = 'Saving…'; status.className = 'preview-ed-status is-saving'
+      saveBtn.disabled = true; setStatus('is-saving', 'Saving…')
       try {
         var res = item.is_e2e ? await saveE2E(item, submittedText, ext, encInfo) : await savePlain(item, submittedText, encInfo)
         // The server returns {'error': ...} with a 4xx/5xx and NO success key on
@@ -397,21 +702,30 @@
         // The file changed server-side whatever happens to this preview now.
         if (window.FxPreview && window.FxPreview._onSaved) window.FxPreview._onSaved(item)
         if (!isCurrent(generation)) return
-        if (editRevision === submittedRevision) {
-          dirty = false; _editorDirty = false; status.textContent = 'Saved'; status.className = 'preview-ed-status is-saved'
-        } else {
-          dirty = true; _editorDirty = true; status.textContent = 'Modified'; status.className = 'preview-ed-status is-mod'; saveBtn.disabled = false
-        }
+        // The download button must hand out what was just saved, not the
+        // bytes the preview opened with.
+        var dl = $('previewDownloadBtn')
+        if (_blobUrl) { try { URL.revokeObjectURL(_blobUrl) } catch (e) {} }
+        _blobUrl = URL.createObjectURL(new Blob([encodeTextBytes(submittedText, encInfo)], { type: 'text/plain' }))
+        if (dl) dl.href = _blobUrl
+        clean = submittedText; savedOnce = true
+        dirty = ta.value !== clean; _editorDirty = dirty
+        if (dirty) { setStatus('is-mod', 'Unsaved changes'); saveBtn.disabled = false } else setStatus('is-saved', 'Saved')
       } catch (e) {
         if (!isCurrent(generation)) return
-        status.textContent = 'Save failed'; status.className = 'preview-ed-status is-err'; saveBtn.disabled = false; toast('COULD NOT SAVE FILE: ' + String((e && e.message) || 'UNKNOWN ERROR').toUpperCase(), 'error')
+        setStatus('is-err', 'Save failed'); saveBtn.disabled = false; toast('COULD NOT SAVE FILE: ' + String((e && e.message) || 'UNKNOWN ERROR').toUpperCase(), 'error')
       } finally {
         saving = false; _saving = false
       }
     }
     saveBtn.addEventListener('click', doSave)
-    updGutter()
+    paintLayout()
+    updPos()
     paintHl()
+    // Measuring wrapped rows needs the editor in the DOM.
+    requestAnimationFrame(paintWrap)
+    updGutter()
+    if (!(window.matchMedia && matchMedia('(pointer: coarse)').matches)) requestAnimationFrame(function () { if (isCurrent(generation)) { ta.focus({ preventScroll: true }); ta.setSelectionRange(0, 0) } })
     return wrap
   }
 
@@ -552,7 +866,31 @@
     // Click outside the image / editor / media (the stage padding or backdrop) closes.
     var stage = $('previewBody')
     modal.addEventListener('click', function (e) { if (e.target === modal || e.target === stage) requestClose() })
-    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && modal.classList.contains('preview-visible')) requestClose() })
+    $('previewPrev').addEventListener('click', function () { step(-1) })
+    $('previewNext').addEventListener('click', function () { step(1) })
+    document.addEventListener('keydown', function (e) {
+      if (!modal.classList.contains('preview-visible')) return
+      if (e.key === 'Escape') requestClose()
+      else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey && !e.metaKey && galleryIndex(_current) >= 0) {
+        e.preventDefault(); step(e.key === 'ArrowLeft' ? -1 : 1)
+      }
+    })
+    // Horizontal swipe steps through images (not while zoomed in, pinching or
+    // with the page itself pinch-zoomed).
+    var sx = null, sy = 0
+    stage.addEventListener('touchstart', function (e) {
+      var pinched = window.visualViewport && visualViewport.scale > 1.05
+      sx = e.touches.length === 1 && !_zoomed && !pinched && galleryIndex(_current) >= 0 ? e.touches[0].clientX : null
+      sy = e.touches[0].clientY
+    }, { passive: true })
+    stage.addEventListener('touchend', function (e) {
+      if (sx == null) return
+      var t = e.changedTouches[0], dx = t.clientX - sx, dy = t.clientY - sy
+      sx = null
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1)
+    }, { passive: true })
+    if (window.visualViewport) { visualViewport.addEventListener('resize', fitViewport); visualViewport.addEventListener('scroll', fitViewport) }
+    window.addEventListener('beforeunload', function (e) { if (_editorDirty || _saving) { e.preventDefault(); e.returnValue = '' } })
   }
   window.addEventListener('popstate', onPopState)
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire); else wire()

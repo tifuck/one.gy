@@ -1413,8 +1413,12 @@
       })
       return
     }
-    if (window.FxPreview && FxPreview.open) FxPreview.open(item)
-    else openDetails(item, false)
+    if (!window.FxPreview || !FxPreview.open) { openDetails(item, false); return }
+    // Images browse their siblings: same order as the view, same thumb loader.
+    FxPreview.open(item, IMG_EXT[extension] ? {
+      list: sortItems(S.files, false).filter(function (f) { return IMG_EXT[extOf(f.name, f.extension)] }),
+      thumb: function (node) { if (canThumb(S.files.filter(function (f) { return String(f.id) === node.getAttribute('data-thumb') })[0])) loadThumb(node) }
+    } : null)
   }
 
   // ---- Right-click context menus (shared RdMenu component) -----------------

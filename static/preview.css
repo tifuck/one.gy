@@ -1,117 +1,262 @@
 /* ============================================================================
-   preview.css — Frost file preview + text editor overlay (preview.js).
-   Reuses the _preview_modal.html shell class names (.preview-*), restyled.
+   preview.css — file preview overlay (Files: preview.js, share: temp-preview.js).
+   One chrome for every type: a top bar (close, name, actions, download) over a
+   stage. Text opens as a full-screen editor (or a window, saved per browser);
+   images get prev/next arrows and an optional filmstrip of the folder.
+   The overlay is dark in every theme: media and code both read best on dark,
+   so it derives its own palette from the theme's code tokens.
    ========================================================================== */
 /* Token colours for the highlighted editor (.hljs-* spans; same palette as the
    text thumbnails). highlight.js itself is loaded on demand by crypto.js. */
 @import url('vendor/highlight/github-dark.min.css');
 
 .preview-modal{
+  --pv-bg:var(--code-bg); --pv-fg:var(--code-fg);
+  --pv-dim:color-mix(in srgb,var(--code-fg) 60%,var(--code-bg));
+  --pv-faint:color-mix(in srgb,var(--code-fg) 34%,var(--code-bg));
+  --pv-line:color-mix(in srgb,var(--code-fg) 10%,transparent);
+  --pv-hover:color-mix(in srgb,var(--code-fg) 9%,transparent);
+  --pv-press:color-mix(in srgb,var(--code-fg) 14%,transparent);
+  --pv-glass:color-mix(in srgb,var(--code-bg) 72%,transparent);
+  --pv-bar-h:56px; --pv-strip-h:0px;
+  --pv-code-size:.8125rem; --pv-lh:1.25rem;
   position:fixed; inset:0; z-index:200; display:none; flex-direction:column;
-  background:rgba(var(--ink-rgb),.86); backdrop-filter:blur(4px);
+  color-scheme:dark; color:var(--pv-fg); font-family:var(--font-body);
+  background:rgba(0,0,0,.9); -webkit-backdrop-filter:blur(12px); backdrop-filter:blur(12px);
 }
-:root[data-theme="frost-dark"] .preview-modal{ background:rgba(0,0,0,.9); }
+/* Light themes: anything themed inside the overlay (the share page's editor
+   card, .rd-btn) gets dark tokens too, so it never shows a white header. */
+:root:not([data-theme="frost-dark"]) .preview-modal{
+  --raise:var(--code-bg); --pane:var(--code-bg); --surface:color-mix(in srgb,var(--code-fg) 8%,var(--code-bg));
+  --text:var(--code-fg); --text-dim:color-mix(in srgb,var(--code-fg) 65%,var(--code-bg)); --text-faint:var(--pv-faint);
+  --line:var(--pv-line); --border:var(--pv-line); --hover:var(--pv-hover); --press:var(--pv-press);
+}
 .preview-modal.preview-visible{ display:flex; animation:pvfade .16s ease both; }
 @keyframes pvfade{ from{ opacity:0 } to{ opacity:1 } }
 
-.preview-close{
-  position:absolute; top:1rem; right:1rem; z-index:3; width:40px; height:40px;
-  border:2px solid #fff; background:transparent; color:#fff; cursor:pointer;
-  display:flex; align-items:center; justify-content:center; transition:background .12s, color .12s;
+/* ---- Top bar ---------------------------------------------------------------- */
+.preview-top{
+  flex:none; position:relative; z-index:4; display:flex; align-items:center; gap:4px; box-sizing:border-box;
+  height:calc(var(--pv-bar-h) + env(safe-area-inset-top,0px));
+  padding:env(safe-area-inset-top,0px) max(10px,env(safe-area-inset-right,0px)) 0 max(10px,env(safe-area-inset-left,0px));
 }
-.preview-close:hover{ background:#fff; color:var(--ink); }
-:root[data-theme="frost-dark"] .preview-close:hover{ color:#000; }
-
-.preview-resolution, .preview-zoom-badge{
-  position:absolute; top:1.1rem; left:1.1rem; z-index:3; font-family:var(--font-mono);
-  font-size:.66rem; letter-spacing:.1em; color:#fff; background:rgba(0,0,0,.5);
-  padding:.25rem .55rem; opacity:0; transition:opacity .15s; text-transform:uppercase; pointer-events:none;
+.preview-close, .preview-bar-download, .pv-btn{
+  flex:none; width:40px; height:40px; display:inline-grid; place-items:center; padding:0; border:0; border-radius:10px;
+  background:transparent; color:var(--pv-dim); cursor:pointer; text-decoration:none; transition:background .12s, color .12s;
 }
-.preview-zoom-badge{ left:auto; right:1.1rem; top:auto; bottom:5rem; }
-.preview-resolution.visible, .preview-zoom-badge.visible{ opacity:1; }
-.preview-image{ transition:transform .04s linear; }
+.preview-close:hover, .preview-bar-download:hover, .pv-btn:hover{ background:var(--pv-hover); color:var(--pv-fg); }
+.pv-btn[aria-pressed="true"]{ color:var(--accent); }
+.pv-btn:disabled{ opacity:.35; cursor:default; background:transparent; }
+.preview-bar-download:not([href]){ opacity:.35; pointer-events:none; }
+.preview-modal :is(button, a):focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+.pv-btn svg, .preview-bar-download svg{ width:18px; height:18px; }
 
+.preview-title{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:1px; padding:0 6px; }
+.preview-bar-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.9rem; font-weight:500; color:var(--pv-fg); }
+.preview-meta{ display:flex; gap:12px; font-size:.75rem; color:var(--pv-dim); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.preview-meta > :empty{ display:none; }
+.preview-meta:not(:has(> :not(:empty))){ display:none; }
+/* Its buttons sit in the bar's own row so Save can be ordered after Download. */
+.preview-actions{ display:contents; }
+.preview-ed-save{ order:1; }
+
+/* ---- Stage ------------------------------------------------------------------ */
 .preview-stage{
-  flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center;
-  padding:3.4rem 1.2rem 1rem; overflow:auto;
+  flex:1 1 auto; min-height:0; position:relative; display:flex; align-items:center; justify-content:center;
+  padding:8px 24px 24px; overflow:auto;
 }
-.preview-loading, .preview-error{
-  font-family:var(--font-mono); font-size:.8rem; letter-spacing:.12em; text-transform:uppercase;
-  color:#fff; text-align:center; padding:2rem;
-}
+.preview-loading, .preview-error{ font-size:.88rem; color:var(--pv-dim); text-align:center; padding:2rem; }
 .preview-error{ color:var(--bad); }
 /* Unsupported type. Also carries .preview-error (testsv2 page objects read it),
-   so the error typography is reset here. */
+   so the error colour is reset here. */
 .preview-none{
-  display:flex; flex-direction:column; align-items:center; gap:.6rem; width:min(340px,100%);
-  padding:2rem 1.6rem; text-align:center; background:var(--surface); color:var(--text); border:2px solid var(--border);
-  font-family:var(--font-body); font-size:1rem; letter-spacing:normal; text-transform:none;
+  display:flex; flex-direction:column; align-items:center; gap:.5rem; width:min(340px,100%); box-sizing:border-box;
+  padding:2rem 1.6rem; border-radius:14px; background:var(--pv-bg); border:1px solid var(--pv-line); color:var(--pv-fg); font-size:1rem;
 }
-.preview-none svg{ width:44px; height:44px; color:var(--accent); margin-bottom:.2rem; }
-.preview-none h3{ font-size:1rem; font-weight:600; }
-.preview-none p{ font-size:.85rem; color:var(--text-dim); margin-bottom:.5rem; }
-.preview-none .rd-btn{ padding:.6rem 1.2rem; }
+.preview-none svg{ width:40px; height:40px; color:var(--pv-dim); margin-bottom:.3rem; }
+.preview-none h3{ margin:0; font-size:1rem; font-weight:600; }
+.preview-none p{ margin:0 0 .6rem; font-size:.86rem; color:var(--pv-dim); }
 
-.preview-image{ max-width:100%; max-height:100%; object-fit:contain; border:2px solid rgba(255,255,255,.2); background:#fff; }
-.preview-video{ max-width:100%; max-height:100%; background:#000; }
-.preview-pdf{ width:min(1000px,100%); height:100%; border:0; background:#fff; }
-.preview-audio-wrap{ display:flex; flex-direction:column; align-items:center; gap:1.5rem; color:#fff; }
-.preview-audio-ico{ width:120px; height:120px; border:2px solid rgba(255,255,255,.3); display:flex; align-items:center; justify-content:center; color:var(--accent); }
-.preview-audio-ico svg{ width:56px; height:56px; }
+.preview-image{
+  display:block; max-width:100%; max-height:100%; object-fit:contain; border-radius:4px;
+  box-shadow:0 24px 64px -16px rgba(0,0,0,.7); transition:transform .04s linear, opacity .2s; user-select:none; -webkit-user-drag:none;
+}
+.preview-image.is-stale{ opacity:.4; }
+.preview-video{ max-width:100%; max-height:100%; border-radius:6px; background:#000; }
+.preview-pdf{ width:min(1000px,100%); height:100%; border:0; border-radius:6px; background:#fff; }
+.preview-audio-wrap{ display:flex; flex-direction:column; align-items:center; gap:1.5rem; }
+.preview-audio-ico{ width:120px; height:120px; border-radius:20px; display:grid; place-items:center; background:var(--pv-bg); color:var(--accent); }
+.preview-audio-ico svg{ width:52px; height:52px; }
 .preview-audio{ width:min(460px,80vw); }
-.preview-text{ max-width:900px; width:100%; max-height:100%; overflow:auto; background:var(--surface); color:var(--text); padding:1.2rem; font-family:var(--font-mono); font-size:.82rem; line-height:1.6; border:2px solid var(--border); white-space:pre; }
-.preview-ro-note{ position:absolute; top:1.1rem; left:50%; transform:translateX(-50%); font-family:var(--font-mono); font-size:.62rem; letter-spacing:.12em; color:var(--warn); text-transform:uppercase; }
 
-/* Bottom bar */
-.preview-bar{
-  flex:none; display:flex; align-items:center; gap:1rem; padding:.7rem 1.2rem;
-  background:var(--surface); border-top:2px solid var(--border);
+.preview-zoom-badge{
+  position:absolute; z-index:4; left:50%; bottom:calc(var(--pv-strip-h) + 16px); transform:translateX(-50%);
+  padding:4px 10px; border-radius:999px; background:var(--pv-glass); color:var(--pv-fg);
+  font-size:.75rem; font-variant-numeric:tabular-nums; opacity:0; transition:opacity .15s; pointer-events:none;
 }
-.preview-bar-name{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.88rem; font-weight:600; color:var(--text); }
-.preview-bar-download{
-  flex:none; width:38px; height:38px; border:2px solid var(--border); background:var(--surface);
-  color:var(--text); display:flex; align-items:center; justify-content:center; cursor:pointer; text-decoration:none;
-}
-.preview-bar-download:hover{ background:var(--accent); color:var(--accent-contrast); }
+.preview-zoom-badge.visible{ opacity:1; }
 
-/* ---- Text editor ---------------------------------------------------------- */
-.preview-ed{ width:min(1000px,100%); height:100%; display:flex; flex-direction:column; background:var(--surface); border:2px solid var(--border); box-shadow:8px 8px 0 var(--accent); }
-.preview-ed-head{ flex:none; display:flex; align-items:center; gap:.7rem; padding:.55rem .8rem; border-bottom:2px solid var(--border); }
-.preview-ed-lang{ font-family:var(--font-mono); font-size:.62rem; letter-spacing:.14em; padding:.15rem .45rem; border:1.5px solid var(--border); color:var(--text-dim); }
-.preview-ed-status{ font-family:var(--font-mono); font-size:.64rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); margin-left:auto; }
+/* ---- Image navigation ------------------------------------------------------- */
+.preview-nav{
+  position:absolute; z-index:3; top:calc(50% + (var(--pv-bar-h) - var(--pv-strip-h)) / 2); transform:translateY(-50%);
+  width:44px; height:44px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:var(--pv-glass); color:var(--pv-fg); cursor:pointer; transition:background .12s, opacity .15s;
+}
+.preview-nav:hover{ background:color-mix(in srgb,var(--code-bg) 92%,transparent); }
+.preview-nav:disabled{ opacity:0; pointer-events:none; }
+.preview-nav[hidden]{ display:none; }
+.preview-nav-prev{ left:max(16px,env(safe-area-inset-left,0px)); }
+.preview-nav-next{ right:max(16px,env(safe-area-inset-right,0px)); }
+.pv-gallery .preview-stage{ padding:8px 76px 20px; }
+
+.pv-has-strip{ --pv-strip-h:calc(76px + env(safe-area-inset-bottom,0px)); }
+.preview-strip{
+  flex:none; display:flex; align-items:center; justify-content:safe center; gap:6px; box-sizing:border-box;
+  position:relative; height:var(--pv-strip-h); padding:0 16px env(safe-area-inset-bottom,0px); overflow-x:auto; overflow-y:hidden;
+  scrollbar-width:none; overscroll-behavior-x:contain;
+}
+.preview-strip::-webkit-scrollbar{ display:none; }
+.preview-strip[hidden]{ display:none; }
+.pv-thumb{
+  flex:none; width:52px; height:52px; padding:0; border:0; border-radius:7px; overflow:hidden; cursor:pointer;
+  background:var(--pv-press); opacity:.5; transition:opacity .15s, box-shadow .15s;
+}
+.pv-thumb:hover{ opacity:.85; }
+.pv-thumb.is-active{ opacity:1; box-shadow:0 0 0 2px var(--pv-bg), 0 0 0 4px var(--accent); }
+.pv-thumb-img, .pv-thumb img{ display:block; width:100%; height:100%; object-fit:cover; }
+.pv-thumb-img > :not(img){ display:none; }
+
+/* ---- Text editor ------------------------------------------------------------ */
+/* Full screen (default): the bar and editor are one solid surface. */
+.pv-text{ background:var(--pv-bg); -webkit-backdrop-filter:none; backdrop-filter:none; }
+.pv-text .preview-top{ border-bottom:1px solid var(--pv-line); }
+.pv-text .preview-stage{ padding:0; align-items:stretch; flex-direction:column; overflow:hidden; }
+/* Windowed: a centred window over the dimmed page; the bar is its header. */
+.pv-text.pv-window{ background:rgba(0,0,0,.72); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); }
+.pv-window .preview-top{
+  width:min(1120px,calc(100% - 64px)); margin:32px auto 0; padding:0 8px; height:52px;
+  background:var(--pv-bg); border:1px solid var(--pv-line); border-radius:12px 12px 0 0;
+}
+.pv-window .preview-stage{ padding:0 32px 32px; align-items:center; }
+.pv-window .preview-ed, .pv-window .preview-ro{
+  width:min(1120px,100%); border:1px solid var(--pv-line); border-top:0; border-radius:0 0 12px 12px;
+  box-shadow:0 32px 80px -24px rgba(0,0,0,.8); overflow:hidden;
+}
+
+.preview-ed, .preview-ro{ flex:1 1 auto; min-height:0; width:100%; display:flex; flex-direction:column; background:var(--pv-bg); }
+.preview-ed-save{
+  flex:none; display:inline-flex; align-items:center; gap:6px; height:34px; margin-left:6px; padding:0 14px; border:0; border-radius:9px;
+  background:var(--accent); color:var(--accent-contrast); font:inherit; font-size:.84rem; font-weight:600; cursor:pointer; transition:background .12s, color .12s;
+}
+.preview-ed-save:hover{ box-shadow:inset 0 0 0 100px rgba(255,255,255,.1); }
+.preview-ed-save:disabled{ background:var(--pv-press); color:var(--pv-dim); box-shadow:none; cursor:default; }
+.preview-ed-save[hidden], .pv-only-narrow{ display:none; }
+.preview-ed-save svg{ width:15px; height:15px; }
+
+.preview-ed-body{ flex:1 1 auto; min-height:0; display:flex; overflow:hidden; }
+/* Gutter rows must match the code's line box exactly; the extra bottom padding
+   lets it scroll as far as a textarea with a horizontal scrollbar. */
+.preview-ed-gutter{
+  flex:none; box-sizing:border-box; min-width:calc(var(--pv-digits,2) * 1ch + 30px); overflow:hidden;
+  padding:14px 12px calc(14px + 20px) 16px; text-align:right; white-space:pre; user-select:none;
+  font-family:var(--font-mono); font-size:var(--pv-code-size); line-height:var(--pv-lh); color:var(--pv-faint);
+}
+/* Highlighting: a <pre> of coloured spans under a transparent-text textarea.
+   Both boxes (and the wrap measurer) share every metric below or the caret
+   drifts off the text. */
+.preview-ed-code{ flex:1 1 auto; min-width:0; position:relative; }
+.preview-ed-hl, .preview-ed-ta, .preview-ed-measure{
+  position:absolute; inset:0; box-sizing:border-box; margin:0; padding:14px 20px 14px 6px;
+  font-family:var(--font-mono); font-size:var(--pv-code-size); font-weight:400; line-height:var(--pv-lh);
+  letter-spacing:normal; font-variant-ligatures:none; white-space:pre; overflow:auto; tab-size:4;
+}
+.preview-ed-hl{ color:var(--pv-fg); pointer-events:none; visibility:hidden; }
+.preview-ed-hl code{ font:inherit; background:none; padding:0; }
+.preview-ed-ta{
+  width:100%; height:100%; border:0; border-radius:0; outline:0; resize:none; color:var(--pv-fg); caret-color:var(--accent);
+  background:transparent; scrollbar-width:thin; scrollbar-color:var(--pv-press) transparent; -webkit-appearance:none; appearance:none;
+}
+/* The caret is the focus indicator; the shell's focus ring would draw a bar
+   down the editor's left edge. */
+.preview-modal .preview-ed-ta:focus-visible{ outline:0; }
+.preview-ed-ta::selection{ background:rgba(var(--accent-rgb,55,182,255),.32); }
+.preview-ed-code.is-hl .preview-ed-hl{ visibility:visible; }
+.preview-ed-code.is-hl .preview-ed-ta{ color:transparent; }
+.preview-ed-code.is-hl .preview-ed-ta::selection{ color:transparent; }
+.preview-ed-measure{ inset:0 auto auto 0; height:auto; overflow:visible; visibility:hidden; pointer-events:none; }
+.preview-ed-measure > div{ min-height:var(--pv-lh); }
+.is-wrap :is(.preview-ed-hl, .preview-ed-ta), .preview-ed-measure{ white-space:pre-wrap; overflow-wrap:anywhere; }
+.is-wrap :is(.preview-ed-hl, .preview-ed-ta){ overflow-x:hidden; }
+.is-wrap .preview-ed-gutter{ padding-bottom:14px; }
+
+/* Status bar: the save state owns the flexible left slot, so it can change
+   ("Unsaved changes" → "Saving…" → "Saved") without moving anything. */
+.preview-ed-foot{
+  flex:none; display:flex; align-items:center; gap:18px; box-sizing:border-box;
+  height:calc(28px + env(safe-area-inset-bottom,0px)); padding:0 16px env(safe-area-inset-bottom,0px);
+  border-top:1px solid var(--pv-line); font-size:.75rem; color:var(--pv-dim); font-variant-numeric:tabular-nums; white-space:nowrap;
+}
+.pv-window .preview-ed-foot{ height:28px; padding-bottom:0; }
+.preview-ed-status{ flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:7px; overflow:hidden; text-overflow:ellipsis; }
+.preview-ed-status:not(:empty)::before{ content:""; flex:none; width:6px; height:6px; border-radius:50%; background:currentColor; }
 .preview-ed-status.is-mod{ color:var(--warn); }
 .preview-ed-status.is-saving{ color:var(--accent); }
 .preview-ed-status.is-saved{ color:var(--good); }
 .preview-ed-status.is-err{ color:var(--bad); }
-.preview-ed-save{ display:inline-flex; align-items:center; gap:.4rem; padding:.4rem .7rem; border:2px solid var(--border); background:var(--accent); color:var(--accent-contrast); cursor:pointer; font:inherit; font-size:.78rem; }
-.preview-ed-save:disabled{ background:var(--surface); color:var(--text-dim); cursor:default; }
-.preview-ed-body{ flex:1 1 auto; min-height:0; display:flex; overflow:hidden; }
-/* Gutter line height must equal the code's (.85rem x 1.6); the extra bottom
-   padding lets it scroll as far as a textarea with a horizontal scrollbar. */
-.preview-ed-gutter{ flex:none; width:48px; overflow:hidden; padding:1rem .5rem calc(1rem + 20px) 0; text-align:right; font-family:var(--font-mono); font-size:.8rem; line-height:calc(.85rem * 1.6); color:color-mix(in srgb, var(--code-fg) 40%, transparent); background:var(--bg); border-right:2px solid var(--border); white-space:pre; user-select:none; }
-/* Highlighting: a <pre> of coloured spans under a transparent-text textarea.
-   Both boxes must share every metric below or the caret drifts off the text. */
-.preview-ed-code{ flex:1 1 auto; min-width:0; position:relative; background:var(--code-bg); }
-.preview-ed-hl, .preview-ed-ta{ position:absolute; inset:0; margin:0; padding:1rem; font-family:var(--font-mono); font-size:.85rem; font-weight:400; line-height:1.6; letter-spacing:normal; font-variant-ligatures:none; white-space:pre; overflow:auto; tab-size:2; }
-.preview-ed-hl{ color:var(--code-fg); pointer-events:none; visibility:hidden; }
-.preview-ed-hl code{ font:inherit; background:none; padding:0; }
-.preview-ed-ta{ width:100%; height:100%; border:0; outline:0; resize:none; color:var(--code-fg); caret-color:var(--code-fg); background:transparent; }
-.preview-ed-ta:focus{ outline:0; }
-.preview-ed-code.is-hl .preview-ed-hl{ visibility:visible; }
-.preview-ed-code.is-hl .preview-ed-ta{ color:transparent; }
-.preview-ed-code.is-hl .preview-ed-ta::selection{ color:transparent; background:rgba(var(--accent-rgb,55,182,255),.35); }
-/* Code is a dark mono panel in every theme (--code-bg, like the text
-   thumbnails). Two-class selectors so shell skins (.ui-v2 ...) keep borders
-   and radius but cannot repaint the panel behind the token colours. */
-.preview-ed-body .preview-ed-gutter{ background:var(--code-bg); border-right-color:rgba(255,255,255,.08); }
-.preview-ed-code .preview-ed-ta{ background:transparent; }
-.preview-stage .preview-text{ background:var(--code-bg); color:var(--code-fg); }
+.preview-ed-pos{ min-width:13ch; text-align:right; }
+.pv-foot-narrow{ display:none; }
+/* Touch, while editing: a key bar for what phone keyboards lack. It sits in
+   the status bar, which stays above the on-screen keyboard. */
+.pv-keys{ display:none; flex:none; margin-left:-10px; }
+.is-touch.is-editing .pv-keys{ display:flex; }
+.is-touch.is-editing .preview-ed-foot{ height:calc(44px + env(safe-area-inset-bottom,0px)); }
+.pv-keys .pv-btn{ width:44px; height:44px; border-radius:0; }
+@media (pointer:coarse){
+  .preview-close, .preview-bar-download, .pv-btn{ width:44px; height:44px; }
+  .preview-ed-save{ height:40px; }
+}
 
+/* Read-only (too large to edit). */
+.preview-ro .preview-text{
+  flex:1 1 auto; min-height:0; margin:0; padding:14px 20px; overflow:auto; white-space:pre; color:var(--pv-fg);
+  font-family:var(--font-mono); font-size:var(--pv-code-size); line-height:var(--pv-lh); tab-size:4;
+}
+.preview-ro-note{ color:var(--warn); }
+
+/* ---- Narrow screens --------------------------------------------------------- */
+@media (max-width:720px){
+  .pv-only-wide{ display:none; }
+  .pv-only-narrow{ display:inline-grid; }
+  .pv-text .preview-bar-download{ display:none; }
+  /* A window inside a phone screen only wastes space: always full screen. */
+  .pv-window{ background:var(--pv-bg); }
+  .pv-window .preview-top{ width:auto; margin:0; height:calc(var(--pv-bar-h) + env(safe-area-inset-top,0px));
+    padding:env(safe-area-inset-top,0px) max(6px,env(safe-area-inset-right,0px)) 0 max(6px,env(safe-area-inset-left,0px));
+    border:0; border-bottom:1px solid var(--pv-line); border-radius:0; }
+  .pv-window .preview-stage{ padding:0; align-items:stretch; }
+  .pv-window :is(.preview-ed, .preview-ro){ width:100%; border:0; border-radius:0; box-shadow:none; }
+  .pv-window .preview-ed-foot{ height:calc(28px + env(safe-area-inset-bottom,0px)); padding-bottom:env(safe-area-inset-bottom,0px); }
+}
 @media (max-width:640px){
-  .preview-ed, .preview-pdf{ width:100%; }
-  .preview-ed{ box-shadow:none; border-left:0; border-right:0; }
-  .preview-close{ top:max(1rem,env(safe-area-inset-top)); right:max(1rem,env(safe-area-inset-right)); }
-  .preview-stage{ padding:max(3.2rem,env(safe-area-inset-top)) .4rem .4rem; }
-  .preview-bar{ padding-bottom:max(.7rem,env(safe-area-inset-bottom)); }
+  .preview-modal{ --pv-bar-h:52px; --pv-code-size:.78rem; --pv-lh:1.2rem; }
+  .preview-top{ gap:2px; padding-left:max(6px,env(safe-area-inset-left,0px)); padding-right:max(6px,env(safe-area-inset-right,0px)); }
+  .preview-title{ padding:0 4px; }
+  .preview-ed-save{ padding:0 12px; margin-left:4px; }
+  .preview-stage{ padding:4px 8px 12px; }
+  .pv-gallery .preview-stage{ padding:4px 0 12px; }
+  .preview-pdf{ width:100%; }
+  .preview-nav{ width:38px; height:38px; }
+  .preview-nav-prev{ left:max(8px,env(safe-area-inset-left,0px)); }
+  .preview-nav-next{ right:max(8px,env(safe-area-inset-right,0px)); }
+  .pv-has-strip{ --pv-strip-h:calc(68px + env(safe-area-inset-bottom,0px)); }
+  .pv-thumb{ width:46px; height:46px; }
+  .preview-image{ border-radius:0; box-shadow:none; }
+  .preview-ed-gutter{ padding-left:10px; padding-right:8px; min-width:calc(var(--pv-digits,2) * 1ch + 18px); }
+  .preview-ed-hl, .preview-ed-ta, .preview-ed-measure{ padding-right:14px; }
+  .preview-ed-foot{ gap:14px; padding-left:12px; padding-right:12px; }
+  .preview-ed-foot .pv-foot-wide{ display:none; }
+  .preview-ed-foot .pv-foot-narrow{ display:inline; }
+  .preview-ed-pos{ min-width:5ch; }
+  .is-editing [data-lang]{ display:none; }
 }
 @media (prefers-reduced-motion:reduce){ .preview-modal.preview-visible{ animation:none; } }

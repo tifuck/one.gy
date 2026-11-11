@@ -296,32 +296,6 @@
 .ui-v2 .upload-toast-title, .ui-v2 .upload-stat-label, .ui-v2 .upload-stat-value{ font-family:var(--font-body); letter-spacing:.02em; }
 .ui-v2 .upload-progress-bar{ height:4px; border:0; border-radius:4px; background:var(--press); }
 
-/* ---- Preview overlay (preview.css) -------------------------------------- */
-.ui-v2 .preview-modal{ background:rgba(0,0,0,.88); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); }
-.ui-v2 .preview-close{ width:34px; height:34px; border:0; border-radius:50%; background:rgba(255,255,255,.12); color:var(--on-media); }
-.ui-v2 .preview-close:hover{ background:rgba(255,255,255,.22); color:var(--on-media); }
-.ui-v2 .preview-image{ border:0; border-radius:6px; background:transparent; box-shadow:0 20px 60px -10px rgba(0,0,0,.6); }
-.ui-v2 .preview-resolution, .ui-v2 .preview-zoom-badge, .ui-v2 .preview-loading, .ui-v2 .preview-ro-note{ font-family:var(--font-body); letter-spacing:.01em; text-transform:none; border-radius:6px; }
-.ui-v2 .preview-none, .ui-v2 .preview-text{ background:var(--raise); border:0; border-radius:12px; }
-.ui-v2 .preview-bar{ background:rgba(0,0,0,.4); border-top:1px solid rgba(255,255,255,.08); }
-.ui-v2 .preview-bar-name{ color:var(--on-media); font-weight:500; }
-.ui-v2 .preview-bar-download{ width:32px; height:32px; border:0; border-radius:8px; background:rgba(255,255,255,.12); color:var(--on-media); }
-.ui-v2 .preview-bar-download:hover{ background:rgba(255,255,255,.22); color:var(--on-media); }
-.ui-v2 .preview-ed{ background:var(--raise); border:0; border-radius:12px; box-shadow:var(--shadow-2); overflow:hidden; }
-.ui-v2 .preview-ed-head{ border-bottom:1px solid var(--line); }
-.ui-v2 .preview-ed-lang, .ui-v2 .preview-ed-status{ font-family:var(--font-body); letter-spacing:0; text-transform:none; border:0; border-radius:5px; background:var(--press); padding:.12rem .45rem; }
-.ui-v2 .preview-ed-status{ background:none; }
-.ui-v2 .preview-ed-save{ border:0; border-radius:7px; height:28px; }
-.ui-v2 .preview-ed-gutter{ border-right:1px solid var(--line); background:var(--pane); }
-.ui-v2 .preview-ed-ta{ background:var(--raise); }
-/* The code panel is dark in every theme (github-dark highlighting), so light
-   themes give the whole editor card dark tokens instead of a white header. */
-:root:not([data-theme="frost-dark"]) .ui-v2 .preview-ed{ color-scheme:dark; color:var(--code-fg);
-  --raise:var(--code-bg); --pane:var(--code-bg); --surface:color-mix(in srgb,var(--code-fg) 8%,var(--code-bg));
-  --text:var(--code-fg); --text-dim:color-mix(in srgb,var(--code-fg) 65%,var(--code-bg));
-  --line:color-mix(in srgb,var(--code-fg) 12%,transparent); --border:var(--line);
-  --hover:color-mix(in srgb,var(--code-fg) 7%,transparent); --press:color-mix(in srgb,var(--code-fg) 12%,transparent); }
-
 /* ---- Music player bar (music.css / music-player.js) ---------------------- */
 .ui-v2 .music-player{ --mp-fill:var(--accent); background:color-mix(in srgb,var(--pane) 90%,transparent); border-top:1px solid var(--line);
   -webkit-backdrop-filter:saturate(1.4) blur(18px); backdrop-filter:saturate(1.4) blur(18px); }

@@ -41,12 +41,20 @@ i.fh-chev{ display:block; flex:none; }
 .fh-chev.is-open{ transform:rotate(90deg); }
 .fh-tree-ico{ width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; color:var(--text-dim); }
 .fh-tree.is-on .fh-tree-ico{ color:var(--accent); }
-.fh-side-foot{ display:flex; flex-direction:column; gap:10px; margin-top:auto; padding-top:8px; border-top:1px solid var(--line); }
-.fh-meter{ display:block; height:4px; margin:0 8px 4px; border-radius:4px; background:var(--press); }
+.fh-side-head{ display:flex; align-items:center; min-height:24px; padding:0 8px 2px; font-size:.68rem; font-weight:600; color:var(--text-faint); }
+.fh-side-foot{ display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:5px 9px; margin-top:auto; padding-top:8px; border-top:1px solid var(--line); }
+.fh-trash{ display:grid; place-items:center; grid-row:span 2; width:26px; height:26px; border:1px solid var(--line); border-radius:7px; color:var(--text-dim); }
+.fh-trash svg{ width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.fh-storage{ display:flex; justify-content:space-between; gap:6px; padding-right:4px; font-size:.66rem; color:var(--text-faint); white-space:nowrap; }
+.fh-storage b{ font-weight:500; color:var(--text-dim); }
+.fh-meter{ display:block; height:4px; margin-right:4px; border-radius:4px; background:var(--press); }
 .fh-meter i{ display:block; width:22%; height:100%; border-radius:inherit; background:var(--accent); }
 
 .fh-app-main{ display:flex; flex-direction:column; min-width:0; }
 .fh-app-bar{ display:flex; align-items:center; gap:6px; height:46px; padding:0 12px 0 18px; border-bottom:1px solid var(--line); }
+.fh-app-toggle{ display:grid; place-items:center; width:24px; height:26px; margin-left:-6px; color:var(--text-dim); }
+.fh-app-toggle svg, .fh-app-sort svg{ width:13px; height:13px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.fh-app-sort{ display:inline-flex; align-items:center; gap:3px; height:26px; padding:0 6px; font-size:.72rem; color:var(--text-dim); white-space:nowrap; }
 .fh-app-crumb{ margin-right:auto; font-size:.86rem; font-weight:600; letter-spacing:-.01em; }
 .fh-app-search{ display:flex; align-items:center; gap:6px; width:min(170px,18vw); height:26px; padding:0 8px; border-radius:7px; background:var(--surface); font-size:.72rem; color:var(--text-faint); }
 .fh-app-search svg{ width:12px; height:12px; fill:none; stroke:var(--text-dim); stroke-width:2; stroke-linecap:round; }
@@ -191,7 +199,7 @@ i.fh-chev{ display:block; flex:none; }
 }
 /* Phone: the mock becomes the mobile Files layout, the share card sits under it */
 @media (max-width:760px){
-  .fh-app-side, .fh-app-search span, .fh-app-btn span, .fh-app-seg, .fh-app-btn:not(.is-primary){ display:none; }
+  .fh-app-side, .fh-app-search span, .fh-app-btn span, .fh-app-seg, .fh-app-sort, .fh-app-btn:not(.is-primary){ display:none; }
   .fh-app-body{ grid-template-columns:minmax(0,1fr); }
   .fh-app-search{ width:26px; padding:0; justify-content:center; background:none; }
   .fh-app-btn.is-primary{ width:28px; padding:0; justify-content:center; }
