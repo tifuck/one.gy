@@ -192,6 +192,7 @@
 .nt-conflict-btn:hover{ background:var(--bad); color:var(--on-bad); }
 /* Save state docked at the right end of either note type's toolbar */
 .nt-toolbar > .nt-savestate, .fxc-bar > .nt-savestate{ margin:0 0 0 8px; }
+.nt-toolbar > .nt-savestate:empty, .fxc-bar > .nt-savestate:empty{ display:none; }
 .nt-ed-actions .rd-btn + .rd-btn{ margin-left:6px; }
 .nt-ro{
   flex:none; display:flex; align-items:center; gap:8px; padding:8px 16px;
@@ -202,8 +203,8 @@
 /* Formatting toolbar: wraps onto more rows when the pane is narrow, so every
    button stays on screen (it used to scroll sideways with no scrollbar). */
 .nt-toolbar{
-  flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:2px; min-height:44px; box-sizing:border-box;
-  padding:6px 10px; border-bottom:1px solid var(--line);
+  flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:2px; min-height:40px; box-sizing:border-box;
+  padding:4px 10px; border-bottom:1px solid var(--line); /* 40px: level with the list head */
 }
 .nt-tb-btn{
   flex:none; min-width:30px; height:30px; padding:0 7px; display:inline-flex; align-items:center; justify-content:center;

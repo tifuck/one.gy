@@ -1,0 +1,14 @@
+{
+  "name": "ONE.GY Files",
+  "short_name": "Files",
+  "id": "/",
+  "scope": "/",
+  "start_url": "/files",
+  "display": "standalone",
+  "background_color": "#161616",
+  "theme_color": "#161616",
+  "icons": [
+    { "src": "/static/logos/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "/static/logos/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

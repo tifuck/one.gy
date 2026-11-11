@@ -394,7 +394,7 @@ function start() {
         window.setUpdate(s);
         window.send({ type: 'app:update', data: s });
       },
-      canAutoRestart: () => !(sync.status && sync.status.state === 'syncing') && (!win.isVisible() || win.isMinimized()),
+      canAutoRestart: () => !win.isDestroyed() && !(sync.status && sync.status.state === 'syncing') && (!win.isVisible() || win.isMinimized()),
       beforeRestart: async () => {
         try {
           fs.writeFileSync(resumeFile, JSON.stringify(window.snapshot()));

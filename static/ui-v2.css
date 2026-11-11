@@ -100,7 +100,7 @@
 /* Account / theme popovers */
 .ui-v2 .rd-menu-pop{ background:var(--raise); border:0; border-radius:12px; box-shadow:var(--shadow-pop); padding:5px; min-width:220px; }
 .ui-v2 .rd-menu-head{ font-family:var(--font-body); font-size:.72rem; font-weight:500; letter-spacing:0; text-transform:none; padding:.45rem .6rem .3rem; }
-.ui-v2 .rd-menu-item{ font-size:.84rem; padding:.45rem .6rem; border-radius:7px; }
+.ui-v2 .rd-menu-item{ font-size:.84rem; font-weight:500; padding:.45rem .6rem; border-radius:7px; }
 .ui-v2 .rd-menu-item:hover{ background:var(--press); color:var(--text); }
 .ui-v2 .rd-menu-danger, .ui-v2 .rd-menu-danger:hover{ color:var(--bad); }
 .ui-v2 .rd-menu-danger:hover{ background:var(--bad-soft); }
@@ -230,7 +230,7 @@
 .ui-v2 .rd-cmenu{ min-width:200px; padding:5px; background:var(--raise); border:0; border-radius:11px; box-shadow:var(--shadow-pop); }
 .ui-v2 .rd-cmenu.is-open{ animation:v2menu .13s cubic-bezier(.2,.9,.3,1) both; }
 @keyframes v2menu{ from{ opacity:0; transform:scale(.97); } }
-.ui-v2 .rd-cmenu-item{ height:30px; padding:0 .6rem; gap:.6rem; border-radius:7px; font-size:.84rem; }
+.ui-v2 .rd-cmenu-item{ height:30px; padding:0 .6rem; gap:.6rem; border-radius:7px; font-size:.84rem; font-weight:500; }
 .ui-v2 .rd-cmenu-item:hover, .ui-v2 .rd-cmenu-item:focus-visible{ background:var(--press); }
 .ui-v2 .rd-cmenu-item svg{ width:15px; height:15px; opacity:.75; }
 .ui-v2 .rd-cmenu-item:hover svg{ opacity:1; color:currentColor; }

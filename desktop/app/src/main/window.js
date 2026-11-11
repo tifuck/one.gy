@@ -342,7 +342,8 @@ class MainWindow {
 
   // Title, history buttons and theme for the title bar view.
   sendTitlebar() {
-    if (!this.titlebar || this.titlebar.webContents.isDestroyed()) return;
+    // Quitting destroys the window before its views, which still fire events.
+    if (this.win.isDestroyed() || !this.titlebar || this.titlebar.webContents.isDestroyed()) return;
     const wc = this.site && !this.site.webContents.isDestroyed() ? this.site.webContents : null;
     const browsing = Boolean(wc) && !this.siteLocked && !this.panelOpen;
     const title = this.panelOpen ? (this.panel.webContents.getTitle() || 'ONE.GY') : (this.siteLocked ? 'ONE.GY' : this.siteTitle);

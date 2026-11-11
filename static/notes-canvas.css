@@ -8,8 +8,8 @@
 /* ---- Toolbar -------------------------------------------------------------- */
 /* Wraps onto a second row when the pane is narrow: nothing is ever clipped or hidden behind a scroll */
 .fxc-bar{
-  flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; min-height:44px; box-sizing:border-box;
-  padding:6px 10px; border-bottom:1px solid var(--line); background:var(--bg);
+  flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; min-height:40px; box-sizing:border-box;
+  padding:3px 10px; border-bottom:1px solid var(--line); background:var(--bg); /* 40px: level with the notes list head */
 }
 .fxc-tools, .fxc-colors, .fxc-actions{ display:flex; align-items:center; gap:2px; flex:none; }
 /* Tools: a segmented control, same look as the Files view switcher */

@@ -197,6 +197,12 @@
   }
 
   // ---- Load / render -------------------------------------------------------
+  // The open note and view survive leaving the page; with no note open the list stays visible.
+  var LS_OPEN = 'onegy_notes_open', LS_VIEW = 'onegy_notes_view', restored = false
+  function lsGet (k) { try { return localStorage.getItem(k) } catch (e) { return null } }
+  function lsSet (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v) } catch (e) {} }
+  function showList () { if (window.RdPanels) RdPanels.setCollapsed('side', false, true) }
+
   async function loadAll () {
     if (!haveKeys()) { showLock(true); return }
     showLock(false)
@@ -208,7 +214,15 @@
       S.notebooks = nbData.notebooks || []
       await Promise.all(S.notebooks.map(async function (nb) { nb._name = await decNotebookName(nb, mk) }))
       S.trashCount = loaded[1] ? (loaded[1].notes || []).length : (nbData.trash_count || 0)
+      var v = !restored && lsGet(LS_VIEW)
+      if (v && (['all', 'unfiled', 'trash'].indexOf(v) >= 0 || S.notebooks.some(function (nb) { return String(nb.id) === v }))) S.view = v
       await loadNotes()
+      if (!restored) {
+        restored = true
+        var open = lsGet(LS_OPEN)
+        if (open && S.notes.some(function (n) { return n.id === open })) openNote(open)
+        else { lsSet(LS_OPEN, null); showList() }
+      }
     } catch (e) { listEl.innerHTML = errState('Could not load notebooks.') }
   }
 
@@ -231,6 +245,7 @@
       if (seq !== loadNotesSeq) return
       S.notes = notes
       loadedView = S.view
+      lsSet(LS_VIEW, String(S.view))
       renderList(null, fresh)
       if (!S.noteId && (!editorEl.firstElementChild || editorEl.querySelector('.nt-empty-editor'))) editorEl.innerHTML = emptyEditor()
     } catch (e) { if (seq === loadNotesSeq) listEl.innerHTML = errState('Could not load notes.') }
@@ -351,6 +366,7 @@
     editorEl.querySelectorAll('[contenteditable]').forEach(function (n) { n.setAttribute('contenteditable', 'false') })
     editorEl.querySelectorAll('input, textarea, select, button').forEach(function (n) { n.disabled = true })
     S.noteId = id
+    lsSet(LS_OPEN, id)
     renderList()
     // Seamless switch: dim the outgoing note and hold the spinner back so
     // fast opens (cache/local) swap directly without a loading flash
@@ -1160,6 +1176,8 @@
   function closeEditor () {
     resetOpenState(emptyEditor())
     S.noteId = null
+    lsSet(LS_OPEN, null)
+    showList()
     hideEditorMobile()
   }
   function clearEditorIfOpen (id) { if (S.noteId === id) closeEditor() }

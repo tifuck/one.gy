@@ -298,6 +298,6 @@
 
   window.RdPanels = {
     restore: restore, reclamp: reclamp,
-    toggle: toggle, isCollapsed: isCollapsed, width: widthOf
+    toggle: toggle, isCollapsed: isCollapsed, setCollapsed: setCollapsed, width: widthOf
   }
 })()

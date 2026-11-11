@@ -21,14 +21,17 @@ if(ver!=='3'){
 }
 var v=parseInt(localStorage.getItem('onegy_rd_side_w'),10);
 r.style.setProperty('--rd-side-w',Math.max(150,Math.min(560,isFinite(v)&&v>0?v:dS,W-C))+'px');
-/* Files starts with its folders panel hidden; a stored choice wins. */
+/* Files starts with its folders panel hidden; a stored choice wins. Notes keeps
+   its list open unless a note will be reopened (notes.js: onegy_notes_open). */
 var pg=r.getAttribute('data-rd-page'),c=localStorage.getItem('onegy_rd_side_collapsed_'+pg);
-if(c==='1'||(c===null&&pg==='files'))r.setAttribute('data-rd-side','collapsed');
+if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===null&&pg==='files'))r.setAttribute('data-rd-side','collapsed');
 }catch(e){}})();</script>
   <title>{% block title %}ONE.GY{% endblock %}</title>
   <link rel="icon" type="image/x-icon" href="{{ versioned_static('logos/favicon.ico') }}">
   <link rel="icon" type="image/png" sizes="32x32" href="{{ versioned_static('logos/favicon-32x32.png') }}">
   <link rel="apple-touch-icon" sizes="180x180" href="{{ versioned_static('logos/apple-touch-icon.png') }}">
+  <link rel="manifest" href="{{ versioned_static('manifest.webmanifest') }}">
+  <meta name="theme-color" content="#161616">
   <link rel="preload" href="{{ versioned_static('vendor/fonts/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{{ versioned_static('vendor/fonts/inter-latin-600-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{{ versioned_static('core.css') }}">
