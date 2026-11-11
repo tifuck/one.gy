@@ -240,8 +240,8 @@ function registerIpc({
     const inset = cleanInset(px);
     if (window.isSiteFrame(event.senderFrame) && inset !== null) window.setSiteInset(inset);
   });
-  ipcMain.on('site:leavePanel', (event) => {
-    if (window.isSiteFrame(event.senderFrame)) window.leavePanel();
+  ipcMain.on('site:leavePanel', (event, opts) => {
+    if (window.isSiteFrame(event.senderFrame)) window.leavePanel(Boolean(opts && opts.now));
   });
   ipcMain.handle('site:logout', async (event) => {
     if (!window.isSiteFrame(event.senderFrame)) return 'cancelled';

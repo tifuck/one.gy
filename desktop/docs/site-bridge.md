@@ -101,7 +101,9 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
   while the panel is open, so the rail shows Sync or App settings as the
   current place (`desktop-shell.css`; v2 apps set it empty, which counts as
   `sync`). A click on a link in the rail while it is open closes the panel
-  (`site:leavePanel`).
+  once the next page is there (`site:leavePanel`); a click on a rail menu
+  button (`[data-menu-btn]`, whose popup opens under the panel) closes it at
+  once (`site:leavePanel` with `{ now: true }`).
 - Sign-out: a submit of `form.js-logout-form` is held (window capture phase,
   before the site's own hooks) and handed to the app (`site:logout`). With
   this computer signed in the app asks "Sign out of ONE.GY on this

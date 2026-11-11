@@ -66,7 +66,8 @@ if (origin && window.location.origin === origin && window.top === window) {
   };
   ipcRenderer.on('onegy:site-syncs', (_e, list) => deliverSyncs(list));
 
-  // The panel covers the page but not the rail: a rail link leaves it.
+  // The panel covers the page but not the rail: a rail link leaves it, and a
+  // rail menu (theme, account) closes it at once, as its popup opens under it.
   let panelOpen = false;
   ipcRenderer.on('onegy:panel', (_e, state) => {
     panelOpen = Boolean(state && state.open);
@@ -74,7 +75,9 @@ if (origin && window.location.origin === origin && window.top === window) {
     else document.documentElement.removeAttribute('data-desktop-panel');
   });
   document.addEventListener('click', (e) => {
-    if (panelOpen && e.target instanceof Element && e.target.closest('[data-desktop-rail] a[href]')) ipcRenderer.send('site:leavePanel');
+    if (!panelOpen || !(e.target instanceof Element)) return;
+    if (e.target.closest('[data-desktop-rail] a[href]')) ipcRenderer.send('site:leavePanel');
+    else if (e.target.closest('[data-desktop-rail] [data-menu-btn]')) ipcRenderer.send('site:leavePanel', { now: true });
   }, true);
 
   // Signed in on this computer, the site's sign-out signs out of the app (main

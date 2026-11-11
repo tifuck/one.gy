@@ -452,10 +452,12 @@ class MainWindow {
   }
 
   // A link in the site's rail was clicked (site preload): the panel fades out
-  // over the page it opens.
-  leavePanel() {
+  // over the page it opens; now: no page to wait for (a rail menu opened).
+  leavePanel(now = false) {
     if (!this.panelOpen) return;
-    this.siteReady().then(() => this.send({ type: 'app:navigate', data: { screen: 'close' } }));
+    const close = () => this.send({ type: 'app:navigate', data: { screen: 'close' } });
+    if (now) close();
+    else this.siteReady().then(close);
   }
 
   // The site preload marks html[data-desktop-panel] so the rail shows Sync or
