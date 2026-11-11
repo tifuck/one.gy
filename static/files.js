@@ -229,6 +229,10 @@
     var seq = newLoad()
     var key = 'f:' + (id == null ? 'root' : id)
     var nav = beginLoad(key)
+    if (nav) resetSearchBox()
+    // reload() must re-run the folder being opened, not the one still shown:
+    // S.folderId only changes once the response lands.
+    S.navFolderId = id
     searchIndex = null
     S.searchQ = ''
     S.trashMode = false
@@ -275,7 +279,12 @@
       if (stale(seq)) return
       endLoad(null)
       S.loadFailed = true
-      el.view.innerHTML = errorState('Could not load this folder.')
+      S.loadError = 'Could not load this folder.'
+      // The previous listing is no longer on screen: keyboard actions
+      // (Ctrl+A, Delete) must not act on it.
+      S.folders = []; S.files = []
+      resetSelState(); updateSelbar()
+      render()
     }
   }
 
@@ -283,6 +292,7 @@
     opts = opts || {}
     var seq = newLoad()
     var nav = beginLoad('trash')
+    if (nav) resetSearchBox()
     searchIndex = null
     S.searchQ = ''
     S.trashMode = true; resetSelState()
@@ -319,9 +329,10 @@
       if (stale(seq)) return
       endLoad(null)
       S.loadFailed = true
+      S.loadError = 'Could not load the trash. Nothing has been deleted. Reload to try again.'
       S.folders = []; S.files = []; S.breadcrumbs = []
       var restoreAllBtn = $('restoreAllBtn'); if (restoreAllBtn) restoreAllBtn.hidden = true
-      el.view.innerHTML = errorState('Could not load the trash. Nothing has been deleted. Reload to try again.')
+      render()
     }
     document.querySelectorAll('.fx-tree-row').forEach(function (r) { r.classList.remove('is-active') })
     $('fxTrashBtn').classList.add('is-active')
@@ -332,7 +343,7 @@
   function reload (opts) {
     if (S.trashMode) return loadTrash()
     if (S.searchQ) { searchIndex = null; return doSearch(S.searchQ, opts) }
-    return loadFolder(S.folderId, opts)
+    return loadFolder(S.navFolderId, opts)
   }
 
   // ---- Rendering: chrome ---------------------------------------------------
@@ -489,6 +500,7 @@
   }
   function emptyState () {
     if (S.trashMode) return '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg><h3>Trash is empty</h3><p>Deleted files and folders will appear here.</p></div>'
+    if (S.searchQ) return '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><h3>No matches</h3><p>Nothing found for “' + esc(S.searchQ) + '”.</p></div>'
     return '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 20V6a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z"/></svg><h3>This folder is empty</h3><p>Drop files here or upload them. Everything is end‑to‑end encrypted before it leaves your device.</p><button type="button" class="rd-btn rd-btn-primary" data-empty-upload>Upload files</button></div>'
   }
 
@@ -499,7 +511,9 @@
     el.view.classList.toggle('is-enter', !!enter)
     var folders = sortItems(S.folders, true)
     var files = sortItems(S.files, false)
-    if (!folders.length && !files.length) { el.view.innerHTML = emptyState(); return }
+    // Failed loads leave the listing empty, so the error is derived here: a
+    // later sort / view change must not repaint it as "Trash is empty".
+    if (!folders.length && !files.length) { el.view.innerHTML = S.loadFailed ? errorState(S.loadError) : emptyState(); return }
     var fn = { grid: renderGrid, list: renderList, gallery: renderGallery, columns: renderColumns }[S.view] || renderGrid
     fn(folders, files)
     observeThumbs()
@@ -543,8 +557,11 @@
   }
   // A decrypted E2EE thumb is a local blob URL, so re-renders paint it straight
   // away instead of flashing the placeholder while the queue refills it.
+  // Keyed by the thumbnail nonce too: a content save or sync replace mints a
+  // new thumbnail under a new nonce, so the old decrypted blob stops matching.
+  function thumbKey (item) { return item.id + ':' + (item.enc_thumb_nonce || '') }
   function cachedThumb (item) {
-    var u = e2eThumbCache.get(String(item.id))
+    var u = e2eThumbCache.get(thumbKey(item))
     return u ? '<img src="' + u + '" alt=""' + (isTextThumb(item) ? ' class="is-text"' : '') + '>' : ''
   }
   function isTextThumb (item) { var k = kindOf(item); return k === 'code' || k === 'doc' || k === 'sheet' }
@@ -739,8 +756,9 @@
       var blobUrl
       if (f.is_e2e) {
         if (!haveKeys() || !f.enc_thumb_nonce) return
-        if (e2eThumbCache.has(id)) {
-          blobUrl = e2eThumbCache.get(id)
+        var ck = thumbKey(f)
+        if (e2eThumbCache.has(ck)) {
+          blobUrl = e2eThumbCache.get(ck)
         } else {
           var fk = f._fileKey || (await OneGyCrypto.unwrapFileKeyWithMasterKey(f.encrypted_file_key, f.file_key_nonce, await OneGyCrypto.getMasterKeyFromSession()))
           if (!fk) return
@@ -751,7 +769,7 @@
           if (!enc || enc.byteLength < 16) return
           var dec = await OneGyCrypto.decryptThumbnail(enc, f.enc_thumb_nonce, fk)
           blobUrl = URL.createObjectURL(new Blob([dec], { type: 'image/jpeg' }))
-          rememberE2eThumb(id, blobUrl)
+          rememberE2eThumb(ck, blobUrl)
         }
       } else {
         var tr
@@ -1712,7 +1730,6 @@
     $('fxFileInput').onchange = function () { uploadFiles(this.files); this.value = '' }
 
     // Search — collapsed icon that expands into a live field on click
-    var to = null
     var sBox = $('fxSearchBox'), sInput = $('fxSearch'), sToggle = $('fxSearchToggle'), sClear = $('fxSearchClear')
     function openSearch () {
       sBox.classList.add('is-open')
@@ -1730,15 +1747,15 @@
     }
     // Decided by what is shown (S.searchQ), not by the input text: clearing the
     // box and blurring within the debounce used to leave stale results up.
-    function endSearch () { clearTimeout(to); if (S.searchQ) loadFolder(S.folderId) }
+    function endSearch () { clearTimeout(searchTimer); if (S.searchQ) loadFolder(S.folderId) }
     // Keep the input from blurring first when the icon is used to collapse it
     sToggle.addEventListener('mousedown', function (e) { if (sBox.classList.contains('is-open')) e.preventDefault() })
     sToggle.onclick = function () { sBox.classList.contains('is-open') ? closeSearch() : openSearch() }
     sClear.onclick = function () { sInput.value = ''; sClear.hidden = true; endSearch(); sInput.focus() }
     sInput.addEventListener('input', function () {
-      var q = this.value.trim(); clearTimeout(to)
+      var q = this.value.trim(); clearTimeout(searchTimer)
       sClear.hidden = !q
-      to = setTimeout(function () { q ? doSearch(q) : endSearch() }, 260)
+      searchTimer = setTimeout(function () { q ? doSearch(q) : endSearch() }, 260)
     })
     sInput.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.stopPropagation(); closeSearch(); sToggle.focus() } })
     sInput.addEventListener('blur', function () { if (!sInput.value.trim()) closeSearch() })
@@ -2032,6 +2049,15 @@
   // fetched and decrypted once per search session; loadFolder/loadTrash drop it,
   // and every mutation reloads through one of those.
   var searchIndex = null
+  var searchTimer = null
+  // Navigation leaves search: drop the query text and a pending debounce,
+  // which would otherwise fire after the click and supersede it.
+  function resetSearchBox () {
+    clearTimeout(searchTimer)
+    var inp = $('fxSearch'); if (!inp || !inp.value) return
+    inp.value = ''; $('fxSearchClear').hidden = true
+    if (document.activeElement !== inp) { $('fxSearchBox').classList.remove('is-open'); $('fxSearchToggle').setAttribute('aria-expanded', 'false'); inp.tabIndex = -1 }
+  }
   function loadSearchIndex () {
     if (searchIndex) return searchIndex
     var p = searchIndex = (async function () {
@@ -2083,16 +2109,15 @@
       S.breadcrumbs = []
       if (opts.keepSel) { pruneSel(); updateSelbar() }
       renderBreadcrumb()
-      el.view.setAttribute('data-view', S.view)
-      if (!S.folders.length && !S.files.length) { el.view.innerHTML = '<div class="fx-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><h3>No matches</h3><p>Nothing found for “' + esc(q) + '”.</p></div>'; return }
       render(nav)
     } catch (e) {
       if (stale(seq)) return
       endLoad(null)
       S.loadFailed = true
+      S.loadError = 'Search failed. This is not an empty result. Try again.'
       S.folders = []; S.files = []
       resetSelState(); updateSelbar()
-      el.view.innerHTML = errorState('Search failed. This is not an empty result. Try again.')
+      render()
     }
   }
 

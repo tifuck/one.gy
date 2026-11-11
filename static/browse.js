@@ -1114,11 +1114,15 @@
     Array.prototype.forEach.call(this.querySelectorAll('[data-view]'), function (x) {
       x.classList.toggle('is-active', x === b)
     })
+    // Search results own the view (always rows): repainting the folder
+    // listing here would show it under the still-active query.
+    if (S.searching) return
     renderItems(); hydrateThumbs(); reapplySelection()
   })
   el('bwSort').addEventListener('change', function () {
     S.sort = this.value
     try { localStorage.setItem('onegy_bw_sort', S.sort) } catch (e) {}
+    if (S.searching) return
     renderItems(); hydrateThumbs(); reapplySelection()
   })
   function reapplySelection () {
@@ -1173,6 +1177,9 @@
   // Back/forward through SPA folder navigation
   window.addEventListener('popstate', function (e) {
     var fid = (e.state && e.state.bw) ? e.state.folderId : null
+    // load() keeps the box for noPush (the clear-search path); Back leaves search.
+    clearTimeout(searchTimer)
+    el('bwSearch').value = ''
     load(fid && fid !== S.rootId ? fid : null, { noPush: true })
   })
 

@@ -1185,10 +1185,6 @@
       if (playlist !== targetPlaylist) return
       if (!data.files || data.files.length === 0) return
 
-      // Collect IDs already in the playlist (from the current folder DOM)
-      const existingIds = new Set(playlist.map(t => t.id))
-      let added = 0
-
       // E2EE names arrive as server placeholders ("encrypted_<id>.mp3"):
       // decrypt them with the session keys, as the file list does.
       let masterKey = null
@@ -1197,6 +1193,10 @@
       }
       const names = await Promise.all(data.files.map(f => _subfolderTrackName(f, masterKey)))
       if (playlist !== targetPlaylist) return
+      // After the last await: an overlapping append for the same playlist
+      // (two quick opens in one folder keep its identity) has pushed by now.
+      const existingIds = new Set(playlist.map(t => t.id))
+      let added = 0
       const firstNew = playlist.length
 
       for (const [i, f] of data.files.entries()) {

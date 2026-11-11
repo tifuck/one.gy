@@ -223,7 +223,7 @@
         if (open && S.notes.some(function (n) { return n.id === open })) openNote(open)
         else { lsSet(LS_OPEN, null); showList() }
       }
-    } catch (e) { listEl.innerHTML = errState('Could not load notebooks.') }
+    } catch (e) { listItemsEl().innerHTML = errState('Could not load notebooks.') }
   }
 
   var loadNotesSeq = 0
@@ -236,6 +236,9 @@
     else if (S.view === 'unfiled') url += '?notebook_id=unfiled'
     else if (S.view !== 'all') url += '?notebook_id=' + S.view
     var fresh = loadedView !== S.view
+    // The head (e.g. "Empty trash") is built from S.notes: do not let it
+    // describe the previous view's notes while this one loads.
+    if (fresh) S.notes = []
     if (fresh) listItemsEl().innerHTML = '<div class="nt-skel-list" aria-hidden="true">' + new Array(7).join('<div class="rd-skel nt-skel-item"></div>') + '</div>'
     try {
       var d = await apiGet(url)
@@ -248,7 +251,7 @@
       lsSet(LS_VIEW, String(S.view))
       renderList(null, fresh)
       if (!S.noteId && (!editorEl.firstElementChild || editorEl.querySelector('.nt-empty-editor'))) editorEl.innerHTML = emptyEditor()
-    } catch (e) { if (seq === loadNotesSeq) listEl.innerHTML = errState('Could not load notes.') }
+    } catch (e) { if (seq === loadNotesSeq) listItemsEl().innerHTML = errState('Could not load notes.') }
   }
 
   var TRASH_PATH = 'M4 6.5h16M9.5 6.5V4.5h5v2M6.5 6.5l.8 12.2a1.5 1.5 0 0 0 1.5 1.3h6.4a1.5 1.5 0 0 0 1.5-1.3l.8-12.2'
@@ -405,10 +408,11 @@
         try { canvasData = validateCanvasData(JSON.parse(content || '{"blocks":[]}')) } catch (e) { canvasData = null }
         if (!canvasData) { fail('Canvas data is invalid. This note was not changed.'); return }
         endBusy()
-        renderCanvasNote(n._title || S.titles[id] || 'Untitled', canvasData, S.view === 'trash'); return
+        renderCanvasNote(n._title || S.titles[id] || 'Untitled', canvasData, !!d.is_trashed); return
       }
       endBusy()
-      renderEditor(n._title || S.titles[id] || 'Untitled', content, S.view === 'trash')
+      // From the fetched note, not S.view: the view can change during the awaits.
+      renderEditor(n._title || S.titles[id] || 'Untitled', content, !!d.is_trashed)
     } catch (e) { if (seq === S.openSeq) fail('Could not decrypt this note. It was not changed.') }
   }
   function renderEditor (title, html, readonly) {
