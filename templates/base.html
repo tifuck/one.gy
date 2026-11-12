@@ -1,5 +1,6 @@
 <!doctype html>
-<html lang="en"{% if desktop_app %} class="is-desktop-app"{% endif %}>
+{# data-update-hold: a page that answered a form post is never reloaded by a UI update (core.js) #}
+<html lang="en"{% if desktop_app %} class="is-desktop-app"{% endif %}{% if request.method == 'POST' %} data-update-hold{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">

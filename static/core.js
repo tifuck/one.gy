@@ -344,15 +344,56 @@
   // and nothing is in progress; else a toast offers it and it waits. A breaking
   // build (old pages break on the new API) reloads once nothing is in
   // progress, even while someone looks. Pages poll at their own phase, so
-  // their reloads spread over CHECK_MS by themselves.
+  // their reloads spread over CHECK_MS by themselves. A build the server has
+  // run for STABLE_S is past any rollback and needs no second look, so a page
+  // someone comes back to (a phone resuming a frozen tab) reloads at once.
+  // The reload keeps the place: scroll positions and what pages add on
+  // 'onegy:update' come back as OneGyUpdate.resume.
   var Update = (function () {
-    var CHECK_MS = 10 * 60 * 1000, MIN_GAP_MS = 60 * 1000, CONFIRM_MS = 75 * 1000
-    var IDLE_MS = 5 * 60 * 1000, TICK_MS = 30 * 1000, TYPED_MS = 30 * 60 * 1000
+    var CHECK_MS = 10 * 60 * 1000, MIN_GAP_MS = 60 * 1000, CONFIRM_MS = 75 * 1000, STABLE_S = 300
+    var IDLE_MS = 5 * 60 * 1000, TICK_MS = 30 * 1000, TYPED_MS = 30 * 60 * 1000, BACK_MS = 5000
+    var RESUME_KEY = 'onegy_update_resume', RESUME_MS = 60 * 1000, SCROLL_TRIES = 50
     var TEXT = 'textarea, input:not([type=search]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color])'
     var meta = document.querySelector('meta[name="onegy-build"]')
     var nativeFetch = window.fetch
     var lastCheck = 0, lastInput = Date.now(), seen = null, ready = null, toast = null, tick = null, net = 0
-    var typed = null, typedAt = 0
+    var typed = null, typedAt = 0, back = 0
+
+    // What the page before an update reload left for this one (same URL, just now).
+    var resume = null
+    try {
+      resume = JSON.parse(sessionStorage.getItem(RESUME_KEY))
+      sessionStorage.removeItem(RESUME_KEY)
+    } catch (e) {}
+    if (!resume || resume.at !== location.pathname + location.search || Date.now() - resume.t > RESUME_MS) resume = null
+
+    function keepPlace () {
+      var keep = { at: location.pathname + location.search, t: Date.now(), scroll: {} }
+      ;[].forEach.call(document.querySelectorAll('[id]'), function (el) { if (el.scrollTop > 0) keep.scroll[el.id] = el.scrollTop })
+      if (window.scrollY > 0) keep.scroll[''] = window.scrollY
+      window.dispatchEvent(new CustomEvent('onegy:update', { detail: keep }))
+      try { sessionStorage.setItem(RESUME_KEY, JSON.stringify(keep)) } catch (e) {}
+    }
+
+    // Lists render after their data arrives: keep trying until each position
+    // holds, the tries run out or someone scrolls.
+    function restoreScroll (map) {
+      var tries = 0, events = ['wheel', 'touchstart', 'keydown', 'pointerdown']
+      var stop = function () {
+        clearInterval(timer)
+        events.forEach(function (t) { document.removeEventListener(t, stop, true) })
+      }
+      var timer = setInterval(function () {
+        Object.keys(map).forEach(function (id) {
+          var el = id ? document.getElementById(id) : document.scrollingElement
+          if (!el) return
+          el.scrollTop = map[id]
+          if (Math.abs(el.scrollTop - map[id]) <= 1) delete map[id]
+        })
+        if (!Object.keys(map).length || ++tries >= SCROLL_TRIES) stop()
+      }, 100)
+      events.forEach(function (t) { document.addEventListener(t, stop, { capture: true, passive: true }) })
+    }
 
     // Network work in flight: uploads (XHR) and fetches until their body is read.
     function hold (p) {
@@ -391,10 +432,11 @@
       return el.checkVisibility ? el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true }) : el.getClientRects().length > 0
     }
 
-    // A page that must never be reloaded under its user marks an element
-    // data-update-hold (the "Preparing download" page).
+    // What must never be reloaded under its user is marked data-update-hold
+    // while it is on screen (the "Preparing download" page, a key shown once,
+    // a page that answered a form post).
     function busy () {
-      if (net > 0 || document.querySelector('[data-update-hold]')) return true
+      if (net > 0 || [].some.call(document.querySelectorAll('[data-update-hold]'), shown)) return true
       if (window.OneGyCrypto && OneGyCrypto.busy && OneGyCrypto.busy()) return true
       // Every page's unsaved-work and upload guard is a cancelling beforeunload listener.
       var ev = new Event('beforeunload', { cancelable: true })
@@ -416,7 +458,7 @@
     function reload () {
       fetchBuild().then(function (d) {
         if (!d || !d.build) return
-        if (d.build !== meta.content) { location.reload(); return }
+        if (d.build !== meta.content) { keepPlace(); location.reload(); return }
         clearInterval(tick)
         if (toast) toast.remove()
         ready = seen = toast = null
@@ -435,16 +477,19 @@
       btn.type = 'button'
       btn.className = 'rd-btn rd-btn-ghost rd-btn-sm'
       btn.textContent = 'Reload'
-      btn.addEventListener('click', function () { location.reload() })
+      btn.addEventListener('click', function () { keepPlace(); location.reload() })
       toast.appendChild(btn)
       host.appendChild(toast)
     }
 
     function apply () {
       if (!ready) return
-      var idle = document.hidden || Date.now() - lastInput >= IDLE_MS
+      var now = Date.now(), returning = now - back < BACK_MS
+      var idle = document.hidden || now - lastInput >= IDLE_MS || returning
       // A breaking build waits one tick with its notice up.
       if ((idle || (ready.breaking && toast)) && !busy()) { reload(); return }
+      // The page's own refresh on coming back is still in flight.
+      if (returning) { setTimeout(apply, 500); return }
       showNotice()
     }
 
@@ -455,12 +500,14 @@
       fetchBuild().then(function (d) {
         if (!d || !d.build || ready) return
         if (d.build === meta.content) { seen = null; return }
-        if (!seen || seen.build !== d.build) {
-          seen = { build: d.build, at: now }
-          setTimeout(function () { check(true) }, CONFIRM_MS)
-          return
+        if (!(d.age >= STABLE_S)) {
+          if (!seen || seen.build !== d.build) {
+            seen = { build: d.build, at: now }
+            setTimeout(function () { check(true) }, CONFIRM_MS)
+            return
+          }
+          if (now - seen.at < MIN_GAP_MS) return
         }
-        if (now - seen.at < MIN_GAP_MS) return
         ready = { breaking: String(d.breaking) !== meta.getAttribute('data-breaking') }
         tick = setInterval(apply, TICK_MS)
         apply()
@@ -468,21 +515,28 @@
     }
 
     function init () {
+      if (resume && resume.scroll) restoreScroll(resume.scroll)
       if (!meta || !nativeFetch) return
       var touch = function () { lastInput = Date.now() }
       ;['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'scroll'].forEach(function (t) {
         document.addEventListener(t, touch, { capture: true, passive: true })
       })
-      document.addEventListener('visibilitychange', function () { if (document.hidden) apply(); else check() })
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) { apply(); return }
+        // Back after a while away: the moment to reload, before the first click.
+        if (Date.now() - lastInput >= IDLE_MS) back = Date.now()
+        if (ready) apply(); else check()
+      })
       window.addEventListener('focus', function () { check() })
+      window.addEventListener('pageshow', function (e) { if (e.persisted) check() })
       window.addEventListener('online', function () { check() })
       setInterval(function () { check() }, CHECK_MS)
     }
 
-    return { init: init, busy: busy }
+    return { init: init, busy: busy, resume: resume }
   })()
   // ONE.GY Desktop asks before an update restart (desktop/docs/site-bridge.md).
-  window.OneGyUpdate = { busy: Update.busy }
+  window.OneGyUpdate = { busy: Update.busy, resume: Update.resume }
 
     document.addEventListener('submit', function (e) {
       var form = e.target && e.target.closest ? e.target.closest('form.js-logout-form') : null

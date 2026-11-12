@@ -334,7 +334,7 @@ function showRecoveryKeyModal(recoveryKey, redirectUrl) {
       <span class="auth-mark is-accent" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg></span>
       <h2 class="auth-dialog-title" id="recKeyTitle">Save your recovery key</h2>
       <p class="auth-dialog-text" id="recKeyText">It is the only way to recover your encrypted files if you lose your password. The server cannot recover your data without it.</p>
-      <div class="auth-key" id="recoveryKeyDisplay"></div>
+      <div class="auth-key" id="recoveryKeyDisplay" data-update-hold></div>
       <div class="auth-dialog-row">
         <button type="button" class="rd-btn rd-btn-ghost" id="copyRecoveryKey"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
         <button type="button" class="rd-btn rd-btn-ghost" id="downloadRecoveryKey"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span>Download</span></button>

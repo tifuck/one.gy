@@ -129,6 +129,7 @@ for _fpath in sorted(os.path.join(_root, _fname) for _root, _dirs, _files in os.
     with open(_fpath, 'rb') as _fp:
         _ui_hash.update(_fp.read())
 UI_BUILD = _ui_hash.hexdigest()[:12]
+UI_BUILD_AT = time.time()
 # Bump when pages of the previous build break against the new backend (an API
 # contract change): open pages then reload as soon as nothing is in progress,
 # even while someone is looking at them.

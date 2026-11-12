@@ -60,9 +60,11 @@ def robots_txt():
 @limiter.exempt
 def api_build():
     """What open pages (core.js) and ONE.GY Desktop poll: the UI build, its
-    breaking revision and the oldest desktop version the sync API accepts.
-    Constant per process: no session, no DB."""
-    return jsonify(build=UI_BUILD, breaking=UI_BREAKING, desktop_min=MIN_DESKTOP_CLIENT_VERSION)
+    breaking revision, how long this process has served it (a build up for a
+    few minutes is past a promote's rollback) and the oldest desktop version
+    the sync API accepts. No session, no DB."""
+    return jsonify(build=UI_BUILD, breaking=UI_BREAKING, age=int(time.time() - UI_BUILD_AT),
+                   desktop_min=MIN_DESKTOP_CLIENT_VERSION)
 
 @app.route('/')
 def index():

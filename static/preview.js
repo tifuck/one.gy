@@ -893,6 +893,8 @@
     window.addEventListener('beforeunload', function (e) { if (_editorDirty || _saving) { e.preventDefault(); e.returnValue = '' } })
   }
   window.addEventListener('popstate', onPopState)
+  // A UI update reload (core.js) reopens what was open (files.js boot).
+  window.addEventListener('onegy:update', function (e) { if (_current) e.detail.preview = String(_current.id) })
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire); else wire()
 
   window.FxPreview = { open: open, close: close, _onSaved: null }

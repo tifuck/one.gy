@@ -140,9 +140,11 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
   while the page has something an update reload or restart would lose
   (network work in flight, crypto worker jobs, a cancelling `beforeunload`
   guard, playing media, text typed in the last 30 minutes that is still on
-  screen, an element marked `data-update-hold`). The page reloads itself into
-  a new UI build (`<meta name="onegy-build">` vs `GET /api/build`) when it is
-  hidden or idle and not busy; the app needs nothing for that.
+  screen, an element marked `data-update-hold` that is on screen). The page
+  reloads itself into a new UI build (`<meta name="onegy-build">` vs
+  `GET /api/build`) when it is hidden, idle or just come back to, and not
+  busy, and comes back where it was (URL, scroll, open preview, music view);
+  the app needs nothing for that.
 
 ## App side
 

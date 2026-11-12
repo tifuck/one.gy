@@ -367,7 +367,7 @@
           <input type="text" id="keyTotp" class="form-input acc-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000"{% if not user.two_factor_enabled %} hidden{% endif %}>
         </div>
       </div>
-      <div class="acc-keyreveal" id="keyReveal" hidden>
+      <div class="acc-keyreveal" id="keyReveal" data-update-hold hidden>
         <div class="rd-callout is-good"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><div>Key created. Copy it now: it won't be shown again.</div></div>
         <div class="acc-keycode"><code id="keyValue"></code><button type="button" class="rd-btn rd-btn-ghost" id="keyCopy">Copy</button></div>
       </div>

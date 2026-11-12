@@ -2310,7 +2310,12 @@
       if (window.__FX_INITIAL_TRASH__) { history.replaceState({ fx: true, trash: true }, ''); loadTrash(); return }
       var init = window.__FX_INITIAL_FOLDER__
       history.replaceState({ fx: true, folderId: init != null ? init : null }, '')
-      loadFolder(init != null ? init : null, { noPush: true })
+      // After a UI update reload (core.js) the preview that was open comes back.
+      var keep = window.OneGyUpdate && OneGyUpdate.resume
+      loadFolder(init != null ? init : null, { noPush: true }).then(function () {
+        var f = keep && keep.preview && S.files.filter(function (x) { return String(x.id) === keep.preview })[0]
+        if (f) openPreview(f)
+      })
     }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot()

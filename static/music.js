@@ -136,7 +136,8 @@
 
   // ---- Rendering: shared bits ---------------------------------------------
   function loading () { view.innerHTML = '<div class="mu-skel" aria-hidden="true">' + new Array(13).join('<span class="rd-skel"></span>') + '</div>' }
-  function startView () { current = { tracks: [], albumName: '' }; loading(); view.scrollTop = 0; return ++viewEpoch }
+  // at: [view, id] of the view being opened, so a UI update reload (core.js) comes back to it.
+  function startView (at) { S.at = at; current = { tracks: [], albumName: '' }; loading(); view.scrollTop = 0; return ++viewEpoch }
   function isCurrentView (epoch) { return epoch === viewEpoch }
 
   // ---- Breadcrumb (toolbar) -------------------------------------------------
@@ -208,7 +209,7 @@
   var current = { tracks: [], albumName: '' }
 
   async function viewHome () {
-    setActive('home'); crumbRoot('Home', viewHome); var epoch = startView()
+    setActive('home'); crumbRoot('Home', viewHome); var epoch = startView(['home'])
     try {
       var d = await jget('/music/api/home')
       if (!isCurrentView(epoch)) return
@@ -220,14 +221,14 @@
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load the library', 'Check your connection and try again.') }
   }
   async function viewAlbums () {
-    setActive('albums'); crumbRoot('Albums', viewAlbums); var epoch = startView()
+    setActive('albums'); crumbRoot('Albums', viewAlbums); var epoch = startView(['albums'])
     try { var d = await jget('/music/api/albums'); var arr = Array.isArray(d) ? d : (d.albums || [])
       if (!isCurrentView(epoch)) return
       view.innerHTML = arr.length ? sectionTitle('', plural(arr.length, 'album')) + '<div class="mu-grid">' + arr.map(albumCard).join('') + '</div>' : empty('No albums yet')
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load albums', 'Check your connection and try again.') }
   }
   async function viewArtists () {
-    setActive('artists'); crumbRoot('Artists', viewArtists); var epoch = startView()
+    setActive('artists'); crumbRoot('Artists', viewArtists); var epoch = startView(['artists'])
     try { var d = await jget('/music/api/artists'); var arr = Array.isArray(d) ? d : (d.artists || [])
       if (!isCurrentView(epoch)) return
       view.innerHTML = arr.length ? sectionTitle('', plural(arr.length, 'artist')) + '<div class="mu-grid mu-grid-artists">' + arr.map(artistCard).join('') + '</div>' : empty('No artists yet')
@@ -235,7 +236,7 @@
   }
   async function viewAlbum (id, again) {
     if (!again) crumbPush('Album', function () { viewAlbum(id, true) })
-    var epoch = startView()
+    var epoch = startView(['album', id])
     try {
       var r = await jget('/music/api/album/' + encodeURIComponent(id))
       if (!isCurrentView(epoch)) return
@@ -251,7 +252,7 @@
   }
   async function viewArtist (id, again) {
     if (!again) crumbPush('Artist', function () { viewArtist(id, true) })
-    var epoch = startView()
+    var epoch = startView(['artist', id])
     try {
       var r = await jget('/music/api/artist/' + encodeURIComponent(id))
       if (!isCurrentView(epoch)) return
@@ -268,7 +269,7 @@
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load this artist', 'Check your connection and try again.') }
   }
   async function viewLiked () {
-    setActive('liked'); crumbRoot('Liked songs', viewLiked); var epoch = startView()
+    setActive('liked'); crumbRoot('Liked songs', viewLiked); var epoch = startView(['liked'])
     try {
       var arr = await jget('/music/api/liked-songs')
       if (!isCurrentView(epoch)) return
@@ -281,7 +282,7 @@
   }
   async function viewPlaylist (id) {
     var known = S.playlists.filter(function (p) { return String(p.id) === String(id) })[0]
-    setActive('', id); crumbRoot(known ? known.name : 'Playlist', function () { viewPlaylist(id) }); var epoch = startView()
+    setActive('', id); crumbRoot(known ? known.name : 'Playlist', function () { viewPlaylist(id) }); var epoch = startView(['playlist', id])
     try {
       var p = await jget('/music/api/playlist/' + encodeURIComponent(id))
       if (!isCurrentView(epoch)) return
@@ -417,7 +418,10 @@
     })
     loadPlaylists()
     window.MusicBrowse = { navigate: navigate }
-    if (!navigateFromHash()) viewHome()
+    window.addEventListener('onegy:update', function (e) { e.detail.music = S.at })
+    var at = window.OneGyUpdate && OneGyUpdate.resume && OneGyUpdate.resume.music
+    var open = at && { home: viewHome, albums: viewAlbums, artists: viewArtists, album: viewAlbum, artist: viewArtist, liked: viewLiked, playlist: viewPlaylist }[at[0]]
+    if (open) open(at[1]); else if (!navigateFromHash()) viewHome()
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot()
 })()
