@@ -26,7 +26,32 @@ const (
 	maxBackoff  = 10 * time.Minute
 	maxErrBody  = 64 << 10
 	maxJSONBody = 64 << 20
+
+	// A request is given up (and retried like a lost connection) when no
+	// byte moves for stallAfter, or the answer to a sent request takes
+	// longer than that (slowAnswer for requests the server works on long).
+	stallAfter = 2 * time.Minute
+	slowAnswer = 30 * time.Minute
 )
+
+var errStalled = errors.New("the server stopped responding")
+
+// Observer hears how the requests sent with its context are going (the
+// engine shows it on the transfer they belong to).
+type Observer struct {
+	// Sent: sent of total bytes of a file-content body went out in this attempt.
+	Sent func(sent, total int64)
+	// Retry: the request failed (why) and is sent again after wait;
+	// why "" = the wait is over.
+	Retry func(why string, wait time.Duration)
+}
+
+type observerKey struct{}
+
+// WithObserver attaches o to the requests made with the returned context.
+func WithObserver(ctx context.Context, o *Observer) context.Context {
+	return context.WithValue(ctx, observerKey{}, o)
+}
 
 // Error is a non-2xx answer from the server.
 type Error struct {
@@ -76,6 +101,7 @@ type Client struct {
 	http       *http.Client
 	userAgent  string
 	maxRetries int
+	stall      time.Duration // stallAfter; shorter in tests
 
 	mu        sync.Mutex
 	token     string
@@ -125,6 +151,7 @@ func New(server string, opt Options) (*Client, error) {
 		http:       &http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		userAgent:  fmt.Sprintf("onegy-desktop/%s (%s; %s)", opt.Version, runtime.GOOS, runtime.GOARCH),
 		maxRetries: retries,
+		stall:      stallAfter,
 		sleep:      sleepCtx,
 	}, nil
 }
@@ -200,6 +227,8 @@ type request struct {
 	// idempotent requests are also retried after transport errors (the server
 	// may have acted on a lost response); others only on 429/503.
 	idempotent bool
+	content    bool // the body is file content: an Observer hears Sent
+	slow       bool // the server may take up to slowAnswer to answer
 }
 
 // do sends r with retries and returns the response with a 2xx/304 status
@@ -208,9 +237,11 @@ func (c *Client) do(ctx context.Context, r request) (*http.Response, error) {
 	if !r.noAuth && c.tokenValue() == "" {
 		return nil, ErrNoToken
 	}
+	obs, _ := ctx.Value(observerKey{}).(*Observer)
 	for attempt := 0; ; attempt++ {
-		resp, err := c.once(ctx, r)
+		resp, err := c.once(ctx, r, obs)
 		var wait time.Duration
+		var why string
 		switch {
 		case err != nil && ctx.Err() != nil:
 			return nil, ctx.Err()
@@ -218,13 +249,19 @@ func (c *Client) do(ctx context.Context, r request) (*http.Response, error) {
 			if !r.idempotent || attempt >= c.maxRetries {
 				return nil, fmt.Errorf("%w: %v", ErrOffline, err)
 			}
-			wait = backoff(attempt)
+			wait, why = backoff(attempt), "Connection problem"
+			if errors.Is(err, errStalled) {
+				why = "one.gy stopped responding"
+			}
 		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable:
 			apiErr := readError(resp)
 			if attempt >= c.maxRetries {
 				return nil, apiErr
 			}
-			wait = backoff(attempt)
+			wait, why = backoff(attempt), "one.gy is busy"
+			if resp.StatusCode == http.StatusTooManyRequests {
+				why = "one.gy is limiting requests"
+			}
 			if apiErr.RetryAfter > 0 {
 				wait = min(apiErr.RetryAfter, maxBackoff)
 			}
@@ -242,23 +279,110 @@ func (c *Client) do(ctx context.Context, r request) (*http.Response, error) {
 		default:
 			return resp, nil
 		}
+		if obs != nil && obs.Retry != nil {
+			obs.Retry(why, wait)
+		}
 		if err := c.sleep(ctx, wait); err != nil {
 			return nil, err
+		}
+		if obs != nil && obs.Retry != nil {
+			obs.Retry("", 0)
 		}
 	}
 }
 
-func (c *Client) once(ctx context.Context, r request) (*http.Response, error) {
+// sendBody is a request body that keeps the stall watchdog fed while bytes
+// leave and reports them: the watchdog runs while the transport writes what
+// was read (stall), and for the answer once everything is out.
+type sendBody struct {
+	r           *bytes.Reader
+	total       int64
+	dog         *time.Timer
+	stall, wait time.Duration
+	sent        func(sent, total int64)
+}
+
+func (b *sendBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	left := int64(b.r.Len())
+	if b.sent != nil && n > 0 {
+		b.sent(b.total-left, b.total)
+	}
+	if left == 0 {
+		b.dog.Reset(b.wait)
+	} else {
+		b.dog.Reset(b.stall)
+	}
+	return n, err
+}
+
+func (b *sendBody) Close() error { return nil }
+
+// recvBody is a response body whose reads are watched for stalls (only while
+// a read is waiting: the reader may pause between reads).
+type recvBody struct {
+	io.ReadCloser
+	dog   *time.Timer
+	stall time.Duration
+	done  context.CancelCauseFunc
+}
+
+func (b *recvBody) Read(p []byte) (int, error) {
+	b.dog.Reset(b.stall)
+	n, err := b.ReadCloser.Read(p)
+	b.dog.Stop()
+	return n, err
+}
+
+func (b *recvBody) Close() error {
+	b.dog.Stop()
+	b.done(nil)
+	return b.ReadCloser.Close()
+}
+
+func (c *Client) once(parent context.Context, r request, obs *Observer) (*http.Response, error) {
 	u := *c.base
 	u.Path = r.path
 	u.RawQuery = r.query.Encode()
+	ctx, cancel := context.WithCancelCause(parent)
+	wait := c.stall
+	if r.slow {
+		wait = max(slowAnswer, c.stall)
+	}
+	first := wait
+	if len(r.body) > 0 {
+		first = c.stall
+	}
+	dog := time.AfterFunc(first, func() { cancel(errStalled) })
+	fail := func(err error) (*http.Response, error) {
+		dog.Stop()
+		if context.Cause(ctx) == errStalled && parent.Err() == nil {
+			err = errStalled
+		}
+		cancel(nil)
+		return nil, err
+	}
 	var body io.Reader
 	if r.body != nil {
 		body = bytes.NewReader(r.body)
 	}
 	req, err := http.NewRequestWithContext(ctx, r.method, u.String(), body)
 	if err != nil {
-		return nil, err
+		return fail(err)
+	}
+	if len(r.body) > 0 {
+		// ContentLength stays as NewRequest set it; GetBody too, so a request
+		// replayed by the transport is watched and reported like the first.
+		get := func() (io.ReadCloser, error) {
+			b := &sendBody{r: bytes.NewReader(r.body), total: int64(len(r.body)), dog: dog, stall: c.stall, wait: wait}
+			if r.content && obs != nil && obs.Sent != nil {
+				b.sent = obs.Sent
+				b.sent(0, b.total)
+			}
+			return b, nil
+		}
+		req.Body, _ = get()
+		req.GetBody = get
 	}
 	for k, v := range r.header {
 		req.Header[k] = v
@@ -285,13 +409,19 @@ func (c *Client) once(ctx context.Context, r request) (*http.Response, error) {
 			}
 			sig, err := signer.Sign([]byte(ts + "\n" + r.method + "\n" + path))
 			if err != nil {
-				return nil, fmt.Errorf("sign request: %w", err)
+				return fail(fmt.Errorf("sign request: %w", err))
 			}
 			req.Header.Set("X-Onegy-Pop-Ts", ts)
 			req.Header.Set("X-Onegy-Pop-Sig", base64.StdEncoding.EncodeToString(sig))
 		}
 	}
-	return c.http.Do(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fail(err)
+	}
+	dog.Stop()
+	resp.Body = &recvBody{ReadCloser: resp.Body, dog: dog, stall: c.stall, done: cancel}
+	return resp, nil
 }
 
 func readError(resp *http.Response) *Error {

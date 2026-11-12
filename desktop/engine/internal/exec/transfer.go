@@ -3,10 +3,13 @@ package exec
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/tifuck/one.gy/desktop/engine/internal/api"
 )
 
 // Transfer pool (plan 7.5 "Scheduling"): global parallel_up / parallel_down
@@ -30,6 +33,22 @@ const (
 	TCancelled = "cancelled"
 )
 
+// Phases of an active transfer (engine-ipc.md "Transfer").
+const (
+	PPreparing    = "preparing"    // reading, hashing and encrypting the local file (done counts that)
+	PTransferring = "transferring" // bytes are moving
+	PFinishing    = "finishing"    // sent: one.gy saves it; received: checked and put in place
+	PRetrying     = "retrying"     // waits before another attempt; note says why
+)
+
+// An active transfer without a sign of life gets a note after noteAfter and
+// counts as stalled after stalledAfter; finished ones beyond keepFinished go.
+const (
+	noteAfter    = 10 * time.Second
+	stalledAfter = 30 * time.Second
+	keepFinished = 500
+)
+
 // TransferView is the IPC Transfer object.
 type TransferView struct {
 	ID         string  `json:"id"`
@@ -40,6 +59,9 @@ type TransferView struct {
 	Done       int64   `json:"done"`
 	Bps        int64   `json:"bps"`
 	State      string  `json:"state"`
+	Phase      string  `json:"phase"`
+	Note       *string `json:"note"`
+	Stalled    bool    `json:"stalled"`
 	Error      *string `json:"error"`
 	StartedAt  *string `json:"started_at"`
 	FinishedAt *string `json:"finished_at"`
@@ -59,7 +81,16 @@ type Transfer struct {
 	cancel    context.CancelFunc
 	seq       int
 	done      int64
+	base      int64 // Span: where the request body being sent starts in done
+	span      int64
+	last      bool
 	state     string
+	phase     string
+	before    string // phase to go back to after retrying
+	note      string
+	stalled   bool
+	held      bool      // sleeping off a bandwidth limit
+	alive     time.Time // last sign of life
 	err       string
 	paused    bool
 	cancelReq bool
@@ -82,6 +113,9 @@ type Pool struct {
 	all     map[string]*Transfer
 	nextID  int
 	waiting []*Transfer
+	// settled: bytes of finished transfers a sync has not counted off what it
+	// has left yet (Flow keeps counting them, so that number never jumps back).
+	settled map[string]int64
 
 	// Notify receives transfer events (throttled to 4/s per transfer, plus
 	// every state change). Finished is called once per finished transfer.
@@ -92,7 +126,7 @@ type Pool struct {
 // NewPool creates a pool with 2 + 2 slots and no bandwidth limit.
 func NewPool() *Pool {
 	p := &Pool{limit: map[string]int{Up: 2, Down: 2}, active: map[string]int{}, paused: map[string]bool{},
-		global: map[string]*Bucket{Up: NewBucket(0), Down: NewBucket(0)}, all: map[string]*Transfer{}}
+		global: map[string]*Bucket{Up: NewBucket(0), Down: NewBucket(0)}, all: map[string]*Transfer{}, settled: map[string]int64{}}
 	p.cond = sync.NewCond(&p.mu)
 	return p
 }
@@ -142,7 +176,7 @@ func (t *Transfer) Start(ctx context.Context) error {
 	}
 	p.dropWaiting(t)
 	p.active[t.dir]++
-	t.state, t.started, t.rateAt = TActive, time.Now(), time.Now()
+	t.state, t.started, t.rateAt, t.alive = TActive, time.Now(), time.Now(), time.Now()
 	p.mu.Unlock()
 	p.cond.Broadcast()
 	p.emit(t, true)
@@ -195,6 +229,8 @@ func (t *Transfer) Wait(ctx context.Context, n int) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	t.hold(true)
+	defer t.hold(false)
 	if err := p.global[t.dir].Wait(ctx, n); err != nil {
 		return err
 	}
@@ -204,18 +240,181 @@ func (t *Transfer) Wait(ctx context.Context, n int) error {
 	return nil
 }
 
+func (t *Transfer) hold(on bool) {
+	t.pool.mu.Lock()
+	t.held, t.alive = on, time.Now()
+	t.pool.mu.Unlock()
+}
+
 // Progress adds n transferred bytes.
-func (t *Transfer) Progress(n int64) {
+func (t *Transfer) Progress(n int64) { t.move(n, false) }
+
+// At sets the transferred bytes (a request body sent again starts over).
+func (t *Transfer) At(n int64) { t.move(n, true) }
+
+func (t *Transfer) move(n int64, abs bool) {
 	p := t.pool
 	p.mu.Lock()
+	if abs {
+		n -= t.done
+	}
 	t.done += n
-	t.rateBytes += n
+	if n > 0 {
+		t.rateBytes += n
+	}
 	if el := time.Since(t.rateAt); el >= time.Second {
 		t.bps = int64(float64(t.rateBytes) / el.Seconds())
 		t.rateAt, t.rateBytes = time.Now(), 0
 	}
+	force := t.livenLocked(PTransferring)
 	p.mu.Unlock()
-	p.emit(t, false)
+	p.emit(t, force)
+}
+
+// livenLocked records a sign of life in phase and reports whether the view
+// changed beyond the byte counts.
+func (t *Transfer) livenLocked(phase string) bool {
+	changed := t.phase != phase || t.note != "" || t.stalled
+	t.phase, t.note, t.stalled, t.alive = phase, "", false, time.Now()
+	return changed
+}
+
+// Phase starts a phase. Preparing counts its own bytes (Prep), so done
+// starts over there and again when the transfer itself begins.
+func (t *Transfer) Phase(phase string) {
+	p := t.pool
+	p.mu.Lock()
+	if phase == PPreparing || t.phase == PPreparing {
+		t.done = 0
+	}
+	if phase != PTransferring {
+		t.bps = 0
+	}
+	t.livenLocked(phase)
+	p.mu.Unlock()
+	p.emit(t, true)
+}
+
+// Prep adds n bytes read while preparing (no transfer rate).
+func (t *Transfer) Prep(n int) {
+	p := t.pool
+	p.mu.Lock()
+	t.done += int64(n)
+	force := t.livenLocked(PPreparing)
+	p.mu.Unlock()
+	p.emit(t, force)
+}
+
+// Span maps the request body sent next onto done: it covers n bytes from
+// base; last = the transfer is complete once it is sent.
+func (t *Transfer) Span(base, n int64, last bool) {
+	t.pool.mu.Lock()
+	t.base, t.span, t.last = base, n, last
+	t.pool.mu.Unlock()
+}
+
+// sent is the api.Observer's Sent: sent of total body bytes went out.
+func (t *Transfer) sent(sent, total int64) {
+	p := t.pool
+	p.mu.Lock()
+	base, span, last := t.base, t.span, t.last
+	p.mu.Unlock()
+	if total <= 0 {
+		return
+	}
+	t.At(base + span*sent/total)
+	if last && sent >= total {
+		t.Phase(PFinishing)
+	}
+}
+
+// Retrying shows why the transfer waits before another attempt; "" = the
+// wait is over and the request goes out again.
+func (t *Transfer) Retrying(note string) {
+	p := t.pool
+	p.mu.Lock()
+	if note == "" {
+		t.livenLocked(t.before)
+	} else {
+		if t.phase != PRetrying {
+			t.before = t.phase
+		}
+		t.livenLocked(PRetrying)
+		t.note, t.bps = note, 0
+	}
+	p.mu.Unlock()
+	p.emit(t, true)
+}
+
+// Observe makes the API requests sent with the returned context report
+// their upload progress and retries on t.
+func (t *Transfer) Observe(ctx context.Context) context.Context {
+	return api.WithObserver(ctx, &api.Observer{Sent: t.sent, Retry: func(why string, wait time.Duration) {
+		if why != "" {
+			why = fmt.Sprintf("%s; trying again in %s", why, wait.Round(time.Second))
+		}
+		t.Retrying(why)
+	}})
+}
+
+// Tick (once a second) says so on active transfers that show no sign of
+// life, and zeroes the speed of ones that stopped moving.
+func (p *Pool) Tick() {
+	p.mu.Lock()
+	var changed []*Transfer
+	for _, t := range p.all {
+		if t.state != TActive || t.phase == PRetrying {
+			continue
+		}
+		idle := time.Since(t.alive)
+		note, bps := "", t.bps
+		if idle >= 3*time.Second {
+			bps = 0
+		}
+		if idle >= noteAfter {
+			s := idle.Round(time.Second)
+			switch {
+			case t.held:
+				note = "Held back by the speed limit"
+			case t.phase == PPreparing:
+				note = fmt.Sprintf("Reading the file: no progress for %s", s)
+			case t.phase == PFinishing && t.dir == Up:
+				note = fmt.Sprintf("Sent; one.gy has not confirmed for %s", s)
+			case t.phase == PFinishing: // decrypting and checking a download is local work
+			default:
+				note = fmt.Sprintf("No data moved for %s", s)
+			}
+		}
+		stalled := note != "" && !t.held && idle >= stalledAfter
+		if note != t.note || bps != t.bps || stalled != t.stalled {
+			t.note, t.bps, t.stalled = note, bps, stalled
+			changed = append(changed, t)
+		}
+	}
+	p.mu.Unlock()
+	for _, t := range changed {
+		p.emit(t, true)
+	}
+}
+
+// Flow sums what the active transfers of a sync have moved so far and gives
+// the first note among them (why the sync is not getting on).
+func (p *Pool) Flow(syncID string) (moved int64, note string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	moved = p.settled[syncID]
+	for _, t := range p.all {
+		if t.syncID != syncID || (t.state != TActive && t.state != TPaused) {
+			continue
+		}
+		if t.phase == PTransferring || t.phase == PFinishing {
+			moved += min(t.done, t.size)
+		}
+		if note == "" && !t.held {
+			note = t.note
+		}
+	}
+	return moved, note
 }
 
 // SetDone resets the progress (a resumed transfer starts at its offset).
@@ -236,13 +435,18 @@ func (t *Transfer) Finish(err error) {
 	switch {
 	case err == nil:
 		t.state, t.done = TDone, t.size
+		if t.syncID != "" {
+			p.settled[t.syncID] += t.size
+		}
 	case t.cancelReq || errors.Is(err, ErrSuperseded) || errors.Is(err, context.Canceled):
 		t.state = TCancelled // cancelled, re-planned or interrupted (pause): not a failure
 	default:
 		t.state, t.err = TFailed, err.Error()
 	}
 	t.finished, t.bps = time.Now(), 0
+	t.phase, t.note, t.stalled = "", "", false
 	view := t.viewLocked()
+	p.forgetOldLocked()
 	p.mu.Unlock()
 	t.cancel()
 	p.cond.Broadcast()
@@ -264,8 +468,12 @@ func iso(tm time.Time) *string {
 }
 
 func (t *Transfer) viewLocked() TransferView {
-	v := TransferView{ID: t.id, Direction: t.dir, Path: t.path, Size: t.size, Done: t.done, Bps: t.bps, State: t.state,
-		StartedAt: iso(t.started), FinishedAt: iso(t.finished), Manual: t.manual}
+	v := TransferView{ID: t.id, Direction: t.dir, Path: t.path, Size: t.size, Done: max(min(t.done, t.size), 0), Bps: t.bps, State: t.state,
+		Phase: t.phase, Stalled: t.stalled, StartedAt: iso(t.started), FinishedAt: iso(t.finished), Manual: t.manual}
+	if t.note != "" {
+		n := t.note
+		v.Note = &n
+	}
 	if t.syncID != "" {
 		s := t.syncID
 		v.SyncID = &s
@@ -381,6 +589,36 @@ func (p *Pool) Cancel(id string) bool {
 		p.cond.Broadcast()
 	}
 	return ok
+}
+
+// Settle: the sync counted n bytes of a finished transfer off what it has
+// left (n < 0: it counted anew, nothing is outstanding).
+func (p *Pool) Settle(syncID string, n int64) {
+	p.mu.Lock()
+	if left := p.settled[syncID] - n; n < 0 || left <= 0 {
+		delete(p.settled, syncID)
+	} else {
+		p.settled[syncID] = left
+	}
+	p.mu.Unlock()
+}
+
+// forgetOldLocked keeps the newest keepFinished finished transfers (a long
+// run of small files would otherwise grow the list without end).
+func (p *Pool) forgetOldLocked() {
+	var fin []*Transfer
+	for _, t := range p.all {
+		if t.state == TDone || t.state == TFailed || t.state == TCancelled {
+			fin = append(fin, t)
+		}
+	}
+	if len(fin) < keepFinished+100 {
+		return
+	}
+	sort.Slice(fin, func(i, j int) bool { return fin[i].seq < fin[j].seq })
+	for _, t := range fin[:len(fin)-keepFinished] {
+		delete(p.all, t.id)
+	}
 }
 
 // ClearCompleted forgets finished transfers.

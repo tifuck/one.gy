@@ -55,6 +55,17 @@ func TestSyncMethods(t *testing.T) {
 		}
 		return false
 	})
+	// The upload told the app what it was doing on the way.
+	phases := map[string]bool{}
+	waitFor(t, "transfer events for every phase of the upload", func() bool {
+		for len(rc.events) > 0 {
+			if ev := <-rc.events; ev["type"] == "transfer" {
+				d := ev["data"].(map[string]any)
+				phases[d["phase"].(string)], phases[d["state"].(string)] = true, true
+			}
+		}
+		return phases["preparing"] && phases["transferring"] && phases["finishing"] && phases["done"]
+	})
 
 	srv.AddFile(&work, "b.txt", []byte("from the web"))
 	rc.ok("engine.nudge", nil)
@@ -123,7 +134,8 @@ func TestSyncMethods(t *testing.T) {
 	rc.ok("syncs.syncNow", map[string]any{"id": id})
 	waitFor(t, "metered pause", func() bool {
 		res, _ := rc.call("syncs.list", nil)
-		return res.([]any)[0].(map[string]any)["state"] == "paused"
+		s := res.([]any)[0].(map[string]any)
+		return s["state"] == "paused" && s["waiting"] == true && strings.Contains(s["detail"].(string), "metered")
 	})
 	_ = stateDir
 }

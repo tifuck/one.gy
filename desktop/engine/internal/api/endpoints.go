@@ -215,7 +215,7 @@ func (c *Client) Content(ctx context.Context, fileID string, w io.Writer, offset
 	if ifMatch != "" {
 		h.Set("If-Match", strconv.Quote(ifMatch))
 	}
-	resp, err := c.do(ctx, request{method: "GET", path: "/apiv1/sync/files/" + url.PathEscape(fileID) + "/content", header: h, idempotent: true})
+	resp, err := c.do(ctx, request{method: "GET", path: "/apiv1/sync/files/" + url.PathEscape(fileID) + "/content", header: h, idempotent: true, slow: true})
 	if err != nil {
 		return 0, err
 	}
@@ -309,7 +309,7 @@ func (c *Client) Versions(ctx context.Context, fileID string) (*Versions, error)
 func (c *Client) RestoreVersion(ctx context.Context, fileID, versionID string, body map[string]any) (*Node, error) {
 	var out Node
 	path := "/apiv1/sync/files/" + url.PathEscape(fileID) + "/versions/" + url.PathEscape(versionID) + "/restore"
-	_, err := c.jsonCall(ctx, request{method: "POST", path: path}, body, &out)
+	_, err := c.jsonCall(ctx, request{method: "POST", path: path, slow: true}, body, &out)
 	return &out, err
 }
 
@@ -373,7 +373,7 @@ func (c *Client) UploadSmall(ctx context.Context, fields UploadFields, content, 
 		return nil, false, err
 	}
 	raw, _, err := c.rawCall(ctx, request{method: "POST", path: "/apiv1/sync/files", body: buf.Bytes(),
-		contentType: mw.FormDataContentType(), idempotent: true})
+		contentType: mw.FormDataContentType(), idempotent: true, content: true})
 	if err != nil {
 		return nil, false, err
 	}
@@ -410,7 +410,7 @@ func (c *Client) PutPart(ctx context.Context, sessionID string, i int, data []by
 	sum := sha256.Sum256(data)
 	h := http.Header{"X-Content-Sha256": {hex.EncodeToString(sum[:])}}
 	_, err := c.jsonCall(ctx, request{method: "PUT", path: "/apiv1/sync/uploads/" + url.PathEscape(sessionID) + "/parts/" + strconv.Itoa(i),
-		body: data, contentType: "application/octet-stream", header: h, idempotent: true}, nil, nil)
+		body: data, contentType: "application/octet-stream", header: h, idempotent: true, content: true}, nil, nil)
 	return err
 }
 
@@ -428,7 +428,7 @@ func (c *Client) CompleteSession(ctx context.Context, sessionID, thumbB64, thumb
 	}
 	b, _ := json.Marshal(body)
 	raw, _, err := c.rawCall(ctx, request{method: "POST", path: "/apiv1/sync/uploads/" + url.PathEscape(sessionID) + "/complete",
-		body: b, contentType: "application/json", idempotent: true})
+		body: b, contentType: "application/json", idempotent: true, slow: true})
 	if err != nil {
 		return nil, false, err
 	}

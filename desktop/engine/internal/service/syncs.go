@@ -76,6 +76,9 @@ type syncInput struct {
 	RemotePath  json.RawMessage `json:"remote_path"`
 	State       json.RawMessage `json:"state"`
 	Paused      json.RawMessage `json:"paused"`
+	Detail      json.RawMessage `json:"detail"`
+	Waiting     json.RawMessage `json:"waiting"`
+	RetryAt     json.RawMessage `json:"retry_at"`
 	Stats       json.RawMessage `json:"stats"`
 	CreatedAt   json.RawMessage `json:"created_at"`
 }
@@ -87,14 +90,15 @@ type Sync struct {
 	RemotePath string    `json:"remote_path"`
 	State      string    `json:"state"`
 	Paused     bool      `json:"paused"`
+	Detail     string    `json:"detail"`   // why it waits or what it is busy with ("" = nothing to add)
+	Waiting    bool      `json:"waiting"`  // not getting on right now; detail says why
+	RetryAt    *string   `json:"retry_at"` // when a waiting sync tries again
 	Stats      SyncStats `json:"stats"`
 	CreatedAt  string    `json:"created_at"`
 }
 
 type SyncStats struct {
-	PendingUp    int    `json:"pending_up"`
-	PendingDown  int    `json:"pending_down"`
-	BytesLeft    int64  `json:"bytes_left"`
+	syncer.Stats
 	Issues       int    `json:"issues"`
 	LastSyncedAt string `json:"last_synced_at"`
 }
@@ -168,12 +172,24 @@ func (s *Service) toSync(ctx context.Context, r *state.SyncRow) Sync {
 	if r.Paused {
 		st = "paused"
 	}
-	stats := SyncStats{Issues: issues, LastSyncedAt: r.LastSyncedAt}
+	out := Sync{ID: r.ID, SyncConfig: c, RemotePath: r.RemotePath, State: st, Paused: r.Paused, CreatedAt: r.CreatedAt,
+		Stats: SyncStats{Issues: issues, LastSyncedAt: r.LastSyncedAt}}
 	if run := s.mgr.Runner(r.ID); run != nil {
-		rs := run.Stats()
-		stats.PendingUp, stats.PendingDown, stats.BytesLeft = rs.PendingUp, rs.PendingDown, rs.BytesLeft
+		out.Stats.Stats = run.Stats()
+		// Bytes of transfers under way count as soon as they have moved.
+		moved, note := s.pool.Flow(r.ID)
+		out.Stats.BytesLeft = max(out.Stats.BytesLeft-moved, 0)
+		detail, waiting, at := run.Detail()
+		if detail == "" {
+			detail, waiting = note, note != ""
+		}
+		out.Detail, out.Waiting = detail, waiting
+		if !at.IsZero() {
+			t := at.UTC().Format(time.RFC3339)
+			out.RetryAt = &t
+		}
 	}
-	return Sync{ID: r.ID, SyncConfig: c, RemotePath: r.RemotePath, State: st, Paused: r.Paused, Stats: stats, CreatedAt: r.CreatedAt}
+	return out
 }
 
 func (s *Service) syncsList(ctx context.Context, _ json.RawMessage) (any, error) {

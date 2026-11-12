@@ -83,7 +83,9 @@ func (t *Tree) IsStalled(rel string) bool {
 // Options for Run. RootRules, when set, replaces the root .onegyignore (the
 // preview of a sync that does not exist yet). DB/SyncID enable the hash
 // cache; without them every file is hashed. Windows hidden/system items are
-// excluded (Rules.Hide) unless IncludeHiddenSystem.
+// excluded (Rules.Hide) unless IncludeHiddenSystem. Progress, when set,
+// hears how many files were looked at and how many bytes of new or changed
+// ones were read so far (a first scan reads everything).
 type Options struct {
 	Root                string
 	FSKind              string
@@ -91,6 +93,7 @@ type Options struct {
 	DB                  *state.DB
 	SyncID              string
 	IncludeHiddenSystem bool
+	Progress            func(files int, read int64)
 }
 
 type scanner struct {
@@ -103,6 +106,14 @@ type scanner struct {
 	byFID   map[localfs.FileID]*state.LocalCacheRow
 	upserts []*state.LocalCacheRow
 	buf     []byte
+	files   int
+	read    int64
+}
+
+func (s *scanner) progress() {
+	if s.Progress != nil {
+		s.Progress(s.files, s.read)
+	}
 }
 
 // Run walks the root.
@@ -249,6 +260,8 @@ func (s *scanner) dir(rel string) error {
 // hash fills e.SHA256 from the cache or by reading the file. Only a context
 // cancellation is returned as an error.
 func (s *scanner) hash(rel string, e *Entry, in localfs.Info) error {
+	s.files++
+	s.progress()
 	same := func(c *state.LocalCacheRow) bool {
 		return c != nil && c.Size == e.Size && c.MtimeNs == e.MtimeNs && c.LocalFID == string(e.ID) && c.PlainSHA256 != ""
 	}
@@ -310,6 +323,8 @@ func (s *scanner) readHash(rel string, in localfs.Info) (string, error) {
 		k, err := f.Read(s.buf)
 		h.Write(s.buf[:k])
 		n += int64(k)
+		s.read += int64(k)
+		s.progress()
 		if err == io.EOF {
 			break
 		}

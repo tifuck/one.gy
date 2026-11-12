@@ -49,6 +49,7 @@ type Service struct {
 	mu         sync.Mutex
 	cfg        Settings
 	lastStatus map[string]any
+	lastSync   map[string]string // sync id -> what publishProgress last sent
 	stop       context.CancelFunc
 	ctx        context.Context
 	caps       *api.Capabilities
@@ -60,7 +61,7 @@ func New(ctx context.Context, opts Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{opts: opts, db: db, rpc: ipc.NewServer(), pool: exec.NewPool(), ctx: ctx}
+	s := &Service{opts: opts, db: db, rpc: ipc.NewServer(), pool: exec.NewPool(), ctx: ctx, lastSync: map[string]string{}}
 	if s.cfg, err = s.loadSettings(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -397,7 +398,27 @@ func (s *Service) publishStatus() {
 	}
 }
 
-// statusLoop keeps the status event current (at most once a second).
+// publishProgress keeps the app's picture of running work live: transfers
+// that stopped moving say so, and a sync whose numbers or reason changed
+// (items finished, bytes moved, waiting for something) sends a sync event.
+func (s *Service) publishProgress() {
+	s.pool.Tick()
+	s.mgr.Each(func(r *syncer.Runner) {
+		moved, note := s.pool.Flow(r.ID)
+		detail, _, at := r.Detail()
+		now := fmt.Sprint(r.State(), r.Stats(), moved, note, detail, at.Unix())
+		s.mu.Lock()
+		changed := s.lastSync[r.ID] != now
+		s.lastSync[r.ID] = now
+		s.mu.Unlock()
+		if changed {
+			s.syncChanged(r.ID)
+		}
+	})
+}
+
+// statusLoop keeps the status event and the progress of syncs and transfers
+// current (at most once a second).
 func (s *Service) statusLoop(ctx context.Context) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
@@ -406,6 +427,7 @@ func (s *Service) statusLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			s.publishProgress()
 			s.publishStatus()
 		}
 	}

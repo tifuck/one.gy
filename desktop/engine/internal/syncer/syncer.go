@@ -92,11 +92,15 @@ func parseConfig(raw string) Config {
 	return c
 }
 
-// Stats is the IPC Sync.stats part the runner knows.
+// Stats is the IPC Sync.stats part the runner knows: what is left (counted
+// down as transfers finish) and what this run of work started with, which
+// is what is left plus what finished since the sync last had nothing to do.
 type Stats struct {
 	PendingUp   int   `json:"pending_up"`
 	PendingDown int   `json:"pending_down"`
 	BytesLeft   int64 `json:"bytes_left"`
+	TotalItems  int   `json:"total_items"`
+	TotalBytes  int64 `json:"total_bytes"`
 }
 
 // Activity is one activity event / activity.recent entry.
@@ -126,6 +130,12 @@ type Runner struct {
 	mu         sync.Mutex
 	state      string
 	stats      Stats
+	doneItems  int // transfers finished since the sync last had nothing to do
+	doneBytes  int64
+	detail     string    // why the sync waits or what it is busy with ("" = nothing to add to the state)
+	busy       bool      // detail is progress, not a wait
+	retryAt    time.Time // when a waiting sync looks again
+	lastFail   string    // why the last op failed
 	env2       environment
 	retries    map[string]*retry
 	sticky     map[string]reconcile.Issue
@@ -208,11 +218,33 @@ func (r *Runner) setState(ctx context.Context, st string, synced bool) {
 	}
 }
 
+// Detail says why the sync waits (waiting) or what it is busy with, and
+// when a waiting sync tries again (zero = not at a set time).
+func (r *Runner) Detail() (detail string, waiting bool, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.detail, r.detail != "" && !r.busy, r.retryAt
+}
+
+// setDetail says why the sync waits ("" = it does not).
+func (r *Runner) setDetail(s string) {
+	r.mu.Lock()
+	r.detail, r.busy, r.retryAt = s, false, time.Time{}
+	r.mu.Unlock()
+}
+
+// setBusy says what the sync is working on when no transfer shows it.
+func (r *Runner) setBusy(s string) {
+	r.mu.Lock()
+	r.detail, r.busy, r.retryAt = s, true, time.Time{}
+	r.mu.Unlock()
+}
+
 // pausedBy reports whether the sync must not run now (paused, or the
-// metered/battery policy says pause).
-func (r *Runner) pausedBy(row *state.SyncRow, cfg Config) bool {
+// metered/battery policy says pause) and, when it was not the user, why.
+func (r *Runner) pausedBy(row *state.SyncRow, cfg Config) (bool, string) {
 	if row.Paused {
-		return true
+		return true, ""
 	}
 	set := r.env.Settings()
 	r.mu.Lock()
@@ -224,7 +256,13 @@ func (r *Runner) pausedBy(row *state.SyncRow, cfg Config) bool {
 		}
 		return own
 	}
-	return (e.metered && pol(cfg.Metered, set.Metered) == "pause") || (e.battery && pol(cfg.Battery, set.Battery) == "pause")
+	switch {
+	case e.metered && pol(cfg.Metered, set.Metered) == "pause":
+		return true, "Waiting: this connection is metered"
+	case e.battery && pol(cfg.Battery, set.Battery) == "pause":
+		return true, "Waiting: this computer runs on battery"
+	}
+	return false, ""
 }
 
 // Pass runs the sync to convergence (or until it has to wait).
@@ -238,16 +276,19 @@ func (r *Runner) Pass(ctx context.Context) error {
 		return ErrGone
 	}
 	cfg := parseConfig(row.Config)
-	if r.pausedBy(row, cfg) {
+	if paused, why := r.pausedBy(row, cfg); paused {
+		r.setDetail(why)
 		r.setState(ctx, "paused", false)
 		return nil
 	}
 	// Keys closed (not set up, strict start, offline after a restart): wait.
 	// A locked app still syncs with the key tree, so only the client counts.
 	if _, err := r.env.Exec.Acct.Client(); err != nil {
+		r.setDetail("Waiting for ONE.GY Desktop to be unlocked")
 		r.setState(ctx, "paused", false)
 		return nil
 	}
+	r.setDetail("")
 	if !MarkerMatches(row.LocalRoot, row.ID) {
 		r.setState(ctx, "root_missing", false)
 		r.syncIssues(ctx, []reconcile.Issue{{Kind: "root_missing", Message: "The local folder is missing or was replaced. Nothing is synced until it is back.",
@@ -285,11 +326,14 @@ func (r *Runner) offline(ctx context.Context, row *state.SyncRow, err error) err
 	case errors.Is(err, exec.ErrCrashed):
 		return err
 	case errors.Is(err, api.ErrOffline):
+		r.setDetail("Cannot reach one.gy (" + err.Error() + "); trying again within 30 s")
 		r.setState(context.Background(), "offline", false)
 	case ctx.Err() != nil:
+		r.setDetail("") // paused or shutting down
 		return ctx.Err()
 	default:
 		slog.Error("sync pass failed", "sync_id", r.ID, "err", redact(err, row.LocalRoot, ""))
+		r.setDetail("Syncing failed (" + err.Error() + "); trying again within 30 s")
 		r.setState(context.Background(), "error", false)
 	}
 	return err
@@ -325,7 +369,13 @@ func (r *Runner) rounds(ctx context.Context, row *state.SyncRow, cfg Config, x *
 			slog.Debug("plan", "sync_id", r.ID, "round", round, "ops", signature(plan.Ops), "issues", len(issues))
 		}
 		uncross(in, plan.Ops)
-		run := r.runnable(plan.Ops)
+		run, waiting := r.runnable(plan.Ops)
+		r.mu.Lock()
+		r.detail, r.busy, r.retryAt = "", false, time.Time{}
+		if len(run) == 0 {
+			r.detail, r.retryAt = waiting, r.nextRun
+		}
+		r.mu.Unlock()
 		if len(run) == 0 {
 			if len(plan.Ops) == 0 {
 				r.clearMassDecisions()
@@ -385,6 +435,7 @@ func (r *Runner) stall(ctx context.Context, issues []reconcile.Issue) {
 		Actions: []string{"retry"}}
 	r.mu.Lock()
 	r.sticky["sync_error|"] = is
+	r.detail, r.busy, r.retryAt = "The same changes keep failing to apply; see Issues", false, time.Time{}
 	r.mu.Unlock()
 	r.syncIssues(ctx, append(issues, is))
 	r.setState(ctx, "stalled", false)
@@ -411,18 +462,43 @@ func (r *Runner) setStats(ops []reconcile.Op) {
 		}
 	}
 	r.mu.Lock()
+	if st.PendingUp+st.PendingDown == 0 {
+		r.doneItems, r.doneBytes, r.lastFail = 0, 0, ""
+	}
+	st.TotalItems, st.TotalBytes = r.doneItems+st.PendingUp+st.PendingDown, r.doneBytes+st.BytesLeft
 	changed := st != r.stats
 	r.stats = st
+	r.env.Exec.Pool.Settle(r.ID, -1)
 	r.mu.Unlock()
 	if changed && r.env.Events.Sync != nil {
 		r.env.Events.Sync(r.ID)
 	}
 }
 
+// transferred counts a finished transfer off what is left (the service
+// publishes the new numbers within a second).
+func (r *Runner) transferred(o reconcile.Op) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch o.Kind {
+	case reconcile.Upload:
+		r.stats.PendingUp = max(r.stats.PendingUp-1, 0)
+	case reconcile.Download, reconcile.VerifyLink:
+		r.stats.PendingDown = max(r.stats.PendingDown-1, 0)
+	default:
+		return
+	}
+	r.stats.BytesLeft = max(r.stats.BytesLeft-o.Size, 0)
+	r.doneItems++
+	r.doneBytes += o.Size
+	r.env.Exec.Pool.Settle(r.ID, o.Size)
+}
+
 // runnable drops ops that must wait: uploads of files still being written
 // (quiet period), paths in retry backoff, uploads while the quota is full and
-// downloads while the disk is full. nextRun records when to look again.
-func (r *Runner) runnable(ops []reconcile.Op) []reconcile.Op {
+// downloads while the disk is full. nextRun records when to look again and
+// waiting says what the dropped ops wait for.
+func (r *Runner) runnable(ops []reconcile.Op) (run []reconcile.Op, waiting string) {
 	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -433,33 +509,50 @@ func (r *Runner) runnable(ops []reconcile.Op) []reconcile.Op {
 		}
 	}
 	var out []reconcile.Op
+	var retrying, full, noSpace, changing int
 	for _, o := range ops {
 		if rt := r.retries[retryKey(o)]; rt != nil && now.Before(rt.until) {
 			later(rt.until)
+			retrying++
 			continue
 		}
 		switch o.Kind {
 		case reconcile.Upload, reconcile.CreateRemoteDir:
 			if now.Before(r.holdUp) {
 				later(r.holdUp)
+				full++
 				continue
 			}
 		case reconcile.Download, reconcile.VerifyLink:
 			if now.Before(r.holdDown) {
 				later(r.holdDown)
+				noSpace++
 				continue
 			}
 		}
 		if o.Kind == reconcile.Upload && o.Local != nil {
 			if ready := time.Unix(0, o.Local.MtimeNs).Add(r.QuietPeriod(o.Size)); now.Before(ready) {
 				later(ready)
+				changing++
 				continue
 			}
 		}
 		out = append(out, o)
 	}
 	r.nextRun = next
-	return out
+	switch {
+	case full > 0:
+		waiting = "Your one.gy storage is full; uploads wait"
+	case noSpace > 0:
+		waiting = "This drive is full; downloads wait"
+	case retrying > 0 && r.lastFail != "":
+		waiting = fmt.Sprintf("%d of the changes failed and wait for another try: %s", retrying, r.lastFail)
+	case retrying > 0:
+		waiting = fmt.Sprintf("%d of the changes failed and wait for another try", retrying)
+	case changing > 0:
+		waiting = fmt.Sprintf("Waiting for %d files to stop changing", changing)
+	}
+	return out, waiting
 }
 
 func retryKey(o reconcile.Op) string { return string(o.Kind) + "|" + o.Path }
@@ -480,19 +573,24 @@ func (r *Runner) execute(ctx context.Context, x *exec.Executor, ops []reconcile.
 		}
 	}
 	breakSwap(structural, root, caseSensitive)
-	for _, o := range structural {
+	// These run one after the other with no transfer to watch: say how far they are.
+	for i, o := range structural {
+		r.setBusy(fmt.Sprintf("Creating and moving folders and files (%d of %d)", i+1, len(structural)))
 		if err := r.one(ctx, x, o); err != nil {
 			return err
 		}
 	}
+	r.setDetail("")
 	if err := r.parallel(ctx, x, content); err != nil {
 		return err
 	}
-	for _, o := range deletes {
+	for i, o := range deletes {
+		r.setBusy(fmt.Sprintf("Removing deleted items (%d of %d)", i+1, len(deletes)))
 		if err := r.one(ctx, x, o); err != nil {
 			return err
 		}
 	}
+	r.setDetail("")
 	return nil
 }
 
@@ -624,9 +722,11 @@ func (r *Runner) one(ctx context.Context, x *exec.Executor, o reconcile.Op) erro
 	var ie *exec.IssueError
 	switch {
 	case err == nil:
+		r.transferred(o)
 		r.done(o)
 	case errors.Is(err, exec.ErrSuperseded):
 	case errors.Is(err, account.ErrNeedsUnlock):
+		r.failed("ONE.GY Desktop is locked")
 		r.backoff(o, false) // waits for the app to be unlocked; not an issue
 	case errors.Is(err, exec.ErrRemoteCycle):
 		return r.undoLocalMove(ctx, x, o)
@@ -645,10 +745,12 @@ func (r *Runner) one(ctx context.Context, x *exec.Executor, o reconcile.Op) erro
 		case "disk_full":
 			r.holdDown = time.Now().Add(5 * time.Minute)
 		}
+		r.lastFail = ie.Message
 		r.mu.Unlock()
 		r.backoff(o, false)
 	default:
 		slog.Warn("op failed", "sync_id", r.ID, "kind", o.Kind, "path", logx.Name(o.Path), "err", redact(err, x.Root(), o.Path))
+		r.failed(err.Error())
 		if r.backoff(o, true) {
 			r.mu.Lock()
 			r.sticky["sync_error|"+o.Path] = reconcile.Issue{Kind: "sync_error", Path: o.Path, Message: "This keeps failing: " + err.Error(), Actions: []string{"retry", "ignore"}}
@@ -656,6 +758,12 @@ func (r *Runner) one(ctx context.Context, x *exec.Executor, o reconcile.Op) erro
 		}
 	}
 	return nil
+}
+
+func (r *Runner) failed(why string) {
+	r.mu.Lock()
+	r.lastFail = why
+	r.mu.Unlock()
 }
 
 // undoLocalMove answers crossed folder moves (moved into each other on the
@@ -743,7 +851,7 @@ func (r *Runner) clearMassDecisions() {
 func (r *Runner) input(ctx context.Context, row *state.SyncRow, cfg Config) (*reconcile.Input, error) {
 	db := r.env.Exec.DB
 	tree, err := scan.Run(ctx, scan.Options{Root: row.LocalRoot, FSKind: row.FSKind, DB: db, SyncID: row.ID,
-		IncludeHiddenSystem: cfg.IncludeHiddenSystem})
+		IncludeHiddenSystem: cfg.IncludeHiddenSystem, Progress: r.scanned})
 	if err != nil {
 		return nil, err
 	}
@@ -771,6 +879,19 @@ func (r *Runner) input(ctx context.Context, row *state.SyncRow, cfg Config) (*re
 		PropagateDeletes: cfg.PropagateDeletes, Versioning: caps.Versioning, KeepExecBit: cfg.KeepExecBit, MassDeleteCount: set.MassDeleteCount,
 		MassDeletePercent: set.MassDeletePercent, MassDeleteLocal: ml, MassDeleteRemote: mr, CaseSensitive: row.CaseSensitive,
 		FSKind: row.FSKind, Device: name, Now: time.Now(), Initial: cfg.Initial}, Local: tree, Remote: *rem, Base: base}, nil
+}
+
+// scanned shows how far the scan is: reading every new or changed file
+// takes a while on a large folder, and there is no transfer to watch yet.
+func (r *Runner) scanned(files int, read int64) {
+	s := fmt.Sprintf("Checked %d files", files)
+	if read >= 1<<20 {
+		s += fmt.Sprintf(", read %.1f GB of new and changed ones", float64(read)/1e9)
+		if read < 1e9 {
+			s = fmt.Sprintf("Checked %d files, read %d MB of new and changed ones", files, read/1e6)
+		}
+	}
+	r.setBusy(s)
 }
 
 func (r *Runner) deviceID() string {

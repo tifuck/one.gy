@@ -51,6 +51,36 @@ export function percent(done, total) {
   return Math.min(100, Math.max(0, (done / total) * 100));
 }
 
+// What a transfer that has not finished is doing (engine-ipc.md "Transfer"):
+// its phase and numbers, plus the engine's note when it waits or stopped moving.
+export function transferStatus(t) {
+  if (t.state === 'queued') return `Queued · ${bytes(t.size)}`;
+  if (t.state === 'paused') return `Paused · ${bytes(t.done)} of ${bytes(t.size)}`;
+  if (t.phase === 'retrying') return t.note || 'Trying again';
+  let parts = [`${bytes(t.done)} of ${bytes(t.size)}`, speed(t.bps), eta(t) ? `${eta(t)} left` : ''];
+  if (t.phase === 'preparing') parts = [`Preparing · ${bytes(t.done)} of ${bytes(t.size)}`];
+  if (t.phase === 'finishing') parts = [t.direction === 'up' ? 'Saving on one.gy' : 'Checking the download'];
+  return [...parts, t.note].filter(Boolean).join(' · ');
+}
+
+// The transfer waits for another try or shows no sign of life.
+export const transferWaits = (t) => Boolean(t.stalled || t.phase === 'retrying');
+
+// How far a sync's current run of work is, 0-100, or null when the engine
+// gave no total: by bytes, or by items when the work has no bytes (empty files).
+export function syncPercent(s) {
+  const st = s.stats || {};
+  const left = (st.pending_up || 0) + (st.pending_down || 0);
+  if (st.total_bytes > 0) return percent(st.total_bytes - (st.bytes_left || 0), st.total_bytes);
+  if (st.total_items > 0) return percent(st.total_items - left, st.total_items);
+  return null;
+}
+
+export const clockTime = (iso) => {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? new Date(t).toLocaleTimeString() : '';
+};
+
 export const basename = (p) => String(p || '').split(/[\\/]/).filter(Boolean).pop() || String(p || '');
 
 export const SYNC_TYPES = {

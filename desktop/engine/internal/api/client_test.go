@@ -334,3 +334,49 @@ func TestUploads(t *testing.T) {
 }
 
 func ptr(v int64) *int64 { return &v }
+
+// An upload reports its body as it goes out (with a real Content-Length), and
+// a server that stops answering ends the attempt instead of hanging it.
+func TestUploadProgressAndStall(t *testing.T) {
+	part := bytes.Repeat([]byte("x"), 300<<10)
+	hang := make(chan struct{})
+	c, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/parts/1") {
+			select {
+			case <-hang:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		if r.ContentLength != int64(len(part)) || !bytes.Equal(b, part) {
+			t.Errorf("part arrived as %d bytes, Content-Length %d", len(b), r.ContentLength)
+		}
+		w.Write([]byte(`{}`))
+	})
+	t.Cleanup(func() { close(hang) }) // before the server's Close, which waits for its handlers
+	c.stall = 150 * time.Millisecond
+	var sent []int64
+	var whys []string
+	ctx := WithObserver(context.Background(), &Observer{
+		Sent:  func(n, total int64) { sent = append(sent, n*100/total) },
+		Retry: func(why string, _ time.Duration) { whys = append(whys, why) },
+	})
+	if err := c.PutPart(ctx, "s1", 0, part); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) < 3 || sent[0] != 0 || sent[len(sent)-1] != 100 {
+		t.Fatalf("progress %v, want 0 .. 100 in steps", sent)
+	}
+	start := time.Now()
+	err := c.PutPart(ctx, "s1", 1, part)
+	if !errors.Is(err, ErrOffline) || !strings.Contains(err.Error(), errStalled.Error()) {
+		t.Fatalf("stalled request: %v", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("stall took %v to notice", time.Since(start))
+	}
+	if len(whys) != 6 || whys[0] != "one.gy stopped responding" || whys[1] != "" {
+		t.Fatalf("retry reasons %q", whys)
+	}
+}

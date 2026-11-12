@@ -248,7 +248,8 @@ func (m *Manager) Runner(id string) *Runner {
 	return nil
 }
 
-func (m *Manager) each(fn func(*Runner)) {
+// Each calls fn for every runner.
+func (m *Manager) Each(fn func(*Runner)) {
 	m.mu.Lock()
 	var rs []*Runner
 	for _, h := range m.runners {
@@ -262,7 +263,7 @@ func (m *Manager) each(fn func(*Runner)) {
 
 // Wake asks every runner (id "") or one runner for a pass.
 func (m *Manager) Wake(id string) {
-	m.each(func(r *Runner) {
+	m.Each(func(r *Runner) {
 		if id == "" || r.ID == id {
 			r.Wake()
 		}
@@ -271,7 +272,7 @@ func (m *Manager) Wake(id string) {
 
 // Interrupt cancels the running pass of a sync (id "" = all), e.g. on pause.
 func (m *Manager) Interrupt(id string) {
-	m.each(func(r *Runner) {
+	m.Each(func(r *Runner) {
 		if id == "" || r.ID == id {
 			r.Interrupt()
 		}
@@ -283,7 +284,7 @@ func (m *Manager) SetEnvironment(battery, metered bool) {
 	m.mu.Lock()
 	m.envNow = environment{battery, metered}
 	m.mu.Unlock()
-	m.each(func(r *Runner) {
+	m.Each(func(r *Runner) {
 		r.SetEnvironment(battery, metered)
 		r.Interrupt()
 		r.Wake()
@@ -292,7 +293,7 @@ func (m *Manager) SetEnvironment(battery, metered bool) {
 
 // Busy sums pending transfers and reports whether any sync is working.
 func (m *Manager) Busy() (pending int, syncing bool) {
-	m.each(func(r *Runner) {
+	m.Each(func(r *Runner) {
 		st := r.Stats()
 		pending += st.PendingUp + st.PendingDown
 		s := r.State()

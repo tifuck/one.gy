@@ -53,7 +53,7 @@ func (x *Executor) downloadSteps(ctx context.Context, j *job, t *Transfer) error
 		if o.Kind == reconcile.VerifyLink {
 			plain = ""
 		}
-		got, err := x.fetch(ctx, n, x.tmpPath(j.row.ID, ".enc"), plain, t)
+		got, err := x.fetch(t.Observe(ctx), n, x.tmpPath(j.row.ID, ".enc"), plain, t)
 		if err != nil {
 			return err
 		}
@@ -206,6 +206,7 @@ func (x *Executor) fetch(ctx context.Context, n *state.RemoteNode, encPath, plai
 		if err := x.fetchCipher(ctx, c, n, encPath, t); err != nil {
 			return nil, err
 		}
+		t.Phase(PFinishing)
 		ef, err := os.Open(encPath)
 		if err != nil {
 			return nil, err
@@ -231,6 +232,7 @@ func (x *Executor) fetch(ctx context.Context, n *state.RemoteNode, encPath, plai
 		if got != n.CipherSize {
 			return nil, fmt.Errorf("download incomplete (%d of %d bytes)", got, n.CipherSize)
 		}
+		t.Phase(PFinishing)
 	}
 	if pf != nil {
 		if err := pf.Sync(); err != nil {

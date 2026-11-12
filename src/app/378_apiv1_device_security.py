@@ -313,7 +313,10 @@ def _tree_scope_allows(folder_id):
 
 @app.route('/apiv1/sync/tree-keys', methods=['POST'])
 @csrf.exempt
-@limiter.limit("120 per minute")
+# The engine calls this once per file and folder it creates, so the limit sits
+# above uploads (1000/min) plus folder creates (600/min): at 120 a first sync
+# of many small files stopped for the rest of every minute.
+@limiter.limit("2000 per minute")
 @device_auth_required
 def apiv1_sync_tree_keys():
     """Store key-tree wraps (sync-api.md "Key tree"). Key material only: no name,

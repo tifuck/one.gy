@@ -50,10 +50,24 @@ application error. Clients branch on `data.code`, not on the number.
  "metered": "inherit", "battery": "inherit",
  "keep_exec_bit": true, "thumbnails": true, "include_hidden_system": false,
  "state": "syncing", "paused": false,
+ "detail": "", "waiting": false, "retry_at": null,
  "stats": {"pending_up": 3, "pending_down": 0, "bytes_left": 1048576,
+           "total_items": 12, "total_bytes": 9437184,
            "issues": 1, "last_synced_at": "2026-11-08T14:32:00Z"},
  "created_at": "…"}
 ```
+- `stats.pending_*` / `bytes_left`: what is left, counted down while the work
+  runs (`bytes_left` includes the bytes transfers under way have moved).
+  `total_*`: what this run of work covers (left + finished since the sync last
+  had nothing to do; 0 when idle), so `1 - bytes_left / total_bytes` is how far
+  it is.
+- `detail`: one sentence on why the sync is not getting on (`waiting: true`:
+  failed changes waiting for another try with the last error, files still
+  changing, storage or disk full, offline with the cause, keys locked, metered
+  or battery policy, a transfer that waits or stopped moving) or on what it is
+  busy with when no transfer shows it (`waiting: false`: folders, moves,
+  deletes, `n of m`). `""` = nothing to add to `state`. `retry_at`: when a
+  waiting sync looks again (null = not at a set time).
 - `type`: `two_way` | `backup` | `mirror` (download only) | `archive` (upload, no deletes) | `full` (two-way on drive root).
 - `encryption`: `e2ee` | `standard`. Fixed after create.
 - `conflict_policy`: `keep_both` | `prefer_remote` | `prefer_local` | `ask`.
@@ -70,11 +84,22 @@ application error. Clients branch on `data.code`, not on the number.
 ```json
 {"id": "t_91", "sync_id": "s_8f2c|null", "direction": "up", "path": "reports/q3.pdf",
  "size": 104857600, "done": 52428800, "bps": 4194304, "state": "active",
+ "phase": "transferring", "note": null, "stalled": false,
  "error": null, "started_at": "…", "finished_at": null, "manual": false}
 ```
 `state`: `queued` | `active` | `paused` | `done` | `failed` | `cancelled`.
 `cancelled` also covers sync transfers dropped because the plan changed or the
 sync was paused (they are re-planned); `error` is set only for `failed`.
+`phase` (while `active`, else `""`): `preparing` (the local file is read,
+hashed and encrypted; `done` counts those bytes and starts over when the
+transfer begins) | `transferring` (`done` follows the bytes on the wire, also
+inside one request) | `finishing` (upload sent and one.gy saves it; download
+received and checked) | `retrying` (waits before another attempt).
+`note`: why it waits (`retrying`: rate limited, server busy, connection
+problem, no answer, with the delay) or that nothing moved for how long (after
+10 s; the engine gives a request up after 2 minutes without a byte, 30 for
+answers the server works on long). `stalled`: no sign of life for 30 s.
+The engine keeps the last 500 finished transfers.
 
 **Issue**
 ```json
@@ -224,8 +249,8 @@ Notifications from the engine: `{"jsonrpc": "2.0", "method": "event", "params": 
 | type | data |
 |---|---|
 | `status` | `{"state": "up_to_date|syncing|paused|offline|issues|locked|signed_out", "pending": n, "bps_up", "bps_down"}` (overall, ≤1/s) |
-| `sync` | `Sync` (on any change) |
-| `transfer` | `Transfer` (throttled ≤4/s per transfer) |
+| `sync` | `Sync` (on any change; progress and `detail` ≤1/s) |
+| `transfer` | `Transfer` (throttled ≤4/s per transfer; phase, note and state changes at once) |
 | `issue` | `Issue` (new or resolved; resolved has `"resolved": true`) |
 | `activity` | `{"at","sync_id","action","path"}` |
 | `notify` | `{"title","body","kind": "conflict|issue|mass_delete|transfer|revoked|info"}` (conflicts and issues at most every 30 s per sync) |

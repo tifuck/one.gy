@@ -96,6 +96,8 @@ body.rd-app{ background:transparent; }
 .dk-sync-arrow svg{ width:14px; height:14px; color:var(--text-faint); }
 .dk-sync-meta{ display:flex; gap:12px; font-size:.76rem; color:var(--text-faint); }
 .ui-v2 .dk-sync-meter{ max-width:360px; margin:2px 0; }
+.dk-sync-detail{ font-size:.78rem; color:var(--text-dim); overflow-wrap:anywhere; }
+.dk-sync-detail.is-warn{ color:var(--warn); }
 .dk-sync-actions{ display:flex; gap:2px; flex:none; }
 .ui-v2 .rd-meter.is-busy .rd-meter-fill{ width:30%; animation:dkbusy 1.4s ease-in-out infinite; }
 @keyframes dkbusy{ from{ transform:translateX(-100%); } to{ transform:translateX(340%); } }
@@ -119,6 +121,7 @@ body.rd-app{ background:transparent; }
 .ui-v2 .dk-tr-meter{ margin:6px 0 2px 23px; max-width:420px; }
 .dk-tr-detail{ white-space:nowrap; color:var(--text-dim); font-size:.8rem; }
 .dk-tr-error{ color:var(--bad); white-space:normal; }
+.dk-tr-warn{ color:var(--warn); white-space:normal; }
 
 /* ---- Issues ----------------------------------------------------------------------------------------- */
 .dk-banner{ align-items:center; margin-bottom:16px; }

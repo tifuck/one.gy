@@ -6,7 +6,7 @@
 import { h, icon, fill } from './components/dom.js';
 import { openMenu } from './components/menu.js';
 import {
-  bytes, speed, eta, percent, basename, ago, count, SYNC_TYPES, SYNC_STATES,
+  bytes, speed, percent, basename, ago, count, transferStatus, transferWaits, syncPercent, SYNC_TYPES, SYNC_STATES,
 } from './components/format.js';
 import {
   api, store, on, handleEvent, refreshAll,
@@ -109,6 +109,7 @@ function renderIssues() {
 function stateOf(s) {
   if (s.paused) return SYNC_STATES.paused;
   if (store.account && store.account.locked) return { label: 'Locked', tone: 'warn' };
+  if (s.waiting && s.state === 'syncing') return { label: 'Waiting', tone: 'warn' };
   return SYNC_STATES[s.state] || { label: s.state, tone: '' };
 }
 
@@ -119,6 +120,8 @@ function syncSub(s) {
   if (st.pending_up) parts.push(`↑ ${count(st.pending_up)}`);
   if (st.pending_down) parts.push(`↓ ${count(st.pending_down)}`);
   if (st.bytes_left) parts.push(`${bytes(st.bytes_left)} left`);
+  if (parts.length && syncPercent(s) !== null) parts.push(`${Math.floor(syncPercent(s))}%`);
+  if (s.waiting && s.detail && !s.paused) parts.push(s.detail);
   if (!parts.length && s.state === 'up_to_date') parts.push(st.last_synced_at ? ago(st.last_synced_at) : 'not synced yet');
   return [
     h('span', { class: `tp-tone${state.tone ? ` is-${state.tone}` : ''}` }, state.label),
@@ -137,7 +140,7 @@ function renderSyncs() {
     },
     icon((SYNC_TYPES[s.type] || SYNC_TYPES.two_way).icon, 'tp-sync-icon'),
     h('span', { class: 'tp-sync-name' }, s.name),
-    h('span', { class: 'tp-sync-sub' }, syncSub(s))),
+    h('span', { class: 'tp-sync-sub', title: (!s.paused && s.detail) || null }, syncSub(s))),
     h('button', {
       type: 'button', class: 'rd-icon-btn tp-sync-folder', dataset: { key: `folder:${s.id}` }, 'aria-label': `Open the ${s.name} folder`, title: 'Open folder',
       onclick: () => tray.action('folder', s.id),
@@ -150,13 +153,13 @@ function renderSyncs() {
 function liveRow(t) {
   const bar = h('div', { class: 'rd-meter-fill' });
   bar.style.width = `${percent(t.done, t.size)}%`;
-  const left = eta(t);
+  const status = transferStatus(t);
   return h('li', { class: 'tp-tr' },
     icon(t.direction === 'up' ? 'upload' : 'download', `tp-tr-icon is-${t.direction}`),
     h('span', { class: 'tp-tr-name', title: t.path }, basename(t.path)),
     h('span', { class: 'tp-tr-meta' }, t.state === 'paused' ? 'Paused' : `${Math.floor(percent(t.done, t.size))}%`),
     h('div', { class: 'rd-meter tp-tr-meter' }, bar),
-    h('span', { class: 'tp-tr-sub' }, [`${bytes(t.done)} of ${bytes(t.size)}`, t.bps > 0 ? speed(t.bps) : '', left ? `${left} left` : ''].filter(Boolean).join(' · ')));
+    h('span', { class: `tp-tr-sub${transferWaits(t) ? ' is-warn' : ''}`, title: status }, status));
 }
 
 function doneRow(t) {

@@ -37,13 +37,13 @@
       encryption: 'e2ee', hide_extensions: false, conflict_policy: 'keep_both', issue_mode: 'smart',
       propagate_deletes: true, debris_days: 30, schedule: { mode: 'live', interval_minutes: 15, window: null },
       limits: { upload_kbps: 0, download_kbps: 0 }, metered: 'inherit', battery: 'inherit',
-      keep_exec_bit: true, include_hidden_system: false, thumbnails: true, paused: false, created_at: iso(86400000 * 20),
+      keep_exec_bit: true, include_hidden_system: false, thumbnails: true, paused: false, detail: '', waiting: false, retry_at: null, created_at: iso(86400000 * 20),
     };
     const syncs = new Map();
     const addSync = (s) => syncs.set(s.id, Object.assign({}, baseSync, s));
     if (o.signedIn && !o.empty) {
       addSync({ id: 's_work', name: 'Work', type: 'two_way', local_path: local('Work'), remote_folder_id: 12, remote_path: '/Work', state: 'syncing',
-        stats: { pending_up: 3, pending_down: 1, bytes_left: 158334976, issues: 2, last_synced_at: iso(60000) } });
+        stats: { pending_up: 3, pending_down: 1, bytes_left: 158334976, total_items: 9, total_bytes: 412334976, issues: 2, last_synced_at: iso(60000) } });
       addSync({ id: 's_photos', name: 'Photos', type: 'backup', local_path: local('Pictures'), remote_folder_id: 21, remote_path: '/Backups/alice-laptop/Pictures', state: 'up_to_date',
         stats: { pending_up: 0, pending_down: 0, bytes_left: 0, issues: 0, last_synced_at: iso(240000) } });
       addSync({ id: 's_music', name: 'Music', type: 'mirror', encryption: 'standard', local_path: local('Music'), remote_folder_id: 30, remote_path: '/Music', state: 'paused', paused: true,
@@ -51,7 +51,9 @@
     }
 
     const transfers = new Map();
-    const addTransfer = (t) => transfers.set(t.id, Object.assign({ error: null, finished_at: null, manual: false, started_at: iso(30000) }, t));
+    const addTransfer = (t) => transfers.set(t.id, Object.assign({
+      error: null, finished_at: null, manual: false, started_at: iso(30000), phase: t.state === 'active' ? 'transferring' : '', note: null, stalled: false,
+    }, t));
     if (o.signedIn) {
       addTransfer({ id: 't_1', sync_id: 's_work', direction: 'up', path: 'reports/q3-final.pdf', size: 104857600, done: 52428800, bps: 4194304, state: 'active' });
       addTransfer({ id: 't_2', sync_id: 's_work', direction: 'down', path: 'design/mockups/home.fig', size: 48234496, done: 9437184, bps: 2097152, state: 'active' });
@@ -398,6 +400,7 @@
         t.done = Math.min(t.size, t.done + t.bps);
         if (t.done >= t.size) {
           t.state = 'done';
+          t.phase = '';
           t.bps = 0;
           t.finished_at = iso(0);
           emit('activity', { at: t.finished_at, sync_id: t.sync_id, action: t.direction === 'up' ? 'Uploaded' : 'Downloaded', path: t.path });
@@ -411,6 +414,7 @@
         if (activeCount >= 2) break;
         if (t.state === 'queued') {
           t.state = 'active';
+          t.phase = 'transferring';
           t.bps = 3145728;
           activeCount++;
           emit('transfer', t);

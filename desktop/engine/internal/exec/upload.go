@@ -59,11 +59,12 @@ func (x *Executor) uploadSteps(ctx context.Context, j *job, t *Transfer) error {
 	if err := t.Start(ctx); err != nil {
 		return err
 	}
+	ctx = t.Observe(ctx)
 	o := j.rec.Op
 	for restarts := 0; ; restarts++ {
 		if j.row.State == state.OpPlanned {
 			src := sourceFile{abs: x.abs(o.Path), expect: o.Local, fsKind: x.s.FSKind}
-			up, err := x.prepareUpload(ctx, j.rec, src, x.spoolDir(j.row.ID))
+			up, err := x.prepareUpload(ctx, j.rec, src, x.spoolDir(j.row.ID), t)
 			if err != nil {
 				return err
 			}
@@ -149,8 +150,9 @@ type sourceFile struct {
 }
 
 // prepareUpload resolves the target, spools the encrypted snapshot and
-// builds the request fields.
-func (x *Executor) prepareUpload(ctx context.Context, rec *record, src sourceFile, dir string) (*upState, error) {
+// builds the request fields (t shows it as the preparing phase).
+func (x *Executor) prepareUpload(ctx context.Context, rec *record, src sourceFile, dir string, t *Transfer) (*upState, error) {
+	t.Phase(PPreparing)
 	o := rec.Op
 	up := &upState{Mode: x.s.Encryption, Fields: map[string]string{}}
 	var key []byte
@@ -195,7 +197,7 @@ func (x *Executor) prepareUpload(ctx context.Context, rec *record, src sourceFil
 	if err != nil {
 		return nil, err
 	}
-	if err := x.spool(ctx, src, key, caps.ChunkSize, dir, up); err != nil {
+	if err := x.spool(ctx, src, key, caps.ChunkSize, dir, up, t.Prep); err != nil {
 		return nil, err
 	}
 	if up.Mode == "e2ee" {
@@ -238,8 +240,9 @@ func (x *Executor) newFileFields(ctx context.Context, f map[string]string, name 
 
 // spool writes the snapshot of src into dir: E2EE as header + one framed
 // chunk per part, standard as plaintext parts of chunkSize. It fails with
-// ErrSuperseded when the file is not (or no longer) the expected one.
-func (x *Executor) spool(ctx context.Context, src sourceFile, key []byte, chunkSize int64, dir string, up *upState) error {
+// ErrSuperseded when the file is not (or no longer) the expected one. read
+// hears every chunk read.
+func (x *Executor) spool(ctx context.Context, src sourceFile, key []byte, chunkSize int64, dir string, up *upState, read func(int)) error {
 	f, err := localfs.OpenForSnapshot(src.abs)
 	if err != nil {
 		if localfs.IsLocked(err) {
@@ -267,7 +270,7 @@ func (x *Executor) spool(ctx context.Context, src sourceFile, key []byte, chunkS
 	}
 	plain := sha256.New()
 	sw := &splitWriter{dir: dir, header: up.Mode == "e2ee", h: sha256.New()}
-	r := io.TeeReader(&ctxReader{ctx, f}, plain)
+	r := io.TeeReader(&ctxReader{ctx, f, read}, plain)
 	if up.Mode == "e2ee" {
 		err = e2ee.EncryptStream(r, sw, key, before.Size)
 	} else {
@@ -311,15 +314,18 @@ func (x *Executor) spool(ctx context.Context, src sourceFile, key []byte, chunkS
 var errShort = errors.New("source ended early")
 
 type ctxReader struct {
-	ctx context.Context
-	r   io.Reader
+	ctx  context.Context
+	r    io.Reader
+	read func(int)
 }
 
 func (c *ctxReader) Read(p []byte) (int, error) {
 	if err := c.ctx.Err(); err != nil {
 		return 0, err
 	}
-	return c.r.Read(p)
+	n, err := c.r.Read(p)
+	c.read(n)
+	return n, err
 }
 
 // splitWriter receives an E2EE container (header, then length-prefixed
@@ -492,10 +498,8 @@ func (x *Executor) send(ctx context.Context, opID int64, uploadID string, up *up
 		if err := t.Wait(ctx, buf.Len()); err != nil {
 			return nil, err
 		}
+		t.Span(0, up.Size, true)
 		node, _, err := c.UploadSmall(ctx, fields, buf.Bytes(), thumb)
-		if err == nil {
-			t.Progress(up.Size)
-		}
 		return node, err
 	}
 	return x.sendSession(ctx, c, opID, uploadID, up, dir, thumb, t)
@@ -569,6 +573,7 @@ func (x *Executor) sendSession(ctx context.Context, c *api.Client, opID int64, u
 		if err := t.Wait(ctx, len(b)); err != nil {
 			return nil, err
 		}
+		t.Span(done, int64(len(b)), false)
 		if err := c.PutPart(ctx, sess.SessionID, i, b); err != nil {
 			if api.IsCode(err, "conflict") { // parts of another encryption: never mix them
 				c.AbortSession(ctx, sess.SessionID)
@@ -577,8 +582,9 @@ func (x *Executor) sendSession(ctx context.Context, c *api.Client, opID int64, u
 			return nil, err
 		}
 		done += int64(len(b))
-		t.Progress(int64(len(b)))
+		t.At(done)
 	}
+	t.Phase(PFinishing)
 	thumbB64 := ""
 	if thumb != nil {
 		thumbB64 = e2ee.EncodeBase64(thumb)

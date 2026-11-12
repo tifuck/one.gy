@@ -331,3 +331,60 @@ func TestPool(t *testing.T) {
 		t.Fatalf("bucket took %v", d)
 	}
 }
+
+// A transfer says what it is doing: its phase, why it waits, and that it
+// stopped moving; a sync's moved bytes count while it is under way.
+func TestTransferStatus(t *testing.T) {
+	p := NewPool()
+	ctx := context.Background()
+	tr, _ := p.Begin(ctx, "s1", Up, "a.bin", 1000, false, nil)
+	view := func() TransferView { return p.List("")[0] }
+	tr.Start(ctx)
+	tr.Phase(PPreparing)
+	tr.Prep(1000)
+	if last := view(); last.Phase != PPreparing || last.Done != 1000 {
+		t.Fatalf("preparing: %+v", last)
+	}
+	if moved, _ := p.Flow("s1"); moved != 0 {
+		t.Fatalf("preparing counted as moved: %d", moved)
+	}
+	tr.Span(0, 1000, true)
+	tr.sent(0, 2000)
+	tr.sent(500, 2000)
+	if last := view(); last.Phase != PTransferring || last.Done != 250 {
+		t.Fatalf("sending: %+v", last)
+	}
+	if moved, _ := p.Flow("s1"); moved != 250 {
+		t.Fatalf("moved %d, want 250", moved)
+	}
+	tr.Retrying("one.gy is busy; trying again in 30s")
+	p.Tick()
+	if _, note := p.Flow("s1"); view().Note == nil || note != *view().Note || view().Phase != PRetrying {
+		t.Fatalf("retrying: %+v, sync note %q", view(), note)
+	}
+	tr.Retrying("")
+	tr.sent(2000, 2000)
+	if last := view(); last.Phase != PFinishing || last.Note != nil || last.Done != 1000 {
+		t.Fatalf("sent: %+v", last)
+	}
+	p.mu.Lock()
+	tr.alive = time.Now().Add(-45 * time.Second)
+	p.mu.Unlock()
+	p.Tick()
+	if last := view(); last.Note == nil || !last.Stalled || !strings.Contains(*last.Note, "has not confirmed for 45s") {
+		t.Fatalf("stalled: %+v", last)
+	}
+	tr.Finish(nil)
+	if last := view(); last.State != TDone || last.Note != nil || last.Stalled || last.Phase != "" {
+		t.Fatalf("done: %+v", last)
+	}
+
+	// Finished transfers do not pile up without end.
+	for i := 0; i < keepFinished+150; i++ {
+		x, _ := p.Begin(ctx, "s1", Down, "f", 1, false, nil)
+		x.Finish(nil)
+	}
+	if n := len(p.List(TDone)); n > keepFinished+100 {
+		t.Fatalf("%d finished transfers kept", n)
+	}
+}

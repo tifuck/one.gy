@@ -6,7 +6,7 @@ import {
 import { toastError } from '../components/toast.js';
 import { manualUpload, manualDownload } from '../components/manual.js';
 import {
-  bytes, speed, eta, percent, basename, ago,
+  bytes, percent, basename, ago, transferStatus, transferWaits,
 } from '../components/format.js';
 import { rpc, store, on, loadTransfers } from '../store.js';
 
@@ -34,9 +34,10 @@ function transferRow(t) {
     ? h('span', { class: 'dk-tr-error' }, t.error || 'Failed')
     : t.state === 'done'
       ? `${bytes(t.size)} · ${ago(t.finished_at)}`
-      : live
-        ? [`${bytes(t.done)} of ${bytes(t.size)}`, t.state === 'paused' ? ' · paused' : '', t.bps > 0 ? ` · ${speed(t.bps)}` : '', eta(t) ? ` · ${eta(t)} left` : '']
-        : bytes(t.size);
+      : t.state === 'cancelled'
+        // A sync transfer stops when the sync is paused or its plan changes; the sync plans it again.
+        ? `${t.manual ? 'Cancelled' : 'Stopped; the sync takes it up again'} · ${bytes(t.size)}`
+        : h('span', { class: transferWaits(t) ? 'dk-tr-warn' : null }, transferStatus(t));
   const actions = [];
   if (t.state === 'active' || t.state === 'queued') actions.push(h('button', { type: 'button', class: 'rd-icon-btn', 'aria-label': `Pause ${basename(t.path)}`, onclick: () => act('transfers.pause', { id: t.id }) }, icon('pause')));
   if (t.state === 'paused') actions.push(h('button', { type: 'button', class: 'rd-icon-btn', 'aria-label': `Resume ${basename(t.path)}`, onclick: () => act('transfers.resume', { id: t.id }) }, icon('play')));
@@ -117,11 +118,16 @@ export function mount(container, params = {}) {
 
   render();
   loadTransfers().catch(toastError);
+  // Events can be missed (the engine drops them when its queue is full): while
+  // anything runs, read the list again so no row stays behind.
+  const resync = setInterval(() => {
+    if ([...store.transfers.values()].some((t) => !t.finished_at)) loadTransfers().catch(() => {});
+  }, 5000);
   let pending = false;
   const off = on('transfers', () => {
     if (pending) return;
     pending = true;
     requestAnimationFrame(() => { pending = false; render(); });
   });
-  return off;
+  return () => { clearInterval(resync); off(); };
 }

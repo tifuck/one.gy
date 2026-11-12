@@ -44,8 +44,9 @@ func (x *Executor) manualUpload(ctx context.Context, t *Transfer, src, name stri
 	rec := &record{Op: reconcile.Op{Kind: reconcile.Upload, Path: name, RemoteName: name}, UploadID: "op-" + token(), FileID: uuid4()}
 	dir := filepath.Join(x.s.Root, "spool", "m-"+rec.UploadID)
 	defer os.RemoveAll(dir)
+	ctx = t.Observe(ctx)
 	for attempt := 0; ; attempt++ {
-		up, err := x.prepareUpload(ctx, rec, sourceFile{abs: src}, dir)
+		up, err := x.prepareUpload(ctx, rec, sourceFile{abs: src}, dir, t)
 		if errors.Is(err, ErrSuperseded) {
 			return fmt.Errorf("the file changed while it was read; try again")
 		}
@@ -87,7 +88,7 @@ func ManualDownload(ctx context.Context, env *Env, fileID, localDir string) (str
 			defer os.Remove(tmp + ".enc")
 			defer os.Remove(tmp + ".plain")
 			var got *fetched
-			if got, err = x.fetch(tctx, n, tmp+".enc", tmp+".plain", t); err == nil {
+			if got, err = x.fetch(t.Observe(tctx), n, tmp+".enc", tmp+".plain", t); err == nil {
 				x.finishPlain(tmp+".plain", got.meta)
 				err = placeFree(tmp+".plain", localDir, local)
 			}

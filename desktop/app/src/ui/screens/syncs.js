@@ -10,7 +10,7 @@ import { syncOptionsForm } from '../components/sync-options.js';
 import { syncFilter } from '../components/sync-filter.js';
 import { ACTIONS } from './wizard.js';
 import {
-  bytes, count, ago, percent, SYNC_TYPES, SYNC_STATES,
+  bytes, count, ago, percent, syncPercent, clockTime, SYNC_TYPES, SYNC_STATES,
 } from '../components/format.js';
 import {
   api, rpc, bridge, store, on, navigate, loadSyncs, loadIssues,
@@ -24,13 +24,29 @@ function progressOf(s) {
   if (st.pending_up) parts.push(`↑ ${count(st.pending_up)}`);
   if (st.pending_down) parts.push(`↓ ${count(st.pending_down)}`);
   if (st.bytes_left) parts.push(`${bytes(st.bytes_left)} left`);
+  const pct = syncPercent(s);
+  if (pct !== null) parts.push(`${Math.floor(pct)}%`);
   return parts.join(' · ');
+}
+
+// The bar of a sync with work left: how far it is when the engine gave a
+// total, else (an older engine) only that it is busy.
+function progressMeter(s) {
+  const pct = syncPercent(s);
+  const fillEl = h('div', { class: 'rd-meter-fill' });
+  if (pct === null) return h('div', { class: 'rd-meter dk-sync-meter is-busy', role: 'progressbar', 'aria-label': 'Syncing' }, fillEl);
+  fillEl.style.width = `${pct}%`;
+  return h('div', {
+    class: 'rd-meter dk-sync-meter', role: 'progressbar', 'aria-label': 'Syncing', 'aria-valuenow': Math.round(pct), 'aria-valuemin': 0, 'aria-valuemax': 100,
+  }, fillEl);
 }
 
 function stateOf(s) {
   if (s.paused) return SYNC_STATES.paused;
   // The engine holds every sync while the key is locked; say why.
   if (store.account && store.account.locked) return { label: 'Locked', tone: 'warn' };
+  // Work is left but nothing moves right now; the detail line says why.
+  if (s.waiting && s.state === 'syncing') return { label: 'Waiting', tone: 'warn' };
   return SYNC_STATES[s.state] || { label: s.state, tone: '' };
 }
 
@@ -44,8 +60,11 @@ function syncRow(s) {
     type: 'button', class: 'rd-icon-btn', 'aria-label': `Actions for ${s.name}`, 'aria-haspopup': 'menu',
     onclick: (e) => openMenu(e.currentTarget, rowMenu(s)),
   }, icon('more'));
-  // The engine reports what is left, not a total, so the bar only shows activity.
-  const meter = h('div', { class: 'rd-meter dk-sync-meter is-busy', role: 'progressbar', 'aria-label': 'Syncing' }, h('div', { class: 'rd-meter-fill' }));
+  // Why the sync waits or what it is busy with, in the engine's words.
+  const detail = s.detail && !s.paused
+    ? h('div', { class: `dk-sync-detail${s.waiting ? ' is-warn' : ''}` },
+      s.detail, s.retry_at ? ` · next try ${clockTime(s.retry_at)}` : '')
+    : null;
   let verifyMeter = null;
   if (verifying) {
     const pct = percent(verifying.done, verifying.total);
@@ -65,11 +84,12 @@ function syncRow(s) {
         h('span', { class: 'dk-path', title: s.local_path }, s.local_path),
         icon(s.type === 'mirror' ? 'back' : s.type === 'two_way' || s.type === 'full' ? 'sync' : 'forward', 'dk-sync-arrow'),
         h('span', { class: 'dk-path', title: s.remote_path }, `one.gy${s.remote_path === '/' ? '' : s.remote_path}`)),
-      verifyMeter || (progress && !s.paused ? meter : null),
+      verifyMeter || (progress && !s.paused ? progressMeter(s) : null),
       h('div', { class: 'dk-sync-meta' },
         h('span', null, type.short),
         verifying ? h('span', null, `Verifying ${count(verifying.done)} of ${count(verifying.total)} files`) : null,
-        progress ? h('span', null, progress) : h('span', null, `Last synced ${ago(s.stats && s.stats.last_synced_at)}`))),
+        progress ? h('span', null, progress) : h('span', null, `Last synced ${ago(s.stats && s.stats.last_synced_at)}`)),
+      detail),
     h('div', { class: 'dk-sync-actions' },
       h('button', {
         type: 'button', class: 'rd-icon-btn', 'aria-label': s.paused ? `Resume ${s.name}` : `Pause ${s.name}`,
