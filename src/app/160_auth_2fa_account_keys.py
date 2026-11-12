@@ -617,7 +617,7 @@ def api_get_keys():
     user = _current_session_user()
     if not user:
         return jsonify({'error': 'USER NOT FOUND'}), 404
-    return jsonify(_user_key_material(user))
+    return jsonify({**_user_key_material(user), 'username': user.username})
 
 
 def _user_key_material(user):

@@ -175,9 +175,9 @@
     if (!r.ok) throw new Error('keys')
     var kd = await r.json()
     if (!kd.has_e2ee_keys) { toast('THIS ACCOUNT HAS NO ENCRYPTION KEYS', 'error'); return false }
-    var wrap = pw
+    var wrap = pw, sk = null
     if (kd.split_key_version >= 1 && kd.auth_token_salt) {
-      var sk = await OneGyCrypto.deriveAuthAndWrappingKeys(pw, kd.auth_token_salt)
+      sk = await OneGyCrypto.deriveAuthAndWrappingKeys(pw, kd.auth_token_salt)
       wrap = sk.wrappingKey
     }
     var res = await OneGyCrypto.unlockUserKeys(wrap, {
@@ -186,6 +186,8 @@
     })
     await OneGyCrypto.storeMasterKeyInSession(res.masterKey)
     if (res.privateKey && OneGyCrypto.storePrivateKeyInSession) { try { await OneGyCrypto.storePrivateKeyInSession(res.privateKey) } catch (e) {} }
+    // Phones: offer a fingerprint, face or PIN for next time, while the password is at hand.
+    if (sk && window.OneGyQuickUnlock) await OneGyQuickUnlock.offer(document.querySelector('#fxLockBar .fx-lock-card'), { authToken: sk.authToken, masterKey: res.masterKey, username: kd.username })
     return true
   }
 
@@ -1954,6 +1956,7 @@
     $('fxDrawerClose').onclick = closeDrawer
 
     // E2EE unlock
+    function unlocked () { $('fxUnlockPw').value = ''; $('fxLockBar').hidden = true; toast('ENCRYPTION KEYS UNLOCKED', 'success'); reload() }
     $('fxUnlockForm').addEventListener('submit', async function (e) {
       e.preventDefault()
       var pw = $('fxUnlockPw').value; if (!pw) return
@@ -1961,9 +1964,10 @@
       var ok = false
       try { ok = await unlockKeys(pw) } catch (err) { ok = false }
       btn.disabled = false
-      if (ok) { $('fxUnlockPw').value = ''; $('fxLockBar').hidden = true; toast('ENCRYPTION KEYS UNLOCKED', 'success'); reload() }
+      if (ok) unlocked()
       else toast('INCORRECT PASSWORD', 'error')
     })
+    if (window.OneGyQuickUnlock && !haveKeys()) OneGyQuickUnlock.mount($('fxUnlockForm'), unlocked)
 
     // Name modal
     $('fxNameSave').onclick = function () { var v = $('fxNameInput').value.trim(); if (!v) return; var cb = nameCb; closeNameModal(); if (cb) cb(v) }

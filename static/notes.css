@@ -413,6 +413,8 @@
   .ui-v2 .rd-cmenu-sw{ width:24px; height:24px; }
   .nt-ed-actions .rd-icon-btn{ width:38px; height:38px; }
   .ui-v2 .rd-cmenu-item{ height:40px; } /* note / notebook / New menus */
+  /* Centred, the password field lands under the on-screen keyboard and the page pans; top-aligned it stays put */
+  .nt-lock{ align-items:flex-start; padding-top:2rem; }
 }
 
 @media (prefers-reduced-motion:reduce){

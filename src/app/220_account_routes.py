@@ -39,6 +39,7 @@ def account():
         storage_used_gb=round(storage_used_gb, 2),
         storage_limit_gb=storage_limit_gb,
         storage_percent=storage_percent,
+        quick_unlock_days=get_numeric_setting('desktop_pin_max_age_days'),
     )
 
 # ─── PREVIEW SCAFFOLD ROUTES REMOVED ─────────────────────────────────────────

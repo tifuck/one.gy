@@ -1052,6 +1052,16 @@ def logout():
     # of all their other devices too.
     revoked = _revoke_current_session()
 
+    # Signing out ends quick unlock in this browser (core.js adds its row id).
+    quick_unlock_id = request.form.get('quick_unlock_id')
+    if quick_unlock_id and session.get('logged_in_user_id'):
+        try:
+            QuickUnlock.query.filter_by(id=quick_unlock_id, user_id=session['logged_in_user_id']).delete(synchronize_session=False)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            print(f'[AUTH] Could not remove quick unlock during logout: {e}')
+
     # SECURITY FIX: Preserve guest session ID if it exists (for temp uploads)
     guest_user_id = session.get('user_id')
 

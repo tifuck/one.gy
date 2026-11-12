@@ -567,6 +567,17 @@
       if (!form) return
       try { if (window.OneGyCrypto && OneGyCrypto.clearSessionKeys) OneGyCrypto.clearSessionKeys() } catch (err) {}
       try { sessionStorage.clear() } catch (err) {}
+      // Signing out ends quick unlock in this browser (quick-unlock.js): the
+      // record goes, and its id rides along so the server drops its half too.
+      try {
+        var quick = JSON.parse(localStorage.getItem('onegy_quick_unlock') || 'null')
+        localStorage.removeItem('onegy_quick_unlock')
+        if (quick && quick.id) {
+          var field = document.createElement('input')
+          field.type = 'hidden'; field.name = 'quick_unlock_id'; field.value = quick.id
+          form.appendChild(field)
+        }
+      } catch (err) {}
     })
 
     function boot () { initNav(); initNotifs(); initReveal(); initCountUp(); initModals(); initMarquee(); Update.init() }

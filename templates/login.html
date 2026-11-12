@@ -121,6 +121,7 @@ try {
 </div>
 
 <script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('quick-unlock.js') }}" defer></script>
 <script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">
 document.addEventListener('DOMContentLoaded', function() {
@@ -129,7 +130,22 @@ document.addEventListener('DOMContentLoaded', function() {
       window.OneGyCrypto.clearSessionKeys()
     }
   } catch(e) {}
+  // A fingerprint, face or PIN set up in this browser signs in instead of the password.
+  if (window.OneGyQuickUnlock) {
+    OneGyQuickUnlock.mount(document.getElementById('loginForm'), function (d) {
+      clearLoginNotifDismissals()
+      window.location.href = (d && d.redirect) || '{{ url_for("files") }}'
+    })
+  }
 })
+
+// After a password sign-in on a phone: offer a fingerprint, face or PIN for next time.
+async function offerQuickUnlock(box, offer, csrfToken) {
+  if (!window.OneGyQuickUnlock || !offer) return
+  // Signing in started a new session, so the token this page was rendered with is stale.
+  if (csrfToken) document.querySelector('meta[name="csrf-token"]').content = csrfToken
+  try { await OneGyQuickUnlock.offer(box, Object.assign({ leave: true }, offer)) } catch (e) {}
+}
 
 // Clear login-trigger notification dismissals from sessionStorage so they show again on re-login
 function clearLoginNotifDismissals() {
@@ -182,6 +198,7 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
     // rejected and the failure counted toward captcha/lockout.
     let authTokenSalt = null
     let splitKeys = null
+    let quickOffer = null
     const preResp = await fetch('/auth/pre-login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
@@ -268,6 +285,7 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
           // Store keys in sessionStorage for this browser session
           await OneGyCrypto.storeMasterKeyInSession(masterKey)
           await OneGyCrypto.storePrivateKeyInSession(privateKey)
+          quickOffer = { authToken: splitKeys.authToken, masterKey, username }
           
           showFlash('ENCRYPTION KEYS UNLOCKED', 'success')
         } catch (keyErr) {
@@ -325,6 +343,7 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
     }
     
     // Step 4: Redirect
+    await offerQuickUnlock(document.getElementById('loginBox'), quickOffer, result.csrf_token)
     clearLoginNotifDismissals()
     setTimeout(() => {
       window.location.href = result.redirect
@@ -374,6 +393,7 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
     if (!response.ok) {
       throw new Error(result.error || 'VERIFICATION FAILED')
     }
+    let quickOffer = null
 
     // 2FA verified — now unlock E2EE keys using the in-memory wrapping key
     if (window.crypto && window.crypto.subtle && pending2FA) {
@@ -389,6 +409,7 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
 
           await OneGyCrypto.storeMasterKeyInSession(masterKey)
           await OneGyCrypto.storePrivateKeyInSession(privateKey)
+          quickOffer = { authToken: pending2FA.splitKeys.authToken, masterKey, username: document.getElementById('username').value.trim() }
 
           showFlash('ENCRYPTION KEYS UNLOCKED', 'success')
         } catch (keyErr) {
@@ -450,6 +471,7 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
     pending2FA = null
 
     // Redirect to dashboard
+    await offerQuickUnlock(document.getElementById('twoFactorBox'), quickOffer, result.csrf_token)
     clearLoginNotifDismissals()
     setTimeout(() => {
       window.location.href = result.redirect || '{{ url_for("files") }}'

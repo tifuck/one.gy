@@ -1950,11 +1950,13 @@
   async function unlockKeys (pw) {
     var kd = await apiGet('/api/keys')
     if (!kd.has_e2ee_keys) { toast('THIS ACCOUNT HAS NO ENCRYPTION KEYS', 'error'); return false }
-    var wrap = pw
-    if (kd.split_key_version >= 1 && kd.auth_token_salt) { var sk = await OneGyCrypto.deriveAuthAndWrappingKeys(pw, kd.auth_token_salt); wrap = sk.wrappingKey }
+    var wrap = pw, sk = null
+    if (kd.split_key_version >= 1 && kd.auth_token_salt) { sk = await OneGyCrypto.deriveAuthAndWrappingKeys(pw, kd.auth_token_salt); wrap = sk.wrappingKey }
     var res = await OneGyCrypto.unlockUserKeys(wrap, { encryptedMasterKey: kd.encrypted_master_key, masterKeyNonce: kd.master_key_nonce, masterKeySalt: kd.master_key_salt, encryptedPrivateKey: kd.encrypted_private_key, privateKeyNonce: kd.private_key_nonce })
     await OneGyCrypto.storeMasterKeyInSession(res.masterKey)
     if (res.privateKey && OneGyCrypto.storePrivateKeyInSession) { try { await OneGyCrypto.storePrivateKeyInSession(res.privateKey) } catch (e) {} }
+    // Phones: offer a fingerprint, face or PIN for next time, while the password is at hand.
+    if (sk && window.OneGyQuickUnlock) await OneGyQuickUnlock.offer(document.querySelector('#ntLock .nt-lock-card'), { authToken: sk.authToken, masterKey: res.masterKey, username: kd.username })
     return true
   }
 
@@ -2022,8 +2024,10 @@
       var btn = this.querySelector('button'); btn.disabled = true
       var ok = false; try { ok = await unlockKeys(pw) } catch (err) { ok = false }
       btn.disabled = false
-      if (ok) { $('ntUnlockPw').value = ''; toast('ENCRYPTION KEYS UNLOCKED', 'success'); loadAll() } else toast('INCORRECT PASSWORD', 'error')
+      if (ok) unlocked(); else toast('INCORRECT PASSWORD', 'error')
     })
+    function unlocked () { $('ntUnlockPw').value = ''; toast('ENCRYPTION KEYS UNLOCKED', 'success'); loadAll() }
+    if (window.OneGyQuickUnlock && $('ntUnlockForm') && !haveKeys()) OneGyQuickUnlock.mount($('ntUnlockForm'), unlocked)
     window.addEventListener('beforeunload', function (e) { if (S.dirty) { e.preventDefault(); e.returnValue = '' } })
   }
   var newMenuWasOpen = false, headMenuBtn = null  // the head button whose menu was opened last

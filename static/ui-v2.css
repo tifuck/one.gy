@@ -211,6 +211,22 @@
 .ui-v2 .ucm-warn .ucm-btn-confirm, .ui-v2 .ucm-e2e-warn .ucm-btn-confirm, .ui-v2 .ucm-no-e2e .ucm-btn-confirm{ background:var(--accent); color:var(--accent-contrast); }
 .ui-v2 .ucm-warn .ucm-btn-confirm:hover, .ui-v2 .ucm-e2e-warn .ucm-btn-confirm:hover, .ui-v2 .ucm-no-e2e .ucm-btn-confirm:hover{ box-shadow:inset 0 0 0 100px rgba(255,255,255,.12); }
 
+/* ---- Quick unlock on the sign-in box and lock cards (quick-unlock.js) ----- */
+.qu-box, .qu-pin, .qu-offer{ display:flex; flex-direction:column; gap:8px; width:100%; }
+.qu-box{ margin-top:10px; }
+.qu-offer{ text-align:center; }
+.qu-box .rd-btn, .qu-offer .rd-btn{ width:100%; height:44px; justify-content:center; }
+.qu-offer-ico{ align-self:center; width:48px; height:48px; margin-bottom:6px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:var(--accent-soft); color:var(--accent); }
+.qu-offer-ico svg{ width:22px; height:22px; }
+.qu-offer-title{ font-size:1.1rem; font-weight:600; letter-spacing:-.01em; }
+.qu-offer-sub{ margin-bottom:6px; font-size:.86rem; color:var(--text-dim); line-height:1.5; }
+.qu-user{ font-size:.86rem; color:var(--text-dim); text-align:center; }
+.qu-switch{ min-height:44px; border:0; background:none; color:var(--text-dim); font:inherit; font-size:.86rem; cursor:pointer; }
+.qu-switch:hover{ color:var(--text); }
+/* PINs are text fields (so password managers leave them alone), masked here */
+.qu-pin-input{ -webkit-text-security:disc; }
+.qu-pin-input::placeholder{ -webkit-text-security:none; }
+
 /* ---- Toasts ------------------------------------------------------------- */
 /* Full-width strip with centred toasts: a left:50% box shrink-wraps to half
    the viewport and broke short messages onto two lines. */

@@ -610,6 +610,8 @@
   /* Taps toggle items while selecting; a stray tap here must not drop the selection */
   .fx-tree .rd-side-row{ min-height:38px; }
   .fx-tree-toggle, .fx-tree-link{ height:38px; }
+  /* Centred, the password field lands under the on-screen keyboard and the page pans; top-aligned it stays put */
+  .fx-unlock{ align-items:flex-start; padding-top:2rem; }
 }
 
 @media (prefers-reduced-motion:reduce){

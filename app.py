@@ -45,6 +45,7 @@ def _load_parts():
         '215_trash.py',
         '220_account_routes.py',
         '225_desktop_pages.py',
+        '226_quick_unlock.py',
         '230_admin_users_settings.py',
         '240_admin_storage.py',
         '245_admin_notifications.py',

@@ -120,7 +120,9 @@
     m.classList.add('rd-open'); m.setAttribute('aria-hidden', 'false'); document.documentElement.style.overflow = 'hidden'
   }
   function closeModal (m) {
-    if (!m) return; m.classList.remove('rd-open'); m.setAttribute('aria-hidden', 'true'); document.documentElement.style.overflow = ''
+    if (!m) return
+    if (m.id === 'quModal' && quPrompt) { quPrompt.reject(new Error('CANCELLED')); quPrompt = null }
+    m.classList.remove('rd-open'); m.setAttribute('aria-hidden', 'true'); document.documentElement.style.overflow = ''
     if (modalOpener && modalOpener.focus && document.contains(modalOpener)) modalOpener.focus({ preventScroll: true })
     modalOpener = null
   }
@@ -320,6 +322,7 @@
       ;[curEl, newEl, confEl].forEach(function (el) { if (el) el.value = '' })
       closeModal(document.getElementById('pwModal'))
       toast('PASSWORD CHANGED. OTHER DEVICES SIGNED OUT', 'success')
+      quRefresh()
     } catch (e) {
       console.error('[ACCOUNT] Password change failed:', e)
       toast(e && e.message ? e.message : 'PASSWORD CHANGE FAILED', 'error')
@@ -346,11 +349,81 @@
       if (pwEl) pwEl.value = ''
       closeModal(document.getElementById('signOutAllModal'))
       toast('SIGNED OUT ON ALL OTHER DEVICES', 'success')
+      quRefresh()
     } catch (e) {
       console.error('[ACCOUNT] Sign-out-all failed:', e)
       toast(e && e.message ? e.message : 'COULD NOT SIGN OUT OTHER DEVICES', 'error')
     } finally { signOutAllConfirm.disabled = false }
   })
+
+  // ---- Quick unlock (quick-unlock.js) -------------------------------------
+  // The password both proves it is the owner setting this up and opens the
+  // master key that gets wrapped, so a tab without unlocked keys works too.
+  var QU = window.OneGyQuickUnlock
+  var quSetup = document.getElementById('quSetupBtn'), quOff = document.getElementById('quOffBtn'),
+      quStatus = document.getElementById('quStatus'), quSave = document.getElementById('quSaveBtn')
+  var quPrompt = null // { resolve, reject } while a passkey prompt waits for its tap
+  async function quRefresh () {
+    if (!quStatus || !QU) return
+    var rec = await QU.status()
+    quStatus.textContent = rec ? (rec.method === 'pin' ? 'PIN' : 'Fingerprint or face') : 'Off'
+    quStatus.classList.toggle('is-good', !!rec); quStatus.classList.toggle('is-dot', !!rec)
+    quSetup.hidden = !!rec; quOff.hidden = !rec
+  }
+  function quMethod () { var r = document.querySelector('input[name="quMethod"]:checked'); return r ? r.value : 'pin' }
+  function quSync () { document.getElementById('quPinField').hidden = quMethod() !== 'pin' }
+  if (quSetup && QU && hasCrypto) {
+    quRefresh()
+    QU.passkeyAvailable().then(function (ok) {
+      if (ok) return
+      document.getElementById('quPasskeyOpt').hidden = true
+      document.querySelector('input[name="quMethod"][value="pin"]').checked = true
+      quSync()
+    })
+    document.getElementById('quMethods').addEventListener('change', quSync)
+    quSetup.addEventListener('click', function () {
+      document.getElementById('quPin').value = ''; document.getElementById('quPw').value = ''
+      quSave.textContent = 'Continue'; quSync()
+      openModal('quModal'); setTimeout(function () { document.getElementById('quPw').focus() }, 60)
+    })
+    quSave.addEventListener('click', async function () {
+      if (quPrompt) { var waiting = quPrompt; quPrompt = null; quSave.disabled = true; waiting.resolve(); return }
+      var method = quMethod(), pinEl = document.getElementById('quPin'), pwEl = document.getElementById('quPw')
+      if (method === 'pin' && !QU.PIN_RE.test(pinEl.value)) { need(pinEl, 'THE PIN MUST BE AT LEAST 6 DIGITS'); return }
+      if (!pwEl.value) { need(pwEl, 'ENTER YOUR PASSWORD'); return }
+      quSave.disabled = true
+      try {
+        var info = await keyInfo(true)
+        if (!info.has_e2ee_keys) throw new Error('THIS ACCOUNT HAS NO ENCRYPTION KEYS')
+        var proof = await credentialProof(pwEl.value)
+        var keys = await OneGyCrypto.unlockUserKeys(proof._split.wrappingKey, {
+          encryptedMasterKey: info.encrypted_master_key, masterKeyNonce: info.master_key_nonce, masterKeySalt: info.master_key_salt,
+          encryptedPrivateKey: info.encrypted_private_key, privateKeyNonce: info.private_key_nonce
+        }).catch(function () { throw new Error('INCORRECT PASSWORD') })
+        await QU.enroll({
+          method: method, authToken: proof.auth_token, masterKey: keys.masterKey, username: info.username, pin: pinEl.value,
+          beforePrompt: function (kind) {
+            return new Promise(function (resolve, reject) {
+              quPrompt = { resolve: resolve, reject: reject }
+              quSave.textContent = kind === 'create' ? 'Add fingerprint or face' : 'Confirm fingerprint or face'
+              quSave.disabled = false
+            })
+          }
+        })
+        pwEl.value = ''; pinEl.value = ''
+        closeModal(document.getElementById('quModal'))
+        toast('QUICK UNLOCK IS ON IN THIS BROWSER', 'success')
+      } catch (e) {
+        console.error('[ACCOUNT] Quick unlock setup failed:', e)
+        if (!(e && e.message === 'CANCELLED')) toast(e && e.name === 'NotAllowedError' ? 'CANCELLED' : (e && e.message ? e.message : 'COULD NOT SET UP QUICK UNLOCK'), 'error')
+      } finally { quPrompt = null; quSave.disabled = false; quSave.textContent = 'Continue'; quRefresh() }
+    })
+    quOff.addEventListener('click', async function () {
+      quOff.disabled = true
+      try { await QU.disable(); toast('QUICK UNLOCK IS OFF IN THIS BROWSER', 'success') } catch (e) { toast('COULD NOT TURN OFF QUICK UNLOCK', 'error') }
+      finally { quOff.disabled = false; quRefresh() }
+    })
+  }
 
   // ---- API keys ----------------------------------------------------------
   var keyList = document.getElementById('keyList')

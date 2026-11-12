@@ -490,6 +490,22 @@ class Device(db.Model):
     web_ticket_hash = db.Column(db.String(64), nullable=True, index=True)  # one-use website sign-in ticket
     web_ticket_expires_at = db.Column(db.DateTime, nullable=True)
 
+class QuickUnlock(db.Model):
+    """Fingerprint/face (passkey PRF) or PIN sign-in and key unlock for one browser
+    (226_quick_unlock.py). The browser keeps the master key wrapped under its
+    passkey's PRF output or PIN plus this row's share; neither half opens it alone.
+    A row stops working when the user's session_epoch moves, after
+    desktop_pin_max_age_days, or after too many wrong proofs."""
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    method = db.Column(db.String(8), nullable=False)                # 'passkey' | 'pin'
+    share = db.Column(db.String(64), nullable=False)                # 32 random bytes (base64)
+    proof_hash = db.Column(db.String(64), nullable=True)            # SHA-256(proof) hex; the proof comes from the PIN or the passkey plus a salt only that browser has
+    failures = db.Column(db.Integer, nullable=False, default=0, server_default='0')  # wrong proofs in a row
+    password_verified_at = db.Column(db.DateTime, nullable=True)    # password entered in that browser; works until + desktop_pin_max_age_days
+    session_epoch = db.Column(db.Integer, nullable=False, default=0, server_default='0')
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
 class SyncTombstone(db.Model):
     """Hard delete of a synced file/folder, served by /apiv1/sync/changes until
     pruned after sync_tombstone_retention_days. No FK: rows may outlive the user."""

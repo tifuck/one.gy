@@ -120,6 +120,16 @@
               </div>
               <a class="rd-btn rd-btn-ghost" href="{{ url_for('account_devices') }}">Manage devices</a>
             </div>
+            {% if not desktop_app %}
+            <div class="rd-field-row">
+              <div class="rd-field-text">
+                <span class="rd-field-label">Quick unlock <span class="rd-pill" id="quStatus">Off</span></span>
+                <p class="rd-field-hint">Sign in and unlock your files in this browser with your fingerprint, face or a PIN instead of your password. Your password is asked again every {{ quick_unlock_days }} days. Signing out or changing your password turns it off.</p>
+              </div>
+              <button type="button" class="rd-btn rd-btn-primary" id="quSetupBtn">Set up</button>
+              <button type="button" class="rd-btn rd-btn-ghost" id="quOffBtn" hidden>Turn off</button>
+            </div>
+            {% endif %}
             <div class="rd-field-row">
               <div class="rd-field-text">
                 <span class="rd-field-label">Recovery key</span>
@@ -263,6 +273,37 @@
   </div>
 </div>
 
+<!-- Quick unlock setup -->
+<div class="rd-modal acc-dialog" id="quModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="quTitle">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3" id="quTitle">Set up quick unlock</h3>{{ close_btn() }}</div>
+    <form class="rd-modal-body acc-form" novalidate data-update-hold>
+      <p>For this browser only. Your fingerprint, face and PIN never leave this device.</p>
+      <fieldset class="rd-field acc-perms" id="quMethods">
+        <legend class="rd-field-label">Unlock with</legend>
+        <div class="acc-perm-grid">
+          <label class="rd-check" id="quPasskeyOpt"><input type="radio" name="quMethod" value="passkey" checked> Fingerprint or face</label>
+          <label class="rd-check"><input type="radio" name="quMethod" value="pin"> PIN</label>
+        </div>
+      </fieldset>
+      <div class="rd-field" id="quPinField" hidden>
+        <label class="rd-field-label" for="quPin">PIN</label>
+        <input type="text" id="quPin" class="form-input qu-pin-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="64">
+        <p class="rd-field-hint">At least 6 digits. Five wrong PINs in a row turn quick unlock off.</p>
+      </div>
+      <div class="rd-field">
+        <label class="rd-field-label" for="quPw">Password</label>
+        <input type="password" id="quPw" class="form-input" autocomplete="current-password">
+      </div>
+      <div class="acc-form-foot">
+        <button type="button" class="rd-btn rd-btn-ghost" data-rd-modal-close>Cancel</button>
+        <button type="submit" class="rd-btn rd-btn-primary" id="quSaveBtn">Continue</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Sign out other devices -->
 <div class="rd-modal acc-dialog" id="signOutAllModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="signOutAllTitle">
   <div class="rd-modal-overlay" data-rd-modal-close></div>
@@ -384,6 +425,7 @@
 
 {% block scripts %}
 <script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('quick-unlock.js') }}" defer></script>
 <script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
 <script src="{{ versioned_static('account.js') }}" defer></script>
