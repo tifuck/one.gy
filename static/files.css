@@ -345,7 +345,7 @@
   display:grid; grid-template-columns:minmax(0,1fr) 150px 96px 120px 28px; align-items:center; gap:12px; padding:0 8px 0 calc(12px + var(--fx-gut));
 }
 .fx-list-head{
-  position:sticky; top:0; z-index:2; height:34px; margin-bottom:4px; background:var(--bg);
+  position:sticky; top:0; z-index:2; height:28px; margin:0 -12px 4px; padding-left:calc(24px + var(--fx-gut)); padding-right:20px; background:var(--bg);
   border-bottom:1px solid var(--line); font-size:.76rem; font-weight:500; color:var(--text-dim);
 }
 .fx-list-head [data-sortcol="size"]{ justify-self:end; }
