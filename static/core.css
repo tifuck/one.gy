@@ -229,6 +229,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
 .rd-menu-danger{color:var(--bad)}
 .rd-menu-danger:hover{background:rgba(216,35,27,.1);color:var(--bad)}
 .rd-menu-sep{height:2px;background:var(--border);margin:.35rem 0}
+/* The build and when this browser got it (core.js buildNote). */
+.rd-menu-note{font-size:.7rem;color:var(--text-dim);padding:.3rem .6rem .35rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+.rd-nav-drawer .rd-menu-note{padding:.5rem 12px .2rem}
 .rd-menu-user{display:flex;align-items:center;gap:.6rem;padding:.55rem .6rem .7rem}
 .rd-menu-user b{display:block;font-size:.9rem;line-height:1.2}
 .rd-menu-user span{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)}

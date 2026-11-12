@@ -50,6 +50,9 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button class="rd-menu-item rd-menu-danger" type="submit">Sign out</button>
         </form>
+        {# core.js adds when this browser got the build #}
+        <div class="rd-menu-sep"></div>
+        <div class="rd-menu-note" data-build-note>Build {{ ui_build[:7] }}</div>
       </div>
     </div>
   </div>
@@ -109,6 +112,8 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="rd-menu-item rd-menu-danger" type="submit">Log out</button>
           </form>
+          <div class="rd-menu-sep"></div>
+          <div class="rd-menu-note" data-build-note>Build {{ ui_build[:7] }}</div>
         </div>
       </div>
       {% elif allow_registration %}
@@ -149,6 +154,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button class="rd-nav-link rd-menu-danger" type="submit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4.5H7a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h7"/><path d="M10 12h10M16.5 8.5 20 12l-3.5 3.5"/></svg>Log out</button>
       </form>
+      <div class="rd-menu-note" data-build-note>Build {{ ui_build[:7] }}</div>
     {% else %}
       <a class="rd-nav-link {{ 'is-active' if _nav == 'docs' }}" href="{{ url_for('docs') }}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h5.5A2.5 2.5 0 0 1 12 8v12a2 2 0 0 0-2-2H4zM20 5.5h-5.5A2.5 2.5 0 0 0 12 8v12a2 2 0 0 1 2-2h6z"/></svg>Docs</a>
       <a class="rd-nav-link {{ 'is-active' if _nav == 'desktop' }}" href="{{ url_for('desktop_page') }}" data-hide-in-desktop><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></svg>Desktop app</a>

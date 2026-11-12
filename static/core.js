@@ -514,8 +514,32 @@
       })
     }
 
+    // The account menu's quiet line: the build, and when this browser got it.
+    function buildNote () {
+      var at = 0
+      try {
+        if (localStorage.getItem('onegy_build') !== meta.content) {
+          localStorage.setItem('onegy_build', meta.content)
+          localStorage.setItem('onegy_build_at', Date.now())
+        }
+        at = +localStorage.getItem('onegy_build_at')
+      } catch (e) {}
+      if (!at) return
+      var when = new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      ;[].forEach.call(document.querySelectorAll('[data-build-note]'), function (el) { el.textContent += ' · updated ' + when })
+    }
+
+    // After an update reload, say so once someone is looking.
+    function sayUpdated () {
+      if (document.hidden || !window.showToast) return
+      document.removeEventListener('visibilitychange', sayUpdated)
+      showToast('ONE.GY was updated', 'info')
+    }
+
     function init () {
       if (resume && resume.scroll) restoreScroll(resume.scroll)
+      if (resume) { document.addEventListener('visibilitychange', sayUpdated); sayUpdated() }
+      if (meta) buildNote()
       if (!meta || !nativeFetch) return
       var touch = function () { lastInput = Date.now() }
       ;['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'scroll'].forEach(function (t) {
