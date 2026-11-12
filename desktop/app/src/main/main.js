@@ -406,7 +406,8 @@ function start() {
         window.send({ type: 'app:update', data: s });
       },
       canAutoRestart: async () => !win.isDestroyed() && !(sync.status && sync.status.state === 'syncing')
-        && (!win.isVisible() || win.isMinimized() || powerMonitor.getSystemIdleState(UPDATE_IDLE_S) !== 'active')
+        // 'unknown' (no idle detection on this desktop) is not idle.
+        && (!win.isVisible() || win.isMinimized() || ['idle', 'locked'].includes(powerMonitor.getSystemIdleState(UPDATE_IDLE_S)))
         && !(await window.siteBusy()),
       beforeRestart: async () => {
         try {

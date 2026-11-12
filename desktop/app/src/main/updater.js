@@ -73,7 +73,8 @@ function systemctlError(err) {
 // state: { supported, kind, state, current, version, progress, error, failed, checked_at, required }
 //   state: idle | checking | current | downloading | available | installing | ready | error
 //   failed: 'check' | 'install' when state is error
-// Returns { state(), check(), install() }; install() also restarts into a ready update.
+// Returns { state(), check(), install(), autoCheck() }; install() also restarts into a
+// ready update, autoCheck() is the background check (respects auto_update).
 function startUpdater({
   settings, serverOrigin, onChange, canAutoRestart, beforeRestart, relaunch,
 }) {
@@ -85,7 +86,7 @@ function startUpdater({
     s = { ...s, ...patch };
     onChange(s);
   };
-  if (!kind) return { state: () => s, check: async () => s, install: async () => s };
+  if (!kind) return { state: () => s, check: async () => s, install: async () => s, autoCheck: async () => {} };
 
   let apply = null; // () => void that quits into the new version, once ready
   let restarting = false;

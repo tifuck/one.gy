@@ -47,8 +47,9 @@ const SITE_READY_MAX_MS = 2000;
 const TRANSPARENT = '#00000000';
 // The update toast view's width (DIP), shadow room included (styles/update.css).
 const NOTICE_W = 380;
-// Main-frame HTTP statuses from the proxy while the server is down.
-const GATEWAY_ERRORS = new Set([502, 503, 504]);
+// Main-frame HTTP statuses only the server's proxy sends, while the server is
+// down (503 is the server's own "busy", with its own page).
+const GATEWAY_ERRORS = new Set([502, 504]);
 
 function isMainFrameOf(frame, wc) {
   const main = wc && !wc.isDestroyed() ? wc.mainFrame : null;
@@ -209,7 +210,7 @@ class MainWindow {
       // A gateway error (the server restarting for an update): the offline
       // page, which tries again by itself.
       if (GATEWAY_ERRORS.has(code) && originOf(url) === this.opts.serverOrigin()) {
-        this.showOffline(url, 'one.gy is restarting');
+        this.showOffline(url, `HTTP ${code}`);
         return;
       }
       if (originOf(url) === this.opts.serverOrigin()) this.offlineRetries = 0;

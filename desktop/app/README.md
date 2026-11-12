@@ -126,7 +126,12 @@ test/           node --test, plus the env-gated e2e_bridge.py
   `relaunch-state.json` (window bounds, maximized, hidden, site page, open
   panel screen) and the next start opens there; with the app lock on, the lock
   screen comes first. A ready update restarts by itself only while the window
-  is hidden in the tray or minimized and not mid-sync. NSIS and AppImage:
+  is hidden in the tray or minimized, the screen is locked or the computer has
+  been idle for 20 minutes, and never mid-sync or while the site page has
+  something in progress (`OneGyUpdate.busy()`, site-bridge.md). Later hides
+  the toast for a day. Below the server's `desktop_min` (`GET /api/build`) the
+  update is required: checked for and restarted into even with automatic
+  updates off, and its toast cannot be dismissed. NSIS and AppImage:
   electron-updater (generic provider on this repo's latest GitHub release)
   downloads in the background, Restart now installs silently and relaunches.
   The beta channel reads `beta*.yml`, which every release also carries. deb and

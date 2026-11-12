@@ -340,15 +340,19 @@
   // ---- New UI build: reload into it at a safe moment ---------------------
   // <meta name="onegy-build"> is the build this page came from; GET /api/build
   // the server's. A new build seen twice a minute apart (a promote that rolls
-  // back does not count) is applied after a random delay (no reload stampede):
-  // at once when the page is hidden or idle and nothing is in progress, else a
-  // toast offers it and it waits. A breaking build (old pages break on the new
-  // API) reloads once nothing is in progress, even while someone looks.
+  // back does not count) is applied at once when the page is hidden or idle
+  // and nothing is in progress; else a toast offers it and it waits. A breaking
+  // build (old pages break on the new API) reloads once nothing is in
+  // progress, even while someone looks. Pages poll at their own phase, so
+  // their reloads spread over CHECK_MS by themselves.
   var Update = (function () {
     var CHECK_MS = 10 * 60 * 1000, MIN_GAP_MS = 60 * 1000, CONFIRM_MS = 75 * 1000
-    var IDLE_MS = 5 * 60 * 1000, JITTER_MS = 2 * 60 * 1000, TICK_MS = 30 * 1000
+    var IDLE_MS = 5 * 60 * 1000, TICK_MS = 30 * 1000, TYPED_MS = 30 * 60 * 1000
+    var TEXT = 'textarea, input:not([type=search]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color])'
     var meta = document.querySelector('meta[name="onegy-build"]')
-    var lastCheck = 0, lastInput = Date.now(), seen = null, ready = null, toast = null, net = 0
+    var nativeFetch = window.fetch
+    var lastCheck = 0, lastInput = Date.now(), seen = null, ready = null, toast = null, tick = null, net = 0
+    var typed = null, typedAt = 0
 
     // Network work in flight: uploads (XHR) and fetches until their body is read.
     function hold (p) {
@@ -360,13 +364,14 @@
     if (window.XMLHttpRequest) {
       var send = XMLHttpRequest.prototype.send
       XMLHttpRequest.prototype.send = function () {
+        var open = true
+        var end = function () { if (open) { open = false; net-- } }
         net++
-        this.addEventListener('loadend', function () { net-- })
-        return send.apply(this, arguments)
+        this.addEventListener('loadend', end, { once: true })
+        try { return send.apply(this, arguments) } catch (e) { end(); throw e }
       }
     }
-    if (window.fetch) {
-      var nativeFetch = window.fetch
+    if (nativeFetch) {
       window.fetch = function () {
         return hold(nativeFetch.apply(window, arguments)).then(function (r) {
           ['arrayBuffer', 'blob', 'json', 'text', 'formData'].forEach(function (m) {
@@ -378,22 +383,44 @@
       }
     }
 
+    // The field someone typed in last (a script filling a field in is not typing).
+    document.addEventListener('input', function (e) {
+      if (e.isTrusted && e.target.matches && e.target.matches(TEXT)) { typed = e.target; typedAt = Date.now() }
+    }, true)
+    function shown (el) {
+      return el.checkVisibility ? el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true }) : el.getClientRects().length > 0
+    }
+
+    // A page that must never be reloaded under its user marks an element
+    // data-update-hold (the "Preparing download" page).
     function busy () {
-      if (net > 0) return true
+      if (net > 0 || document.querySelector('[data-update-hold]')) return true
       if (window.OneGyCrypto && OneGyCrypto.busy && OneGyCrypto.busy()) return true
       // Every page's unsaved-work and upload guard is a cancelling beforeunload listener.
       var ev = new Event('beforeunload', { cancelable: true })
       window.dispatchEvent(ev)
       if (ev.defaultPrevented) return true
       if ([].some.call(document.querySelectorAll('audio, video'), function (m) { return !m.paused })) return true
-      var fields = document.querySelectorAll('textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=button]):not([type=submit])')
-      return [].some.call(fields, function (el) {
-        return !el.readOnly && !el.disabled && el.value !== el.defaultValue && el.getClientRects().length > 0
-      })
+      // Text typed a short while ago and still on screen: a form not sent yet.
+      return !!typed && Date.now() - typedAt < TYPED_MS && !!typed.value && typed.isConnected && shown(typed)
     }
 
+    function fetchBuild () {
+      return nativeFetch('/api/build', { cache: 'no-store', credentials: 'omit' })
+        .then(function (r) { return r.ok ? r.json() : null })
+        .catch(function () { return null })
+    }
+
+    // Never into a server that does not answer (mid-promote: the tab would sit
+    // on an error page); back on this page's build (a rollback) there is nothing to do.
     function reload () {
-      try { location.reload() } catch (e) {}
+      fetchBuild().then(function (d) {
+        if (!d || !d.build) return
+        if (d.build !== meta.content) { location.reload(); return }
+        clearInterval(tick)
+        if (toast) toast.remove()
+        ready = seen = toast = null
+      })
     }
 
     function showNotice () {
@@ -408,13 +435,13 @@
       btn.type = 'button'
       btn.className = 'rd-btn rd-btn-ghost rd-btn-sm'
       btn.textContent = 'Reload'
-      btn.addEventListener('click', reload)
+      btn.addEventListener('click', function () { location.reload() })
       toast.appendChild(btn)
       host.appendChild(toast)
     }
 
     function apply () {
-      if (!ready || !ready.armed) return
+      if (!ready) return
       var idle = document.hidden || Date.now() - lastInput >= IDLE_MS
       // A breaking build waits one tick with its notice up.
       if ((idle || (ready.breaking && toast)) && !busy()) { reload(); return }
@@ -422,33 +449,26 @@
     }
 
     function check (force) {
-      if (!meta || !window.fetch) return
       var now = Date.now()
-      if (!force && now - lastCheck < MIN_GAP_MS) return
+      if (ready || (!force && now - lastCheck < MIN_GAP_MS)) return
       lastCheck = now
-      nativeFetch('/api/build', { cache: 'no-store', credentials: 'omit' })
-        .then(function (r) { return r.ok ? r.json() : null })
-        .then(function (d) {
-          if (!d || !d.build || ready) return
-          if (d.build === meta.content) { seen = null; return }
-          if (!seen || seen.build !== d.build) {
-            seen = { build: d.build, at: now }
-            setTimeout(function () { check(true) }, CONFIRM_MS)
-            return
-          }
-          if (now - seen.at < MIN_GAP_MS) return
-          ready = { breaking: String(d.breaking) !== meta.getAttribute('data-breaking'), armed: false }
-          setTimeout(function () {
-            ready.armed = true
-            apply()
-            setInterval(apply, TICK_MS)
-          }, Math.random() * JITTER_MS)
-        })
-        .catch(function () {})
+      fetchBuild().then(function (d) {
+        if (!d || !d.build || ready) return
+        if (d.build === meta.content) { seen = null; return }
+        if (!seen || seen.build !== d.build) {
+          seen = { build: d.build, at: now }
+          setTimeout(function () { check(true) }, CONFIRM_MS)
+          return
+        }
+        if (now - seen.at < MIN_GAP_MS) return
+        ready = { breaking: String(d.breaking) !== meta.getAttribute('data-breaking') }
+        tick = setInterval(apply, TICK_MS)
+        apply()
+      })
     }
 
     function init () {
-      if (!meta) return
+      if (!meta || !nativeFetch) return
       var touch = function () { lastInput = Date.now() }
       ;['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'scroll'].forEach(function (t) {
         document.addEventListener(t, touch, { capture: true, passive: true })
@@ -459,7 +479,7 @@
       setInterval(function () { check() }, CHECK_MS)
     }
 
-    return { init: init, busy: busy, check: check }
+    return { init: init, busy: busy }
   })()
   // ONE.GY Desktop asks before an update restart (desktop/docs/site-bridge.md).
   window.OneGyUpdate = { busy: Update.busy }

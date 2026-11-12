@@ -9,7 +9,8 @@
 
 {% block content %}
 {% set ext = get_compound_ext(filename).rsplit('.', 1)[-1] %}
-<section class="gw-section">
+{# data-update-hold: a UI update never reloads this page (core.js) #}
+<section class="gw-section" data-update-hold>
   <div class="gw-card">
     <div class="gw-ico is-accent" id="statusIcon">
       <svg class="gw-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8" opacity=".25"/><path d="M20 12a8 8 0 0 0-8-8"/></svg>

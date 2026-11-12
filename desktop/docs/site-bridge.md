@@ -139,7 +139,8 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
 - Updates (every page, `static/core.js`): `window.OneGyUpdate.busy()` is true
   while the page has something an update reload or restart would lose
   (network work in flight, crypto worker jobs, a cancelling `beforeunload`
-  guard, playing media, edited visible fields). The page reloads itself into
+  guard, playing media, text typed in the last 30 minutes that is still on
+  screen, an element marked `data-update-hold`). The page reloads itself into
   a new UI build (`<meta name="onegy-build">` vs `GET /api/build`) when it is
   hidden or idle and not busy; the app needs nothing for that.
 
@@ -152,9 +153,10 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
   and the page title (the taskbar title adds "· ONE.GY"). Keys and mouse
   buttons too: Alt+←/→, mouse back/forward, Ctrl+R / F5 (hard: Ctrl+Shift+R),
   zoom Ctrl+= / Ctrl+- / Ctrl+0 (remembered). A page that fails to load, or
-  a 502/503/504 from the server's origin (restarting for an update), is
-  replaced by a local "Can't reach <server>" page with Retry that also
-  retries by itself (5 s, doubling up to a minute).
+  a 502 or 504 from the server's proxy (the server restarting for an
+  update; 503 is the server's own "busy" page and stays), is replaced by a
+  local "Can't reach <server>" / "<server> is not responding" page with
+  Retry that also retries by itself (5 s, doubling up to a minute).
 - Updates: before an automatic update restart the app runs
   `window.OneGyUpdate.busy()` in the site page and waits while it is true.
   `GET /api/build` `desktop_min` is the oldest app version the server's sync
