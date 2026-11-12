@@ -136,6 +136,12 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
   computer, read-only on one.gy").
 - The username is read from a `data-username` attribute rendered by the
   template, never from the URL.
+- Updates (every page, `static/core.js`): `window.OneGyUpdate.busy()` is true
+  while the page has something an update reload or restart would lose
+  (network work in flight, crypto worker jobs, a cancelling `beforeunload`
+  guard, playing media, edited visible fields). The page reloads itself into
+  a new UI build (`<meta name="onegy-build">` vs `GET /api/build`) when it is
+  hidden or idle and not busy; the app needs nothing for that.
 
 ## App side
 
@@ -145,8 +151,15 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
   (`src/ui/titlebar.html`) is the drag area and has back / forward / reload
   and the page title (the taskbar title adds "· ONE.GY"). Keys and mouse
   buttons too: Alt+←/→, mouse back/forward, Ctrl+R / F5 (hard: Ctrl+Shift+R),
-  zoom Ctrl+= / Ctrl+- / Ctrl+0 (remembered). A page that fails to load is
-  replaced by a local "Can't reach <server>" page with Retry.
+  zoom Ctrl+= / Ctrl+- / Ctrl+0 (remembered). A page that fails to load, or
+  a 502/503/504 from the server's origin (restarting for an update), is
+  replaced by a local "Can't reach <server>" page with Retry that also
+  retries by itself (5 s, doubling up to a minute).
+- Updates: before an automatic update restart the app runs
+  `window.OneGyUpdate.busy()` in the site page and waits while it is true.
+  `GET /api/build` `desktop_min` is the oldest app version the server's sync
+  API accepts; below it the update is required (checked for and restarted
+  into even with automatic updates off, toast not dismissible).
 - Sign-in: the app's own sign-in screen ("Sign in to ONE.GY": username,
   password, two-factor code when asked; server and computer name under a
   disclosure) is the only sign-in while this computer is signed out. It

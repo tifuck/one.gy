@@ -1,12 +1,17 @@
 // The update toast (main/window.js notice view, bottom right of the window):
 // the updater's state when it needs the user, with the one step left. Later
-// or Close hides it until the state or version changes; App settings > Updates
-// keeps the same actions. It reports its height so the view fits the card.
+// or Close hides it for a day or until the state or version changes; a
+// required update (the server no longer syncs with this version) cannot be
+// dismissed. App settings > Updates keeps the same actions. It reports its
+// height so the view fits the card.
 const bridge = window.onegyUpdate;
 const els = Object.fromEntries(['wrap', 'card', 'title', 'text', 'bar', 'actions', 'later', 'go', 'close']
   .map((id) => [id, document.getElementById(id)]));
+const SNOOZE_MS = 24 * 60 * 60 * 1000;
 let dismissed = null;
 let shownKey = null;
+let last = null;
+let snooze = null;
 
 const named = (s) => (s.version ? `ONE.GY ${s.version}` : 'A new version of ONE.GY');
 const COPY = {
@@ -16,18 +21,33 @@ const COPY = {
   error: (s) => ({ title: 'Update failed', text: s.error, action: 'Try again', bad: true }),
 };
 
-// Only what needs the user: a failed background check waits in Settings.
-const copyFor = (s) => (s && COPY[s.state] && !(s.state === 'error' && s.failed !== 'install') ? COPY[s.state](s) : null);
+const REQUIRED = {
+  title: 'Update required',
+  text: 'This version of ONE.GY can no longer sync. The update installs as soon as it is ready.',
+  busy: true,
+};
+
+// Only what needs the user: a failed background check waits in Settings,
+// unless the update is required.
+const copyFor = (s) => {
+  if (!s) return null;
+  const c = COPY[s.state] && (s.state !== 'error' || s.failed === 'install' || s.required) ? COPY[s.state](s) : null;
+  if (!s.required) return c;
+  return c ? { ...c, title: s.state === 'error' ? c.title : REQUIRED.title } : REQUIRED;
+};
 
 function report() {
   bridge.size(els.wrap.hidden ? 0 : Math.ceil(els.wrap.getBoundingClientRect().height));
 }
 
 function render(s) {
+  last = s;
   document.documentElement.dataset.theme = s.theme === 'frost' ? 'frost' : 'frost-dark';
   const c = copyFor(s);
   const key = c ? `${s.state}:${s.version}` : null;
-  els.wrap.hidden = !c || key === dismissed;
+  els.wrap.hidden = !c || (key === dismissed && !s.required);
+  els.later.hidden = Boolean(s.required);
+  els.close.hidden = Boolean(s.required);
   if (!els.wrap.hidden) {
     els.title.textContent = c.title;
     els.text.textContent = c.text;
@@ -44,10 +64,16 @@ function render(s) {
 }
 
 const dismiss = () => {
+  if (last && last.required) return;
   dismissed = shownKey;
   els.wrap.hidden = true;
   shownKey = null;
   report();
+  clearTimeout(snooze);
+  snooze = setTimeout(() => {
+    dismissed = null;
+    if (last) render(last);
+  }, SNOOZE_MS);
 };
 els.later.addEventListener('click', dismiss);
 els.close.addEventListener('click', dismiss);

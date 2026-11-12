@@ -116,6 +116,25 @@ def versioned_static(filename):
 
 app.jinja_env.globals['versioned_static'] = versioned_static
 
+# UI build: changes when a promote changes any template or static file (not
+# static/cli/, which PROD rebuilds on every promote). Open pages poll it via
+# GET /api/build (core.js) and reload into a new one at a safe moment.
+_ui_hash = hashlib.md5()
+for _rel, _h in sorted(_static_hashes.items()):
+    if not _rel.startswith('cli/'):
+        _ui_hash.update(f'{_rel}:{_h}\n'.encode())
+_templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
+for _fpath in sorted(os.path.join(_root, _fname) for _root, _dirs, _files in os.walk(_templates_dir) for _fname in _files):
+    _ui_hash.update(os.path.relpath(_fpath, _templates_dir).encode() + b'\n')
+    with open(_fpath, 'rb') as _fp:
+        _ui_hash.update(_fp.read())
+UI_BUILD = _ui_hash.hexdigest()[:12]
+# Bump when pages of the previous build break against the new backend (an API
+# contract change): open pages then reload as soon as nothing is in progress,
+# even while someone is looking at them.
+UI_BREAKING = 1
+app.jinja_env.globals.update(ui_build=UI_BUILD, ui_breaking=UI_BREAKING)
+
 _secret_key = os.environ.get('SECRET_KEY', '')
 if not _secret_key or _secret_key == 'devkey-change-me':
     import warnings as _warnings

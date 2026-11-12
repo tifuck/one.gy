@@ -47,6 +47,8 @@ const SITE_READY_MAX_MS = 2000;
 const TRANSPARENT = '#00000000';
 // The update toast view's width (DIP), shadow room included (styles/update.css).
 const NOTICE_W = 380;
+// Main-frame HTTP statuses from the proxy while the server is down.
+const GATEWAY_ERRORS = new Set([502, 503, 504]);
 
 function isMainFrameOf(frame, wc) {
   const main = wc && !wc.isDestroyed() ? wc.mainFrame : null;
@@ -78,6 +80,7 @@ class MainWindow {
     this.noticeHeight = 0;
     this.update = null; // the updater's state, for the toast
     this.resumePath = null; // the site path to open first after an update restart
+    this.offlineRetries = 0; // offline pages in a row, for their retry backoff
     this.maximizeOnShow = false;
   }
 
@@ -202,7 +205,14 @@ class MainWindow {
     });
     // The page asked for, before redirects (the sign-in page drops it).
     wc.on('did-start-navigation', (d) => { if (d.isMainFrame && !d.isSameDocument) this.siteWanted = d.url; });
-    wc.on('did-navigate', (_e, url) => {
+    wc.on('did-navigate', (_e, url, code) => {
+      // A gateway error (the server restarting for an update): the offline
+      // page, which tries again by itself.
+      if (GATEWAY_ERRORS.has(code) && originOf(url) === this.opts.serverOrigin()) {
+        this.showOffline(url, 'one.gy is restarting');
+        return;
+      }
+      if (originOf(url) === this.opts.serverOrigin()) this.offlineRetries = 0;
       this.siteUser = null;
       wc.setZoomFactor(this.opts.settings.get().site_zoom);
       this.sendTitlebar();
@@ -257,12 +267,26 @@ class MainWindow {
     wc.loadURL(`${url}?${next}`, { extraHeaders: `X-Onegy-Desktop-Ticket: ${ticket}\n` });
   }
 
-  // A small local page with Retry instead of a blank window.
+  // A small local page with Retry instead of a blank window; it also tries
+  // again by itself, waiting longer each time (n).
   showOffline(failedUrl, reason) {
     const origin = this.opts.serverOrigin();
     const retry = originOf(failedUrl) === origin ? failedUrl : origin + START_PATH;
-    const q = new URLSearchParams({ url: retry, reason: String(reason || '').slice(0, 200), theme: this.opts.settings.get().theme });
+    const q = new URLSearchParams({
+      url: retry, reason: String(reason || '').slice(0, 200), theme: this.opts.settings.get().theme, n: String(this.offlineRetries),
+    });
+    this.offlineRetries += 1;
     this.site.webContents.loadURL(`${OFFLINE_URL}?${q}`);
+  }
+
+  // Whether the site page has something in progress an update restart would
+  // lose (an upload, unsaved edits, playing music): core.js OneGyUpdate.busy().
+  siteBusy() {
+    const wc = this.site && !this.site.webContents.isDestroyed() && !this.siteLocked ? this.site.webContents : null;
+    if (!wc || originOf(wc.getURL()) !== this.opts.serverOrigin()) return Promise.resolve(false);
+    return wc.executeJavaScript('Boolean(window.OneGyUpdate && window.OneGyUpdate.busy())')
+      .then((busy) => busy === true)
+      .catch(() => false);
   }
 
   // Server URL changed: drop the old view (and its preload origin) and rebuild.

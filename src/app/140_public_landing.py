@@ -56,6 +56,14 @@ def robots_txt():
     resp.headers['Cache-Control'] = 'public, max-age=86400'
     return resp
 
+@app.route('/api/build')
+@limiter.exempt
+def api_build():
+    """What open pages (core.js) and ONE.GY Desktop poll: the UI build, its
+    breaking revision and the oldest desktop version the sync API accepts.
+    Constant per process: no session, no DB."""
+    return jsonify(build=UI_BUILD, breaking=UI_BREAKING, desktop_min=MIN_DESKTOP_CLIENT_VERSION)
+
 @app.route('/')
 def index():
     landing_stats = get_public_landing_stats()

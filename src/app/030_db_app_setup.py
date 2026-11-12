@@ -672,15 +672,19 @@ def _log_safe_path(path):
 @app.after_request
 def log_request_info(response):
     """Log each request with the real client IP for reverse proxy environments."""
-    # Only log non-static, non-trivial requests
-    if not request.path.startswith('/static/'):
+    # Only log non-static, non-trivial requests (every open page polls /api/build)
+    if not request.path.startswith('/static/') and request.path != '/api/build':
         ip = get_real_ip()
         print(f'[REQUEST] {ip} {request.method} {_log_safe_path(request.path)} -> {response.status_code}')
     # Static file caching: 1 year TTL (cache-busted by ?v=hash query param)
     if request.path.startswith('/static/'):
-        # Only real assets are immutable; a 404 must not be pinned for a year.
+        # Only real assets are immutable; a 404 must not be pinned for a year,
+        # nor today's file under another build's ?v= (a page loaded just before
+        # a promote, or a rollback that makes that ?v= current again).
+        v = request.args.get('v')
+        current = not v or v == _static_hashes.get(request.path[len('/static/'):])
         response.headers['Cache-Control'] = (
-            'public, max-age=31536000, immutable' if response.status_code < 400 else 'no-store')
+            'public, max-age=31536000, immutable' if response.status_code < 400 and current else 'no-store')
     elif 'Cache-Control' not in response.headers:
         # AUDIT FIX (residual): dynamic pages/API responses carried NO
         # Cache-Control at all, so browsers (and any shared/forward proxy in

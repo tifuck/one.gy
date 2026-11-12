@@ -28,6 +28,7 @@ const SITE_DECIDE_MAX_MS = 8000; // load the site anyway when the engine says no
 const RESUME_PANELS = new Set(['syncs', 'transfers', 'issues', 'settings', ...SETTINGS_SCREENS]); // also what the tray popover may open
 const MAX_PAUSE_MS = 24 * 60 * 60 * 1000;
 const RESIGN_EVERY_MS = 30 * 1000; // device mode: sign a site view that lost its session in again, at most this often
+const UPDATE_IDLE_S = 20 * 60; // a ready update restarts a visible window after this long without input
 
 const APP_ID = 'gy.one.desktop';
 const ENGINE_EXE = process.platform === 'win32' ? 'onegy-engine.exe' : 'onegy-engine';
@@ -395,14 +396,18 @@ function start() {
     });
 
     // A ready update asks first (the toast); it restarts by itself only when
-    // nobody would see the toast, and never mid-sync.
+    // nobody is at the window (hidden, minimized, screen locked or idle), and
+    // never mid-sync or with something in progress on the site.
     updater = startUpdater({
       settings,
+      serverOrigin: () => settings.get().server_url,
       onChange: (s) => {
         window.setUpdate(s);
         window.send({ type: 'app:update', data: s });
       },
-      canAutoRestart: () => !win.isDestroyed() && !(sync.status && sync.status.state === 'syncing') && (!win.isVisible() || win.isMinimized()),
+      canAutoRestart: async () => !win.isDestroyed() && !(sync.status && sync.status.state === 'syncing')
+        && (!win.isVisible() || win.isMinimized() || powerMonitor.getSystemIdleState(UPDATE_IDLE_S) !== 'active')
+        && !(await window.siteBusy()),
       beforeRestart: async () => {
         try {
           fs.writeFileSync(resumeFile, JSON.stringify(window.snapshot()));

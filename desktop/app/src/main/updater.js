@@ -13,8 +13,12 @@
 // manager). Its polkit rule lets the signed-in user start just that unit;
 // without it the system asks for the password. When the timer installs on its
 // own, the app notices its files were replaced and asks to restart.
-// A ready update restarts by itself only while the window is hidden in the
-// tray or minimized (canAutoRestart) and auto_update is on.
+// A ready update restarts by itself only when nobody would lose anything
+// (canAutoRestart: hidden, minimized, screen locked or the computer idle; not
+// syncing, nothing in progress on the site) and auto_update is on.
+// The server's GET /api/build names the oldest version its sync API accepts
+// (desktop_min). Below it the update is required: it is checked for and
+// restarts into even with auto_update off, and its toast cannot be dismissed.
 'use strict';
 
 const path = require('path');
@@ -64,17 +68,18 @@ function systemctlError(err) {
   return line || err.message;
 }
 
-// opts: { settings, onChange(state), canAutoRestart(): bool, beforeRestart(): Promise, relaunch() }
-// state: { supported, kind, state, current, version, progress, error, failed, checked_at }
+// opts: { settings, serverOrigin(): string, onChange(state), canAutoRestart(): Promise<bool>,
+//         beforeRestart(): Promise, relaunch() }
+// state: { supported, kind, state, current, version, progress, error, failed, checked_at, required }
 //   state: idle | checking | current | downloading | available | installing | ready | error
 //   failed: 'check' | 'install' when state is error
 // Returns { state(), check(), install() }; install() also restarts into a ready update.
 function startUpdater({
-  settings, onChange, canAutoRestart, beforeRestart, relaunch,
+  settings, serverOrigin, onChange, canAutoRestart, beforeRestart, relaunch,
 }) {
   const kind = installKind();
   let s = {
-    supported: Boolean(kind), kind, state: 'idle', current: app.getVersion(), version: null, progress: null, error: null, failed: null, checked_at: null,
+    supported: Boolean(kind), kind, state: 'idle', current: app.getVersion(), version: null, progress: null, error: null, failed: null, checked_at: null, required: false,
   };
   const set = (patch) => {
     s = { ...s, ...patch };
@@ -91,8 +96,8 @@ function startUpdater({
     await beforeRestart();
     apply();
   };
-  setInterval(() => {
-    if (s.state === 'ready' && settings.get().auto_update && canAutoRestart()) restart();
+  setInterval(async () => {
+    if (s.state === 'ready' && (settings.get().auto_update || s.required) && await canAutoRestart()) restart();
   }, RESTART_POLL_MS);
 
   const busy = () => ['checking', 'downloading', 'installing', 'ready'].includes(s.state);
@@ -198,7 +203,22 @@ function startUpdater({
     install = async () => (s.state === 'ready' ? restart().then(() => s) : check());
   }
 
-  const autoCheck = () => { if (settings.get().auto_update) check(); };
+  // The server's version floor; offline or an older server: unchanged.
+  const checkFloor = async () => {
+    try {
+      const res = await net.fetch(`${serverOrigin()}/api/build`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const required = isNewer((await res.json()).desktop_min, s.current);
+      if (required !== s.required) {
+        console.log(`[UPDATE] update ${required ? 'required by the server' : 'no longer required'}`);
+        set({ required });
+      }
+    } catch { /* the next check tries again */ }
+  };
+  const autoCheck = async () => {
+    await checkFloor();
+    if (settings.get().auto_update || s.required) check();
+  };
   setTimeout(autoCheck, 15000);
   setInterval(autoCheck, CHECK_EVERY_MS);
   powerMonitor.on('resume', () => setTimeout(autoCheck, 15000));

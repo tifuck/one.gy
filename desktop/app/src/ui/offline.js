@@ -1,6 +1,7 @@
 // Offline page, shown in the site view when the website fails to load
 // (window.js showOffline). Query: url (the page to retry, on the server),
-// reason (Chromium's error text), theme. Retry, or going back online,
+// reason (Chromium's error text), theme, n (offline pages in a row). Retry,
+// going back online, or the automatic retry (5 s, doubling up to a minute)
 // replaces this page with the website again.
 import { ICONS } from './components/icons.js';
 
@@ -15,11 +16,12 @@ try {
 } catch { /* no retry target */ }
 
 const reason = (q.get('reason') || '').slice(0, 200);
+const waitS = Math.min(60, 5 * 2 ** Math.min(4, Number(q.get('n')) || 0));
 if (target) {
   document.title = `Can't reach ${target.host} · ONE.GY`;
   document.getElementById('title').textContent = `Can't reach ${target.host}`;
 }
-document.getElementById('detail').textContent = `Check your connection, then try again.${reason ? ` (${reason})` : ''}`;
+document.getElementById('detail').textContent = `Check your connection. Trying again in ${waitS} s.${reason ? ` (${reason})` : ''}`;
 document.getElementById('icon').innerHTML = ICONS.cloud;
 
 const retry = document.getElementById('retry');
@@ -27,4 +29,5 @@ const go = () => { if (target) location.replace(target.href); };
 retry.disabled = !target;
 retry.addEventListener('click', go);
 window.addEventListener('online', go);
+setTimeout(go, waitS * 1000);
 retry.focus();

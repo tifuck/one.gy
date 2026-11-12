@@ -66,7 +66,9 @@ const OneGyCrypto = (function() {
   function _getWorker() {
     if (!_worker) {
       try {
-        // Resolve worker URL relative to crypto.js location
+        // The shells give the versioned URL: an unversioned one is cached for a
+        // year. Else resolve it relative to crypto.js.
+        const meta = document.querySelector('meta[name="onegy-crypto-worker"]')
         const scripts = document.getElementsByTagName('script')
         let basePath = '/static/'
         for (let i = 0; i < scripts.length; i++) {
@@ -76,7 +78,7 @@ const OneGyCrypto = (function() {
             break
           }
         }
-        _worker = new Worker(basePath + 'crypto-worker.js')
+        _worker = new Worker(meta ? meta.content : basePath + 'crypto-worker.js')
         const worker = _worker
         worker.onmessage = function(e) {
           const { id, result, error, type, progress } = e.data
@@ -1913,6 +1915,9 @@ const OneGyCrypto = (function() {
   // ─── Public API ───────────────────────────────────────────────────
 
   return {
+    // Work in the crypto worker right now (core.js holds a UI update reload).
+    busy: () => _workerCallbacks.size > 0,
+
     // Utilities
     toBase64,
     fromBase64,

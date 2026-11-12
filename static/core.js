@@ -337,6 +337,133 @@
     window.addEventListener('resize', function () { clearTimeout(t); t = setTimeout(buildAll, 200) }, { passive: true })
   }
 
+  // ---- New UI build: reload into it at a safe moment ---------------------
+  // <meta name="onegy-build"> is the build this page came from; GET /api/build
+  // the server's. A new build seen twice a minute apart (a promote that rolls
+  // back does not count) is applied after a random delay (no reload stampede):
+  // at once when the page is hidden or idle and nothing is in progress, else a
+  // toast offers it and it waits. A breaking build (old pages break on the new
+  // API) reloads once nothing is in progress, even while someone looks.
+  var Update = (function () {
+    var CHECK_MS = 10 * 60 * 1000, MIN_GAP_MS = 60 * 1000, CONFIRM_MS = 75 * 1000
+    var IDLE_MS = 5 * 60 * 1000, JITTER_MS = 2 * 60 * 1000, TICK_MS = 30 * 1000
+    var meta = document.querySelector('meta[name="onegy-build"]')
+    var lastCheck = 0, lastInput = Date.now(), seen = null, ready = null, toast = null, net = 0
+
+    // Network work in flight: uploads (XHR) and fetches until their body is read.
+    function hold (p) {
+      net++
+      var done = function () { net-- }
+      p.then(done, done)
+      return p
+    }
+    if (window.XMLHttpRequest) {
+      var send = XMLHttpRequest.prototype.send
+      XMLHttpRequest.prototype.send = function () {
+        net++
+        this.addEventListener('loadend', function () { net-- })
+        return send.apply(this, arguments)
+      }
+    }
+    if (window.fetch) {
+      var nativeFetch = window.fetch
+      window.fetch = function () {
+        return hold(nativeFetch.apply(window, arguments)).then(function (r) {
+          ['arrayBuffer', 'blob', 'json', 'text', 'formData'].forEach(function (m) {
+            var read = r[m]
+            if (read) r[m] = function () { return hold(read.apply(r, arguments)) }
+          })
+          return r
+        })
+      }
+    }
+
+    function busy () {
+      if (net > 0) return true
+      if (window.OneGyCrypto && OneGyCrypto.busy && OneGyCrypto.busy()) return true
+      // Every page's unsaved-work and upload guard is a cancelling beforeunload listener.
+      var ev = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(ev)
+      if (ev.defaultPrevented) return true
+      if ([].some.call(document.querySelectorAll('audio, video'), function (m) { return !m.paused })) return true
+      var fields = document.querySelectorAll('textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=button]):not([type=submit])')
+      return [].some.call(fields, function (el) {
+        return !el.readOnly && !el.disabled && el.value !== el.defaultValue && el.getClientRects().length > 0
+      })
+    }
+
+    function reload () {
+      try { location.reload() } catch (e) {}
+    }
+
+    function showNotice () {
+      if (toast && toast.isConnected) return
+      var host = document.getElementById('toastContainer')
+      if (!host) return
+      toast = document.createElement('div')
+      toast.className = 'toast-message toast-info'
+      toast.setAttribute('role', 'status')
+      toast.textContent = ready.breaking ? 'ONE.GY was updated and reloads in a moment' : 'ONE.GY was updated'
+      var btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'rd-btn rd-btn-ghost rd-btn-sm'
+      btn.textContent = 'Reload'
+      btn.addEventListener('click', reload)
+      toast.appendChild(btn)
+      host.appendChild(toast)
+    }
+
+    function apply () {
+      if (!ready || !ready.armed) return
+      var idle = document.hidden || Date.now() - lastInput >= IDLE_MS
+      // A breaking build waits one tick with its notice up.
+      if ((idle || (ready.breaking && toast)) && !busy()) { reload(); return }
+      showNotice()
+    }
+
+    function check (force) {
+      if (!meta || !window.fetch) return
+      var now = Date.now()
+      if (!force && now - lastCheck < MIN_GAP_MS) return
+      lastCheck = now
+      nativeFetch('/api/build', { cache: 'no-store', credentials: 'omit' })
+        .then(function (r) { return r.ok ? r.json() : null })
+        .then(function (d) {
+          if (!d || !d.build || ready) return
+          if (d.build === meta.content) { seen = null; return }
+          if (!seen || seen.build !== d.build) {
+            seen = { build: d.build, at: now }
+            setTimeout(function () { check(true) }, CONFIRM_MS)
+            return
+          }
+          if (now - seen.at < MIN_GAP_MS) return
+          ready = { breaking: String(d.breaking) !== meta.getAttribute('data-breaking'), armed: false }
+          setTimeout(function () {
+            ready.armed = true
+            apply()
+            setInterval(apply, TICK_MS)
+          }, Math.random() * JITTER_MS)
+        })
+        .catch(function () {})
+    }
+
+    function init () {
+      if (!meta) return
+      var touch = function () { lastInput = Date.now() }
+      ;['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'scroll'].forEach(function (t) {
+        document.addEventListener(t, touch, { capture: true, passive: true })
+      })
+      document.addEventListener('visibilitychange', function () { if (document.hidden) apply(); else check() })
+      window.addEventListener('focus', function () { check() })
+      window.addEventListener('online', function () { check() })
+      setInterval(function () { check() }, CHECK_MS)
+    }
+
+    return { init: init, busy: busy, check: check }
+  })()
+  // ONE.GY Desktop asks before an update restart (desktop/docs/site-bridge.md).
+  window.OneGyUpdate = { busy: Update.busy }
+
     document.addEventListener('submit', function (e) {
       var form = e.target && e.target.closest ? e.target.closest('form.js-logout-form') : null
       if (!form) return
@@ -344,7 +471,7 @@
       try { sessionStorage.clear() } catch (err) {}
     })
 
-    function boot () { initNav(); initNotifs(); initReveal(); initCountUp(); initModals(); initMarquee() }
+    function boot () { initNav(); initNotifs(); initReveal(); initCountUp(); initModals(); initMarquee(); Update.init() }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot)
   else boot()
 
