@@ -225,6 +225,14 @@
     return nav
   }
   function endLoad (key) { clearTimeout(skelTimer); el.view.classList.remove('is-loading'); shownKey = key }
+  // The session ran out while the page sat open (6 h idle): load the page for
+  // real so the server sends it to sign-in. The desktop app signs its view in
+  // again there and comes back to this path.
+  function sessionExpired (r, path) {
+    if (r.status !== 401) return false
+    location.assign(path)
+    return true
+  }
 
   async function loadFolder (id, opts) {
     opts = opts || {}
@@ -249,6 +257,7 @@
       var r = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       if (stale(seq)) return
       if (!r.ok) {
+        if (sessionExpired(r, id == null ? '/files' : '/files/folder/' + id)) return
         if (opts.fallbackRoot && r.status === 404 && id != null) return loadFolder(null)
         throw new Error('HTTP ' + r.status)
       }
@@ -307,6 +316,7 @@
       // A JSON error body used to be parsed as an empty listing, which renders
       // "Trash is empty" — telling the user their deleted data is already gone
       // when the request merely failed.
+      if (sessionExpired(r, '/trash')) return
       if (!r.ok) throw new Error('HTTP ' + r.status)
       var d = await r.json()
       if (stale(seq)) return
