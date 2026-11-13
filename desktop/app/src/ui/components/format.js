@@ -34,14 +34,18 @@ export function ago(iso) {
   if (!Number.isFinite(t)) return '–';
   const s = (Date.now() - t) / 1000;
   if (s < 45) return 'just now';
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return new Date(t).toLocaleDateString();
+  const days = Math.floor(s / 86400);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  const d = new Date(t);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(d.getFullYear() === new Date().getFullYear() ? {} : { year: 'numeric' }) });
 }
 
 export function dateTime(iso) {
   const t = Date.parse(iso);
-  return Number.isFinite(t) ? new Date(t).toLocaleString() : '–';
+  return Number.isFinite(t) ? new Date(t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '–';
 }
 
 export const shortHash = (h) => (typeof h === 'string' && h ? `${h.replace(/…$/, '').slice(0, 10)}…` : '–');
@@ -78,7 +82,7 @@ export function syncPercent(s) {
 
 export const clockTime = (iso) => {
   const t = Date.parse(iso);
-  return Number.isFinite(t) ? new Date(t).toLocaleTimeString() : '';
+  return Number.isFinite(t) ? new Date(t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
 };
 
 export const basename = (p) => String(p || '').split(/[\\/]/).filter(Boolean).pop() || String(p || '');

@@ -24,7 +24,7 @@ function numberInput(value, { min = 0, max, step = 1 }, onchange) {
   });
 }
 
-// deletes: false leaves out "Sync deletes" (the wizard asks backups directly).
+// deletes: false leaves out "Sync deletions" (the wizard asks backups directly).
 export function syncOptionsForm(cfg, { platform = 'linux', deletes = true, onChange = () => {} } = {}) {
   const set = (fn) => (v) => { fn(v); onChange(); };
   cfg.schedule = { mode: 'live', interval_minutes: 15, window: null, ...cfg.schedule };
@@ -41,18 +41,18 @@ export function syncOptionsForm(cfg, { platform = 'linux', deletes = true, onCha
     intervalField.hidden = cfg.schedule.mode !== 'interval';
     windowField.hidden = cfg.schedule.mode !== 'window';
   };
-  const debris = field('Keep local deleted files for (days)', numberInput(cfg.debris_days, { min: 0, max: 3650 }, set((v) => { cfg.debris_days = v; })),
-    'Deleted and replaced files go to .onegy/debris first. 0 moves them to the system trash instead.');
+  const debris = field('Keep deleted files for (days)', numberInput(cfg.debris_days, { min: 0, max: 3650 }, set((v) => { cfg.debris_days = v; })),
+    'Deleted and replaced files wait in .onegy/debris first. Set to 0 to send them straight to the system trash.');
 
   const el = h('div', { class: 'dk-options' },
     h('section', { class: 'dk-opt-group' },
       h('h3', { class: 'dk-opt-title' }, 'Conflicts and issues'),
-      field('When a file changed on both sides', select(POLICY, cfg.conflict_policy, set((v) => { cfg.conflict_policy = v; })),
-        '"Prefer" options keep the other copy as an old version, so nothing is lost.'),
+      field('When a file changes on both sides', select(POLICY, cfg.conflict_policy, set((v) => { cfg.conflict_policy = v; })),
+        '“Prefer” options keep the other copy as an older version, so nothing is lost.'),
       field('Issue handling', select(ISSUE_MODE, cfg.issue_mode, set((v) => { cfg.issue_mode = v; })))),
     h('section', { class: 'dk-opt-group' },
-      h('h3', { class: 'dk-opt-title' }, 'Deletes'),
-      deletes ? row('Sync deletes', 'Off: deleting a file on one side leaves the other copy alone.',
+      h('h3', { class: 'dk-opt-title' }, 'Deletions'),
+      deletes ? row('Sync deletions', 'When off, deleting a file on one side leaves the other copy alone.',
         switchInput(cfg.propagate_deletes, set((v) => { cfg.propagate_deletes = v; }))) : null,
       debris),
     h('section', { class: 'dk-opt-group' },
@@ -62,14 +62,14 @@ export function syncOptionsForm(cfg, { platform = 'linux', deletes = true, onCha
     h('section', { class: 'dk-opt-group' },
       h('h3', { class: 'dk-opt-title' }, 'Bandwidth and power'),
       h('div', { class: 'dk-grid-2' },
-        field('Upload limit (KB/s)', numberInput(cfg.limits.upload_kbps, { min: 0, max: 10000000 }, set((v) => { cfg.limits.upload_kbps = v; })), '0 = app setting'),
-        field('Download limit (KB/s)', numberInput(cfg.limits.download_kbps, { min: 0, max: 10000000 }, set((v) => { cfg.limits.download_kbps = v; })), '0 = app setting')),
+        field('Upload limit (KB/s)', numberInput(cfg.limits.upload_kbps, { min: 0, max: 10000000 }, set((v) => { cfg.limits.upload_kbps = v; })), '0 uses the app setting.'),
+        field('Download limit (KB/s)', numberInput(cfg.limits.download_kbps, { min: 0, max: 10000000 }, set((v) => { cfg.limits.download_kbps = v; })), '0 uses the app setting.')),
       h('div', { class: 'dk-grid-2' },
-        field('On a metered network', select(INHERIT, cfg.metered, set((v) => { cfg.metered = v; }))),
-        field('On battery', select(INHERIT, cfg.battery, set((v) => { cfg.battery = v; }))))),
+        field('On metered networks', select(INHERIT, cfg.metered, set((v) => { cfg.metered = v; }))),
+        field('On battery power', select(INHERIT, cfg.battery, set((v) => { cfg.battery = v; }))))),
     h('section', { class: 'dk-opt-group' },
       h('h3', { class: 'dk-opt-title' }, 'Files'),
-      row('Thumbnails for images', 'Encrypted previews, so photos look the same on the website.',
+      row('Image thumbnails', 'Encrypted previews, so photos look the same on the website.',
         switchInput(cfg.thumbnails, set((v) => { cfg.thumbnails = v; }))),
       platform === 'linux'
         ? row('Keep the executable bit', 'Restores file permissions on other Linux computers.',

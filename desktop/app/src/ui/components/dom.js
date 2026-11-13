@@ -70,8 +70,10 @@ export function field(label, control, hint) {
     h('p', { class: 'rd-field-error', 'aria-live': 'polite' }));
 }
 
+// The label points at the control, or at the input inside a wrapper (num() in settings.js).
 export function row(label, hint, control) {
-  const id = control.id || (control.id = nextId('r'));
+  const target = control.matches('input, select, textarea, button') ? control : control.querySelector('input, select, textarea') || control;
+  const id = target.id || (target.id = nextId('r'));
   return h('div', { class: 'rd-field-row' },
     h('div', { class: 'rd-field-text' },
       h('label', { class: 'rd-field-label', for: id }, label),

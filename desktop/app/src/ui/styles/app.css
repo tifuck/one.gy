@@ -20,6 +20,11 @@ body.rd-app{ background:transparent; }
 .dk-solo .adm-main{ display:flex; flex-direction:column; }
 .dk-solo #admPanel{ width:100%; max-width:760px; margin:auto; }
 .dk-solo #admPanel:has(.dk-signin, .dk-lock){ max-width:400px; }
+/* Every page has one content width, so switching sections never moves the right edge. */
+#screen{ max-width:880px; }
+.dk-solo #screen, .dk-panel .adm-narrow{ max-width:none; }
+/* Actions line up with the title, however long the subtitle runs. */
+.ui-v2 .adm-head .rd-page-actions{ align-self:start; }
 
 /* ---- Sign-in (screens/signin.js): the website's sign-in card -------------- */
 .dk-signin{ padding:32px 32px 24px; background:var(--panel); border:1px solid var(--line); border-radius:14px; }
@@ -56,7 +61,18 @@ body.rd-app{ background:transparent; }
 .dk-btn-row{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .dk-grid-2{ display:grid; grid-template-columns:repeat(auto-fit,minmax(12rem,1fr)); gap:12px; }
 .ui-v2 .dk-num{ width:8.5rem; }
-.ui-v2 .rd-field-row > select.form-input{ width:auto; min-width:11rem; max-width:100%; }
+/* Settings rows: every control is 32px tall like the buttons, selects and number boxes share one width. */
+.ui-v2 .rd-field-row{ min-height:32px; }
+.ui-v2 .rd-field-row > select.form-input, .ui-v2 .dk-numbox{ flex:none; width:13rem; max-width:100%; }
+.ui-v2 .rd-field-row > select.form-input, .ui-v2 .dk-numbox > .form-input{ height:32px; font-size:.86rem; }
+.dk-numbox{ position:relative; }
+.ui-v2 .dk-numbox > .form-input{ width:100%; padding-right:4.75rem; font-variant-numeric:tabular-nums; -moz-appearance:textfield; }
+.dk-numbox > .form-input::-webkit-inner-spin-button, .dk-numbox > .form-input::-webkit-outer-spin-button{ -webkit-appearance:none; margin:0; }
+.dk-numbox-unit{ position:absolute; top:50%; right:12px; transform:translateY(-50%); font-size:.8rem; color:var(--text-faint); pointer-events:none; }
+.dk-row-value{ max-width:18rem; margin-right:4px; font-size:.84rem; color:var(--text-dim); }
+.rd-field-hint > .dk-path{ display:block; }
+.dk-row-form{ display:flex; flex-direction:column; gap:10px; padding-top:14px; border-top:1px solid var(--line); }
+.dk-row-form[hidden]{ display:none; }
 .ui-v2 code{ font-family:var(--font-mono); font-size:.8em; padding:1px 5px; border-radius:5px; background:var(--press); }
 /* dom.js icon() wraps the svg in a span; the site styles a bare svg */
 .ui-v2 .rd-callout > .dk-icon{ margin-top:1px; color:var(--text-dim); }
@@ -83,22 +99,29 @@ body.rd-app{ background:transparent; }
 .dk-offline{ display:grid; place-items:center; min-height:100vh; padding:24px; }
 
 /* ---- Syncs ----------------------------------------------------------------------------------- */
-.dk-sync{ display:flex; align-items:flex-start; gap:14px; padding:14px 12px 14px 16px; }
+/* A row: type icon | name, local → one.gy, progress, meta | state | actions, on one grid for every
+   row: the status column has a fixed width so bars and paths end in the same place, and everything
+   hangs from the top, so a row with a progress bar or an error only grows downwards. The status
+   and the buttons centre on the name's line, like the buttons in Transfers. */
+.dk-sync{ display:grid; grid-template-columns:36px minmax(0,1fr) 12rem auto; align-items:start; column-gap:14px; padding:14px 12px 14px 16px; }
 .dk-sync + .dk-sync{ border-top:1px solid var(--line); }
 .dk-sync-icon{ display:grid; place-items:center; width:36px; height:36px; flex:none; border-radius:9px; background:var(--surface-2); color:var(--text-dim); }
 .dk-sync-icon.is-e2ee{ color:var(--accent); }
-.dk-sync-main{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:5px; }
-.dk-sync-title{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-.dk-sync-name{ font-size:.95rem; font-weight:600; letter-spacing:-.01em; }
+.dk-sync-main{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.dk-sync-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; font-weight:600; letter-spacing:-.01em; line-height:1.35; }
 .dk-pill-btn{ cursor:pointer; }
 .dk-sync-paths{ display:flex; align-items:center; gap:6px; min-width:0; font-size:.82rem; color:var(--text-dim); }
 .dk-sync-paths .dk-path{ flex:0 1 auto; }
-.dk-sync-arrow svg{ width:14px; height:14px; color:var(--text-faint); }
-.dk-sync-meta{ display:flex; gap:12px; font-size:.76rem; color:var(--text-faint); }
-.ui-v2 .dk-sync-meter{ max-width:360px; margin:2px 0; }
+.dk-sync-arrow svg{ width:13px; height:13px; color:var(--text-faint); }
+.dk-sync-meta{ display:flex; flex-wrap:wrap; font-size:.76rem; color:var(--text-faint); }
+.dk-sync-meta > * + *::before{ content:"·"; margin:0 6px; color:var(--text-faint); }
+.dk-sync-meta .is-warn{ color:var(--warn); }
+.ui-v2 .dk-sync-meter{ max-width:none; margin:5px 0 3px; }
 .dk-sync-detail{ font-size:.78rem; color:var(--text-dim); overflow-wrap:anywhere; }
 .dk-sync-detail.is-warn{ color:var(--warn); }
-.dk-sync-actions{ display:flex; gap:2px; flex:none; }
+.dk-sync-detail.is-bad{ color:var(--bad); }
+.dk-sync-status{ display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:6px; min-height:21px; }
+.dk-sync-actions{ display:flex; align-items:center; gap:2px; height:21px; }
 .ui-v2 .rd-meter.is-busy .rd-meter-fill{ width:30%; animation:dkbusy 1.4s ease-in-out infinite; }
 @keyframes dkbusy{ from{ transform:translateX(-100%); } to{ transform:translateX(340%); } }
 .dk-drop{ position:relative; min-height:100%; }
@@ -107,11 +130,20 @@ body.rd-app{ background:transparent; }
   border-radius:14px; background:var(--accent-soft); color:var(--accent); font-weight:600; pointer-events:none; }
 
 /* ---- Transfers ------------------------------------------------------------------------------------ */
-.dk-toolbar{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin-bottom:12px; }
+.dk-toolbar{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin-bottom:16px; }
 .dk-toolbar-right{ display:flex; gap:8px; margin-left:auto; }
-.dk-toolbar-quiet{ padding-bottom:12px; border-bottom:1px solid var(--line); }
-.ui-v2 .dk-search{ width:14rem; height:32px; }
-.ui-v2 .dk-sort{ width:auto; height:32px; }
+.ui-v2 .dk-search{ width:12rem; height:32px; font-size:.84rem; }
+.ui-v2 .dk-sort{ width:auto; height:32px; font-size:.84rem; }
+.dk-caret svg{ width:14px; height:14px; margin-right:-4px; color:var(--text-dim); }
+/* Fixed columns: the name takes what Status (room for a two-line error) and the buttons leave. */
+.ui-v2 .dk-tr-table{ table-layout:fixed; }
+.ui-v2 .dk-tr-table th.dk-tr-status{ width:17rem; }
+.ui-v2 .dk-tr-table th.is-actions{ width:6.5rem; }
+/* Cells hang from the top: the status text and the buttons sit on the file name's line whatever
+   else a row shows (sub line, bar, a two-line error). */
+.ui-v2 .dk-tr-table td{ vertical-align:top; }
+.ui-v2 .dk-tr-table td.dk-tr-detail{ padding-top:9px; }
+.dk-tr-actions{ display:flex; justify-content:flex-end; gap:2px; margin:-6px 0; }
 .dk-tr-name{ display:flex; align-items:center; gap:8px; font-weight:500; min-width:0; }
 .dk-tr-name > span:last-child{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .dk-tr-dir svg{ width:15px; height:15px; }
@@ -119,7 +151,7 @@ body.rd-app{ background:transparent; }
 .dk-tr-dir.is-down{ color:var(--good); }
 .dk-tr-sub{ margin:2px 0 0 23px; overflow:hidden; text-overflow:ellipsis; font-size:.76rem; color:var(--text-faint); }
 .ui-v2 .dk-tr-meter{ margin:6px 0 2px 23px; max-width:420px; }
-.dk-tr-detail{ white-space:nowrap; color:var(--text-dim); font-size:.8rem; }
+.dk-tr-detail{ color:var(--text-dim); font-size:.8rem; line-height:1.45; }
 .dk-tr-error{ color:var(--bad); white-space:normal; }
 .dk-tr-warn{ color:var(--warn); white-space:normal; }
 
@@ -143,8 +175,13 @@ body.rd-app{ background:transparent; }
 .dk-issue-note{ display:flex; align-items:flex-start; gap:6px; margin-top:8px; }
 
 /* ---- Settings ---------------------------------------------------------------------------------------- */
-.dk-settings-body{ margin-top:16px; }
-.dk-kv{ display:grid; grid-template-columns:max-content minmax(0,1fr); gap:6px 16px; font-size:.86rem; }
+.rd-tabs + .dk-settings-body{ margin-top:16px; }
+/* A new tab or section fades in; its panels are built in one go (settings.js render). */
+.dk-settings-body > *{ animation:dk-in .18s cubic-bezier(0,0,.2,1); }
+@keyframes dk-in{ from{ opacity:0; } }
+.dk-kv{ display:grid; grid-template-columns:9rem minmax(0,1fr); gap:8px 16px; font-size:.86rem; }
+.dk-kv + .rd-field-row{ padding-top:14px; border-top:1px solid var(--line); }
+.ui-v2 .dk-kv-meter{ max-width:18rem; margin-top:8px; }
 .dk-kv dt, .dk-kv > span:nth-child(odd){ color:var(--text-dim); }
 .dk-kv dd{ margin:0; min-width:0; overflow-wrap:anywhere; }
 .dk-mini-list{ display:flex; flex-direction:column; gap:6px; font-size:.86rem; }
@@ -245,4 +282,5 @@ label.dk-tree-name{ cursor:pointer; }
 }
 @media (prefers-reduced-motion:reduce){
   .ui-v2 .rd-meter.is-busy .rd-meter-fill{ animation:none; width:100%; opacity:.5; }
+  .dk-settings-body > *{ animation:none; }
 }

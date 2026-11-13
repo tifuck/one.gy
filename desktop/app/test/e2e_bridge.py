@@ -479,7 +479,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     # 4. Conflict with "Ask me", resolved in Issues.
     page.get_by_role('button', name='Actions for Projects').click()
     page.get_by_role('menuitem', name='Settings').click()
-    page.locator('dialog').get_by_label('When a file changed on both sides').select_option('ask')
+    page.locator('dialog').get_by_label('When a file changes on both sides').select_option('ask')
     page.locator('dialog').get_by_role('button', name='Save').click()
     page.wait_for_selector('dialog', state='detached')
     page.get_by_role('button', name='Pause Projects').click()
@@ -553,7 +553,7 @@ def run(page, bridge, other, local, backup_src, username, password):
     # Settings > Folders.
     tab(page, 'Settings')
     page.get_by_role('tab', name='Folders').click()
-    page.wait_for_selector('text=Clear debris now')
+    page.get_by_role('button', name='Empty deleted files of Projects').wait_for()
     shot(page, bridge, 'settings-folders')
 
     # 7. Remove the backup (make it a normal folder), then the sync with its local folder.

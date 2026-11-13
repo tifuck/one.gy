@@ -21,12 +21,12 @@ function progressOf(s) {
   const pending = (st.pending_up || 0) + (st.pending_down || 0);
   if (!pending) return null;
   const parts = [];
-  if (st.pending_up) parts.push(`↑ ${count(st.pending_up)}`);
-  if (st.pending_down) parts.push(`↓ ${count(st.pending_down)}`);
+  if (st.pending_up) parts.push(`${count(st.pending_up)} to upload`);
+  if (st.pending_down) parts.push(`${count(st.pending_down)} to download`);
   if (st.bytes_left) parts.push(`${bytes(st.bytes_left)} left`);
   const pct = syncPercent(s);
   if (pct !== null) parts.push(`${Math.floor(pct)}%`);
-  return parts.join(' · ');
+  return parts;
 }
 
 // The bar of a sync with work left: how far it is when the engine gave a
@@ -60,10 +60,11 @@ function syncRow(s) {
     type: 'button', class: 'rd-icon-btn', 'aria-label': `Actions for ${s.name}`, 'aria-haspopup': 'menu',
     onclick: (e) => openMenu(e.currentTarget, rowMenu(s)),
   }, icon('more'));
-  // Why the sync waits or what it is busy with, in the engine's words.
+  // Why the sync waits or what it is busy with, in the engine's words, in the tone of its state.
+  const tone = state.tone === 'warn' || state.tone === 'bad' ? ` is-${state.tone}` : '';
   const detail = s.detail && !s.paused
-    ? h('div', { class: `dk-sync-detail${s.waiting ? ' is-warn' : ''}` },
-      s.detail, s.retry_at ? ` · next try ${clockTime(s.retry_at)}` : '')
+    ? h('div', { class: `dk-sync-detail${tone}` },
+      s.detail, s.retry_at ? ` Next try at ${clockTime(s.retry_at)}.` : '')
     : null;
   let verifyMeter = null;
   if (verifying) {
@@ -72,24 +73,26 @@ function syncRow(s) {
     fillEl.style.width = `${pct}%`;
     verifyMeter = h('div', { class: 'rd-meter dk-sync-meter', role: 'progressbar', 'aria-label': 'Verifying', 'aria-valuenow': Math.round(pct), 'aria-valuemin': 0, 'aria-valuemax': 100 }, fillEl);
   }
+  const remote = `one.gy${s.remote_path === '/' ? '' : s.remote_path}`;
+  const synced = s.stats && s.stats.last_synced_at;
   return h('li', { class: 'dk-sync' },
-    h('span', { class: `dk-sync-icon${s.encryption === 'e2ee' ? ' is-e2ee' : ''}` }, icon(type.icon)),
+    h('span', { class: `dk-sync-icon${s.encryption === 'e2ee' ? ' is-e2ee' : ''}`, title: type.label }, icon(type.icon)),
     h('div', { class: 'dk-sync-main' },
-      h('div', { class: 'dk-sync-title' },
-        h('span', { class: 'dk-sync-name' }, s.name),
-        h('span', { class: `rd-pill is-dot${state.tone ? ` is-${state.tone}` : ''}` }, state.label),
-        s.encryption === 'standard' ? h('span', { class: 'rd-pill is-warn' }, 'Standard encryption') : null,
-        issues ? h('button', { type: 'button', class: 'rd-pill is-bad dk-pill-btn', onclick: () => navigate('issues') }, `${issues} issue${issues === 1 ? '' : 's'}`) : null),
+      h('span', { class: 'dk-sync-name', title: s.name }, s.name),
       h('div', { class: 'dk-sync-paths' },
         h('span', { class: 'dk-path', title: s.local_path }, s.local_path),
-        icon(s.type === 'mirror' ? 'back' : s.type === 'two_way' || s.type === 'full' ? 'sync' : 'forward', 'dk-sync-arrow'),
-        h('span', { class: 'dk-path', title: s.remote_path }, `one.gy${s.remote_path === '/' ? '' : s.remote_path}`)),
+        icon(s.type === 'mirror' ? 'arrowLeft' : s.type === 'two_way' || s.type === 'full' ? 'arrowBoth' : 'arrowRight', 'dk-sync-arrow'),
+        h('span', { class: 'dk-path', title: remote }, remote)),
       verifyMeter || (progress && !s.paused ? progressMeter(s) : null),
       h('div', { class: 'dk-sync-meta' },
         h('span', null, type.short),
+        s.encryption === 'standard' ? h('span', { class: 'is-warn', title: 'Not end-to-end encrypted' }, 'Standard encryption') : null,
         verifying ? h('span', null, `Verifying ${count(verifying.done)} of ${count(verifying.total)} files`) : null,
-        progress ? h('span', null, progress) : h('span', null, `Last synced ${ago(s.stats && s.stats.last_synced_at)}`)),
+        progress ? progress.map((p) => h('span', null, p)) : h('span', null, synced ? `Last synced ${ago(synced)}` : 'Not synced yet')),
       detail),
+    h('div', { class: 'dk-sync-status' },
+      issues ? h('button', { type: 'button', class: 'rd-pill is-bad dk-pill-btn', onclick: () => navigate('issues') }, `${issues} issue${issues === 1 ? '' : 's'}`) : null,
+      h('span', { class: `rd-pill is-dot${state.tone ? ` is-${state.tone}` : ''}` }, state.label)),
     h('div', { class: 'dk-sync-actions' },
       h('button', {
         type: 'button', class: 'rd-icon-btn', 'aria-label': s.paused ? `Resume ${s.name}` : `Pause ${s.name}`,
@@ -115,7 +118,7 @@ function rowMenu(s) {
     'sep',
     { label: 'Choose what to sync', icon: 'sliders', run: () => whatToSyncDialog(s) },
     { label: 'Settings', icon: 'settings', run: () => settingsDialog(s) },
-    { label: 'View debris', icon: 'trash', run: () => run(bridge('openPath', joinLocal(s.local_path, '.onegy', 'debris'))) },
+    { label: 'Open deleted files', icon: 'trash', run: () => run(bridge('openPath', joinLocal(s.local_path, '.onegy', 'debris'))) },
     'sep',
     { label: 'Remove sync', icon: 'x', danger: true, run: () => removeSync(s) },
   ];
@@ -131,7 +134,7 @@ async function verify(s) {
   const res = await rpc('syncs.verify', { id: s.id }).catch(toastError);
   if (!res) return;
   const bad = (res.differs || 0) + (res.missing || 0);
-  toast(bad ? `${count(res.differs)} differ, ${count(res.missing)} missing. See Issues.` : `${count(res.matches)} files match.`, bad ? 'error' : 'success', 6000);
+  toast(bad ? `${count(res.differs)} differ and ${count(res.missing)} are missing. See Issues.` : `All ${count(res.matches)} files match.`, bad ? 'error' : 'success', 6000);
 }
 
 function settingsDialog(s) {
@@ -139,15 +142,15 @@ function settingsDialog(s) {
   const fixed = h('div', { class: 'dk-kv' },
     h('span', null, 'Type'), h('span', null, (SYNC_TYPES[s.type] || {}).label || s.type),
     h('span', null, 'This computer'), h('span', { class: 'dk-path' }, s.local_path),
-    h('span', null, 'one.gy'), h('span', { class: 'dk-path' }, s.remote_path),
-    h('span', null, 'Encryption'), h('span', null, s.encryption === 'e2ee' ? 'End-to-end encrypted' : 'Standard'));
+    h('span', null, 'On one.gy'), h('span', { class: 'dk-path' }, `one.gy${s.remote_path === '/' ? '' : s.remote_path}`),
+    h('span', null, 'Encryption'), h('span', null, s.encryption === 'e2ee' ? 'End-to-end encrypted' : 'Standard encryption'));
   const name = h('input', { class: 'form-input', value: s.name, maxlength: 80 });
   openDialog({
-    title: `${s.name} settings`,
+    title: `Settings for ${s.name}`,
     wide: true,
     body: [
       fixed,
-      h('p', { class: 'rd-field-hint' }, 'Folders, type and encryption are fixed. To change them, remove the sync and add it again.'),
+      h('p', { class: 'rd-field-hint' }, 'The folders, type and encryption can’t be changed. To change them, remove the sync and add it again.'),
       field('Name', name),
       syncOptionsForm(patch, { platform: store.version && store.version.platform }),
     ],
@@ -162,7 +165,7 @@ function settingsDialog(s) {
           for (const k of keys) if (JSON.stringify(patch[k]) !== JSON.stringify(s[k])) changes[k] = patch[k];
           const updated = await rpc('syncs.update', { id: s.id, patch: changes });
           store.syncs.set(updated.id, updated);
-          toast('Saved', 'success');
+          toast('Settings saved', 'success');
         },
       },
     ],
@@ -198,7 +201,7 @@ async function whatToSyncDialog(s) {
           if (filter.text() === text) return;
           const res = await rpc('syncs.setIgnoreRules', { id: s.id, text: filter.text() });
           if (!res.ok) throw new Error((res.errors || []).map((e) => `Line ${e.line}: ${e.message}`).join(' '));
-          toast('Saved. The sync applies it now.', 'success');
+          toast('Saved. The sync applies the change now.', 'success');
         },
       },
     ],
@@ -242,11 +245,11 @@ async function removeSync(s) {
 export function mount(container) {
   const list = h('div');
   const page = h('div', { class: 'dk-drop' },
-    pageHead('Syncs', 'Folders on this computer that stay in step with one.gy.',
+    pageHead('Syncs', 'Folders on this computer that stay in sync with one.gy.',
       h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('wizard', { type: 'backup' }) }, icon('backup'), 'Add backup'),
       h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard', {}) }, icon('plus'), 'Add sync')),
     list,
-    h('p', { class: 'dk-drop-hint' }, 'Tip: drop a folder here to sync it.'));
+    h('p', { class: 'dk-drop-hint' }, 'Drop a folder here to add a sync.'));
 
   function render() {
     clear(list);
@@ -254,8 +257,8 @@ export function mount(container) {
     if (!syncs.length) {
       append(list, h('div', { class: 'rd-empty' },
         h('span', { class: 'rd-empty-icon' }, icon('sync')),
-        h('h2', { class: 'rd-empty-title' }, 'Nothing syncs yet'),
-        h('p', { class: 'rd-empty-text' }, 'What should this computer do? You can add more later.'),
+        h('h2', { class: 'rd-empty-title' }, 'No syncs yet'),
+        h('p', { class: 'rd-empty-text' }, 'Choose what this computer should do. You can add more later.'),
         h('div', { class: 'dk-cards dk-empty-cards' }, ACTIONS.filter((a) => a.type).map((a) => h('button', {
           type: 'button', class: 'dk-card', onclick: () => navigate('wizard', { type: a.type }),
         }, h('span', { class: 'dk-card-icon' }, icon(SYNC_TYPES[a.type].icon)),

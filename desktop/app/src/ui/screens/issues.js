@@ -22,7 +22,7 @@ function side(label, s) {
       h('dt', null, 'Size'), h('dd', null, bytes(s.size)),
       s.mtime ? [h('dt', null, 'Modified'), h('dd', null, dateTime(s.mtime))] : null,
       h('dt', null, 'Hash'), h('dd', { class: 'dk-mono' }, shortHash(s.sha256)))
-      : h('p', { class: 'dk-side-none' }, 'Not there'));
+      : h('p', { class: 'dk-side-none' }, 'Not on this side'));
 }
 
 function localPathOf(issue) {
@@ -47,7 +47,7 @@ async function resolve(issue, action) {
     }
     await rpc('issues.resolve', params);
     store.issues.delete(issue.id);
-    toast('Done', 'success');
+    toast('Issue resolved', 'success');
   } catch (err) {
     toastError(err);
   }
@@ -66,7 +66,7 @@ async function viewVersions(issue) {
 function massDeleteText(issue) {
   const d = issue.detail || {};
   if (!d.count) return null;
-  return `${d.count.toLocaleString('en-US')} items were deleted ${d.side === 'remote' ? 'on one.gy' : 'on this computer'}. "Keep" ${d.side === 'remote' ? 'one.gy' : 'this computer'} deletes them on the other side too; the other choice brings them back.`;
+  return `${d.count.toLocaleString('en-US')} items were deleted ${d.side === 'remote' ? 'on one.gy' : 'on this computer'}. Keep ${d.side === 'remote' ? 'one.gy' : 'this computer'} deletes them on the other side too. The other choice brings them back.`;
 }
 
 function issueCard(issue) {
@@ -76,7 +76,7 @@ function issueCard(issue) {
     : versions ? 'Previous versions are kept on one.gy.' : null;
   return h('li', { class: 'dk-issue' },
     h('div', { class: 'dk-issue-head' },
-      h('span', { class: 'dk-issue-path', title: issue.path }, issue.path || '(sync root)'),
+      h('span', { class: 'dk-issue-path', title: issue.path }, issue.path || 'The sync folder itself'),
       h('span', { class: 'dk-issue-msg' }, issue.message)),
     showSides ? h('div', { class: 'dk-sides' }, side('This computer', issue.local), side('one.gy', issue.remote)) : null,
     note ? h('p', { class: 'rd-field-hint dk-issue-note' }, icon('info'), note) : null,
@@ -94,7 +94,7 @@ export function mount(container) {
   const banner = h('div');
   const groups = h('div', { class: 'dk-issue-groups' });
   append(container,
-    pageHead('Issues', 'Things the sync engine will not decide on its own. Nothing is deleted while an issue is open.'),
+    pageHead('Issues', 'Decisions the sync leaves to you. Nothing is deleted while an issue is open.'),
     banner, groups);
 
   render = () => {
@@ -105,27 +105,27 @@ export function mount(container) {
       append(groups, h('div', { class: 'rd-empty' },
         h('span', { class: 'rd-empty-icon' }, icon('check')),
         h('h2', { class: 'rd-empty-title' }, 'No issues'),
-        h('p', { class: 'rd-empty-text' }, 'Everything syncs on its own right now.')));
+        h('p', { class: 'rd-empty-text' }, 'Everything is syncing on its own.')));
       return;
     }
     const smart = issues.filter((i) => (store.syncs.get(i.sync_id) || {}).issue_mode !== 'advanced');
     if (smart.length) {
       append(banner, h('div', { class: 'rd-callout is-accent dk-banner' }, icon('info'),
-        h('div', null, `${smart.length} issue${smart.length === 1 ? '' : 's'} can be resolved automatically: conflicts keep both copies, nothing is overwritten.`),
+        h('div', null, `${smart.length} issue${smart.length === 1 ? '' : 's'} can be resolved automatically. Conflicts keep both copies, so nothing is overwritten.`),
         h('button', {
           type: 'button', class: 'rd-btn rd-btn-primary rd-btn-sm',
           onclick: async (e) => {
             e.currentTarget.disabled = true;
             try {
               const res = await rpc('issues.resolveAll', {});
-              toast(`${res.resolved} resolved`, 'success');
+              toast(`${res.resolved} issue${res.resolved === 1 ? '' : 's'} resolved`, 'success');
               await loadIssues();
             } catch (err) {
               toastError(err);
               e.currentTarget.disabled = false;
             }
           },
-        }, 'Resolve all automatically')));
+        }, 'Resolve all')));
     }
     const bySync = new Map();
     for (const i of issues) {

@@ -76,7 +76,7 @@ export function pinDialog({ title = 'Unlock with a PIN', strict = false } = {}) 
 }
 
 export function pinSummary(a) {
-  if (!a || !a.pin_set) return 'Off: ONE.GY asks for your password when it is locked.';
-  if (!pinUsable(a)) return 'Expired: enter your password once and the PIN works again.';
+  if (!a || !a.pin_set) return 'Off. ONE.GY asks for your password to unlock.';
+  if (!pinUsable(a)) return 'Expired. Enter your password once and the PIN works again.';
   return `On${a.pin_strict ? ', also after a restart' : ''}. Works until ${dateTime(a.pin_expires_at)}.`;
 }

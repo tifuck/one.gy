@@ -4,6 +4,7 @@ import {
   h, icon, clear, append, fill, pageHead,
 } from '../components/dom.js';
 import { toastError } from '../components/toast.js';
+import { openMenu } from '../components/menu.js';
 import { manualUpload, manualDownload } from '../components/manual.js';
 import {
   bytes, percent, basename, ago, transferStatus, transferWaits,
@@ -11,10 +12,10 @@ import {
 import { rpc, store, on, loadTransfers } from '../store.js';
 
 const TABS = [
-  { id: 'active', label: 'Active', match: (t) => t.state === 'active' || t.state === 'paused' },
-  { id: 'queued', label: 'Queued', match: (t) => t.state === 'queued' },
-  { id: 'done', label: 'Completed', match: (t) => t.state === 'done' },
-  { id: 'failed', label: 'Failed', match: (t) => t.state === 'failed' || t.state === 'cancelled' },
+  { id: 'active', label: 'Active', empty: 'No active transfers', match: (t) => t.state === 'active' || t.state === 'paused' },
+  { id: 'queued', label: 'Queued', empty: 'Nothing queued', match: (t) => t.state === 'queued' },
+  { id: 'done', label: 'Completed', empty: 'No completed transfers', match: (t) => t.state === 'done' },
+  { id: 'failed', label: 'Failed', empty: 'No failed transfers', match: (t) => t.state === 'failed' || t.state === 'cancelled' },
 ];
 const SORTS = {
   recent: (a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')),
@@ -36,7 +37,7 @@ function transferRow(t) {
       ? `${bytes(t.size)} · ${ago(t.finished_at)}`
       : t.state === 'cancelled'
         // A sync transfer stops when the sync is paused or its plan changes; the sync plans it again.
-        ? `${t.manual ? 'Cancelled' : 'Stopped; the sync takes it up again'} · ${bytes(t.size)}`
+        ? `${t.manual ? 'Cancelled' : 'Stopped, the sync will retry'} · ${bytes(t.size)}`
         : h('span', { class: transferWaits(t) ? 'dk-tr-warn' : null }, transferStatus(t));
   const actions = [];
   if (t.state === 'active' || t.state === 'queued') actions.push(h('button', { type: 'button', class: 'rd-icon-btn', 'aria-label': `Pause ${basename(t.path)}`, onclick: () => act('transfers.pause', { id: t.id }) }, icon('pause')));
@@ -46,10 +47,10 @@ function transferRow(t) {
     h('td', { class: 'is-trunc' },
       h('div', { class: 'dk-tr-name' }, icon(t.direction === 'up' ? 'upload' : 'download', `dk-tr-dir is-${t.direction}`),
         h('span', { title: t.path }, basename(t.path))),
-      h('div', { class: 'dk-tr-sub' }, sync ? sync.name : 'Manual', ' · ', t.path),
+      h('div', { class: 'dk-tr-sub' }, sync ? sync.name : 'Started by you', ' · ', t.path),
       live ? h('div', { class: 'rd-meter dk-tr-meter' }, fill) : null),
     h('td', { class: 'dk-tr-detail' }, detail),
-    h('td', { class: 'is-actions' }, actions));
+    h('td', { class: 'is-actions' }, h('div', { class: 'dk-tr-actions' }, actions)));
 }
 
 export function mount(container, params = {}) {
@@ -58,36 +59,43 @@ export function mount(container, params = {}) {
   let sort = 'recent';
   const tabs = h('div', { class: 'rd-tabs', role: 'tablist', 'aria-label': 'Transfer lists' });
   const body = h('tbody');
+  const emptyTitle = h('h2', { class: 'rd-empty-title' });
   const empty = h('div', { class: 'rd-empty', hidden: true },
     h('span', { class: 'rd-empty-icon' }, icon('transfers')),
-    h('h2', { class: 'rd-empty-title' }, 'Nothing here'),
+    emptyTitle,
     h('p', { class: 'rd-empty-text' }, 'Uploads and downloads show up here while they run.'));
-  const table = h('section', { class: 'rd-panel' }, h('div', { class: 'rd-table-wrap' }, h('table', { class: 'rd-table' },
-    h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Progress'), h('th', { class: 'is-actions' }, h('span', { class: 'sr-only' }, 'Actions')))),
+  const table = h('section', { class: 'rd-panel' }, h('div', { class: 'rd-table-wrap' }, h('table', { class: 'rd-table dk-tr-table' },
+    h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', { class: 'dk-tr-status' }, 'Status'), h('th', { class: 'is-actions' }, h('span', { class: 'sr-only' }, 'Actions')))),
     body)));
   const allPaused = () => [...store.transfers.values()].some((t) => t.state === 'paused');
+
+  // Pause and resume for everything at once: one button, the directions in its menu.
+  const globalBar = h('div', { class: 'dk-btn-row' });
+  function renderGlobal() {
+    fill(globalBar,
+      tab === 'done' ? h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => act('transfers.clearCompleted').then(loadTransfers) }, 'Clear completed') : null,
+      allPaused()
+        ? h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => act('transfers.resume', {}) }, icon('play'), 'Resume all')
+        : h('button', {
+          type: 'button', class: 'rd-btn rd-btn-ghost', 'aria-haspopup': 'menu',
+          onclick: (e) => openMenu(e.currentTarget, [
+            { label: 'Pause all', icon: 'pause', run: () => act('transfers.pause', {}) },
+            { label: 'Pause uploads', icon: 'upload', run: () => act('transfers.pause', { direction: 'up' }) },
+            { label: 'Pause downloads', icon: 'download', run: () => act('transfers.pause', { direction: 'down' }) },
+          ]),
+        }, icon('pause'), 'Pause', icon('chevronDown', 'dk-caret')));
+  }
 
   const toolbar = h('div', { class: 'dk-toolbar' },
     tabs,
     h('div', { class: 'dk-toolbar-right' },
       h('input', {
-        type: 'search', class: 'form-input dk-search', placeholder: 'Search', 'aria-label': 'Search transfers',
+        type: 'search', class: 'form-input dk-search', placeholder: 'Search transfers', 'aria-label': 'Search transfers',
         oninput: (e) => { query = e.target.value.trim().toLowerCase(); render(); },
       }),
       h('select', { class: 'form-input dk-sort', 'aria-label': 'Sort', onchange: (e) => { sort = e.target.value; render(); } },
-        h('option', { value: 'recent' }, 'Newest first'), h('option', { value: 'name' }, 'Name'), h('option', { value: 'size' }, 'Size'))));
-
-  const globalBar = h('div', { class: 'dk-toolbar dk-toolbar-quiet' });
-  function renderGlobal() {
-    fill(globalBar, 
-      allPaused()
-        ? h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.resume', {}) }, icon('play'), 'Resume all')
-        : h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.pause', {}) }, icon('pause'), 'Pause all'),
-      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.pause', { direction: 'up' }) }, 'Pause uploads'),
-      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.pause', { direction: 'down' }) }, 'Pause downloads'),
-      h('span', { class: 'dk-spacer' }),
-      tab === 'done' ? h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => act('transfers.clearCompleted').then(loadTransfers) }, 'Clear completed') : null);
-  }
+        h('option', { value: 'recent' }, 'Newest first'), h('option', { value: 'name' }, 'Name'), h('option', { value: 'size' }, 'Largest first')),
+      globalBar));
 
   function render() {
     const all = [...store.transfers.values()];
@@ -105,16 +113,17 @@ export function mount(container, params = {}) {
       .sort(SORTS[sort]);
     clear(body);
     for (const t of rows.slice(0, 500)) append(body, transferRow(t));
+    emptyTitle.textContent = query ? 'No matching transfers' : current.empty;
     empty.hidden = rows.length > 0;
     table.hidden = rows.length === 0;
     renderGlobal();
   }
 
   append(container,
-    pageHead('Transfers', 'Sync transfers can be paused. Uploads and downloads you start yourself can also be cancelled.',
+    pageHead('Transfers', 'Uploads and downloads on this computer.',
       h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => manualDownload() }, icon('download'), 'Download…'),
       h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => manualUpload() }, icon('upload'), 'Upload…')),
-    toolbar, globalBar, table, empty);
+    toolbar, table, empty);
 
   render();
   loadTransfers().catch(toastError);

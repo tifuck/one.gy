@@ -7,11 +7,13 @@
 // notifications, prevent sleep) go through appSettings; everything else is
 // the engine's settings.get / settings.set. Changes save as soon as they are
 // made. The theme follows the website's own switch.
+// Every panel is a list of rows: label and hint left, one control or the
+// row's buttons right (action()), read-only facts as a .dk-kv list.
 import {
   h, icon, clear, append, fill, field, row, select, switchInput, pageHead, nextId,
 } from '../components/dom.js';
 import { confirmDialog } from '../components/dialog.js';
-import { pinDialog, pinRules, pinSummary } from '../components/pin.js';
+import { pinDialog, pinSummary } from '../components/pin.js';
 import { pickRemote } from '../components/tree-picker.js';
 import { toast, toastError } from '../components/toast.js';
 import {
@@ -24,13 +26,21 @@ import {
 const SYNC_TABS = [['defaults', 'New syncs'], ['network', 'Network'], ['folders', 'Folders'], ['notifications', 'Notifications'], ['advanced', 'Advanced']];
 const APP_PAGES = {
   general: ['General', 'How ONE.GY starts and runs on this computer.'],
-  account: ['Account', 'The account this computer is signed in to.'],
+  account: ['Account', 'The account this computer syncs with.'],
   security: ['Security', 'The app lock and how this computer keeps your key.'],
-  updates: ['Updates', 'Which version runs here and how it updates.'],
-  about: ['About', 'Versions and diagnostics for support.'],
+  updates: ['Updates', 'The installed version and how ONE.GY updates.'],
+  about: ['About', 'Version details and diagnostics for support.'],
 };
-const SYNC_NOTIFY = [['conflict', 'Conflicts'], ['issue', 'Sync issues'], ['mass_delete', 'Large deletions'], ['transfer', 'Finished transfers']];
-const APP_NOTIFY = [['revoked', 'This computer removed from your devices'], ['info', 'Updates and other news']];
+const SYNC_NOTIFY = [
+  ['conflict', 'Conflicts', 'A file changed on this computer and on one.gy.'],
+  ['issue', 'Sync issues', 'Something needs your decision in Issues.'],
+  ['mass_delete', 'Large deletions', 'A sync paused before deleting many files.'],
+  ['transfer', 'Completed transfers', 'Uploads and downloads finished.'],
+];
+const APP_NOTIFY = [
+  ['revoked', 'Device removed', 'This computer was removed from your devices.'],
+  ['info', 'Updates and news', 'New versions and other announcements.'],
+];
 const INHERITLESS = [['pause', 'Pause'], ['continue', 'Keep syncing']];
 
 async function saveApp(patch) {
@@ -51,15 +61,22 @@ async function saveEngine(patch) {
   }
 }
 
-function num(value, min, max, onchange) {
-  return h('input', {
-    type: 'number', class: 'form-input dk-num', min, max, value,
+const button = (label, onclick, kind = 'ghost', iconName = null) => h('button', { type: 'button', class: `rd-btn rd-btn-${kind}`, onclick }, iconName ? icon(iconName) : null, label);
+
+// A row whose control is one or more buttons. Not a <label> target, so clicking the text runs nothing.
+const action = (label, hint, ...buttons) => row(label, hint, h('div', { class: 'dk-btn-row' }, buttons));
+
+// A number box with its unit inside it (KB/s, days, …).
+function num(value, min, max, onchange, unit) {
+  const input = h('input', {
+    type: 'number', class: 'form-input', min, max, value, inputmode: 'numeric',
     onchange: (e) => {
       const n = Math.min(max, Math.max(min, Math.round(Number(e.target.value)) || min));
       e.target.value = n;
       onchange(n);
     },
   });
+  return h('div', { class: 'dk-numbox' }, input, unit ? h('span', { class: 'dk-numbox-unit', 'aria-hidden': 'true' }, unit) : null);
 }
 
 function panel(title, sub, ...rows) {
@@ -73,34 +90,34 @@ function updateStep(u) {
   const v = u.version;
   switch (u.state) {
     case 'checking': return ['Checking for updates…', 'Checking…', null];
-    case 'downloading': return [`Downloading ${v}${u.progress ? ` · ${u.progress}%` : ''}…`, 'Downloading…', null];
-    case 'available': return [`ONE.GY ${v} is available.`, 'Update and restart', 'installUpdate', true];
-    case 'installing': return [`Installing ${v || 'the update'}… ONE.GY restarts when it is done.`, 'Installing…', null];
-    case 'ready': return [`${v ? `ONE.GY ${v}` : 'A new version'} is ready. Restart to use it; you'll be back where you left off.`, 'Restart now', 'installUpdate', true];
+    case 'downloading': return [`Downloading version ${v}${u.progress ? ` (${u.progress}%)` : ''}…`, 'Downloading…', null];
+    case 'available': return [`Version ${v} is available.`, 'Update and restart', 'installUpdate', true];
+    case 'installing': return [`Installing ${v ? `version ${v}` : 'the update'}. ONE.GY restarts when it’s done.`, 'Installing…', null];
+    case 'ready': return [`${v ? `Version ${v}` : 'A new version'} is ready. Restart to use it, and you’ll be back where you left off.`, 'Restart now', 'installUpdate', true];
     case 'error': return [u.error, u.failed === 'install' ? 'Try again' : 'Check for updates', u.failed === 'install' ? 'installUpdate' : 'checkForUpdates'];
-    case 'current': return [`Up to date · checked ${ago(u.checked_at)}.`, 'Check for updates', 'checkForUpdates'];
-    default: return ['', 'Check for updates', 'checkForUpdates'];
+    case 'current': return [`Up to date. Last checked ${ago(u.checked_at)}.`, 'Check for updates', 'checkForUpdates'];
+    default: return ['Not checked yet.', 'Check for updates', 'checkForUpdates'];
   }
 }
 
 function updateRow() {
   const u0 = store.update || { supported: false };
   const hint = h('p', { class: 'rd-field-hint', 'aria-live': 'polite' });
-  const button = h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', id: nextId('r') });
-  let action = null;
+  const btn = h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', id: nextId('r') });
+  let next = null;
   const paint = (u) => {
-    const [text, label, next, primary] = u.supported ? updateStep(u) : ['This build does not update itself.', 'Check for updates', null];
+    const [text, label, step, primary] = u.supported ? updateStep(u) : ['This build doesn’t update itself.', 'Check for updates', null];
     hint.textContent = text;
-    button.textContent = label;
-    button.className = `rd-btn ${primary ? 'rd-btn-primary' : 'rd-btn-ghost'}`;
-    button.disabled = !next;
-    action = next;
+    btn.textContent = label;
+    btn.className = `rd-btn ${primary ? 'rd-btn-primary' : 'rd-btn-ghost'}`;
+    btn.disabled = !step;
+    next = step;
   };
-  button.addEventListener('click', async () => {
-    if (!action) return;
-    button.disabled = true;
+  btn.addEventListener('click', async () => {
+    if (!next) return;
+    btn.disabled = true;
     try {
-      store.update = await bridge(action);
+      store.update = await bridge(next);
     } catch (err) {
       toastError(err);
     }
@@ -110,23 +127,23 @@ function updateRow() {
   paint(u0);
   return h('div', { class: 'rd-field-row' },
     h('div', { class: 'rd-field-text' },
-      h('label', { class: 'rd-field-label', for: button.id }, store.version ? `ONE.GY ${store.version.app}` : 'ONE.GY'),
+      h('span', { class: 'rd-field-label' }, store.version ? `Version ${store.version.app}` : 'ONE.GY'),
       hint),
-    button);
+    btn);
 }
 
 function general() {
   const a = store.app;
   return [
-    panel('Window', null,
+    panel('Startup and window', null,
       row('Open at login', 'Start ONE.GY in the tray when you sign in to this computer.', switchInput(a.launch_at_login, (v) => saveApp({ launch_at_login: v }))),
       row('Start minimized', 'Open in the tray instead of showing the window.', switchInput(a.start_minimized, (v) => saveApp({ start_minimized: v }))),
       row('Keep running when the window is closed', 'Syncing continues in the tray. Quit from the tray menu.', switchInput(a.close_to_tray, (v) => saveApp({ close_to_tray: v }))),
       store.version && store.version.platform === 'linux'
-        ? row('Open the status popover under the tray icon', 'GNOME on Wayland lets no app place its windows, so ONE.GY runs through XWayland there. Turn this off if text looks blurry with fractional scaling. Applies the next time ONE.GY starts.',
+        ? row('Place the status popover under the tray icon', 'GNOME on Wayland doesn’t let apps place their windows, so ONE.GY runs through XWayland there. Turn this off if text looks blurry with fractional scaling. Takes effect after a restart.',
           switchInput(a.linux_x11, (v) => saveApp({ linux_x11: v })))
         : null),
-    notifyPanel(APP_NOTIFY, 'Notifications about syncing are in Sync > Settings > Notifications.'),
+    notifyPanel(APP_NOTIFY, 'Sync notifications are in Sync › Settings › Notifications.'),
     server(),
   ];
 }
@@ -136,11 +153,11 @@ function updates() {
   // deb / rpm installs follow the stable releases (build/linux/update-system.sh).
   const system = store.update && ['deb', 'rpm'].includes(store.update.kind);
   return [
-    panel('Updates', null,
+    panel('Software update', null,
       updateRow(),
       row('Check for updates automatically', system
-        ? 'Checks every 30 minutes and asks before it restarts; while ONE.GY is in the tray it restarts by itself. This computer also installs new versions in the background every 30 minutes either way.'
-        : 'Checks every 30 minutes, downloads in the background and asks before it restarts; while ONE.GY is in the tray it restarts by itself.',
+        ? 'Checks every 30 minutes and asks before restarting. While ONE.GY is in the tray, it restarts on its own. The system also installs new versions in the background.'
+        : 'Checks every 30 minutes, downloads in the background and asks before restarting. While ONE.GY is in the tray, it restarts on its own.',
       switchInput(a.auto_update, (v) => saveApp({ auto_update: v }))),
       system ? null : row('Update channel', 'Beta gets new versions first.', select([['stable', 'Stable'], ['beta', 'Beta']], a.update_channel, (v) => saveApp({ update_channel: v })))),
   ];
@@ -148,76 +165,77 @@ function updates() {
 
 function notifyPanel(kinds, sub) {
   const a = store.app;
-  return panel('Notifications', sub, ...kinds.map(([k, label]) => row(label, null, switchInput(a.notify[k], (v) => saveApp({ notify: { [k]: v } })))));
+  return panel('Notifications', sub, ...kinds.map(([k, label, hint]) => row(label, hint, switchInput(a.notify[k], (v) => saveApp({ notify: { [k]: v } })))));
 }
 
-const notifications = () => [notifyPanel(SYNC_NOTIFY, 'Updates and device notifications are in App settings > General.')];
+const notifications = () => [notifyPanel(SYNC_NOTIFY, 'Update and device notifications are in App settings › General.')];
 
 function server() {
   const current = store.app.server_url;
   const input = h('input', { class: 'form-input', type: 'url', value: current, spellcheck: 'false' });
   const result = h('p', { class: 'rd-field-hint', 'aria-live': 'polite' });
-  const check = h('button', {
-    type: 'button', class: 'rd-btn rd-btn-ghost',
-    onclick: async () => {
-      result.textContent = 'Checking…';
-      const res = await bridge('probeServer', input.value).catch((e) => ({ ok: false, message: e.message }));
-      result.textContent = res.message;
-      if (!res.ok || res.origin === current) return;
-      store.app = await appSettings.set({ server_url: res.origin });
-      input.value = res.origin;
-      result.textContent = `${res.message} The website now loads from ${res.origin}.`;
-    },
-  }, 'Check and use');
-  return panel('Server', `The website in this app is ${current}.`,
-    h('details', { class: 'dk-details' },
-      h('summary', null, 'Change server'),
-      h('div', { class: 'dk-details-body' },
-        h('p', { class: 'rd-field-hint' }, 'For self-hosted one.gy servers. The address must use https. Sync stays with the server this computer was set up for until you sign out of sync.'),
-        h('div', { class: 'dk-inline' }, field('Server address', input), check),
-        result)));
+  const check = button('Check and use', async () => {
+    result.textContent = 'Checking…';
+    const res = await bridge('probeServer', input.value).catch((e) => ({ ok: false, message: e.message }));
+    result.textContent = res.message;
+    if (!res.ok || res.origin === current) return;
+    store.app = await appSettings.set({ server_url: res.origin });
+    input.value = res.origin;
+    result.textContent = `${res.message} The website now loads from ${res.origin}.`;
+  });
+  const form = h('div', { class: 'dk-row-form', hidden: true },
+    h('p', { class: 'rd-field-hint' }, 'For self-hosted one.gy servers. The address must use https. Sync keeps using the server this computer was set up with until you sign out of sync.'),
+    h('div', { class: 'dk-inline' }, field('New address', input), check),
+    result);
+  const toggle = button('Change…', () => {
+    form.hidden = !form.hidden;
+    toggle.textContent = form.hidden ? 'Change…' : 'Cancel';
+    if (!form.hidden) input.focus();
+  });
+  return panel('Server', null, action('Server address', current, toggle), form);
+}
+
+function signOut() {
+  return button('Sign out of sync', async () => {
+    const ok = await confirmDialog({
+      title: 'Sign out of sync on this computer?',
+      message: 'Syncing stops, this computer is removed from your devices and its keys are deleted. Local files are kept.',
+      confirmLabel: 'Sign out', danger: true,
+    });
+    if (!ok) return;
+    try {
+      await rpc('account.signOut', { revoke: true });
+      await loadAccount();
+      toast('Signed out of sync on this computer', 'success');
+    } catch (err) {
+      toastError(err);
+    }
+  }, 'danger');
 }
 
 function account() {
   const a = store.account;
-  if (!a) return [panel('Account', null, h('p', null, 'The sync engine is not running.'))];
+  if (!a) return [panel('Account', null, h('p', { class: 'rd-field-hint' }, 'The sync engine isn’t running.'))];
   if (!a.signed_in) {
     return [panel('Account', null,
-      h('p', null, 'This computer is not set up for sync yet.'),
-      h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: () => navigate('wizard') }, 'Set up this computer'))];
+      action('Sync isn’t set up', 'Sign in and authorize this computer to start syncing.', button('Set up this computer', () => navigate('wizard'), 'primary')))];
   }
   const used = percent(a.storage_used, a.storage_limit);
-  const fill = h('div', { class: 'rd-meter-fill' });
-  fill.style.width = `${used}%`;
+  const meter = h('div', { class: 'rd-meter-fill' });
+  meter.style.width = `${used}%`;
   return [
     panel('Account', null,
       h('dl', { class: 'dk-kv' },
-        h('dt', null, 'User'), h('dd', null, a.username),
+        h('dt', null, 'Username'), h('dd', null, a.username),
         h('dt', null, 'Server'), h('dd', null, a.server),
-        h('dt', null, 'This device'), h('dd', null, a.device_name || '–'),
-        h('dt', null, 'Storage'), h('dd', null, a.storage_limit > 0 ? `${bytes(a.storage_used)} of ${bytes(a.storage_limit)}` : bytes(a.storage_used))),
-      a.storage_limit > 0 ? h('div', { class: 'rd-meter', role: 'progressbar', 'aria-valuenow': Math.round(used), 'aria-valuemin': 0, 'aria-valuemax': 100 }, fill) : null,
-      h('div', { class: 'dk-btn-row' },
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => navigate('close', { path: '/account' }) }, icon('external'), 'Open account page'))),
-    panel('Sign out of sync on this computer', 'Syncing stops and the keys are removed from this computer. Your files stay where they are. The website stays signed in.',
-      h('button', {
-        type: 'button', class: 'rd-btn rd-btn-danger',
-        onclick: async () => {
-          const ok = await confirmDialog({
-            title: 'Sign out of sync on this computer?',
-            message: 'All syncs pause, this computer is removed from your devices, and its keys are deleted. Local files are kept.',
-            confirmLabel: 'Sign out', danger: true,
-          });
-          if (!ok) return;
-          try {
-            await rpc('account.signOut', { revoke: true });
-            await loadAccount();
-            toast('Signed out of sync on this computer', 'success');
-          } catch (err) {
-            toastError(err);
-          }
-        },
-      }, 'Sign out of sync')),
+        h('dt', null, 'Device name'), h('dd', null, a.device_name || '–'),
+        h('dt', null, 'Storage'), h('dd', null, a.storage_limit > 0 ? `${bytes(a.storage_used)} of ${bytes(a.storage_limit)} used` : `${bytes(a.storage_used)} used`,
+          a.storage_limit > 0 ? h('div', {
+            class: 'rd-meter dk-kv-meter', role: 'progressbar', 'aria-label': 'Storage used', 'aria-valuenow': Math.round(used), 'aria-valuemin': 0, 'aria-valuemax': 100,
+          }, meter) : null)),
+      action('Account page', 'Your profile, password and devices on the website.', button('Open', () => navigate('close', { path: '/account' }), 'ghost', 'external'))),
+    panel('Sign out', null,
+      action('Sign out of sync on this computer', 'Syncing stops and this computer’s keys are deleted. Your files stay where they are, and the website stays signed in.', signOut())),
   ];
 }
 
@@ -226,12 +244,12 @@ function defaults() {
   const d = s.defaults || {};
   const setDefault = (k) => (v) => saveEngine({ defaults: { ...d, [k]: v } }).then(() => { Object.assign(d, { [k]: v }); });
   return [
-    panel('Defaults for new syncs', 'Each sync can change these later in its own settings.',
-      row('Type', 'Selected first in Add sync.', select(['two_way', 'backup', 'mirror'].map((k) => [k, SYNC_TYPES[k].label]), d.type, setDefault('type'))),
-      row('When a file changed on both sides', null, select([['keep_both', 'Keep both copies'], ['prefer_remote', 'Prefer one.gy'], ['prefer_local', 'Prefer this computer'], ['ask', 'Ask me']], d.conflict_policy, setDefault('conflict_policy'))),
-      row('Issue handling', null, select([['smart', 'Smart'], ['advanced', 'Advanced']], d.issue_mode, setDefault('issue_mode'))),
-      row('Keep local deleted files for (days)', '0 uses the system trash.', num(d.debris_days ?? 30, 0, 3650, setDefault('debris_days'))),
-      row('Thumbnails for images', null, switchInput(d.thumbnails !== false, setDefault('thumbnails')))),
+    panel('Defaults for new syncs', 'New syncs start with these. Each sync can change them later in its own settings.',
+      row('Sync type', 'Preselected when you add a sync.', select(['two_way', 'backup', 'mirror'].map((k) => [k, SYNC_TYPES[k].label]), d.type, setDefault('type'))),
+      row('When a file changes on both sides', '“Prefer” options keep the other copy as an older version.', select([['keep_both', 'Keep both copies'], ['prefer_remote', 'Prefer one.gy'], ['prefer_local', 'Prefer this computer'], ['ask', 'Ask me']], d.conflict_policy, setDefault('conflict_policy'))),
+      row('Issue handling', 'Smart fixes what is safe on its own. Advanced asks about everything.', select([['smart', 'Smart'], ['advanced', 'Advanced']], d.issue_mode, setDefault('issue_mode'))),
+      row('Keep deleted files for', 'Set to 0 to send them straight to the system trash.', num(d.debris_days ?? 30, 0, 3650, setDefault('debris_days'), 'days')),
+      row('Image thumbnails', 'Encrypted previews, so photos look the same on the website.', switchInput(d.thumbnails !== false, setDefault('thumbnails')))),
   ];
 }
 
@@ -252,36 +270,37 @@ function folders(rerender) {
       toastError(err);
     }
   };
-  const clearBtn = (patch) => h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => saveApp(patch).then(rerender) }, 'Ask every time');
-  const clearDebris = async (s) => {
+  const reset = (patch) => button('Always ask', () => saveApp(patch).then(rerender));
+  const value = (text) => h('span', { class: 'dk-row-value dk-path', title: text }, text);
+  const emptyDebris = async (s) => {
     const ok = await confirmDialog({
-      title: `Clear debris of ${s.name}?`,
-      message: 'Debris holds the files sync deleted or replaced on this computer. They are deleted now and cannot be restored from there.',
-      confirmLabel: 'Clear debris', danger: true,
+      title: `Empty deleted files of ${s.name}?`,
+      message: 'The files this sync deleted or replaced on this computer are removed from its .onegy/debris folder for good.',
+      confirmLabel: 'Empty', danger: true,
     });
     if (!ok) return;
     try {
       await rpc('syncs.clearDebris', { id: s.id });
-      toast('Debris cleared', 'success');
+      toast('Deleted files emptied', 'success');
     } catch (err) {
       toastError(err);
     }
   };
   const list = [...store.syncs.values()].sort((x, y) => String(x.name).localeCompare(String(y.name)));
+  const upPath = up ? `one.gy${up.path === '/' ? '' : up.path}` : null;
   return [
     panel('Default folders', null,
-      row('Upload folder on one.gy', `Used by Upload… in the tray. Now: ${up ? `one.gy${up.path === '/' ? '' : up.path}` : 'ask every time'}.`,
-        h('div', { class: 'dk-btn-row' }, h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: pick }, 'Choose…'),
-          up ? clearBtn({ default_upload_folder: null }) : null)),
-      row('Download folder on this computer', `Used by downloads you start yourself. Now: ${a.default_download_dir || 'ask every time'}.`,
-        h('div', { class: 'dk-btn-row' }, h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: pickDir }, 'Choose…'),
-          a.default_download_dir ? clearBtn({ default_download_dir: '' }) : null))),
-    panel('Debris', 'Deleted and replaced files wait in each sync\'s .onegy/debris folder for the days set in its options.',
-      list.length
-        ? h('ul', { class: 'dk-mini-list' }, list.map((s) => h('li', null,
-          h('span', null, s.name, ' ', h('span', { class: 'dk-path' }, s.local_path)),
-          h('button', { type: 'button', class: 'rd-btn rd-btn-ghost rd-btn-sm', onclick: () => clearDebris(s) }, 'Clear debris now'))))
-        : h('p', { class: 'rd-field-hint' }, 'No syncs yet.')),
+      action('Upload folder on one.gy', 'Where Upload… in the tray puts files.',
+        value(upPath || 'Ask every time'), button('Choose…', pick), up ? reset({ default_upload_folder: null }) : null),
+      action('Download folder on this computer', 'Where downloads you start yourself are saved.',
+        value(a.default_download_dir || 'Ask every time'), button('Choose…', pickDir), a.default_download_dir ? reset({ default_download_dir: '' }) : null)),
+    panel('Deleted files', 'Files a sync deletes or replaces on this computer wait in its .onegy/debris folder for the days set in its settings.',
+      ...(list.length
+        ? list.map((s) => action(s.name, h('span', { class: 'dk-path', title: s.local_path }, s.local_path),
+          h('button', {
+            type: 'button', class: 'rd-btn rd-btn-ghost', 'aria-label': `Empty deleted files of ${s.name}`, onclick: () => emptyDebris(s),
+          }, 'Empty')))
+        : [h('p', { class: 'rd-field-hint' }, 'No syncs yet.')])),
   ];
 }
 
@@ -292,25 +311,24 @@ function network() {
     class: 'form-input', value: proxy.url, placeholder: 'socks5://host:1080 or http://host:8080', spellcheck: 'false',
     onchange: (e) => saveEngine({ proxy: { mode: 'manual', url: e.target.value.trim() } }),
   });
-  const proxyField = field('Proxy address', proxyUrl, 'Credentials, if any, go in the address.');
+  const proxyField = field('Proxy address', proxyUrl, 'If the proxy needs a username and password, include them in the address.');
   proxyField.hidden = proxy.mode !== 'manual';
   return [
-    panel('Speed', '0 means no limit.',
-      row('Upload limit (KB/s)', null, num(s.upload_kbps, 0, 10000000, (v) => saveEngine({ upload_kbps: v }))),
-      row('Download limit (KB/s)', null, num(s.download_kbps, 0, 10000000, (v) => saveEngine({ download_kbps: v }))),
-      row('Parallel uploads', null, num(s.parallel_up, 1, 6, (v) => saveEngine({ parallel_up: v }))),
-      row('Parallel downloads', null, num(s.parallel_down, 1, 6, (v) => saveEngine({ parallel_down: v })))),
+    panel('Bandwidth', 'Set a limit to 0 for no limit.',
+      row('Upload limit', null, num(s.upload_kbps, 0, 10000000, (v) => saveEngine({ upload_kbps: v }), 'KB/s')),
+      row('Download limit', null, num(s.download_kbps, 0, 10000000, (v) => saveEngine({ download_kbps: v }), 'KB/s')),
+      row('Simultaneous uploads', null, num(s.parallel_up, 1, 6, (v) => saveEngine({ parallel_up: v }))),
+      row('Simultaneous downloads', null, num(s.parallel_down, 1, 6, (v) => saveEngine({ parallel_down: v })))),
     panel('Proxy', null,
-      row('Proxy', null, select([['none', 'None'], ['system', 'Use system settings'], ['manual', 'Manual']], proxy.mode, (v) => {
+      row('Connection', null, select([['none', 'No proxy'], ['system', 'System proxy settings'], ['manual', 'Manual proxy']], proxy.mode, (v) => {
         proxyField.hidden = v !== 'manual';
         if (v !== 'manual') saveEngine({ proxy: { mode: v, url: '' } });
       })),
       proxyField),
-    panel('Power and metered networks', 'Each sync can override the first two in its own settings.',
-      row('On a metered network', null, select(INHERITLESS, s.metered, (v) => saveEngine({ metered: v }))),
-      row('On battery', null, select(INHERITLESS, s.battery, (v) => saveEngine({ battery: v }))),
-      row('Prevent sleep while syncing', null, switchInput(store.app.prevent_sleep, (v) => saveApp({ prevent_sleep: v }))),
-      row('Check one.gy for changes at most every (seconds)', null, num(s.poll_floor_seconds, 5, 3600, (v) => saveEngine({ poll_floor_seconds: v })))),
+    panel('Power and data', 'Each sync can override the metered network and battery choices in its own settings.',
+      row('On metered networks', 'Connections such as a phone hotspot or a capped data plan.', select(INHERITLESS, s.metered, (v) => saveEngine({ metered: v }))),
+      row('On battery power', null, select(INHERITLESS, s.battery, (v) => saveEngine({ battery: v }))),
+      row('Prevent sleep while syncing', 'Keeps this computer awake until syncing finishes.', switchInput(store.app.prevent_sleep, (v) => saveApp({ prevent_sleep: v })))),
   ];
 }
 
@@ -320,93 +338,86 @@ function security(rerender) {
   const openSite = (p) => () => navigate('close', { path: p });
   const pinActions = a.pin_set
     ? [
-      h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: async () => { if (await pinDialog({ title: 'Change PIN', strict: a.pin_strict })) rerender(); } }, 'Change PIN'),
-      h('button', {
-        type: 'button', class: 'rd-btn rd-btn-ghost',
-        onclick: async () => {
-          if (!await confirmDialog({ title: 'Stop using a PIN?', message: 'ONE.GY then asks for your password whenever it is locked.', confirmLabel: 'Stop using a PIN' })) return;
-          try {
-            store.account = await rpc('account.removePin');
-            toast('PIN removed', 'success');
-            rerender();
-          } catch (err) {
-            toastError(err);
-          }
-        },
-      }, 'Stop using a PIN')]
-    : [h('button', { type: 'button', class: 'rd-btn rd-btn-primary', onclick: async () => { if (await pinDialog()) rerender(); } }, 'Set up a PIN')];
+      button('Change PIN', async () => { if (await pinDialog({ title: 'Change PIN', strict: a.pin_strict })) rerender(); }),
+      button('Remove PIN', async () => {
+        if (!await confirmDialog({ title: 'Remove the PIN?', message: 'ONE.GY then asks for your password whenever it is locked.', confirmLabel: 'Remove PIN' })) return;
+        try {
+          store.account = await rpc('account.removePin');
+          toast('PIN removed', 'success');
+          rerender();
+        } catch (err) {
+          toastError(err);
+        }
+      })]
+    : [button('Set up PIN', async () => { if (await pinDialog()) rerender(); })];
   return [
-    panel('App lock', 'ONE.GY locks when it starts, when this computer sleeps or locks its screen, and after the idle time below. Syncing keeps going while it is locked.',
-      row('Unlock with a PIN', `${pinSummary(a)} ${a.pin_set ? '' : pinRules(null)}`, h('div', { class: 'dk-btn-row' }, pinActions)),
-      row('Lock after I am away for', null, select([[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [240, '4 hours'], [0, 'Only on start, sleep and screen lock']],
+    panel('App lock', 'ONE.GY locks when it starts, when this computer sleeps or locks its screen, and after the idle time below. Syncing continues while it is locked.',
+      action('Unlock with a PIN', pinSummary(a), ...pinActions),
+      row('Lock when idle for', 'It always locks on start, sleep and screen lock.', select([[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [240, '4 hours'], [0, 'Never']],
         store.app.lock_after_minutes, (v) => saveApp({ lock_after_minutes: Number(v) }))),
-      a.lock_enabled ? h('div', { class: 'dk-btn-row' }, h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => bridge('lockNow').catch(toastError) }, icon('lock'), 'Lock now')) : null,
-      row('Request signing key', a.hardware_key ? 'Kept in this computer\'s security chip (TPM): a copy of the app data cannot be used on another computer.' : 'A software key in the system key store (this computer has no usable security chip).',
-        h('span', { class: 'rd-pill' }, a.signed_requests ? (a.hardware_key ? 'Hardware' : 'Software') : 'Not yet'))),
+      a.lock_enabled ? action('Lock now', 'Lock ONE.GY until you unlock it with your PIN or password.', button('Lock now', () => bridge('lockNow').catch(toastError), 'ghost', 'lock')) : null),
     panel('This computer', null,
-      row('Ask for my password when the app starts', 'The key is then kept in memory only, never in the system key store.', switchInput(s.require_password_on_start, (v) => saveEngine({ require_password_on_start: v }))),
-      row('Unlock the website with this device\'s key', 'Encrypted names show up on the Files page without typing your password. Any script running on the one.gy site in this app could also get the key, just as it could while you are unlocked in a browser.',
-        switchInput(s.web_unlock, (v) => saveEngine({ web_unlock: v })))),
+      row('Ask for my password when ONE.GY starts', 'Your key is then kept in memory only, never in the system key store.', switchInput(s.require_password_on_start, (v) => saveEngine({ require_password_on_start: v }))),
+      row('Unlock the website with this computer’s key', 'Shows encrypted file names on the website without asking for your password. Scripts on one.gy in this app can then read the key, as they can in a browser where you are unlocked.',
+        switchInput(s.web_unlock, (v) => saveEngine({ web_unlock: v }))),
+      row('Request signing key', a.hardware_key ? 'Kept in this computer’s security chip (TPM), so a copy of the app data can’t be used on another computer.' : 'Kept in the system key store. This computer has no usable security chip.',
+        h('span', { class: 'rd-pill' }, a.signed_requests ? (a.hardware_key ? 'Hardware' : 'Software') : 'Not created yet'))),
     panel('Account security', 'These open on the website.',
-      h('div', { class: 'dk-btn-row' },
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: openSite('/account') }, 'Change password'),
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: openSite('/account') }, 'Export recovery key'),
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: openSite('/account/devices') }, 'Other devices'))),
+      action('Password', 'Change the password for your account.', button('Change password', openSite('/account'), 'ghost', 'external')),
+      action('Recovery key', 'Export the key that restores your encrypted files if you forget your password.', button('Export recovery key', openSite('/account'), 'ghost', 'external')),
+      action('Devices', 'See the devices that sync with your account and remove old ones.', button('Manage devices', openSite('/account/devices'), 'ghost', 'external'))),
   ];
 }
 
 function advanced() {
   const s = store.settings;
   return [
-    panel('Safety', null,
-      row('Pause and ask when a sync would delete more than (items)', null, num(s.mass_delete_count, 1, 1000000, (v) => saveEngine({ mass_delete_count: v }))),
-      row('…or more than (% of the sync)', null, num(s.mass_delete_percent, 1, 100, (v) => saveEngine({ mass_delete_percent: v })))),
+    panel('Deletion safety', 'A sync pauses and asks you first when it would delete more than either limit.',
+      row('Number of items', null, num(s.mass_delete_count, 1, 1000000, (v) => saveEngine({ mass_delete_count: v }), 'items')),
+      row('Share of the sync', null, num(s.mass_delete_percent, 1, 100, (v) => saveEngine({ mass_delete_percent: v }), '%'))),
     panel('Sync engine', null,
-      row('Full rescan every (minutes)', 'Catches changes the file watcher missed.', num(s.rescan_minutes, 5, 1440, (v) => saveEngine({ rescan_minutes: v }))),
-      row('Log detail', 'For troubleshooting with Export diagnostics in App settings > About. Logs never contain file names unless set to debug.',
-        select([['error', 'Errors'], ['warn', 'Warnings'], ['info', 'Normal'], ['debug', 'Debug']], s.log_level, (v) => saveEngine({ log_level: v })))),
-    panel('Caches', 'Forgets the cached list of one.gy folders and the decrypted keys, then loads them again. Your files are not touched.',
-      h('div', { class: 'dk-btn-row' }, h('button', {
-        type: 'button', class: 'rd-btn rd-btn-ghost',
-        onclick: async (e) => {
-          e.currentTarget.disabled = true;
-          try {
-            await rpc('engine.clearCaches');
-            toast('Caches cleared', 'success');
-          } catch (err) {
-            toastError(err);
-          } finally {
-            e.currentTarget.disabled = false;
-          }
-        },
-      }, 'Clear caches'))),
+      row('Full rescan every', 'Catches changes the file watcher missed.', num(s.rescan_minutes, 5, 1440, (v) => saveEngine({ rescan_minutes: v }), 'minutes')),
+      row('Check one.gy for changes at most every', 'Shorter waits pick up changes sooner but use more data.', num(s.poll_floor_seconds, 5, 3600, (v) => saveEngine({ poll_floor_seconds: v }), 'seconds')),
+      row('Log level', 'Logs leave out file names unless set to Debug. Export them from App settings › About.',
+        select([['error', 'Errors only'], ['warn', 'Warnings'], ['info', 'Normal'], ['debug', 'Debug']], s.log_level, (v) => saveEngine({ log_level: v })))),
+    panel('Maintenance', null,
+      action('Clear caches', 'Reloads the list of one.gy folders and the decrypted keys. Your files are not touched.', button('Clear caches', async (e) => {
+        const b = e.currentTarget;
+        b.disabled = true;
+        try {
+          await rpc('engine.clearCaches');
+          toast('Caches cleared', 'success');
+        } catch (err) {
+          toastError(err);
+        } finally {
+          b.disabled = false;
+        }
+      }))),
   ];
 }
 
 // Works without the engine too: its rows then stay out.
 function about() {
   const info = h('dl', { class: 'dk-kv' });
-  if (store.version) append(info, h('dt', null, 'App'), h('dd', null, `${store.version.app} · Electron ${store.version.electron}`));
+  const dataDir = h('span', { class: 'dk-path' }, 'Logs, settings and the sync database.');
+  if (store.version) append(info, h('dt', null, 'ONE.GY Desktop'), h('dd', null, store.version.app), h('dt', null, 'Electron'), h('dd', null, store.version.electron));
   rpc('engine.info').then((e) => {
-    append(info, h('dt', null, 'Engine'), h('dd', null, `${e.version} (protocol ${e.protocol})`),
-      h('dt', null, 'Data folder'), h('dd', { class: 'dk-path' }, e.state_dir));
+    append(info, h('dt', null, 'Sync engine'), h('dd', null, `${e.version} (protocol ${e.protocol})`));
+    dataDir.textContent = e.state_dir;
+    dataDir.title = e.state_dir;
   }).catch(() => {});
   return [
     panel('Version', null, info),
-    panel('Diagnostics', 'A zip with logs and a redacted summary. Check it before you send it to anyone.',
-      h('div', { class: 'dk-btn-row' },
-        h('button', {
-          type: 'button', class: 'rd-btn rd-btn-ghost',
-          onclick: async () => {
-            try {
-              const res = await bridge('exportDiagnostics');
-              if (res) toast('Diagnostics saved', 'success');
-            } catch (err) {
-              toastError(err);
-            }
-          },
-        }, 'Export diagnostics'),
-        h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => bridge('openDataFolder').catch(toastError) }, 'Open data folder'))),
+    panel('Diagnostics', null,
+      action('Export diagnostics', 'A zip with logs and a redacted summary. Review it before you share it.', button('Export…', async () => {
+        try {
+          const res = await bridge('exportDiagnostics');
+          if (res) toast('Diagnostics saved', 'success');
+        } catch (err) {
+          toastError(err);
+        }
+      })),
+      action('Data folder', dataDir, button('Open', () => bridge('openDataFolder').catch(toastError)))),
   ];
 }
 
@@ -431,12 +442,11 @@ function settingsPage(container, title, sub, tabList, first) {
         }, label));
       }
     }
-    clear(body);
     if (NEEDS_ENGINE.has(tab)) {
       try {
         store.settings = await rpc('settings.get');
       } catch (err) {
-        append(body, h('div', { class: 'rd-callout is-warn' }, icon('alert'), h('div', null, `These settings need the sync engine: ${err.message}`)));
+        fill(body, h('div', { class: 'rd-callout is-warn' }, icon('alert'), h('div', null, `These settings need the sync engine: ${err.message}`)));
         return;
       }
     }
@@ -448,7 +458,7 @@ function settingsPage(container, title, sub, tabList, first) {
     fill(body, ...(tab === 'security' && !signedIn ? account() : RENDER[tab](render)));
   }
 
-  append(container, h('div', { class: 'adm-narrow' }, pageHead(title, sub), tabs, body));
+  append(container, h('div', { class: 'dk-settings' }, pageHead(title, sub), tabs, body));
   render();
   return on('engine', (state) => { if (state === 'connected' && (NEEDS_ENGINE.has(tab) || tab === 'about' || tab === 'account')) render(); });
 }
