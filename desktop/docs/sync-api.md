@@ -1,7 +1,7 @@
 # Sync API (server ↔ desktop engine), protocol 1
 
 The contract between `src/app/045_sync_feed.py`, `375_apiv1_sync.py`,
-`376_apiv1_sync_uploads.py` (server) and `desktop/engine/internal/api` (client).
+`376_apiv1_sync_uploads.py` (server) and `client/internal/api` (client).
 Change both sides together and bump `protocol` on breaking changes.
 Design rationale: `docs/desktop-client-plan.md` (DEV-only doc), sections 7–8.
 

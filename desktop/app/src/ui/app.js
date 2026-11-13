@@ -286,6 +286,7 @@ document.addEventListener('keydown', (e) => {
 on('status', renderSide);
 on('issues', renderSide);
 on('transfers', renderSide);
+on('syncs', renderSide);
 on('account', regate);
 on('engine', regate);
 on('app', () => applyTheme(store.app && store.app.theme));

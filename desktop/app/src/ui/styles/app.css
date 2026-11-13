@@ -130,9 +130,11 @@ body.rd-app{ background:transparent; }
   border-radius:14px; background:var(--accent-soft); color:var(--accent); font-weight:600; pointer-events:none; }
 
 /* ---- Transfers ------------------------------------------------------------------------------------ */
+/* The controls wrap below the tabs only when they no longer fit with the search box at its smallest. */
 .dk-toolbar{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin-bottom:16px; }
-.dk-toolbar-right{ display:flex; gap:8px; margin-left:auto; }
-.ui-v2 .dk-search{ width:12rem; height:32px; font-size:.84rem; }
+.dk-toolbar > .rd-tabs{ flex:none; }
+.dk-toolbar-right{ display:flex; flex:1 1 0; justify-content:flex-end; gap:8px; }
+.ui-v2 .dk-search{ flex:1 0 7rem; width:7rem; max-width:12rem; height:32px; font-size:.84rem; }
 .ui-v2 .dk-sort{ width:auto; height:32px; font-size:.84rem; }
 .dk-caret svg{ width:14px; height:14px; margin-right:-4px; color:var(--text-dim); }
 /* Fixed columns: the name takes what Status (room for a two-line error) and the buttons leave. */
@@ -153,6 +155,7 @@ body.rd-app{ background:transparent; }
 .ui-v2 .dk-tr-meter{ margin:6px 0 2px 23px; max-width:420px; }
 .dk-tr-detail{ color:var(--text-dim); font-size:.8rem; line-height:1.45; }
 .dk-tr-error{ color:var(--bad); white-space:normal; }
+.dk-pager{ display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-top:12px; font-size:.8rem; color:var(--text-dim); }
 .dk-tr-warn{ color:var(--warn); white-space:normal; }
 
 /* ---- Issues ----------------------------------------------------------------------------------------- */
@@ -278,7 +281,7 @@ label.dk-tree-name{ cursor:pointer; }
 
 /* ---- Narrow windows -------------------------------------------------------------------------------------- */
 @media (max-width:620px){
-  .dk-toolbar-right{ margin-left:0; }
+  .dk-toolbar-right{ justify-content:flex-start; }
 }
 @media (prefers-reduced-motion:reduce){
   .ui-v2 .rd-meter.is-busy .rd-meter-fill{ animation:none; width:100%; opacity:.5; }

@@ -1,4 +1,4 @@
-// In-memory fake of onegy-engine (desktop/docs/engine-ipc.md) with seed data
+// In-memory fake of the sync engine, `onegy daemon` (desktop/docs/engine-ipc.md), with seed data
 // and live-looking events. No Node or DOM APIs, so it runs both behind the
 // socket in dev/mock-engine.js and in a plain browser via dev/ui-stub.js.
 (function (root) {

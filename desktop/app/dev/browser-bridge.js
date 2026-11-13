@@ -4,7 +4,7 @@
 // supervisor, settings store, removeSync, method whitelist). Never packaged
 // (electron-builder only ships src/ and package.json).
 //
-//   node dev/browser-bridge.js --engine ../engine/bin/onegy-engine \
+//   node dev/browser-bridge.js --engine ../../client/bin/onegy \
 //     --state-dir /tmp/x/state --socket /tmp/x/engine.sock [--port 0] [--engine-arg=--insecure-tls]
 //
 // HTTP on 127.0.0.1 only:
@@ -60,7 +60,7 @@ function broadcast(ev) {
 
 const engine = new EngineSupervisor({
   command: path.resolve(opt.engine),
-  args: ['--state-dir', opt.stateDir, ...opt.engineArgs],
+  args: ['daemon', '--state-dir', opt.stateDir, ...opt.engineArgs],
   socketPath: opt.socket,
 });
 const sync = new SyncStatus(engine);

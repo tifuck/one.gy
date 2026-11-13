@@ -34,6 +34,9 @@ case "$1" in
     fi
     rm -f /etc/systemd/system/onegy-desktop-update.service /etc/systemd/system/onegy-desktop-update.timer
     rm -f /etc/polkit-1/rules.d/49-onegy-desktop-update.rules
+    if [ "$(readlink /usr/bin/onegy)" = '/opt/${sanitizedProductName}/resources/engine/onegy' ]; then
+      rm -f /usr/bin/onegy
+    fi
     if [ -d /run/systemd/system ]; then
       systemctl daemon-reload || true
     fi

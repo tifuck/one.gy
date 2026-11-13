@@ -1477,12 +1477,12 @@
     // is rejected outright, never uploaded in the clear.
     if (!haveKeys()) throw new Error('ENCRYPTION KEYS ARE LOCKED')
     if (file.size > UPLOAD_MAX_BYTES) throw new Error('LARGER THAN THE ' + UPLOAD_MAX_LABEL + ' ENCRYPTED UPLOAD LIMIT')
-    var uid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now() + Math.random())
+    var uid = OneGyCrypto.randomUUID()
     var masterKey = await OneGyCrypto.getMasterKeyFromSession()
     var fileKey = await OneGyCrypto.generateFileKey()
     // NOTE (memory): the whole plaintext plus its ciphertext are held in RAM
     // here (up to 2 x the file size). Streaming would change the chunk framing
-    // that crypto.js / crypto-worker.js / cli_E2EE_binary/crypto.go all
+    // that crypto.js / client/e2ee/crypto.go both
     // implement byte-for-byte, so the buffering strategy is left alone.
     var buf = await file.arrayBuffer()
     var encData = await OneGyCrypto.encryptFileData(buf, fileKey, function (pct) { setPct(row, pct * 0.6) })

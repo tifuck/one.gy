@@ -1,5 +1,5 @@
 # electron-builder config for ONE.GY Desktop. Build through scripts/dist.js:
-# it sets the version from desktop/VERSION (-c.extraMetadata.version), always
+# it sets the version from client/VERSION (-c.extraMetadata.version), always
 # passes --publish never (CI uploads the installers), and builds each Linux
 # target in its own run (concurrent deb/rpm targets race on the shared
 # resources/package-type file that electron-updater reads) and merges their
@@ -19,8 +19,8 @@ extraResources:
   - from: resources/engine
     to: engine
     filter:
-      - "onegy-engine"
-      - "onegy-engine.exe"
+      - "onegy"
+      - "onegy.exe"
 asar: true
 publish:
   provider: generic
@@ -41,6 +41,8 @@ win:
   icon: build/icon.ico
   artifactName: ONE.GY-Desktop-Setup.${ext}
 nsis:
+  # Adds the bundled onegy binary to the user PATH (removed on uninstall).
+  include: build/installer.nsh
   oneClick: false
   perMachine: false
   allowElevation: false

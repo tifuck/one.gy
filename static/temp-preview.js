@@ -1143,12 +1143,15 @@
       }
     }
 
-    if (masterKey && (keyInfo.link_encrypted_file_key || keyInfo.folder_link_encrypted_file_key || keyInfo.has_folder_link_key)) {
+    // Same share-link rules as the Files editor (preview.js saveE2E): a
+    // link-shared file gets its link wrap even when none was stored yet.
+    if (masterKey) {
       try {
         var manageResp = await fetch('/file/' + fileId + '/manage-data', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         if (!manageResp.ok) return { success: false, error: 'COULD NOT CHECK SHARE STATUS. NOT SAVING' }
         var manageData = await manageResp.json()
-        var needFileLink = !!(manageData.has_file_link_key || keyInfo.link_encrypted_file_key)
+        var needFileLink = !!(manageData.has_file_link_key || keyInfo.link_encrypted_file_key ||
+          (manageData.is_link_shared && !manageData.ancestor_share_token && !manageData.has_folder_link_key))
         var needFolderLink = !!(manageData.has_folder_link_key || manageData.ancestor_share_token || keyInfo.folder_link_encrypted_file_key)
         if (needFileLink) {
           var fileLinkInfo = await OneGyCrypto.deriveLinkSecret(masterKey, 'file', fileId)

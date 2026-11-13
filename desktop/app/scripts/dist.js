@@ -1,4 +1,4 @@
-// Packages the app with the version from desktop/VERSION (package.json keeps a
+// Packages the app with the version from client/VERSION (package.json keeps a
 // dev placeholder). Extra args go to electron-builder:
 //   node scripts/dist.js                    this OS (Linux: AppImage, deb, rpm)
 //   node scripts/dist.js --linux deb rpm    some Linux targets
@@ -18,8 +18,8 @@ const yaml = require('js-yaml');
 const APP = path.join(__dirname, '..');
 const DIST = path.join(APP, 'dist');
 const LINUX_TARGETS = ['AppImage', 'deb', 'rpm'];
-const version = fs.readFileSync(path.join(APP, '..', 'VERSION'), 'utf8').trim();
-if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(version)) throw new Error(`bad desktop/VERSION: ${version}`);
+const version = fs.readFileSync(path.join(APP, '..', '..', 'client', 'VERSION'), 'utf8').trim();
+if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(version)) throw new Error(`bad client/VERSION: ${version}`);
 
 const cli = require.resolve('electron-builder/cli.js');
 const build = (args) => {

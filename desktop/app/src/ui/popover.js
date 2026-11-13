@@ -9,7 +9,7 @@ import {
   bytes, speed, percent, basename, ago, count, transferStatus, transferWaits, syncPercent, SYNC_TYPES, SYNC_STATES,
 } from './components/format.js';
 import {
-  api, store, on, handleEvent, refreshAll,
+  api, store, on, handleEvent, refreshAll, plannedCount,
 } from './store.js';
 
 const tray = window.onegyTray;
@@ -179,7 +179,8 @@ const newest = (key) => (a, b) => String(b[key] || '').localeCompare(String(a[ke
 function renderTransfers() {
   const all = [...store.transfers.values()];
   const live = all.filter((t) => t.state === 'active' || t.state === 'paused').sort(newest('started_at'));
-  const waiting = all.filter((t) => t.state === 'queued').length + Math.max(0, live.length - MAX_LIVE);
+  // Queued transfers, live ones beyond the list, and files syncs have yet to start.
+  const waiting = all.filter((t) => t.state === 'queued').length + Math.max(0, live.length - MAX_LIVE) + plannedCount();
   const recent = all.filter((t) => t.state === 'done' || t.state === 'failed').sort(newest('finished_at')).slice(0, MAX_RECENT);
   if (!live.length && !waiting && !recent.length) {
     return fill($('transfers'), h('div', { class: 'tp-empty' }, icon('transfers'),
@@ -214,15 +215,27 @@ function render() {
 }
 
 // Engine events arrive while hidden too; draw at most once a frame, and only when seen.
+// Not while a button is pressed: one replaced before mouseup loses its click.
 let queued = false;
+let held = false;
 function schedule() {
-  if (queued || document.hidden) return;
+  if (queued || document.hidden || held) return;
   queued = true;
   requestAnimationFrame(() => {
     queued = false;
+    if (held) return;
     render();
   });
 }
+document.addEventListener('pointerdown', () => { held = true; });
+const release = () => {
+  if (!held) return;
+  held = false;
+  setTimeout(schedule);
+};
+window.addEventListener('pointerup', release);
+window.addEventListener('pointercancel', release);
+window.addEventListener('blur', release);
 
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme === 'frost' ? 'frost' : 'frost-dark';

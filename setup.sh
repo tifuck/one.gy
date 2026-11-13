@@ -148,10 +148,10 @@ step "Creating / upgrading the database schema"
 venv/bin/flask --app app db-upgrade >/dev/null || die "db-upgrade failed — check DATABASE_URL in .env"
 echo "    done"
 
-# ─── 6. E2EE CLI binaries ───────────────────────────────────────────────────
+# ─── 6. onegy CLI binaries (client/) ────────────────────────────────────────
 if [[ -n "$GO_BIN" ]]; then
     step "Building the CLI binaries (served from /cli)"
-    PATH="$(dirname "$GO_BIN"):$PATH" bash cli_E2EE_binary/build.sh >/dev/null
+    PATH="$(dirname "$GO_BIN"):$PATH" bash client/build.sh >/dev/null
     echo "    done"
 fi
 

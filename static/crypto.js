@@ -45,7 +45,23 @@ const OneGyCrypto = (function() {
 
   // ─── Web Worker Bridge ────────────────────────────────────────────
   // Offloads heavy CPU operations (PBKDF2, file encrypt/decrypt) to a
-  // background thread so the UI stays responsive.
+  // background thread so the UI stays responsive. The worker is this same
+  // file (see workerOps below), so page, worker and tests/crypto_helper.js
+  // (Node) all run one implementation.
+
+  const _IS_PAGE = typeof window !== 'undefined' && typeof document !== 'undefined'
+  const _IN_WORKER = typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope
+  // This script's own (versioned) URL, captured while it runs: the worker is
+  // started from it. An unversioned URL would be cached for a year.
+  const _SELF_URL = (function() {
+    if (!_IS_PAGE) return ''
+    if (document.currentScript && document.currentScript.src) return document.currentScript.src
+    const scripts = document.getElementsByTagName('script')
+    for (let i = 0; i < scripts.length; i++) {
+      if (/\/crypto\.js(\?|$)/.test(scripts[i].src || '')) return scripts[i].src
+    }
+    return ''
+  })()
 
   let _worker = null
   let _workerMsgId = 0
@@ -64,21 +80,11 @@ const OneGyCrypto = (function() {
   }
 
   function _getWorker() {
-    if (!_worker) {
+    // No worker inside the worker itself or under Node: callers fall back to
+    // the main-thread implementations.
+    if (!_worker && _SELF_URL && typeof Worker !== 'undefined') {
       try {
-        // The shells give the versioned URL: an unversioned one is cached for a
-        // year. Else resolve it relative to crypto.js.
-        const meta = document.querySelector('meta[name="onegy-crypto-worker"]')
-        const scripts = document.getElementsByTagName('script')
-        let basePath = '/static/'
-        for (let i = 0; i < scripts.length; i++) {
-          const src = scripts[i].src || ''
-          if (src.includes('crypto.js')) {
-            basePath = src.substring(0, src.lastIndexOf('/') + 1)
-            break
-          }
-        }
-        _worker = new Worker(meta ? meta.content : basePath + 'crypto-worker.js')
+        _worker = new Worker(_SELF_URL)
         const worker = _worker
         worker.onmessage = function(e) {
           const { id, result, error, type, progress } = e.data
@@ -167,6 +173,17 @@ const OneGyCrypto = (function() {
     return randomBytes(NONCE_SIZE)
   }
 
+  // AUDIT FIX F6: CSPRNG UUIDv4 for upload idempotency keys (both uploaders):
+  // randomUUID() when available, never Math.random().
+  function randomUUID() {
+    if (crypto.randomUUID) return crypto.randomUUID()
+    const b = randomBytes(16)
+    b[6] = (b[6] & 0x0f) | 0x40 // version 4
+    b[8] = (b[8] & 0x3f) | 0x80 // variant
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+    return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20)
+  }
+
   /**
    * Derive a nonce for a specific chunk from a base nonce + chunk index.
    * XOR the chunk index (as 4 big-endian bytes) into the last 4 bytes of the nonce.
@@ -203,7 +220,9 @@ const OneGyCrypto = (function() {
    * deriveAuthAndWrappingKeys() with 600K iterations + HKDF instead.
    * Returns { key: CryptoKey, salt: Uint8Array }
    */
-  async function _deriveWrappingKeyMainThread(password, salt) {
+  // extractable: only the worker (workerOps) exports derived keys, to hand
+  // them back to the page.
+  async function _deriveWrappingKeyMainThread(password, salt, extractable = false) {
     if (!salt) salt = randomBytes(32)
     const encoder = new TextEncoder()
     const keyMaterial = await crypto.subtle.importKey(
@@ -213,7 +232,7 @@ const OneGyCrypto = (function() {
       { name: 'PBKDF2', salt: salt, iterations: PBKDF2_ITERATIONS_LEGACY, hash: 'SHA-256' },
       keyMaterial,
       { name: 'AES-GCM', length: 256 },
-      false,
+      extractable,
       ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
     )
     return { key, salt: new Uint8Array(salt) }
@@ -240,7 +259,7 @@ const OneGyCrypto = (function() {
    * Derive an AES-256-GCM key from a passphrase for guest uploads (file key wrapping).
    * Uses legacy 210K iterations for passphrase-based E2E (temp uploads, CLI).
    */
-  async function _derivePassphraseKeyMainThread(passphrase, salt) {
+  async function _derivePassphraseKeyMainThread(passphrase, salt, extractable = false) {
     if (!salt) salt = randomBytes(32)
     const encoder = new TextEncoder()
     const keyMaterial = await crypto.subtle.importKey(
@@ -250,7 +269,7 @@ const OneGyCrypto = (function() {
       { name: 'PBKDF2', salt: salt, iterations: PBKDF2_ITERATIONS_LEGACY, hash: 'SHA-256' },
       keyMaterial,
       { name: 'AES-GCM', length: 256 },
-      false,
+      extractable,
       ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
     )
     return { key, salt: new Uint8Array(salt) }
@@ -282,7 +301,7 @@ const OneGyCrypto = (function() {
    * The server NEVER sees the raw password — only the auth token.
    * Returns { authToken: base64, wrappingKey: CryptoKey, salt: base64 }
    */
-  async function _deriveAuthAndWrappingKeysMainThread(password, salt) {
+  async function _deriveAuthAndWrappingKeysMainThread(password, salt, extractable = false) {
     if (!salt) salt = randomBytes(32)
     else if (typeof salt === 'string') salt = fromBase64(salt)
     const encoder = new TextEncoder()
@@ -308,7 +327,7 @@ const OneGyCrypto = (function() {
       { name: 'HKDF', hash: 'SHA-256', salt: encoder.encode('onegy-wrap-v1'), info: encoder.encode('wrap') },
       hkdfMaterial,
       { name: 'AES-GCM', length: 256 },
-      false,
+      extractable,
       ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
     )
     return {
@@ -1123,6 +1142,64 @@ const OneGyCrypto = (function() {
     return out.buffer
   }
 
+  // ─── Worker Operations ─────────────────────────────────────────────
+  // What the worker runs for _workerCall(op, ...): the main-thread
+  // implementations above, with keys crossing the worker boundary as raw
+  // base64 (a CryptoKey cannot be posted). tests/crypto_helper.js uses them
+  // too. Each op takes the message fields and an optional onProgress.
+
+  async function _importFileKey(fileKeyRaw, usage) {
+    return crypto.subtle.importKey('raw', fromBase64(fileKeyRaw), { name: 'AES-GCM' }, false, [usage])
+  }
+
+  async function _exportRaw(key) {
+    return toBase64(await crypto.subtle.exportKey('raw', key))
+  }
+
+  const workerOps = {
+    async deriveAuthAndWrappingKeys(d) {
+      const r = await _deriveAuthAndWrappingKeysMainThread(d.password, d.salt, true)
+      return { authToken: r.authToken, wrappingKeyRaw: await _exportRaw(r.wrappingKey), salt: r.salt }
+    },
+    async derivePassphraseKey(d) {
+      const r = await _derivePassphraseKeyMainThread(d.passphrase, d.salt ? fromBase64(d.salt) : null, true)
+      return { keyRaw: await _exportRaw(r.key), salt: toBase64(r.salt) }
+    },
+    async deriveWrappingKey(d) {
+      const r = await _deriveWrappingKeyMainThread(d.password, d.salt ? fromBase64(d.salt) : null, true)
+      return { keyRaw: await _exportRaw(r.key), salt: toBase64(r.salt) }
+    },
+    async encryptFileData(d, onProgress) {
+      return { encrypted: await _encryptFileDataMainThread(d.data, await _importFileKey(d.fileKeyRaw, 'encrypt'), onProgress) }
+    },
+    // AUDIT FIX F4: the Blob reaches the worker as a cheap structured-clone
+    // handle and is read one CHUNK_SIZE slice at a time.
+    async encryptFileBlob(d, onProgress) {
+      return { encrypted: await _encryptBlobMainThread(d.blob, await _importFileKey(d.fileKeyRaw, 'encrypt'), onProgress) }
+    },
+    async decryptFileData(d, onProgress) {
+      return { decrypted: await _decryptFileDataMainThread(d.data, await _importFileKey(d.fileKeyRaw, 'decrypt'), onProgress) }
+    }
+  }
+
+  if (_IN_WORKER) {
+    self.onmessage = async function(e) {
+      const { id, op } = e.data
+      try {
+        if (!Object.prototype.hasOwnProperty.call(workerOps, op)) throw new Error('Unknown worker op: ' + op)
+        // AUDIT FIX F4: progress frames carry the request id.
+        const result = await workerOps[op](e.data, function(p) {
+          self.postMessage({ type: 'progress', id, progress: p })
+        })
+        // Transfer the output buffer instead of copying it.
+        const out = result.encrypted || result.decrypted
+        self.postMessage({ id, result }, out ? [out] : [])
+      } catch (err) {
+        self.postMessage({ id, error: err.message || String(err) })
+      }
+    }
+  }
+
   // ─── Session Key Storage ──────────────────────────────────────────
   // Unlocked keys are kept strictly per-tab in sessionStorage, which the
   // browser clears automatically when the tab closes. They survive in-tab
@@ -1490,7 +1567,7 @@ const OneGyCrypto = (function() {
 
   // Purge the legacy IndexedDB key store on load so old persistent records
   // never outlive the tab session.
-  _purgeLegacyKeyDb()
+  if (_IS_PAGE) _purgeLegacyKeyDb()
 
   // ONE.GY Desktop: its preload exposes window.onegyDesktop.unlock(), which
   // hands this tab the device's master key so the lock bar never appears.
@@ -1922,6 +1999,7 @@ const OneGyCrypto = (function() {
     toBase64,
     fromBase64,
     randomBytes,
+    randomUUID,
 
     // Key derivation
     deriveWrappingKey,
@@ -1961,6 +2039,9 @@ const OneGyCrypto = (function() {
     // File encryption/decryption
     encryptFileData,
     decryptFileData,
+
+    // The worker's operations (raw base64 keys in and out); tests/crypto_helper.js
+    workerOps,
 
     // Session storage
     storeMasterKeyInSession,
@@ -2029,5 +2110,7 @@ const OneGyCrypto = (function() {
 //     2FA enable/disable, sign-out-all and account deletion unusable.
 //
 // Assigning it here fixes every such call site at once and keeps the bare
-// identifier working for the code that already uses it.
-window.OneGyCrypto = OneGyCrypto
+// identifier working for the code that already uses it. In the crypto worker
+// there is no window; under Node (tests/crypto_helper.js) it is a module.
+if (typeof window !== 'undefined') window.OneGyCrypto = OneGyCrypto
+if (typeof module === 'object' && module.exports) module.exports = OneGyCrypto

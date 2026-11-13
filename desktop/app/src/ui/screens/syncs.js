@@ -13,7 +13,7 @@ import {
   bytes, count, ago, percent, syncPercent, clockTime, SYNC_TYPES, SYNC_STATES,
 } from '../components/format.js';
 import {
-  api, rpc, bridge, store, on, navigate, loadSyncs, loadIssues,
+  api, rpc, bridge, store, on, navigate, loadSyncs, loadIssues, loadTransfers,
 } from '../store.js';
 
 function progressOf(s) {
@@ -240,6 +240,7 @@ async function removeSync(s) {
     alsoLocal.checked ? 'Sync removed and folder moved to the trash' : 'Sync removed');
   loadSyncs().catch(toastError);
   loadIssues().catch(toastError);
+  loadTransfers().catch(toastError);
 }
 
 export function mount(container) {
@@ -251,7 +252,25 @@ export function mount(container) {
     list,
     h('p', { class: 'dk-drop-hint' }, 'Drop a folder here to add a sync.'));
 
+  // Progress events rebuild the rows about once a second per sync; a button
+  // replaced between mousedown and mouseup loses its click, so hold off while pressed.
+  let held = false;
+  let missed = false;
+  const release = () => {
+    if (!held) return;
+    held = false;
+    if (missed) setTimeout(render);
+  };
+  list.addEventListener('pointerdown', () => { held = true; missed = false; });
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+  window.addEventListener('blur', release);
+
   function render() {
+    if (held) {
+      missed = true;
+      return;
+    }
     clear(list);
     const syncs = [...store.syncs.values()].sort((x, y) => String(x.name).localeCompare(String(y.name)));
     if (!syncs.length) {
@@ -281,5 +300,10 @@ export function mount(container) {
   append(container, page);
   render();
   const offs = [on('syncs', render), on('account', render), on('verify', render)];
-  return () => offs.forEach((off) => off());
+  return () => {
+    offs.forEach((off) => off());
+    window.removeEventListener('pointerup', release);
+    window.removeEventListener('pointercancel', release);
+    window.removeEventListener('blur', release);
+  };
 }

@@ -676,23 +676,6 @@ function _appendE2EUploadFields(fd, e2e) {
   }
 }
 
-// AUDIT FIX F6: upload idempotency key. randomUUID() when available,
-// otherwise a CSPRNG-built UUIDv4 — the old Math.random() fallback made the
-// server-side dedupe key guessable/collision-prone (Math.random() is not a
-// CSPRNG). getRandomValues is present in every browser that can run the
-// WebCrypto E2EE path this uploader already requires.
-function _secureUploadId() {
-  if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
-  const b = new Uint8Array(16);
-  window.crypto.getRandomValues(b);
-  b[6] = (b[6] & 0x0f) | 0x40; // UUIDv4 version bits
-  b[8] = (b[8] & 0x3f) | 0x80; // UUIDv4 variant bits
-  const h = [];
-  for (let i = 0; i < 16; i++) h.push(b[i].toString(16).padStart(2, '0'));
-  const s = h.join('');
-  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20);
-}
-
 async function _uploadWithRetries(encryptedFiles, opts) {
   const MAX_RETRIES = 3;
   const totalUploadSize = encryptedFiles.reduce((sum, file) => sum + file.size, 0);
@@ -707,7 +690,7 @@ async function _uploadWithRetries(encryptedFiles, opts) {
   opts.ui.showCard('up', `Uploading ${opts.files.length} ${opts.files.length === 1 ? 'file' : 'files'}`, 'Uploading…', true);
   _wireUploadCancel(state);
 
-  const uploadFileId = _secureUploadId();
+  const uploadFileId = OneGyCrypto.randomUUID(); // AUDIT FIX F6: CSPRNG, see crypto.js
 
   // Retry loop
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

@@ -1,4 +1,4 @@
-// Dev-only stand-in for onegy-engine: serves dev/mock-core.js over the same
+// Dev-only stand-in for the sync engine (`onegy daemon`): serves dev/mock-core.js over the same
 // socket/pipe and JSON-RPC framing as the real engine (engine-ipc.md).
 //   node dev/mock-engine.js [--socket <path>] [--signed-out]
 // `npm run dev:mock` makes the app spawn this instead of the real engine.

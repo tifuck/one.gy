@@ -1,4 +1,4 @@
-// Engine supervisor: connects to onegy-engine over the socket/pipe from
+// Engine supervisor: connects to the sync engine (`onegy daemon`) over the socket/pipe from
 // desktop/docs/engine-ipc.md, spawns it when nothing is listening, restarts it
 // with backoff after a crash, and re-emits engine events. Pure Node.
 'use strict';

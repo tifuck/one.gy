@@ -6,7 +6,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta name="onegy-build" content="{{ ui_build }}" data-breaking="{{ ui_breaking }}">
-  <meta name="onegy-crypto-worker" content="{{ versioned_static('crypto-worker.js') }}">
   <script nonce="{{ csp_nonce }}">/* pre-paint theme (no FOUC) */(function(){try{var t=localStorage.getItem('onegy_theme');var ok=['frost','frost-dark'];document.documentElement.setAttribute('data-theme',ok.indexOf(t)>=0?t:'frost-dark')}catch(e){document.documentElement.setAttribute('data-theme','frost-dark')}})();</script>
   <title>{% block title %}ONE.GY{% endblock %}</title>
   <link rel="icon" type="image/x-icon" href="{{ versioned_static('logos/favicon.ico') }}">

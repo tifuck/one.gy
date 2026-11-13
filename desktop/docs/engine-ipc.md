@@ -1,13 +1,15 @@
-# Engine IPC (desktop app ↔ onegy-engine), protocol 1
+# Engine IPC (desktop app ↔ `onegy daemon`), protocol 1
 
-The contract between `desktop/engine/internal/ipc` (server) and
+The contract between `client/internal/ipc` (server; the engine is the
+`onegy daemon` subcommand of `client/cmd/onegy`) and
 `desktop/app/src/main/engine.js` (client). Change both sides together.
 
 ## Transport
 
 - Linux: Unix socket `$XDG_RUNTIME_DIR/onegy/engine.sock` (dir 0700, socket
   0600). Without `XDG_RUNTIME_DIR`: `<state dir>/run/engine.sock`.
-- Windows: named pipe `\\.\pipe\onegy-engine-<USERNAME>`, DACL = current user only.
+- Windows: named pipe `\\.\pipe\onegy-engine-<USERNAME>`, DACL = current user only
+  (the pipe keeps its name from before the engine became `onegy daemon`).
 - Framing: one JSON object per line (`\n`-terminated, UTF-8). JSON-RPC 2.0.
 - The engine also accepts `--socket <path>` (tests, multiple instances) and
   writes `<state dir>/engine.json` `{"pid", "socket", "version"}` once listening.
@@ -19,7 +21,7 @@ The contract between `desktop/engine/internal/ipc` (server) and
   `engine.info` and `engine.shutdown` answer, everything else is `forbidden`.
   A wrong secret is `forbidden`. An engine left running by a crashed app has
   another secret: the app asks it to shut down and starts its own. Without the
-  flag (tests, `onegyctl`, the dev bridge before 0.4) `ipc.hello` always succeeds.
+  flag (tests, `onegy ipc`, the dev bridge before 0.4) `ipc.hello` always succeeds.
 
 ## Errors
 
@@ -248,7 +250,7 @@ Notifications from the engine: `{"jsonrpc": "2.0", "method": "event", "params": 
 
 | type | data |
 |---|---|
-| `status` | `{"state": "up_to_date|syncing|paused|offline|issues|locked|signed_out", "pending": n, "bps_up", "bps_down"}` (overall, ≤1/s) |
+| `status` | `{"state": "up_to_date|syncing|paused|offline|issues|locked|signed_out", "pending": n, "bps_up", "bps_down", "paused_up", "paused_down"}` (overall, ≤1/s; `paused_*`: that direction is paused by `transfers.pause`, so its queued transfers wait with a `note`) |
 | `sync` | `Sync` (on any change; progress and `detail` ≤1/s) |
 | `transfer` | `Transfer` (throttled ≤4/s per transfer; phase, note and state changes at once) |
 | `issue` | `Issue` (new or resolved; resolved has `"resolved": true`) |

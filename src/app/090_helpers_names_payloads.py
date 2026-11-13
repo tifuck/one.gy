@@ -319,7 +319,7 @@ def _note_content_checksum(content):
 #
 # The server cannot decrypt an E2EE container (that is the whole point), so this
 # is STRUCTURAL validation only, matching the on-disk format produced by
-# static/crypto.js:encryptFileData() and cli_E2EE_binary/crypto.go:
+# static/crypto.js:encryptFileData() and client/e2ee/crypto.go:
 #
 #   [1 byte version][4 bytes chunk_count BE][12 bytes base nonce]  = 17 byte header
 #   then exactly chunk_count records of: [4 bytes length BE][length bytes ciphertext]
@@ -329,7 +329,7 @@ def _note_content_checksum(content):
 # still produces exactly one 16-byte (tag-only) chunk. The walk uses seek(), so
 # validating a multi-GB container costs a handful of 4-byte reads.
 #
-# Every producer (crypto.js, crypto-worker.js, crypto.go, crypto_helper.js)
+# Every producer (crypto.js in the page or its worker, crypto.go)
 # writes full 64 MiB chunks and only the LAST one may be short. Tiny chunks are
 # therefore only possible in a crafted upload, where they would turn the walk
 # into tens of millions of Python seek+read iterations. The declared count is

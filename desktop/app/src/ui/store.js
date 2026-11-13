@@ -112,6 +112,7 @@ export function handleEvent(ev) {
     case 'transfer':
       if (d && d.id) {
         store.transfers.set(d.id, d);
+        trimTransfers();
         emit('transfers', d);
       }
       break;
@@ -157,6 +158,39 @@ export function handleEvent(ev) {
   }
 }
 
+// The engine keeps the newest 500 finished transfers; events alone would grow
+// this map for as long as the app runs, so drop the oldest finished ones too.
+function trimTransfers() {
+  if (store.transfers.size <= 700) return;
+  for (const [id, t] of store.transfers) {
+    if (store.transfers.size <= 600) break;
+    if (t.finished_at) store.transfers.delete(id);
+  }
+}
+
+const LIVE = new Set(['active', 'paused', 'queued']);
+
+// What syncs still have to move but have not handed to the transfer pool yet
+// (each sync starts a few at a time): [{ sync, direction, count }].
+export function plannedWork() {
+  const live = new Map();
+  for (const t of store.transfers.values()) {
+    if (t.sync_id && LIVE.has(t.state)) live.set(`${t.sync_id}|${t.direction}`, (live.get(`${t.sync_id}|${t.direction}`) || 0) + 1);
+  }
+  const out = [];
+  for (const s of store.syncs.values()) {
+    if (s.paused) continue;
+    const st = s.stats || {};
+    for (const [direction, n] of [['up', st.pending_up], ['down', st.pending_down]]) {
+      const left = (n || 0) - (live.get(`${s.id}|${direction}`) || 0);
+      if (left > 0) out.push({ sync: s, direction, count: left });
+    }
+  }
+  return out;
+}
+
+export const plannedCount = () => plannedWork().reduce((n, w) => n + w.count, 0);
+
 export const issueCount = () => store.issues.size;
 export const activeTransferCount = () => [...store.transfers.values()]
-  .filter((t) => t.state === 'active' || t.state === 'queued').length;
+  .filter((t) => LIVE.has(t.state)).length + plannedCount();

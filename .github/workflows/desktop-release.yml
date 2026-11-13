@@ -1,13 +1,14 @@
 # Builds ONE.GY Desktop (Windows NSIS, Linux deb + rpm installers and the
 # portable AppImage) and publishes a
-# GitHub release desktop-v<version> when desktop/VERSION names a version that
-# has no release tag yet. Builds are unsigned for now.
+# GitHub release desktop-v<version> when client/VERSION names a version that
+# has no release tag yet. The app bundles the onegy binary from client/ (the
+# same CLI + sync engine one.gy serves at /static/cli/). Builds are unsigned for now.
 name: Desktop release
 
 on:
   push:
     branches: [main]
-    paths: ["desktop/**", "cli_E2EE_binary/e2ee/**", ".github/workflows/desktop-release.yml"]
+    paths: ["desktop/**", "client/**", ".github/workflows/desktop-release.yml"]
   workflow_dispatch:
 
 permissions:
@@ -26,11 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: version
-        name: Read desktop/VERSION
+        name: Read client/VERSION
         run: |
-          version="$(tr -d '[:space:]' < desktop/VERSION)"
+          version="$(tr -d '[:space:]' < client/VERSION)"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-            echo "::error::desktop/VERSION is not a version: $version"
+            echo "::error::client/VERSION is not a version: $version"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -55,12 +56,10 @@ jobs:
         include:
           - os: windows-latest
             builder_args: --win nsis
-            engine: onegy-engine.exe
-            ldflags_extra: -H=windowsgui
+            engine: onegy.exe
           - os: ubuntu-latest
             builder_args: --linux AppImage deb rpm
-            engine: onegy-engine
-            ldflags_extra: ""
+            engine: onegy
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.check.outputs.version }}
@@ -73,17 +72,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: desktop/engine/go.mod
-          cache-dependency-path: |
-            desktop/engine/go.sum
-            cli_E2EE_binary/go.sum
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
 
-      - name: Test the shared crypto package
-        working-directory: cli_E2EE_binary
-        run: go test ./e2ee/...
-
-      - name: Test the engine
-        working-directory: desktop/engine
+      # The shared crypto package, the CLI and the engine.
+      - name: Test the client
+        working-directory: client
         shell: bash
         # Failing test output is also emitted as an annotation, which is readable
         # without signing in to GitHub (job logs are not).
@@ -95,18 +89,19 @@ jobs:
           if [ "$status" -ne 0 ]; then
             msg="$(grep -E -B3 -A15 -- '--- FAIL|^panic:|^FAIL' test.log | tr -d '\r' | head -c 30000 \
               | sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }')"
-            echo "::error title=Engine tests failed::${msg}"
+            echo "::error title=Client tests failed::${msg}"
           fi
           exit "$status"
 
-      - name: Build the engine
-        working-directory: desktop/engine
+      # Same flags as desktop/app/scripts/build-engine.js; the app runs it as `onegy daemon`.
+      - name: Build onegy
+        working-directory: client
         env:
           CGO_ENABLED: "0"
         run: |
           go build -trimpath \
-            -ldflags "-s -w -X github.com/tifuck/one.gy/desktop/engine/internal/config.Version=${VERSION} ${{ matrix.ldflags_extra }}" \
-            -o "../app/resources/engine/${{ matrix.engine }}" ./cmd/onegy-engine
+            -ldflags "-s -w -X github.com/tifuck/one.gy/client/internal/config.Version=${VERSION} -X main.bundled=1" \
+            -o "../desktop/app/resources/engine/${{ matrix.engine }}" ./cmd/onegy
 
       - uses: actions/setup-node@v4
         with:
@@ -131,7 +126,7 @@ jobs:
         working-directory: desktop/app
         run: npm test
 
-      # scripts/dist.js takes the version from desktop/VERSION (checked above)
+      # scripts/dist.js takes the version from client/VERSION (checked above)
       # and builds each Linux target in its own run (see electron-builder.yml).
       - name: Package
         working-directory: desktop/app

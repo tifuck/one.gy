@@ -56,6 +56,13 @@ if apparmor_status --enabled > /dev/null 2>&1; then
   fi
 fi
 
+# ONE.GY: the bundled onegy binary (CLI + sync engine) on PATH. Never
+# replaces an onegy that is not this package's.
+ONEGY_BIN='/opt/${sanitizedProductName}/resources/engine/onegy'
+if [ ! -e /usr/bin/onegy ] || [ "$(readlink /usr/bin/onegy)" = "$ONEGY_BIN" ]; then
+  ln -sfn "$ONEGY_BIN" /usr/bin/onegy
+fi
+
 # ONE.GY: install updates in the background, no password prompt. A root timer
 # runs resources/update-system.sh (removed again by after-remove.sh).
 if [ -d /run/systemd/system ]; then

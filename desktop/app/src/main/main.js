@@ -31,7 +31,7 @@ const RESIGN_EVERY_MS = 30 * 1000; // device mode: sign a site view that lost it
 const UPDATE_IDLE_S = 20 * 60; // a ready update restarts a visible window after this long without input
 
 const APP_ID = 'gy.one.desktop';
-const ENGINE_EXE = process.platform === 'win32' ? 'onegy-engine.exe' : 'onegy-engine';
+const ENGINE_EXE = process.platform === 'win32' ? 'onegy.exe' : 'onegy';
 const DEV = !app.isPackaged;
 const parseUrl = (u) => {
   try { return new URL(u); } catch { return null; }
@@ -78,7 +78,7 @@ function engineCommand() {
   }
   // Dev runs use what `npm run build:engine` writes (the same place the installer build copies from).
   const dir = DEV ? path.join(__dirname, '..', '..', 'resources', 'engine') : path.join(process.resourcesPath, 'engine');
-  return { command: path.join(dir, ENGINE_EXE), args: [], env: {} };
+  return { command: path.join(dir, ENGINE_EXE), args: ['daemon'], env: {} };
 }
 
 // Windows: Run key via Electron. Linux: XDG autostart entry. Dev runs skip it.

@@ -58,7 +58,7 @@ export function percent(done, total) {
 // What a transfer that has not finished is doing (engine-ipc.md "Transfer"):
 // its phase and numbers, plus the engine's note when it waits or stopped moving.
 export function transferStatus(t) {
-  if (t.state === 'queued') return `Queued · ${bytes(t.size)}`;
+  if (t.state === 'queued') return [`Queued · ${bytes(t.size)}`, t.note].filter(Boolean).join(' · ');
   if (t.state === 'paused') return `Paused · ${bytes(t.done)} of ${bytes(t.size)}`;
   if (t.phase === 'retrying') return t.note || 'Trying again';
   let parts = [`${bytes(t.done)} of ${bytes(t.size)}`, speed(t.bps), eta(t) ? `${eta(t)} left` : ''];
@@ -68,7 +68,7 @@ export function transferStatus(t) {
 }
 
 // The transfer waits for another try or shows no sign of life.
-export const transferWaits = (t) => Boolean(t.stalled || t.phase === 'retrying');
+export const transferWaits = (t) => Boolean(t.stalled || t.phase === 'retrying' || (t.state === 'queued' && t.note));
 
 // How far a sync's current run of work is, 0-100, or null when the engine
 // gave no total: by bytes, or by items when the work has no bytes (empty files).

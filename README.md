@@ -242,7 +242,7 @@ Open `https://<your-domain>/register` and register immediately after setup. **Th
 
 - Run `bash start.sh` or use the systemd service. Either one upgrades the schema, runs startup maintenance, then starts gunicorn on `BIND_HOST:WEB_PORT`.
 - Logs: `journalctl -u onegy -f`.
-- To update: `git pull`, `venv/bin/pip install -r requirements.txt`, rebuild the CLI with `(cd cli_E2EE_binary && bash build.sh)`, then `sudo systemctl restart onegy`.
+- To update: `git pull`, `venv/bin/pip install -r requirements.txt`, rebuild the CLI with `(cd client && bash build.sh)`, then `sudo systemctl restart onegy`.
 
 ## Configuration
 
@@ -257,7 +257,7 @@ Open `https://<your-domain>/register` and register immediately after setup. **Th
 
 - **Server**: Flask + MariaDB behind gunicorn, with a scheduler for replication, integrity scrubs and cleanup.
 - **Web app**: plain JavaScript and Web Crypto, no framework or build step.
-- **CLI and sync engine**: Go, sharing one E2EE package (`cli_E2EE_binary/e2ee`) that is byte-compatible with the browser crypto.
+- **CLI and sync engine**: one Go binary, `onegy` (`client/`): the CLI, and the sync engine ONE.GY Desktop runs as `onegy daemon`. Its E2EE package (`client/e2ee`) is byte-compatible with the browser crypto.
 - **Desktop app**: Electron shell around the site plus the Go sync engine (`desktop/`).
 
 </details>

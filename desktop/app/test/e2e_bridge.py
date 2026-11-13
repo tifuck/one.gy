@@ -3,7 +3,7 @@ ONE.GY Desktop end-to-end run through the REAL native UI and the REAL engine
 against a live DEV server. Not run in CI and never against production.
 
 Electron needs a display, so the native UI (src/ui) runs in Playwright's
-Chromium through dev/browser-bridge.js, which proxies to a real onegy-engine.
+Chromium through dev/browser-bridge.js, which proxies to a real engine (`onegy daemon`).
 A second device token (simulating the website and another computer) checks
 and changes one.gy directly with the sync API and its own E2EE crypto.
 
@@ -19,8 +19,8 @@ bridge status (onStatus) is checked at each stage through the same module the
 app uses. The site's openSync() is simulated with the bridge's /panel.
 Screenshots of each step, dark and light, 1280x800.
 
-Run from the repo root, after `go build -tags devtls -o desktop/engine/bin/onegy-engine ./cmd/onegy-engine`
-in desktop/engine:
+Run from the repo root, after `go build -tags devtls -o bin/onegy ./cmd/onegy`
+in client/:
 
   ONEGY_E2E=1 ONEGY_E2E_SERVER=https://127.0.0.1:4999 \
     testsv2/venv/bin/python desktop/app/test/e2e_bridge.py
@@ -51,7 +51,6 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(os.path.dirname(APP_DIR))
 sys.path[:0] = [os.path.join(REPO, 'testsv2'), os.path.join(REPO, 'testsv2', 'tests')]
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 import crypto_helper  # noqa: E402
@@ -63,7 +62,7 @@ if SERVER.lower() in ('https://one.gy', 'https://www.one.gy'):
     sys.exit('Refusing to run against production.')
 WORK = os.environ.get('ONEGY_E2E_DIR', '/tmp/fuse/desktop-e2e')
 NODE = os.environ.get('NODE', shutil.which('node') or 'node')
-ENGINE = os.path.join(REPO, 'desktop', 'engine', 'bin', 'onegy-engine')
+ENGINE = os.path.join(REPO, 'client', 'bin', 'onegy')
 SHOTS = os.path.join(WORK, 'shots')
 DEVICE = 'E2E-PC'
 PIN = '482916'
@@ -86,33 +85,8 @@ def wait(what, ok, timeout=120, step=1.0):
 
 # ─── Second device: sync API + E2EE ──────────────────────────────────────────
 
-def seal(key, data):
-    nonce = os.urandom(12)
-    return base64.b64encode(AESGCM(key).encrypt(nonce, data, None)).decode(), base64.b64encode(nonce).decode()
-
-
-def unseal(key, ct_b64, nonce_b64):
-    return AESGCM(key).decrypt(base64.b64decode(nonce_b64), base64.b64decode(ct_b64), None)
-
-
-def container(plain, key):
-    nonce = os.urandom(12)
-    aad = bytes([2]) + (1).to_bytes(4, 'big') + (0).to_bytes(4, 'big') + bytes([1])
-    ct = AESGCM(key).encrypt(nonce[:8] + (int.from_bytes(nonce[8:], 'big') ^ 0).to_bytes(4, 'big'), plain, aad)
-    return bytes([2]) + (1).to_bytes(4, 'big') + nonce + len(ct).to_bytes(4, 'big') + ct
-
-
-def open_container(data, key):
-    count = int.from_bytes(data[1:5], 'big')
-    base, off, out = data[5:17], 17, b''
-    for i in range(count):
-        n = int.from_bytes(data[off:off + 4], 'big')
-        ct = data[off + 4:off + 4 + n]
-        off += 4 + n
-        nonce = base[:8] + (int.from_bytes(base[8:], 'big') ^ i).to_bytes(4, 'big')
-        aad = bytes([2]) + count.to_bytes(4, 'big') + i.to_bytes(4, 'big') + bytes([1 if i == count - 1 else 0])
-        out += AESGCM(key).decrypt(nonce, ct, aad)
-    return out
+seal, unseal = crypto_helper.seal, crypto_helper.unseal
+container, open_container = crypto_helper.container, crypto_helper.open_container
 
 
 class Device:
