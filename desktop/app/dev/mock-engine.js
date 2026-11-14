@@ -71,9 +71,12 @@ if (process.platform !== 'win32') {
   fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   fs.rmSync(socketPath, { force: true });
 }
-server.listen(socketPath, () => {
+const listen = () => server.listen(socketPath, () => {
   if (process.platform !== 'win32') fs.chmodSync(socketPath, 0o600);
   console.log(`[MOCK] listening on ${socketPath}`);
 });
+// Like the engine: the secret is read before the first connection is served.
+if (argv.includes('--ipc-secret-stdin')) process.stdin.on('end', listen);
+else listen();
 setInterval(() => engine.tick(), 1000).unref();
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(); process.exit(0); });
