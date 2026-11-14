@@ -300,6 +300,7 @@ function start() {
   engine.on('state', (s) => {
     window.send({ type: 'app:engine', data: { state: s } });
     popover.send({ type: 'app:engine', data: { state: s } });
+    if (s === 'connected' && state.pausedUntil && state.pausedUntil <= Date.now()) resumeAll(true);
   });
   engine.on('event', (ev) => {
     window.send(ev);
@@ -307,20 +308,43 @@ function start() {
     if (ev.type === 'notify') notify(ev.data);
   });
 
-  const pauseAll = async (ms) => {
+  // The engine keeps syncs paused across restarts, so the end of a timed
+  // pause is kept in the settings: a restart or a failed resume never turns
+  // it into a pause until resumed (the next engine connect resumes it).
+  const setPausedUntil = (until) => {
     clearTimeout(state.pauseTimer);
-    state.pausedUntil = ms ? Date.now() + ms : null;
-    await engine.call('syncs.pause', {}).catch((err) => console.error(`[APP] pause failed: ${err.message}`));
-    if (ms) state.pauseTimer = setTimeout(() => resumeAll(), ms);
-    tray.update({ pausedUntil: state.pausedUntil });
-    popover.send({ type: 'app:tray', data: { pausedUntil: state.pausedUntil } });
+    state.pausedUntil = until;
+    if (until) state.pauseTimer = setTimeout(() => resumeAll(true), Math.max(0, until - Date.now()));
+    if (settings.get().paused_until !== until) {
+      try { settings.set({ paused_until: until }); } catch (err) { console.error(`[APP] saving the pause failed: ${err.message}`); }
+    }
+    if (tray) tray.update({ pausedUntil: until });
+    if (popover) popover.send({ type: 'app:tray', data: { pausedUntil: until } });
   };
-  const resumeAll = async () => {
+  const pauseAll = async (ms) => {
+    try {
+      await engine.call('syncs.pause', {});
+    } catch (err) {
+      console.error(`[APP] pause failed: ${err.message}`);
+      dialog.showErrorBox('Could not pause syncing', err.message);
+      return;
+    }
+    setPausedUntil(ms ? Date.now() + ms : null);
+  };
+  // timed: the end of a timed pause (no dialog; retried on the next engine connect).
+  const resumeAll = async (timed = false) => {
     clearTimeout(state.pauseTimer);
-    state.pausedUntil = null;
-    await engine.call('syncs.resume', {}).catch((err) => console.error(`[APP] resume failed: ${err.message}`));
-    tray.update({ pausedUntil: null });
-    popover.send({ type: 'app:tray', data: { pausedUntil: null } });
+    try {
+      await engine.call('syncs.resume', {});
+    } catch (err) {
+      console.error(`[APP] resume failed: ${err.message}`);
+      if (!timed) {
+        dialog.showErrorBox('Could not resume syncing', err.message);
+        setPausedUntil(state.pausedUntil);
+      }
+      return;
+    }
+    setPausedUntil(null);
   };
   const upload = async () => {
     if (!sync.authorized()) return;
@@ -419,6 +443,14 @@ function start() {
         await engine.stop();
         state.engineStopped = true;
       },
+      // The installer did not start: the app goes on as before.
+      restartFailed: () => {
+        state.quitting = false;
+        state.engineStopped = false;
+        engine.stopping = false;
+        engine.start();
+        fs.rm(resumeFile, { force: true }, () => {});
+      },
       relaunch: () => {
         app.relaunch({ args: [] });
         app.quit();
@@ -435,7 +467,7 @@ function start() {
         panel: (screen) => openPanel(RESUME_PANELS.has(screen) ? screen : 'syncs'),
         folder: openSyncFolder,
         pause: (ms) => pauseAll(Number.isSafeInteger(ms) && ms > 0 && ms <= MAX_PAUSE_MS ? ms : null),
-        resume: resumeAll,
+        resume: () => resumeAll(),
         upload,
         close: () => {},
       },
@@ -452,10 +484,11 @@ function start() {
       lock: lockNow,
       openSync: () => openPanel('syncs'),
       pauseAll,
-      resumeAll,
+      resumeAll: () => resumeAll(),
       upload,
       quit,
     });
+    setPausedUntil(settings.get().paused_until);
 
     settings.onChange((next, before) => {
       if (next.server_url !== before.server_url) window.recreateSite();

@@ -47,6 +47,7 @@ class EngineSupervisor extends EventEmitter {
     this.backoff = BACKOFF_MIN_MS;
     this.connectedAt = 0;
     this.loop = null;
+    this.spawnFailed = false;
     // Handed to the engine we spawn on stdin (--ipc-secret-stdin) and presented
     // with ipc.hello: other programs of this user cannot drive the engine.
     this.secret = crypto.randomBytes(32).toString('hex');
@@ -67,6 +68,7 @@ class EngineSupervisor extends EventEmitter {
     while (!this.stopping && !this.client) {
       this.setState('connecting');
       if (await this.tryConnect()) return;
+      if (this.stopping) return;
       if (!this.child) {
         if (!this.spawnEngine()) {
           this.setState('missing');
@@ -80,7 +82,8 @@ class EngineSupervisor extends EventEmitter {
         await sleep(CONNECT_POLL_MS);
       }
       if (this.stopping) return;
-      this.setState('disconnected');
+      this.setState(this.spawnFailed ? 'missing' : 'disconnected');
+      this.spawnFailed = false;
       await sleep(this.nextBackoff());
     }
   }
@@ -98,35 +101,38 @@ class EngineSupervisor extends EventEmitter {
     } catch {
       return false;
     }
+    // Before subscribing: the first events can arrive with its reply.
+    client.on('event', (ev) => this.emit('event', ev));
     try {
       await client.call('ipc.hello', { secret: this.secret });
+      await client.call('engine.subscribe');
     } catch (err) {
       if (err.code === 'forbidden') {
         // An engine started by an earlier run of the app (it crashed): its
         // secret is gone. Ask it to exit; run() then starts ours.
         console.error('[ENGINE] running engine has another IPC secret; restarting it');
         await client.call('engine.shutdown').catch(() => {});
-        client.close();
-        return false;
+      } else {
+        console.error(`[ENGINE] handshake failed (${err.code}): ${err.message}`);
       }
+      client.close();
+      return false;
+    }
+    if (client.closed || this.stopping) {
+      client.close();
+      return false;
     }
     this.client = client;
     this.connectedAt = Date.now();
-    client.on('event', (ev) => this.emit('event', ev));
-    client.on('close', () => this.onClientClose(client));
-    try {
-      await client.call('engine.subscribe');
-    } catch (err) {
-      console.error(`[ENGINE] subscribe failed: ${err.message}`);
-    }
-    if (this.client !== client) return false;
+    client.on('close', (err) => this.onClientClose(client, err));
     this.setState('connected');
     return true;
   }
 
-  onClientClose(client) {
+  onClientClose(client, err) {
     if (this.client !== client) return;
     this.client = null;
+    if (err) console.error(`[ENGINE] connection lost: ${err.message}`);
     if (Date.now() - this.connectedAt > STABLE_AFTER_MS) this.backoff = BACKOFF_MIN_MS;
     this.setState('disconnected');
     if (!this.stopping) setTimeout(() => this.start(), this.nextBackoff());
@@ -154,7 +160,14 @@ class EngineSupervisor extends EventEmitter {
     };
     forward(child.stdout);
     forward(child.stderr);
-    child.on('error', (err) => console.error(`[ENGINE] spawn failed: ${err.message}`));
+    // A failed spawn (EACCES, ENOENT) emits 'error' and never 'exit'.
+    child.on('error', (err) => {
+      console.error(`[ENGINE] spawn failed: ${err.message}`);
+      if (child.pid === undefined && this.child === child) {
+        this.child = null;
+        this.spawnFailed = true;
+      }
+    });
     child.on('exit', (code, signal) => {
       if (this.child === child) this.child = null;
       console.log(`[ENGINE] exited code=${code} signal=${signal}`);

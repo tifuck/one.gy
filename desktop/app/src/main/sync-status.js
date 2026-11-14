@@ -120,8 +120,9 @@ class SyncStatus extends EventEmitter {
       const list = await this.engine.call('syncs.list');
       this.syncs = new Map((Array.isArray(list) ? list : []).map((s) => [s.id, s]));
     } catch (err) {
-      this.syncs = new Map();
-      if (err.code !== 'not_signed_in') console.error(`[SYNC] syncs.list failed: ${err.message}`);
+      // Signed out: no syncs. Any other failure keeps the last list (sync events still update it).
+      if (err.code === 'not_signed_in') this.syncs = new Map();
+      else console.error(`[SYNC] syncs.list failed: ${err.message}`);
     }
     this.emit('change');
   }

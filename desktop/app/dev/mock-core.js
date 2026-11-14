@@ -154,6 +154,7 @@
 
     const methods = {
       'engine.info': () => ({ version: '0.1.0-mock', protocol: 1, state_dir: local('.local', 'share', 'onegy'), platform: o.platform }),
+      'ipc.hello': () => ({}), // like the engine without --ipc-secret-stdin
       'engine.subscribe': () => ({}),
       'engine.shutdown': () => ({}),
       'engine.nudge': () => ({}),

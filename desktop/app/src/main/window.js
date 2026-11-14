@@ -424,7 +424,11 @@ class MainWindow {
 
   zoom(dir) {
     const factor = nextZoom(this.opts.settings.get().site_zoom, dir);
-    this.opts.settings.set({ site_zoom: factor });
+    try {
+      this.opts.settings.set({ site_zoom: factor });
+    } catch (err) {
+      console.error(`[SETTINGS] saving the zoom failed: ${err.message}`);
+    }
     this.site.webContents.setZoomFactor(factor);
     this.panel.webContents.setZoomFactor(factor);
     this.layout();

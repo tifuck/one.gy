@@ -3,7 +3,7 @@
 'use strict';
 
 const path = require('path');
-const { app, shell } = require('electron');
+const { app, shell, Notification } = require('electron');
 const { isUiUrl } = require('./protocol');
 
 // Permissions the website may get, and only from the configured server origin.
@@ -94,6 +94,12 @@ function configureSiteSession(ses, getOrigin) {
     item.setSaveDialogOptions({
       title: 'Save download',
       defaultPath: path.join(app.getPath('downloads'), path.basename(item.getFilename() || 'download')),
+    });
+    // There is no download bar: say when one fails ('cancelled' is the user's choice).
+    item.once('done', (_ev, state) => {
+      if (state !== 'interrupted') return;
+      console.error(`[DOWNLOAD] ${item.getFilename()} was interrupted`);
+      if (Notification.isSupported()) new Notification({ title: 'Download failed', body: `${item.getFilename()} could not be downloaded. Try again.` }).show();
     });
   });
 }

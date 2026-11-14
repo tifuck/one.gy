@@ -69,14 +69,14 @@ function systemctlError(err) {
 }
 
 // opts: { settings, serverOrigin(): string, onChange(state), canAutoRestart(): Promise<bool>,
-//         beforeRestart(): Promise, relaunch() }
+//         beforeRestart(): Promise, restartFailed() (undoes beforeRestart), relaunch() }
 // state: { supported, kind, state, current, version, progress, error, failed, checked_at, required }
 //   state: idle | checking | current | downloading | available | installing | ready | error
 //   failed: 'check' | 'install' when state is error
 // Returns { state(), check(), install(), autoCheck() }; install() also restarts into a
 // ready update, autoCheck() is the background check (respects auto_update).
 function startUpdater({
-  settings, serverOrigin, onChange, canAutoRestart, beforeRestart, relaunch,
+  settings, serverOrigin, onChange, canAutoRestart, beforeRestart, restartFailed, relaunch,
 }) {
   const kind = installKind();
   let s = {
@@ -187,7 +187,17 @@ function startUpdater({
       apply = () => autoUpdater.quitAndInstall(true, true);
       set({ state: 'ready', version: info.version, progress: null });
     });
-    autoUpdater.on('error', (err) => { if (s.state !== 'ready') fail('check', err.message); });
+    // quitAndInstall reports a failed install only here, and the app keeps running.
+    autoUpdater.on('error', (err) => {
+      if (s.state !== 'ready') {
+        fail('check', err.message);
+      } else if (restarting) {
+        restarting = false;
+        apply = null;
+        fail('install', `The update could not be installed: ${err.message}`);
+        restartFailed();
+      }
+    });
 
     check = async () => {
       if (busy()) return s;

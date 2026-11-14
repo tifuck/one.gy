@@ -68,7 +68,12 @@ export function mount(container) {
     submit.disabled = true;
     try {
       const url = serverInput.value.trim();
-      if (url && url !== server()) store.app = await appSettings.set({ server_url: url });
+      if (url && url !== server()) {
+        // A mistyped address is never saved (the website would move to it).
+        const probe = await bridge('probeServer', url);
+        if (!probe.ok) throw Object.assign(new Error(probe.message), { code: 'bad_server' });
+        store.app = await appSettings.set({ server_url: probe.origin });
+      }
       const req = {
         server: server(), username: username.value.trim(), password: password.value, device_name: device.value.trim(),
       };

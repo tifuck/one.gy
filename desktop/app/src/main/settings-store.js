@@ -25,6 +25,7 @@ const DEFAULTS = Object.freeze({
   lock_after_minutes: 30, // app lock after this much system idle time (0 = only on start, sleep and screen lock)
   default_upload_folder: null, // {id, path}: one.gy folder for tray Upload…
   default_download_dir: '', // local folder for manual downloads ('' = ask)
+  paused_until: null, // ms timestamp: tray "Pause for 1 hour" resumes then (main.js)
   notify: Object.freeze(Object.fromEntries(NOTIFY_KINDS.map((k) => [k, true]))),
 });
 
@@ -60,6 +61,7 @@ const VALIDATORS = {
     return idOk && pathOk ? { id: v.id, path: v.path } : undefined;
   },
   default_download_dir: (v) => (v === '' || (typeof v === 'string' && v.length <= 4096 && path.isAbsolute(v)) ? v : undefined),
+  paused_until: (v) => (v === null || (Number.isSafeInteger(v) && v > 0) ? v : undefined),
   notify: (v) => {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
     const out = {};
@@ -96,7 +98,12 @@ class SettingsStore {
     try {
       stored = JSON.parse(fs.readFileSync(this.file, 'utf8'));
     } catch (err) {
-      if (err.code !== 'ENOENT') console.error(`[SETTINGS] unreadable ${this.file}, using defaults: ${err.message}`);
+      if (err.code !== 'ENOENT') {
+        // Kept aside: the next save would overwrite it.
+        const aside = `${this.file}.corrupt-${Date.now()}`;
+        try { fs.renameSync(this.file, aside); } catch { /* unreadable, not movable */ }
+        console.error(`[SETTINGS] unreadable ${this.file} (kept as ${aside}), using defaults: ${err.message}`);
+      }
     }
     return applyPatch(DEFAULTS, stored).value;
   }
@@ -109,8 +116,8 @@ class SettingsStore {
   set(patch) {
     const { value, errors } = applyPatch(this.data, patch);
     const before = this.data;
+    this.save(value); // throws before anything changed
     this.data = value;
-    this.save();
     for (const fn of this.listeners) fn(this.get(), before);
     return { settings: this.get(), errors };
   }
@@ -121,11 +128,16 @@ class SettingsStore {
   }
 
   // Atomic write: temp file in the same directory, then rename.
-  save() {
+  save(data) {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, this.file);
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+      fs.renameSync(tmp, this.file);
+    } catch (err) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* the original error matters */ }
+      throw err;
+    }
   }
 }
 

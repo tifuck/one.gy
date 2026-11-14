@@ -13,7 +13,7 @@ const path = require('path');
 const { app, dialog, ipcMain, net, shell } = require('electron');
 const { openExternal, isWebUrl } = require('./security');
 const { isMainFrameOf, SETTINGS_SCREENS } = require('./window');
-const { normalizeServerUrl } = require('./settings-store');
+const { normalizeServerUrl, applyPatch } = require('./settings-store');
 const { isUiUrl } = require('./protocol');
 const { removeSync } = require('./remove-sync');
 const { cleanInset, isSitePath } = require('./site-nav');
@@ -47,7 +47,7 @@ async function probeServer(raw) {
     const res = await net.fetch(`${origin}/apiv1/sync/capabilities`, { method: 'GET', redirect: 'error', cache: 'no-store' });
     const body = await res.json().catch(() => null);
     const code = body && body.code;
-    if (res.ok || (res.status === 401 && (code === 'invalid_token' || code === 'not_authenticated'))) return { ok: true, origin, message: 'Server supports desktop sync.' };
+    if ((res.ok && body && body.protocol) || (res.status === 401 && (code === 'invalid_token' || code === 'not_authenticated'))) return { ok: true, origin, message: 'Server supports desktop sync.' };
     if (res.status === 403 && code === 'sync_disabled') return { ok: false, origin, message: 'Desktop sync is turned off on this server.' };
     return { ok: false, origin, message: `This server does not support desktop sync (HTTP ${res.status}).` };
   } catch (err) {
@@ -93,10 +93,11 @@ function registerIpc({
     app: app.getVersion(), electron: process.versions.electron, platform: process.platform, hostname: os.hostname().slice(0, 80),
   }));
   handle('app:settings:get', () => settings.get());
+  // All or nothing: a rejected patch changes nothing.
   handle('app:settings:set', (patch) => {
-    const { settings: next, errors } = settings.set(patch);
+    const { errors } = applyPatch(settings.get(), patch);
     if (errors.length) throw Object.assign(new Error(errors.join(', ')), { code: 'validation_failed', data: { errors } });
-    return next;
+    return settings.set(patch).settings;
   });
   handle('app:probeServer', (url) => probeServer(url));
 
@@ -121,7 +122,8 @@ function registerIpc({
   handle('app:openPath', async (p) => {
     if (typeof p !== 'string' || !path.isAbsolute(p)) throw Object.assign(new Error('Not an absolute path'), { code: 'validation_failed' });
     const st = await fs.stat(p).catch(() => null);
-    if (st && st.isDirectory()) {
+    if (!st) throw Object.assign(new Error('This file or folder does not exist.'), { code: 'not_found' });
+    if (st.isDirectory()) {
       const err = await shell.openPath(p);
       if (err) throw new Error(err);
     } else {
@@ -175,7 +177,9 @@ function registerIpc({
   });
   handle('app:openDataFolder', async () => {
     const info = await engine.call('engine.info');
-    if (info && typeof info.state_dir === 'string' && path.isAbsolute(info.state_dir)) await shell.openPath(info.state_dir);
+    if (!info || typeof info.state_dir !== 'string' || !path.isAbsolute(info.state_dir)) throw new Error('The sync engine did not report its data folder.');
+    const err = await shell.openPath(info.state_dir);
+    if (err) throw new Error(err);
     return true;
   });
 
@@ -234,7 +238,12 @@ function registerIpc({
     return sync.syncsForUser(window.siteUser);
   });
   ipcMain.on('site:theme', (event, theme) => {
-    if (window.isSiteFrame(event.senderFrame) && THEMES.has(theme) && settings.get().theme !== theme) settings.set({ theme });
+    if (!window.isSiteFrame(event.senderFrame) || !THEMES.has(theme) || settings.get().theme === theme) return;
+    try {
+      settings.set({ theme });
+    } catch (err) {
+      console.error(`[SETTINGS] saving the theme failed: ${err.message}`);
+    }
   });
   ipcMain.on('site:inset', (event, px) => {
     const inset = cleanInset(px);
@@ -260,7 +269,8 @@ function registerIpc({
       if (!me || me.user_id !== account.user_id) return null;
       const res = await engine.call('account.webUnlockKey');
       return res && typeof res.master_key_b64 === 'string' ? res.master_key_b64 : null;
-    } catch {
+    } catch (err) {
+      console.error(`[IPC] website unlock failed (${err.code || 'internal'}): ${err.message}`);
       return null;
     }
   });

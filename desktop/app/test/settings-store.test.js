@@ -41,11 +41,26 @@ test('set validates, persists atomically and reloads', () => {
   assert.deepEqual(new SettingsStore(dir).get(), settings);
 });
 
-test('a corrupt file falls back to defaults', () => {
+test('a corrupt file falls back to defaults and is kept aside', () => {
   const dir = tmpDir();
   fs.writeFileSync(path.join(dir, 'settings.json'), '{not json');
   const s = new SettingsStore(dir);
   assert.equal(s.get().theme, DEFAULTS.theme);
+  s.set({ theme: 'frost' });
+  const aside = fs.readdirSync(dir).find((f) => f.startsWith('settings.json.corrupt-'));
+  assert.ok(aside);
+  assert.equal(fs.readFileSync(path.join(dir, aside), 'utf8'), '{not json');
+});
+
+test('a failed save changes nothing', () => {
+  const dir = tmpDir();
+  const s = new SettingsStore(dir);
+  let fired = false;
+  s.onChange(() => { fired = true; });
+  fs.mkdirSync(path.join(dir, `settings.json.${process.pid}.tmp`)); // the temp file cannot be written
+  assert.throws(() => s.set({ theme: 'frost' }), { code: 'EISDIR' });
+  assert.equal(s.get().theme, DEFAULTS.theme);
+  assert.equal(fired, false);
 });
 
 test('onChange gets the new and previous values', () => {

@@ -268,11 +268,16 @@ export function mount(container, params = {}) {
   }
 
   // ---- 4. Local folder ------------------------------------------------------------
+  // null: a newer check started meanwhile (another folder was picked).
+  let validateSeq = 0;
   async function validate(withRemote) {
     const req = { local_path: w.cfg.local_path, type: w.cfg.type };
     if (withRemote) req.remote_folder_id = w.cfg.type === 'full' ? null : w.cfg.remote_folder_id;
-    w.validation = await rpc('syncs.validate', req);
-    return w.validation;
+    const mine = ++validateSeq;
+    const v = await rpc('syncs.validate', req).catch((err) => { if (mine === validateSeq) throw err; });
+    if (mine !== validateSeq) return null;
+    w.validation = v;
+    return v;
   }
 
   function validationView(v, withRemote) {
@@ -305,6 +310,7 @@ export function mount(container, params = {}) {
       append(result, h('p', { class: 'rd-field-hint' }, 'Checking the folder…'));
       try {
         const v = await validate(full);
+        if (!v) return;
         fill(result, validationView(v, full));
         setReady(Boolean(v.ok));
       } catch (err) {
@@ -346,6 +352,7 @@ export function mount(container, params = {}) {
         fill(result, h('p', { class: 'rd-field-hint' }, 'Checking…'));
         try {
           const v = await validate(true);
+          if (!v) return;
           fill(result, validationView(v, true));
           setReady(Boolean(v.ok));
         } catch (err) {
@@ -398,6 +405,7 @@ export function mount(container, params = {}) {
       w.cfg.remote_folder_id = t.folder_id;
       w.cfg.remote_path = t.path;
       const v = await validate(true);
+      if (!v) return false;
       fill(result, validationView(v, true));
       if (!v.ok) throw new Error('This backup folder cannot be used. Choose another folder.');
       return true;

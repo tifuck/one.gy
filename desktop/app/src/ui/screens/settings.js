@@ -43,12 +43,19 @@ const APP_NOTIFY = [
 ];
 const INHERITLESS = [['pause', 'Pause'], ['continue', 'Keep syncing']];
 
+// The open settings page's render(): a failed save redraws it, so no control
+// keeps showing a value that was not saved.
+let rerenderPage = () => {};
+
 async function saveApp(patch) {
   try {
     store.app = await appSettings.set(patch);
     toast('Saved', 'success', 1600);
+    return true;
   } catch (err) {
     toastError(err);
+    rerenderPage();
+    return false;
   }
 }
 
@@ -56,8 +63,11 @@ async function saveEngine(patch) {
   try {
     store.settings = await rpc('settings.set', { patch });
     toast('Saved', 'success', 1600);
+    return true;
   } catch (err) {
     toastError(err);
+    rerenderPage();
+    return false;
   }
 }
 
@@ -179,7 +189,12 @@ function server() {
     const res = await bridge('probeServer', input.value).catch((e) => ({ ok: false, message: e.message }));
     result.textContent = res.message;
     if (!res.ok || res.origin === current) return;
-    store.app = await appSettings.set({ server_url: res.origin });
+    try {
+      store.app = await appSettings.set({ server_url: res.origin });
+    } catch (err) {
+      result.textContent = `Could not save the address: ${err.message}`;
+      return;
+    }
     input.value = res.origin;
     result.textContent = `${res.message} The website now loads from ${res.origin}.`;
   });
@@ -242,7 +257,7 @@ function account() {
 function defaults() {
   const s = store.settings;
   const d = s.defaults || {};
-  const setDefault = (k) => (v) => saveEngine({ defaults: { ...d, [k]: v } }).then(() => { Object.assign(d, { [k]: v }); });
+  const setDefault = (k) => (v) => saveEngine({ defaults: { ...d, [k]: v } }).then((ok) => { if (ok) Object.assign(d, { [k]: v }); });
   return [
     panel('Defaults for new syncs', 'New syncs start with these. Each sync can change them later in its own settings.',
       row('Sync type', 'Preselected when you add a sync.', select(['two_way', 'backup', 'mirror'].map((k) => [k, SYNC_TYPES[k].label]), d.type, setDefault('type'))),
@@ -433,6 +448,7 @@ function settingsPage(container, title, sub, tabList, first) {
   const body = h('div', { class: 'dk-settings-body', role: tabs ? 'tabpanel' : null });
 
   async function render() {
+    rerenderPage = render;
     if (tabs) {
       clear(tabs);
       for (const [id, label] of tabList) {

@@ -26,6 +26,11 @@ const REQUIRED = {
   text: 'This version of ONE.GY can no longer sync. The update installs as soon as it is ready.',
   busy: true,
 };
+// Required, but the feed has nothing newer yet (the release is still being built).
+const REQUIRED_NONE = {
+  title: 'Update required',
+  text: 'This version of ONE.GY can no longer sync, and no newer version is out yet. ONE.GY checks again every 30 minutes.',
+};
 
 // Only what needs the user: a failed background check waits in Settings,
 // unless the update is required.
@@ -33,7 +38,8 @@ const copyFor = (s) => {
   if (!s) return null;
   const c = COPY[s.state] && (s.state !== 'error' || s.failed === 'install' || s.required) ? COPY[s.state](s) : null;
   if (!s.required) return c;
-  return c ? { ...c, title: s.state === 'error' ? c.title : REQUIRED.title } : REQUIRED;
+  if (c) return { ...c, title: s.state === 'error' ? c.title : REQUIRED.title };
+  return s.state === 'current' ? REQUIRED_NONE : REQUIRED;
 };
 
 function report() {
@@ -55,6 +61,7 @@ function render(s) {
     els.bar.hidden = !c.busy;
     els.actions.hidden = Boolean(c.busy);
     els.go.textContent = c.action || '';
+    els.go.hidden = !c.action;
     els.go.disabled = false;
     // Replays the entrance when a new card comes up.
     if (key !== shownKey) els.card.getAnimations().forEach((a) => { a.cancel(); a.play(); });

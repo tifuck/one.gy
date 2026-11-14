@@ -12,9 +12,12 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 async function markerMatches(root, id) {
   try {
     const marker = JSON.parse(await fs.readFile(path.join(root, '.onegy', 'sync.json'), 'utf8'));
-    return marker.sync_id === id;
-  } catch {
-    return false;
+    return Boolean(marker) && marker.sync_id === id;
+  } catch (err) {
+    // Missing or not JSON: not this sync's folder. Anything else (no access)
+    // is the real reason nothing was changed.
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR' || err instanceof SyntaxError) return false;
+    throw fail('marker_unreadable', `The sync marker in the local folder could not be read (${err.message}). Nothing was changed.`);
   }
 }
 

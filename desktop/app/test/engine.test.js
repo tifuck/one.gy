@@ -5,6 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -101,6 +102,52 @@ test('supervisor spawns the engine, restarts it after a crash, stops it cleanly'
   await sup.stop();
   await exited;
   await assert.rejects(sup.call('account.status'), { code: 'engine_unavailable' });
+});
+
+// An engine that accepts the connection, then fails ipc.hello: by closing
+// ('close') or with an error other than forbidden ('error').
+function failingEngine(sock, mode) {
+  let connections = 0;
+  const srv = net.createServer((c) => {
+    connections += 1;
+    c.setEncoding('utf8');
+    c.on('data', (d) => {
+      for (const line of d.split('\n').filter(Boolean)) {
+        const m = JSON.parse(line);
+        if (mode === 'close') c.destroy();
+        else c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: 'boom' } })}\n`);
+      }
+    });
+  });
+  return new Promise((resolve) => srv.listen(sock, () => resolve({ srv, connections: () => connections })));
+}
+
+for (const mode of ['close', 'error']) {
+  test(`supervisor does not connect when ipc.hello fails (${mode})`, { skip: process.platform === 'win32', timeout: 15000 }, async () => {
+    const sock = socketPath();
+    const engine = await failingEngine(sock, mode);
+    const sup = new EngineSupervisor({ command: path.join(os.tmpdir(), 'no-such-engine'), socketPath: sock });
+    const states = [];
+    sup.on('state', (s) => states.push(s));
+    sup.start();
+    await waitFor(sup, 'state', (s) => s === 'missing');
+    await new Promise((r) => setTimeout(r, 1500)); // the 1 s backoff: it tries again
+    sup.stopping = true;
+    engine.srv.close();
+    assert.ok(!states.includes('connected'), states.join(','));
+    assert.equal(sup.client, null);
+    assert.ok(engine.connections() >= 2);
+  });
+}
+
+test('supervisor reports an engine binary that cannot run as missing', { skip: process.platform === 'win32', timeout: 30000 }, async () => {
+  const bin = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'onegy-bin-')), 'onegy');
+  fs.writeFileSync(bin, '#!/bin/sh\n', { mode: 0o644 });
+  const sup = new EngineSupervisor({ command: bin, socketPath: socketPath() });
+  sup.start();
+  await waitFor(sup, 'state', (s) => s === 'missing');
+  assert.equal(sup.child, null);
+  sup.stopping = true;
 });
 
 test('supervisor reports a missing binary', async () => {

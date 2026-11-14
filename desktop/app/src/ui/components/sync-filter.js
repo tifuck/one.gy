@@ -126,7 +126,8 @@ export function syncFilter({
       // Back in, but a filter may still leave it out: an exact include wins over filters.
       const probe = await rpc('syncs.browse', { ...params(current()), ignore_rules: buildRules(rules, st) }).catch(() => null);
       const now = probe && probe.items.find((i) => i.path === item.path);
-      if (now && (now.excluded || now.size_skipped)) st.keep.push(item.path);
+      // No answer: keep it explicitly, so a filter cannot silently leave it out.
+      if (!probe || (now && (now.excluded || now.size_skipped))) st.keep.push(item.path);
     } else {
       st.skip.push(item.path);
     }
