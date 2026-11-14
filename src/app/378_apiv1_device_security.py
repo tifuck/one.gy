@@ -86,6 +86,12 @@ def apiv1_device_pop_key():
     device = g.device
     if device.pop_public_key:
         return _sync_error(409, 'conflict', 'This device already signs its requests')
+    # A locked app's stolen token must not swap in its own key. Devices without
+    # the app lock (pre-lock clients migrating on start) already have full access.
+    if device.lock_enabled:
+        err = _device_require_grant()
+        if err:
+            return err
     if not _valid_pop_public_key(data.get('public_key') or ''):
         return _sync_error(400, 'bad_request', 'public_key must be a base64 P-256 public key', field='public_key')
     device.pop_public_key = data['public_key']
@@ -398,12 +404,16 @@ def desktop_session():
     a link or a cross-site form can never log anyone in). The session is bound
     to the device: it ends when the device is removed or its app locks."""
     raw = request.headers.get('X-Onegy-Desktop-Ticket', '')
-    device = Device.query.filter_by(web_ticket_hash=_sha256_hex(raw)).first() if raw else None
+    ticket_hash = _sha256_hex(raw) if raw else None
+    device = Device.query.filter_by(web_ticket_hash=ticket_hash).first() if raw else None
     expires = _utc_aware(device.web_ticket_expires_at) if device else None
     if device is not None:
-        device.web_ticket_hash = None
-        device.web_ticket_expires_at = None
+        # One use: only the request whose UPDATE clears the ticket may sign in.
+        consumed = Device.query.filter_by(id=device.id, web_ticket_hash=ticket_hash).update(
+            {Device.web_ticket_hash: None, Device.web_ticket_expires_at: None}, synchronize_session=False)
         db.session.commit()
+        if consumed != 1:
+            device = None
     if (device is None or not device.is_active or not expires or expires < datetime.now(timezone.utc)
             or not _device_grant_live(device) or not get_setting('allow_desktop_sync')):
         flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
@@ -424,6 +434,9 @@ def desktop_session():
     session.permanent = True
     print(f'[AUTH] User signed in through desktop device {device.id}: {user.username}')
     target = request.args.get('next') or ''
-    if not target.startswith('/') or target.startswith('//') or '\\' in target:
+    parts = urllib.parse.urlsplit(target)
+    if (not target.startswith('/') or target.startswith('//') or '\\' in target
+            or any(ch.isspace() or not ch.isprintable() for ch in target)
+            or parts.scheme or parts.netloc):
         target = url_for('files')
     return redirect(target)

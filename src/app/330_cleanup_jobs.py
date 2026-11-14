@@ -265,6 +265,40 @@ def cleanup_expired_files():
     if trash_count > 0:
         print(f'[CLEANUP] Purged {trash_count} files from trash (older than {retention_hours} hours)')
 
+    # Purge trashed notes (with their versions and replicas) past retention,
+    # through the same staged delete as the notes permanent-delete route.
+    trashed_notes = _take_capped_batch(
+        db.session.query(Note.id, Note.user_id).filter(
+            Note.is_trashed == True,
+            Note.trashed_at.isnot(None),
+            Note.trashed_at < trash_cutoff
+        ).order_by(Note.trashed_at.asc()).limit(CLEANUP_DELETE_BATCH_SIZE + 1).all(),
+        'trashed notes past retention'
+    )
+    note_trash_count = 0
+    for candidate in trashed_notes:
+        lifecycle_lock = _acquire_user_lifecycle_lock(candidate.user_id)
+        note_local_targets = []
+        try:
+            db.session.rollback()
+            note = Note.query.filter(
+                Note.id == candidate.id,
+                Note.is_trashed == True,
+                Note.trashed_at.isnot(None),
+                Note.trashed_at < trash_cutoff,
+            ).first()
+            if not note:
+                continue
+            note_local_targets = _notes_stage_permanent_delete(note)
+            db.session.commit()
+            note_trash_count += 1
+        finally:
+            _release_lifecycle_lock(lifecycle_lock)
+        _purge_staged_locals_with_note_locks(note_local_targets)
+
+    if note_trash_count > 0:
+        print(f'[CLEANUP] Purged {note_trash_count} notes from trash (older than {retention_hours} hours)')
+
 # AUDIT FIX A8: advisory lock files are per-file-id / per-upload-id / per-scope
 # and were only ever close()d, never unlinked. Reap ones that are provably
 # unheld AND untouched for a long time. A lock file is cheap to recreate, and

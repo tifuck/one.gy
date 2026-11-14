@@ -97,11 +97,23 @@ class _S3Backend(_StorageBackend):
         self._checksum_unsupported_at = None
         return True
 
+    def _check_endpoint_host(self):
+        """Re-resolve and validate a custom endpoint's addresses (DNS rebinding
+        after the node was saved). botocore resolves again on its own, so this
+        narrows the window rather than pinning the address."""
+        endpoint_url = self._config.get('endpoint_url')
+        if not endpoint_url:
+            return
+        ok, reason = _validate_storage_node_host(endpoint_url)
+        if not ok:
+            raise ValueError(f'S3 ENDPOINT {endpoint_url} REJECTED: {reason}')
+
     def _get_client(self):
         if self._client is not None:
             return self._client
         import boto3
         from botocore.config import Config as BotoConfig
+        self._check_endpoint_host()
         endpoint_url = self._config.get('endpoint_url')
         access_key = self._config['access_key']
         secret_key = self._config['secret_key']
@@ -369,6 +381,7 @@ class _S3Backend(_StorageBackend):
             import boto3
             from boto3.s3.transfer import TransferConfig
             from botocore.config import Config as BotoConfig
+            self._check_endpoint_host()
             # AUDIT FIX (S3 multipart timeouts): previously this resource was
             # created with NO timeout config, unlike the cached client (which has
             # connect_timeout/read_timeout/retries). A hung endpoint mid-upload
@@ -748,6 +761,7 @@ class _S3Backend(_StorageBackend):
 
     def health_check(self):
         _hc_errors = []
+        self._check_endpoint_host()
         client = self._get_client()
         # Tier 1: head_bucket — standard S3 (AWS, B2, Wasabi, MinIO)
         try:

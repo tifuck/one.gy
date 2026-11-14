@@ -566,9 +566,13 @@ class _StorageManagerNotesThumbnails:
             pass
         return None
 
-    def save_thumbnail(self, file_id, data, is_e2e=False):
+    def save_thumbnail(self, file_id, data, is_e2e=False, replace_checksum=None):
         """Save thumbnail data.
         Always writes to local disk first for speed, then replicates asynchronously.
+        Non-E2EE thumbnails are stored Fernet-encrypted (E2EE ones arrive
+        encrypted by the client); checksums describe the stored bytes.
+        With replace_checksum set, nothing is written unless the current local
+        thumbnail still hashes to it (returns False).
 
         Returns True on success and False when the thumbnail itself could not
         be produced (callers may proceed without a thumbnail). Raises
@@ -581,9 +585,12 @@ class _StorageManagerNotesThumbnails:
         thumb_type = 'e2e' if is_e2e else 'jpg'
         publication_lock = _acquire_thumbnail_publication_lock(file_id, thumb_type)
         try:
+            if replace_checksum is not None and self._thumbnail_checksum_hex(file_id, thumb_type) != replace_checksum:
+                return False
+            stored = data if is_e2e else fernet.encrypt(data)
             backends, local_backend, local_node_id, _version = self._backend_state_snapshot()
             # Always write to local disk first (fast path)
-            local_backend.put_data_atomic('thumbnails', thumb_id, data)
+            local_backend.put_data_atomic('thumbnails', thumb_id, stored)
             # AUDIT FIX H4: the thumbnail generation is alive again -- drop any
             # stale deferred-delete tombstone so the next cycle cannot delete
             # the freshly written payload (belt and braces; Phase B also checks).
@@ -614,7 +621,7 @@ class _StorageManagerNotesThumbnails:
             # (replicas before File) and lets the caller's final commit handle a
             # file removed during rendering as a normal stale-thumbnail race.
             try:
-                _thumb_sum = hashlib.sha256(data).hexdigest()
+                _thumb_sum = hashlib.sha256(stored).hexdigest()
                 _file_obj = db.session.get(File, file_id)
                 if _file_obj is not None:
                     if is_e2e:
@@ -645,7 +652,19 @@ class _StorageManagerNotesThumbnails:
             _release_thumbnail_publication_lock(publication_lock)
 
     def load_thumbnail(self, file_id, is_e2e=False):
-        """Load thumbnail bytes. Local canonical first, then validated cache,
+        """Load thumbnail bytes as served to clients: E2EE thumbnails as stored,
+        non-E2EE ones decrypted. Returns None if unavailable."""
+        stored = self._load_stored_thumbnail(file_id, is_e2e)
+        if stored is None or is_e2e:
+            return stored
+        try:
+            return _decode_stored_thumbnail(stored)
+        except Exception as e:
+            print(f'[STORAGE] Failed to decrypt thumbnail for {file_id}: {e}')
+            return None
+
+    def _load_stored_thumbnail(self, file_id, is_e2e=False):
+        """Load stored thumbnail bytes. Local canonical first, then validated cache,
         then remote fetch into cache. Returns None if unavailable."""
         ext = '.e2e' if is_e2e else '.jpg'
         thumb_id = f'{file_id}{ext}'

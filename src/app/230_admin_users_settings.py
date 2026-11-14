@@ -487,12 +487,23 @@ def admin_api_users():
         _file_storage_sums = dict(db.session.query(
             File.registered_user_id,
             db.func.coalesce(db.func.sum(db.func.coalesce(File.disk_size, File.size)), 0)
-        ).filter(File.registered_user_id.in_(user_ids), File.is_trashed == False)
+        ).filter(File.registered_user_id.in_(user_ids))
          .group_by(File.registered_user_id).all())
+        _live = db.aliased(File)
+        for _uid, _bytes in db.session.query(
+            _live.registered_user_id,
+            db.func.coalesce(db.func.sum(db.func.coalesce(File.disk_size, File.size)), 0)
+        ).join(_live, _live.id == File.version_of_id).filter(_live.registered_user_id.in_(user_ids)) \
+         .group_by(_live.registered_user_id).all():
+            _file_storage_sums[_uid] = int(_file_storage_sums.get(_uid, 0) or 0) + int(_bytes or 0)
         _note_storage_sums = dict(db.session.query(
             Note.user_id, db.func.coalesce(db.func.sum(Note.size), 0)
-        ).filter(Note.user_id.in_(user_ids), Note.is_trashed == False)
+        ).filter(Note.user_id.in_(user_ids))
          .group_by(Note.user_id).all())
+        for _uid, _bytes in db.session.query(
+            NoteVersion.user_id, db.func.coalesce(db.func.sum(NoteVersion.size), 0)
+        ).filter(NoteVersion.user_id.in_(user_ids)).group_by(NoteVersion.user_id).all():
+            _note_storage_sums[_uid] = int(_note_storage_sums.get(_uid, 0) or 0) + int(_bytes or 0)
         _active_api_key_counts = dict(db.session.query(
             ApiKey.user_id, db.func.count(ApiKey.id)
         ).filter(ApiKey.user_id.in_(user_ids), ApiKey.is_active == True)

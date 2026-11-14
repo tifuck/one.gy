@@ -158,3 +158,14 @@ func TestParseErrorsAreLineNumbered(t *testing.T) {
 		}
 	}
 }
+
+func TestEngineDirCase(t *testing.T) {
+	s := NewSet()
+	if s.Match(".ONEGY", localfs.KindDir, 0) != Excluded || s.Match(".onegy", localfs.KindDir, 0) != Excluded {
+		t.Fatal("case-insensitive: .ONEGY is the engine folder")
+	}
+	s.CaseSensitive = true
+	if s.Match(".ONEGY", localfs.KindDir, 0) != Included || s.Match(".onegy", localfs.KindDir, 0) != Excluded {
+		t.Fatal("case-sensitive: only .onegy is the engine folder")
+	}
+}

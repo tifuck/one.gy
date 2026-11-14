@@ -178,9 +178,25 @@ def _sync_check_target(spec):
         return _sync_error(status, 'not_found' if status == 404 else 'bad_request', resp.get_json()['error'])
     if _backup_read_only(folder_id):
         return _backup_read_only_error()
-    if spec['file_id'] and db.session.query(File.id).filter(File.id == spec['file_id']).first():
+    if spec['file_id'] and _sync_file_id_ever_used(spec['file_id']):
         return _sync_error(409, 'conflict', 'file_id is already taken', field='file_id')
     return None
+
+
+def _sync_file_id_ever_used(file_id):
+    """True when file_id names a File row (live, trashed or a version) or was
+    ever used: retired by a hard delete, or still leaving storage traces
+    (replica rows, queued remote deletes, a local payload). Reusing it would
+    serve new content on the old public link /f/<id> and cancel the old
+    payload's remote deletes."""
+    storage_keys = (file_id, f'{file_id}.enc', f'{file_id}.jpg', f'{file_id}.e2e')
+    return bool(
+        db.session.query(File.id).filter(File.id == file_id).first()
+        or db.session.query(RetiredFileId.id).filter(RetiredFileId.id == file_id).first()
+        or db.session.query(FileReplica.id).filter(FileReplica.file_id == file_id).first()
+        or db.session.query(ThumbnailReplica.id).filter(ThumbnailReplica.file_id == file_id).first()
+        or db.session.query(PendingRemoteDelete.id).filter(PendingRemoteDelete.file_id.in_(storage_keys)).first()
+        or os.path.lexists(_local_payload_path(f'{file_id}.enc')))
 
 
 def _sync_find_existing(upload_id):
@@ -590,27 +606,34 @@ def apiv1_sync_upload_session_create():
         if error:
             return error
 
-        # Advisory quota check; the authoritative one runs at complete under the
-        # quota lock. Open sessions of this user count as in-flight bytes.
-        user = db.session.get(User, uid)
-        needed = cipher_size
-        if spec['replace_file_id']:
-            needed -= _quota_bytes_for_file(_sync_load_owned_file(spec['replace_file_id']))
-        in_flight = db.session.query(db.func.coalesce(db.func.sum(SyncUploadSession.cipher_size), 0)).filter(
-            SyncUploadSession.user_id == uid, SyncUploadSession.state == 'open',
-            SyncUploadSession.expires_at > datetime.now(timezone.utc)).scalar() or 0
-        if needed > 0 and not user.has_storage_available(int(in_flight) + needed):
-            return _sync_error(413, 'quota_exceeded', 'Storage limit exceeded')
+        # Open sessions of this user count as in-flight bytes. Summed and
+        # inserted under the quota lock so concurrent opens cannot all pass;
+        # the authoritative check runs again at complete.
+        quota_lock = _acquire_finalize_quota_lock(uid)
+        if quota_lock is None:
+            return _sync_busy()
+        try:
+            user = db.session.get(User, uid)
+            needed = cipher_size
+            if spec['replace_file_id']:
+                needed -= _quota_bytes_for_file(_sync_load_owned_file(spec['replace_file_id']))
+            in_flight = db.session.query(db.func.coalesce(db.func.sum(SyncUploadSession.cipher_size), 0)).filter(
+                SyncUploadSession.user_id == uid, SyncUploadSession.state == 'open',
+                SyncUploadSession.expires_at > datetime.now(timezone.utc)).scalar() or 0
+            if needed > 0 and not user.has_storage_available(int(in_flight) + needed):
+                return _sync_error(413, 'quota_exceeded', 'Storage limit exceeded')
 
-        session = SyncUploadSession(
-            user_id=uid, device_id=g.device.id, upload_id=spec['upload_id'],
-            file_id=spec['file_id'] or str(uuid.uuid4()), folder_id=spec['folder_id'],
-            replace_file_id=spec['replace_file_id'], base_content_version=spec['base_content_version'],
-            mode=spec['mode'], chunk_count=chunk_count, cipher_size=cipher_size, cipher_sha256=cipher_sha256,
-            header_b64=header_b64, meta_json=json.dumps({key: spec[key] for key in _SYNC_META_KEYS}),
-            parts_received='[]', expires_at=_sync_session_expiry(), state='open')
-        db.session.add(session)
-        db.session.commit()
+            session = SyncUploadSession(
+                user_id=uid, device_id=g.device.id, upload_id=spec['upload_id'],
+                file_id=spec['file_id'] or str(uuid.uuid4()), folder_id=spec['folder_id'],
+                replace_file_id=spec['replace_file_id'], base_content_version=spec['base_content_version'],
+                mode=spec['mode'], chunk_count=chunk_count, cipher_size=cipher_size, cipher_sha256=cipher_sha256,
+                header_b64=header_b64, meta_json=json.dumps({key: spec[key] for key in _SYNC_META_KEYS}),
+                parts_received='[]', expires_at=_sync_session_expiry(), state='open')
+            db.session.add(session)
+            db.session.commit()
+        finally:
+            _release_user_quota_lock(quota_lock)
         os.makedirs(_sync_session_dir(session.id), exist_ok=True)
         print(f'[SYNC-UPLOAD] Opened session {session.id} for file {session.file_id} ({spec["mode"]}, '
               f'{chunk_count} part(s), {cipher_size} bytes, replace={bool(spec["replace_file_id"])}, device {g.device.id})')

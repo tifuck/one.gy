@@ -110,7 +110,7 @@ def quick_unlock_status(unlock_id):
 
 
 @app.route('/account/quick-unlock/<unlock_id>/unlock', methods=['POST'])
-@limiter.limit("10 per minute")
+@limiter.limit("10 per minute", key_func=get_remote_address)
 def quick_unlock_unlock(unlock_id):
     """{"proof"} -> {"share", "signed_in", "redirect"}. No session needed: the right
     proof also signs this browser in (the sign-in page), like the desktop app's PIN."""

@@ -115,7 +115,8 @@ func (x *Executor) uploadSteps(ctx context.Context, j *job, t *Transfer) error {
 		return issuef("integrity", o.Path, "one.gy reported an older version than the one just uploaded.", "retry")
 	}
 	row := &state.SyncedRow{RelPath: o.Path, Kind: "file", RemoteID: n.IDString(), LocalFID: up.FID, Size: up.Size, MtimeNs: up.MtimeNs,
-		PlainSHA256: up.SHA256, RemoteContentVersion: ours, RemoteChangeSeq: n.Seq, Mode: int64(up.FileMode), RemoteName: o.RemoteName}
+		PlainSHA256: up.SHA256, RemoteContentVersion: ours, RemoteChangeSeq: n.Seq, Mode: int64(up.FileMode), RemoteName: o.RemoteName,
+		E2EE: up.Mode == "e2ee"}
 	return j.commit(ctx, func(tx *sql.Tx) error {
 		if err := storeNode(tx, n); err != nil {
 			return err
@@ -166,6 +167,9 @@ func (x *Executor) prepareUpload(ctx context.Context, rec *record, src sourceFil
 		if n == nil || n.IsTrashed || n.ContentVersion != o.ContentVersion {
 			return nil, ErrSuperseded
 		}
+		if !n.IsE2E && o.Base != nil && o.Base.E2EE && o.Base.RemoteID == o.RemoteID {
+			return nil, issuef("integrity", o.Path, reconcile.DowngradeMessage, "retry", "ignore")
+		}
 		up.Mode, fileID, cv = "standard", o.RemoteID, o.ContentVersion+1
 		if n.IsE2E {
 			up.Mode = "e2ee"
@@ -184,6 +188,9 @@ func (x *Executor) prepareUpload(ctx context.Context, rec *record, src sourceFil
 			up.Fields["folder_id"] = strconv.FormatInt(*parent, 10)
 		}
 		up.Fields["file_id"] = fileID
+		if o.Base != nil && o.Base.E2EE {
+			up.Mode = "e2ee" // created again (gone on one.gy): never less protected than it was
+		}
 		if up.Mode == "e2ee" {
 			if key, err = x.newFileFields(ctx, up.Fields, o.RemoteName); err != nil {
 				return nil, err

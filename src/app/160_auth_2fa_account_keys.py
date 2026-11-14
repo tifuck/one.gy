@@ -203,7 +203,7 @@ def _clear_failed_totp(user_id):
         _release_security_state_locks(locks)
 
 @app.route('/verify-2fa', methods=['GET', 'POST'])
-@limiter.limit("10 per minute", methods=["POST"])
+@limiter.limit("10 per minute", methods=["POST"], key_func=get_remote_address)
 def verify_2fa():
     """Second step of login — verify TOTP code for users with 2FA enabled."""
     pending_user_id = session.get('2fa_pending_user_id')
@@ -486,12 +486,15 @@ def confirm_2fa():
     user.two_factor_secret = _encrypt_totp_secret(secret)
     user.two_factor_enabled = True
     user.session_epoch = db.func.coalesce(User.session_epoch, 0) + 1  # atomic in SQL: concurrent rotations must not collapse into one
+    # Devices and API keys never passed the new second factor either.
+    _deactivate_user_api_keys(user.id)
+    _deactivate_user_devices(user.id)
     db.session.commit()
     session['session_epoch'] = int(user.session_epoch or 0)
 
     _clear_pending_2fa_setup()
 
-    print(f'[AUTH] 2FA enabled for user: {user.username} (session_epoch rotated -> all other sessions invalidated)')
+    print(f'[AUTH] 2FA enabled for user: {user.username} (session_epoch rotated, API keys and devices revoked)')
 
     return jsonify({'success': True, 'message': '2FA HAS BEEN ENABLED'})
 
@@ -860,7 +863,7 @@ def api_update_keys():
         _release_scoped_lock(lock_file)
 
 @app.route('/api/keys/recovery/challenge', methods=['POST'])
-@limiter.limit("5 per minute")
+@limiter.limit("5 per minute", key_func=get_remote_address)
 def api_recovery_key_challenge():
     """AUDIT FIX M3, step 1 of 2: pre-auth challenge for recovery-key recovery.
 
@@ -887,7 +890,7 @@ def api_recovery_key_challenge():
     if not username or not provided_verifier:
         return jsonify({'error': 'RECOVERY FAILED'}), 403
 
-    user = User.query.filter_by(username=username).first()
+    user = _find_login_user(username)
     if not user or not user.has_e2ee_keys or not (user.recovery_key_verifier or user.recovery_key_hash):
         return jsonify({'error': 'RECOVERY FAILED'}), 403
 
@@ -907,7 +910,7 @@ def api_recovery_key_challenge():
 
 
 @app.route('/api/keys/recovery', methods=['POST'])
-@limiter.limit("5 per minute")
+@limiter.limit("5 per minute", key_func=get_remote_address)
 def api_recovery_key_login():
     """Recover account access using a recovery key, set a new password, and
     ROTATE the recovery key.
@@ -978,7 +981,7 @@ def api_recovery_key_login():
     if not _pw_len_ok:
         return jsonify({'error': _pw_len_err}), 400
 
-    user = User.query.filter_by(username=username).first()
+    user = _find_login_user(username)
     if not user or not user.has_e2ee_keys or not (user.recovery_key_verifier or user.recovery_key_hash):
         return jsonify({'error': 'RECOVERY FAILED'}), 403
 

@@ -959,6 +959,7 @@ class _StorageManagerNodeAdmin:
                 if health_ok:
                     if self._pin_ssh_host_key_if_needed(node, backend):
                         db.session.commit()
+                        self._bump_backends_version()
                     node.status = 'online'
                     node.last_seen_at = datetime.now(timezone.utc)
                     db.session.commit()

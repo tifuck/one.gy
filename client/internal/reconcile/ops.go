@@ -45,7 +45,8 @@
 //     was at another path).
 //   - Download         fetch RemoteID (ContentVersion, PayloadChecksum,
 //     SHA256 when known) into Path. Local = what may be replaced (it goes to
-//     debris first) or Absent. Row at Path.
+//     debris first) or Absent. Row at Path. A Base synced end-to-end
+//     encrypted is only replaced by a standard file with Downgrade.
 //   - Link             no transfer: both sides already agree (same hash, or
 //     folders). Row at Path for RemoteID; if Base was at another path, move
 //     the rows below it too.
@@ -68,6 +69,9 @@
 //   - TrashRemote      trash RemoteID, if_seq RemoteSeq. Delete the rows at
 //     and below Path.
 //   - Forget           delete the Base row and the rows below it (no I/O).
+//
+// A file synced end-to-end encrypted (Base.E2EE) is never uploaded in
+// standard mode: a replace whose node is no longer E2EE is an integrity issue.
 //
 // Ordering: structural ops (creates, moves, conflicts, folder links) first,
 // each after the ops that create its parent or vacate its target; then
@@ -128,6 +132,7 @@ type Op struct {
 	ContentVersion  int64
 	PayloadChecksum string
 	RemoteSize      int64 // Conflict: size of the one.gy version (preview)
+	Downgrade       bool  // Download: the user chose the one.gy version even if it is no longer end-to-end encrypted
 	Base            *state.SyncedRow
 	Reason          string
 }

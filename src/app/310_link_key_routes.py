@@ -100,6 +100,8 @@ def regenerate_file_link(file_id):
                 db.text('UPDATE file SET id = :new_id, filename = :new_filename WHERE id = :old_id'),
                 {'new_id': new_id, 'new_filename': new_filename, 'old_id': old_id}
             )
+            # The old id served the old link: it may never come back as a new file.
+            _retire_file_ids(db.session, [old_id])
             # Desktop sync: the old id is gone (tombstone) and a new node appears.
             if sync_owner:
                 _bump_sync_seq_bulk(sync_owner, File, [old_id], deleted=True)
@@ -207,26 +209,8 @@ def regenerate_folder_link(folder_id):
     cleared = _clear_e2e_link_keys_for_folder_tree(folder.id)
     if cleared:
         print(f'[FOLDER] Cleared {cleared} descendant E2E file link key(s) during link regeneration')
-    # Clear link-wrapped name keys on all subfolders recursively.
-    # AUDIT FIX D3: iterative + visited-guarded (was unbounded recursion that a
-    # parent_id cycle turned into an infinite loop).
-    def clear_subfolder_link_name_keys(root_id):
-        visited = set()
-        stack = [root_id]
-        while stack:
-            fid = stack.pop()
-            if fid in visited:
-                continue
-            visited.add(fid)
-            if len(visited) > _MAX_FOLDER_TREE_NODES:
-                print(f'[WARNING] Link-key clearing walk from folder {root_id} exceeded {_MAX_FOLDER_TREE_NODES} folders; truncating')
-                break
-            for sf in Folder.query.filter_by(parent_id=fid, is_trashed=False).all():
-                if sf.link_encrypted_name_key:
-                    sf.link_encrypted_name_key = None
-                    sf.link_name_key_nonce = None
-                stack.append(sf.id)
-    clear_subfolder_link_name_keys(folder.id)
+    # Sub-folder tokens and link-wrapped name keys go with the old link.
+    _rotate_descendant_share_tokens(folder)
 
     db.session.commit()
 
@@ -568,9 +552,8 @@ def file_key_info(file_id):
         if not file.is_public:
             public_folder = is_file_in_public_folder(file)
             browsable_folder = is_file_in_browsable_folder(file) if not public_folder else None
-            # Same rule as download_encrypted: a share password grants access
-            # to a private file outside shared folders.
-            if not public_folder and not browsable_folder and not file.password_hash:
+            # A share password only gates a share; it never shares a private file.
+            if not public_folder and not browsable_folder:
                 return jsonify({'error': 'FILE NOT FOUND'}), 404
         if file.is_e2e_encrypted and not _e2e_file_has_non_owner_key(file):
             return jsonify({'error': 'FILE NOT FOUND'}), 404
@@ -712,7 +695,7 @@ def download_encrypted(file_id):
             print(f'[ENCRYPTED] File {_log_safe(file.orig_name)} accessible via public folder: {_log_safe(public_folder.name)}')
         elif browsable_folder:
             print(f'[ENCRYPTED] File {_log_safe(file.orig_name)} accessible via browsable folder: {_log_safe(browsable_folder.name)}')
-        elif not is_owner and not file.password_hash:
+        elif not is_owner:
             return render_template('notfound.html',
                 title='FILE NOT FOUND',
                 subtitle='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED',

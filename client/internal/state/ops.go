@@ -306,7 +306,7 @@ func SyncedAt(tx *sql.Tx, syncID, relPath string) (*SyncedRow, error) {
 	var r SyncedRow
 	err := tx.QueryRow(`SELECT `+syncedCols+` FROM synced WHERE sync_id = ? AND rel_path = ?`, syncID, relPath).Scan(
 		&r.SyncID, &r.RelPath, &r.Kind, &r.RemoteID, &r.LocalFID, &r.Size, &r.MtimeNs, &r.PlainSHA256,
-		&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName)
+		&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName, &r.E2EE)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -328,7 +328,7 @@ func (s *DB) SyncedSubtree(ctx context.Context, syncID, relPath string) (map[str
 	for rows.Next() {
 		var r SyncedRow
 		if err := rows.Scan(&r.SyncID, &r.RelPath, &r.Kind, &r.RemoteID, &r.LocalFID, &r.Size, &r.MtimeNs, &r.PlainSHA256,
-			&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName); err != nil {
+			&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName, &r.E2EE); err != nil {
 			return nil, err
 		}
 		out[r.RelPath] = &r

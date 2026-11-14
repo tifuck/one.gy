@@ -324,7 +324,7 @@ def _sync_verify_totp(user, code):
 
 @app.route('/apiv1/devices/pre-login', methods=['POST'])
 @csrf.exempt
-@limiter.limit("15 per minute")
+@limiter.limit("15 per minute", key_func=get_remote_address)
 def apiv1_device_pre_login():
     """/auth/pre-login for clients without a CSRF session (same opaque response)."""
     if not get_setting('allow_desktop_sync'):
@@ -334,7 +334,7 @@ def apiv1_device_pre_login():
 
 @app.route('/apiv1/devices/authorize', methods=['POST'])
 @csrf.exempt
-@limiter.limit("10 per minute")
+@limiter.limit("10 per minute", key_func=get_remote_address)
 def apiv1_device_authorize():
     """Exchange split-key credentials (+ TOTP) for a device token. Same lockout,
     captcha threshold and constant-time check as /login."""
@@ -369,7 +369,7 @@ def apiv1_device_authorize():
     if _login_requires_captcha(normalized):
         return _sync_error(403, 'captcha_required', 'Sign in on the website once, then try again')
 
-    user = User.query.filter_by(username=username).first()
+    user = _find_login_user(username)
     # Same comparison as /login: unknown users compare against a dummy hash.
     stored_hash = '0' * 64
     if user and user.split_key_version and user.split_key_version >= 1 and user.auth_token_hash:
@@ -904,10 +904,8 @@ def apiv1_sync_file_trash(file_id):
 @device_auth_required
 def apiv1_sync_file_restore(file_id):
     uid = g.api_user.id
-    quota_lock = _acquire_user_quota_lock(uid)
     lifecycle_lock = None
     try:
-        _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(uid)
         db.session.rollback()
         _sync_lock_user_row(uid)
@@ -915,13 +913,10 @@ def apiv1_sync_file_restore(file_id):
         file = _sync_load_owned_file(file_id, for_update=True)
         if not file or not file.is_trashed:
             return _sync_error(404, 'not_found', 'File not found in trash')
-        if not user.has_storage_available(_quota_bytes_for_file(file)):
-            return _sync_error(413, 'quota_exceeded', 'Storage limit exceeded')
         _restore_trashed_file(file, user)
         db.session.commit()
     finally:
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
     print(f'[SYNC] Restored file {file.id} (device {g.device.id})')
     return jsonify(_sync_file_node(file))
 
@@ -1123,11 +1118,9 @@ def apiv1_sync_folder_trash(folder_id):
 @device_auth_required
 def apiv1_sync_folder_restore(folder_id):
     uid = g.api_user.id
-    quota_lock = _acquire_user_quota_lock(uid)
     lifecycle_lock = None
     tree_lock = None
     try:
-        _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(uid)
         tree_lock = _acquire_user_folder_tree_lock(uid)
         _sync_lock_user_row(uid)
@@ -1135,9 +1128,6 @@ def apiv1_sync_folder_restore(folder_id):
         folder = _sync_load_owned_folder(folder_id, for_update=True)
         if not folder or not folder.is_trashed:
             return _sync_error(404, 'not_found', 'Folder not found in trash')
-        _, required_bytes = _folder_restore_file_ids_and_size(folder)
-        if required_bytes > 0 and not user.has_storage_available(required_bytes):
-            return _sync_error(413, 'quota_exceeded', 'Storage limit exceeded')
         _restore_folder_to_original_parent(folder, user)
         restore_folder_recursive(folder.id)
         touch_folder(folder.parent_id)
@@ -1145,7 +1135,6 @@ def apiv1_sync_folder_restore(folder_id):
     finally:
         _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
     print(f'[SYNC] Restored folder {folder.id} and its contents (device {g.device.id})')
     return jsonify(_sync_folder_node(folder))
 

@@ -240,6 +240,10 @@ Notes:
   stay open.
 - `syncs.verify` files differing items as `integrity` issues with
   `keep_remote` / `keep_local` / `ignore`.
+- A file synced end-to-end encrypted that one.gy now lists as standard (or
+  replaced by a standard file) is an `integrity` issue with `keep_remote` /
+  `ignore`: it is neither uploaded (that would be in plain text) nor
+  downloaded until the user keeps the one.gy version.
 - `activity` actions: `upload`, `download`, `delete_local`, `delete_remote`,
   `move_local`, `move_remote`, `create_local_dir`, `create_remote_dir`, `conflict`
   (`path` is the original name).

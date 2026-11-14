@@ -214,9 +214,12 @@ const (
 
 // Set holds the loaded rules files of a sync, by folder ("" = root), and the
 // paths the scan excluded by attribute (Windows hidden/system items).
+// CaseSensitive is the local file system's (false = names that differ only
+// in case, like a one.gy folder ".ONEGY", are the engine's own folder).
 type Set struct {
-	dirs   map[string]*Rules
-	hidden map[string]bool
+	dirs          map[string]*Rules
+	hidden        map[string]bool
+	CaseSensitive bool
 }
 
 func NewSet() *Set { return &Set{dirs: map[string]*Rules{}, hidden: map[string]bool{}} }
@@ -248,7 +251,7 @@ func ancestors(rel string) []string {
 // scanner walks top-down and skips excluded folders).
 func (s *Set) Match(rel string, kind localfs.Kind, size int64) Result {
 	name := path.Base(rel)
-	if rel == ".onegy" || s.hidden[rel] {
+	if localfs.Key(rel, s.CaseSensitive) == ".onegy" || s.hidden[rel] {
 		return Excluded
 	}
 	parent := path.Dir(rel)

@@ -43,7 +43,7 @@ func RemoteInput(ctx context.Context, env *exec.Env, deviceID string, rootID *in
 	}
 	for _, n := range nodes {
 		rn := reconcile.RemoteNode{ID: n.ID, Kind: localfs.KindFile, Seq: n.Seq, ContentVersion: n.ContentVersion,
-			PayloadChecksum: n.PayloadChecksum, Size: n.PlainSize}
+			PayloadChecksum: n.PayloadChecksum, Size: n.PlainSize, E2EE: n.IsE2E}
 		if n.ParentID != nil {
 			rn.ParentID = strconv.FormatInt(*n.ParentID, 10)
 		}

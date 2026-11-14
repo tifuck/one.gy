@@ -31,6 +31,17 @@ function defaultSocketPath(platform = process.platform, env = process.env, home 
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The engine's answer to ipc.hello {nonce} (engine-ipc.md): it holds our secret.
+function helloProof(secret, nonce) {
+  return crypto.createHmac('sha256', secret).update(`onegy-engine-hello:${nonce}`).digest('hex');
+}
+
+function proofMatches(secret, nonce, proof) {
+  const want = Buffer.from(helloProof(secret, nonce));
+  const got = Buffer.from(typeof proof === 'string' ? proof : '');
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
 // Emits: 'state' ('connecting'|'connected'|'disconnected'|'missing'), 'event' ({type, data}).
 class EngineSupervisor extends EventEmitter {
   // command: executable to spawn; args: extra args; env: extra env vars.
@@ -104,6 +115,13 @@ class EngineSupervisor extends EventEmitter {
     // Before subscribing: the first events can arrive with its reply.
     client.on('event', (ev) => this.emit('event', ev));
     try {
+      // The engine proves it holds our secret before we send it (or a
+      // password): a program squatting the socket/pipe name cannot.
+      const nonce = crypto.randomBytes(32).toString('hex');
+      const hello = await client.call('ipc.hello', { nonce });
+      if (!proofMatches(this.secret, nonce, hello && hello.proof)) {
+        throw new RpcError('the engine did not prove it holds our IPC secret', 'forbidden');
+      }
       await client.call('ipc.hello', { secret: this.secret });
       await client.call('engine.subscribe');
     } catch (err) {
@@ -200,4 +218,4 @@ class EngineSupervisor extends EventEmitter {
   }
 }
 
-module.exports = { EngineSupervisor, defaultSocketPath, stateDir };
+module.exports = { EngineSupervisor, defaultSocketPath, stateDir, helloProof };

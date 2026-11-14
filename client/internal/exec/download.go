@@ -49,6 +49,9 @@ func (x *Executor) downloadSteps(ctx context.Context, j *job, t *Transfer) error
 		if n == nil || n.IsTrashed || n.PayloadChecksum != o.PayloadChecksum || n.ContentVersion != o.ContentVersion {
 			return ErrSuperseded
 		}
+		if !n.IsE2E && o.Base != nil && o.Base.E2EE && o.Base.RemoteID == o.RemoteID && !o.Downgrade {
+			return issuef("integrity", o.Path, reconcile.DowngradeMessage, "retry", "ignore")
+		}
 		plain := x.tmpPath(j.row.ID, ".plain")
 		if o.Kind == reconcile.VerifyLink {
 			plain = ""
@@ -64,7 +67,7 @@ func (x *Executor) downloadSteps(ctx context.Context, j *job, t *Transfer) error
 			return issuef("integrity", o.Path, "The downloaded file does not match its recorded hash; it was not applied.", "retry", "ignore")
 		}
 		x.finishPlain(plain, got.meta)
-		j.rec.SHA256, j.rec.Seq = got.sha, n.Seq
+		j.rec.SHA256, j.rec.Seq, j.rec.E2EE = got.sha, n.Seq, n.IsE2E
 		if err := j.set(ctx, state.OpStaged); err != nil {
 			return err
 		}
@@ -86,7 +89,7 @@ func (x *Executor) downloadSteps(ctx context.Context, j *job, t *Transfer) error
 		return err
 	}
 	row.RemoteID, row.RemoteName, row.PlainSHA256 = o.RemoteID, o.RemoteName, j.rec.SHA256
-	row.RemoteContentVersion, row.RemoteChangeSeq = o.ContentVersion, j.rec.Seq
+	row.RemoteContentVersion, row.RemoteChangeSeq, row.E2EE = o.ContentVersion, j.rec.Seq, j.rec.E2EE
 	return j.commit(ctx, func(tx *sql.Tx) error {
 		if j.rec.Debris != "" {
 			if err := state.AddDebris(tx, x.s.ID, o.Path, j.rec.Debris, "replaced by a download"); err != nil {

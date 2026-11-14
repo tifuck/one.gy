@@ -195,6 +195,36 @@ def _get_download_session_id():
 # Minimum file size (in bytes) to show preparation page (100MB)
 LARGE_FILE_THRESHOLD = 100 * 1024 * 1024
 MAX_CONCURRENT_PREPS = 10
+# Per-client share of the host-wide pool, so one visitor cannot hold every slot.
+MAX_CONCURRENT_PREPS_PER_IP = 2
+MAX_CONCURRENT_PREPS_PER_USER = 4
+
+
+def _client_ip_bucket():
+    """Client address for per-client budgets. IPv6 is grouped by /64: one host
+    usually controls a whole /64 and could otherwise rotate through it."""
+    addr = get_remote_address() or ''
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return addr
+    if ip.version == 6:
+        if ip.ipv4_mapped:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network((ip, 64), strict=False))
+    return str(ip)
+
+
+def _download_client():
+    """(key, is_user) for per-client download caps: the authenticated user
+    (session, API key or device), else the client address. No request: no
+    per-client cap."""
+    if not has_request_context():
+        return None, False
+    user = getattr(g, 'api_user', None) or _current_session_user()
+    if user:
+        return f'user:{user.id}', True
+    return f'ip:{_client_ip_bucket()}', False
 
 # AUDIT FIX (upload/download integrity): prepared-download slots used to leak
 # permanently. _count_active_preps() counted every 'pending'/'decrypting' state
@@ -270,6 +300,7 @@ def _rebuild_prep_reservations_from_states():
             'owner_identity': str(owner_identity),
             'reserved_bytes': reserved_bytes,
             'created_at': _prep_state_created_epoch(info) or time.time(),
+            'client_key': info.get('client_key'),
         })
     return rebuilt
 
@@ -503,6 +534,7 @@ def _active_prep_reservations_locked(reservations):
             'owner_identity': str(reservation.get('owner_identity')),
             'reserved_bytes': reserved_bytes,
             'created_at': reservation.get('created_at'),
+            'client_key': reservation.get('client_key'),
         })
     return active, changed
 
@@ -630,6 +662,8 @@ def _can_start_prep_download():
 
 def _reserve_prep_download_slot(prep_id, state):
     """Atomically reserve a host-wide slot and plaintext disk footprint."""
+    client_key, is_user = _download_client()
+    client_cap = MAX_CONCURRENT_PREPS_PER_USER if is_user else MAX_CONCURRENT_PREPS_PER_IP
     prep_lock = _acquire_scoped_lock('prep_reservations', prefix='prep')
     try:
         reservations, changed = _active_prep_reservations_locked(
@@ -638,6 +672,12 @@ def _reserve_prep_download_slot(prep_id, state):
         if active_preps >= MAX_CONCURRENT_PREPS:
             if changed:
                 _write_prep_reservations_locked(reservations)
+            return False, active_preps
+        client_preps = sum(1 for item in reservations if item.get('client_key') == client_key)
+        if client_key and client_preps >= client_cap:
+            if changed:
+                _write_prep_reservations_locked(reservations)
+            print(f'[DOWNLOAD] Rejected prepared download: {client_preps} already in progress for this client (limit {client_cap})')
             return False, active_preps
         reserved_bytes = max(0, int(state.get('orig_size', 0) or 0))
         already_reserved = sum(item['reserved_bytes'] for item in reservations)
@@ -661,6 +701,7 @@ def _reserve_prep_download_slot(prep_id, state):
             'owner_identity': owner_identity,
             'reserved_bytes': reserved_bytes,
             'created_at': time.time(),
+            'client_key': client_key,
         }
         reservations.append(reservation)
         _write_prep_reservations_locked(reservations)
@@ -670,6 +711,7 @@ def _reserve_prep_download_slot(prep_id, state):
             'reservation_held': True,
             'producer_pid': owner_pid,
             'producer_identity': owner_identity,
+            'client_key': client_key,
         })
         if not _write_prep_state(prep_id, state):
             _delete_prep_state(prep_id)
@@ -768,6 +810,8 @@ _ZIP_DOWNLOAD_MAX_FILES = int(os.environ.get('ZIP_DOWNLOAD_MAX_FILES', '5000'))
 # Default 20 GB per ZIP — generous for legitimate use but bounded.
 _ZIP_DOWNLOAD_MAX_BYTES = int(os.environ.get('ZIP_DOWNLOAD_MAX_BYTES', str(20 * 1024 * 1024 * 1024)))
 _ZIP_DOWNLOAD_MAX_CONCURRENT = int(os.environ.get('ZIP_DOWNLOAD_MAX_CONCURRENT', '4'))
+_ZIP_DOWNLOAD_MAX_CONCURRENT_PER_IP = 1
+_ZIP_DOWNLOAD_MAX_CONCURRENT_PER_USER = 2
 # AUDIT FIX P11: a ZIP build materialises the FULL archive plus one decrypted
 # member on disk before a single byte is streamed, and the concurrency slot used
 # to be released in the view's `finally` -- i.e. when the view RETURNED the
@@ -893,6 +937,7 @@ def _active_zip_reservations_locked(reservations):
             'owner_identity': str(owner_identity),
             'estimated_bytes': estimated_bytes,
             'created_at': reservation.get('created_at'),
+            'client_key': reservation.get('client_key'),
         })
     if reaped:
         print(f'[ZIP] Reaped {reaped} stale ZIP build reservation(s)')
@@ -977,6 +1022,8 @@ def _acquire_zip_slot(estimated_bytes=0):
     estimated_bytes = max(0, int(estimated_bytes or 0))
     reservation_lock = None
     try:
+        client_key, is_user = _download_client()
+        client_cap = _ZIP_DOWNLOAD_MAX_CONCURRENT_PER_USER if is_user else _ZIP_DOWNLOAD_MAX_CONCURRENT_PER_IP
         reservation_lock = _acquire_scoped_lock('zip_build_reservations', prefix='zip')
         reservations, reaped = _active_zip_reservations_locked(
             _read_zip_reservations_locked())
@@ -984,6 +1031,12 @@ def _acquire_zip_slot(estimated_bytes=0):
             if reaped:
                 _write_zip_reservations_locked(reservations)
             print(f'[ZIP] Rejected ZIP build: {len(reservations)} build(s) already in flight')
+            return None, _zip_slot_busy_response()
+        client_builds = sum(1 for item in reservations if item.get('client_key') == client_key)
+        if client_key and client_builds >= client_cap:
+            if reaped:
+                _write_zip_reservations_locked(reservations)
+            print(f'[ZIP] Rejected ZIP build: {client_builds} build(s) already in flight for this client (limit {client_cap})')
             return None, _zip_slot_busy_response()
         reserved_bytes = sum(item['estimated_bytes'] for item in reservations)
         if estimated_bytes:
@@ -1007,6 +1060,7 @@ def _acquire_zip_slot(estimated_bytes=0):
             'owner_identity': owner_identity,
             'estimated_bytes': estimated_bytes,
             'created_at': time.time(),
+            'client_key': client_key,
         })
         _write_zip_reservations_locked(reservations)
         return reservation_id, None

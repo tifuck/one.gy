@@ -395,16 +395,22 @@ def _remember_folder_share_access(folder):
 # under attack and every address's budget shrinks to
 # SHARE_PW_UNDER_ATTACK_MAX_ATTEMPTS before its escalating lockout: legitimate
 # visitors keep tries of their own, rotating attackers get 3 per address.
+# Rotation through unlimited addresses (an IPv6 prefix) still had no ceiling, so
+# addresses are bucketed by /64 and SHARE_PW_GLOBAL_LOCK_ATTEMPTS failures from
+# all addresses lock the resource for SHARE_PW_GLOBAL_LOCKOUT_SECONDS. Visitors
+# who already unlocked it keep their session marker and are not affected.
 _share_pw_failure_map = {}   # non-authoritative process-local mirror
 _share_pw_lock = threading.Lock()
 SHARE_PW_MAX_ATTEMPTS = 10
 SHARE_PW_UNDER_ATTACK_MAX_ATTEMPTS = 3
 SHARE_PW_LOCKOUT_SECONDS = 300
 SHARE_PW_GLOBAL_MAX_ATTEMPTS = 50
+SHARE_PW_GLOBAL_LOCK_ATTEMPTS = 200
+SHARE_PW_GLOBAL_LOCKOUT_SECONDS = 900
 SHARE_PW_FAILURE_RESET_AFTER = 900
 
 def _share_pw_lockout_key(kind, resource_id):
-    return f'{kind}:{resource_id}:{get_remote_address()}'
+    return f'{kind}:{resource_id}:{_client_ip_bucket()}'
 
 def _share_pw_global_lockout_key(kind, resource_id):
     """Per-resource budget shared by ALL source addresses."""
@@ -455,7 +461,7 @@ def _share_pw_record_failure(kind, resource_id, require_unlocked=False):
     try:
         scoped = _read_share_pw_failure_state(scoped_key, now) or {'count': 0, 'until': 0, 'last': 0}
         shared = _read_share_pw_failure_state(global_key, now) or {'count': 0, 'last': 0}
-        if require_unlocked and scoped.get('until', 0) > now:
+        if require_unlocked and (scoped.get('until', 0) > now or shared.get('until', 0) > now):
             return False
         max_attempts = SHARE_PW_MAX_ATTEMPTS
         if shared.get('count', 0) >= SHARE_PW_GLOBAL_MAX_ATTEMPTS:
@@ -473,6 +479,11 @@ def _share_pw_record_failure(kind, resource_id, require_unlocked=False):
             print(f'[RATELIMIT] Share-password failures for {kind} {resource_id} reached '
                   f'{SHARE_PW_GLOBAL_MAX_ATTEMPTS} from all addresses; per-address budget '
                   f'reduced to {SHARE_PW_UNDER_ATTACK_MAX_ATTEMPTS}')
+        if shared['count'] >= SHARE_PW_GLOBAL_LOCK_ATTEMPTS:
+            shared['until'] = now + SHARE_PW_GLOBAL_LOCKOUT_SECONDS
+            shared['count'] = SHARE_PW_GLOBAL_MAX_ATTEMPTS
+            print(f'[RATELIMIT] Share-password lockout for {kind} {resource_id} from all addresses '
+                  f'for {SHARE_PW_GLOBAL_LOCKOUT_SECONDS}s after {SHARE_PW_GLOBAL_LOCK_ATTEMPTS} failures')
         for key, entry in ((scoped_key, scoped), (global_key, shared)):
             _write_share_pw_failure_state(key, entry)
             with _share_pw_lock:

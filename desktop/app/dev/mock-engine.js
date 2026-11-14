@@ -9,7 +9,7 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const { createMockEngine } = require('./mock-core');
-const { defaultSocketPath } = require('../src/main/engine');
+const { defaultSocketPath, helloProof } = require('../src/main/engine');
 const { LineDecoder } = require('../src/main/rpc');
 
 const argv = process.argv.slice(2);
@@ -18,6 +18,12 @@ const flag = (name) => {
   return i >= 0 ? argv[i + 1] : null;
 };
 const socketPath = flag('socket') || defaultSocketPath();
+// Like the engine: with --ipc-secret-stdin, ipc.hello {nonce} proves the secret.
+let secret = '';
+if (argv.includes('--ipc-secret-stdin')) {
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (d) => { secret += d; });
+}
 const engine = createMockEngine({
   home: os.homedir(),
   sep: path.sep,
@@ -42,7 +48,11 @@ const server = net.createServer((socket) => {
     let reply;
     try {
       if (msg.method === 'engine.subscribe') client.subscribed = true;
-      reply = { jsonrpc: '2.0', id: msg.id, result: engine.call(msg.method, msg.params) };
+      const p = msg.params || {};
+      const result = msg.method === 'ipc.hello' && p.nonce && !p.secret
+        ? { proof: helloProof(secret.trim(), p.nonce) }
+        : engine.call(msg.method, msg.params);
+      reply = { jsonrpc: '2.0', id: msg.id, result };
     } catch (err) {
       reply = { jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: err.message, data: err.data || { code: 'internal' } } };
     }

@@ -5,7 +5,7 @@ NOTES_PENDING_MAX_CONTENT_SIZE = 25 * 1024 * 1024
 NOTES_PENDING_AGGREGATE_MAX_BYTES = 100 * 1024 * 1024
 NOTES_NOTE_CONTENT_MAX_BYTES = 100 * 1024 * 1024
 # Version history: the content a save replaces is kept as a NoteVersion row.
-# ponytail: snapshots live in the DB and do not count toward quota, so they are
+# ponytail: snapshots live in the DB (they count toward quota), so they are
 # small and few; move them to notes/ payloads if picture-heavy notes need history.
 NOTES_VERSION_MAX_BYTES = 2 * 1024 * 1024
 NOTES_VERSION_KEEP = 10
@@ -242,6 +242,15 @@ def _notes_snapshot_version(n, force=False):
     except Exception as e:
         print(f'[NOTES] Warning: could not snapshot note {n.id} before save: {e}')
 
+def _notes_stage_permanent_delete(n):
+    """Stage a note's permanent deletion in the caller's transaction: remote
+    tombstone and replica rows, its versions, the row. Returns the local targets
+    to pass to _purge_staged_locals_with_note_locks() after the commit."""
+    note_local_targets = storage.stage_payload_deletes([_note_payload_delete_key(n.id)])
+    NoteVersion.query.filter_by(note_id=n.id).delete(synchronize_session=False)
+    db.session.delete(n)
+    return note_local_targets
+
 def _cleanup_note_versions():
     """Drop versions whose note is gone (account/admin deletion, notebook purge)."""
     removed = NoteVersion.query.filter(~NoteVersion.note_id.in_(db.session.query(Note.id))).delete(synchronize_session=False)
@@ -460,26 +469,15 @@ def notes_delete_notebook(notebook_id):
 @app.route('/notes/api/notebooks/<int:notebook_id>/restore', methods=['POST'])
 @login_required
 def notes_restore_notebook(notebook_id):
-    """Restore a trashed notebook and its notes."""
+    """Restore a trashed notebook and its notes (trashed notes already count
+    toward quota)."""
     user_id = session['logged_in_user_id']
-    quota_lock = _acquire_user_quota_lock(user_id)
-    lifecycle_lock = None
+    lifecycle_lock = _acquire_user_lifecycle_lock(user_id)
     try:
-        _refresh_quota_snapshot()
-        lifecycle_lock = _acquire_user_lifecycle_lock(user_id)
         db.session.rollback()
-        user = db.session.get(User, user_id)
         nb = Notebook.query.filter_by(id=notebook_id, user_id=user_id, is_trashed=True).first()
         if not nb:
             return jsonify({'error': 'NOTEBOOK NOT FOUND'}), 404
-        required_bytes = db.session.query(db.func.coalesce(db.func.sum(Note.size), 0)).filter_by(
-            notebook_id=notebook_id,
-            user_id=user_id,
-            is_trashed=True,
-            trashed_via_notebook=True,
-        ).scalar() or 0
-        if required_bytes > 0 and not user.has_storage_available(int(required_bytes)):
-            return jsonify({'error': 'STORAGE LIMIT EXCEEDED'}), 413
         nb.is_trashed = False
         nb.trashed_at = None
         nb.updated_at = datetime.now(timezone.utc)
@@ -493,7 +491,6 @@ def notes_restore_notebook(notebook_id):
         return jsonify({'success': True})
     finally:
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
 
 @app.route('/notes/api/notes', methods=['GET'])
 @login_required
@@ -814,7 +811,9 @@ def notes_update_note(note_id):
                 return jsonify({'error': 'STORAGE LIMIT EXCEEDED'}), 413
 
             # The old payload is still on disk here (the staged one replaces it after the commit).
-            _notes_snapshot_version(n, force=bool(data.get('force_version')))
+            # History counts toward quota and is skipped when it would not fit.
+            if not user or user.has_storage_available(content_size):
+                _notes_snapshot_version(n, force=bool(data.get('force_version')))
 
             new_version = expected_version + 1
             now = datetime.now(timezone.utc)
@@ -1049,9 +1048,7 @@ def notes_delete_note(note_id):
         if permanent:
             if not n.is_trashed:
                 return jsonify({'error': 'NOTE MUST BE IN TRASH BEFORE PERMANENT DELETION'}), 409
-            note_local_targets = storage.stage_payload_deletes([_note_payload_delete_key(note_id)])
-            NoteVersion.query.filter_by(note_id=note_id).delete(synchronize_session=False)
-            db.session.delete(n)
+            note_local_targets = _notes_stage_permanent_delete(n)
             db.session.commit()
             print(f'[NOTES] User {user_id} permanently deleted note {note_id}')
         else:
@@ -1093,20 +1090,14 @@ def notes_get_version(note_id, version_id):
 @app.route('/notes/api/notes/<string:note_id>/restore', methods=['POST'])
 @login_required
 def notes_restore_note(note_id):
-    """Restore a trashed note."""
+    """Restore a trashed note (trashed notes already count toward quota)."""
     user_id = session['logged_in_user_id']
-    quota_lock = _acquire_user_quota_lock(user_id)
-    lifecycle_lock = None
+    lifecycle_lock = _acquire_user_lifecycle_lock(user_id)
     try:
-        _refresh_quota_snapshot()
-        lifecycle_lock = _acquire_user_lifecycle_lock(user_id)
         db.session.rollback()
-        user = db.session.get(User, user_id)
         n = Note.query.filter_by(id=note_id, user_id=user_id, is_trashed=True).first()
         if not n:
             return jsonify({'error': 'NOTE NOT FOUND'}), 404
-        if not user.has_storage_available(int(n.size or 0)):
-            return jsonify({'error': 'STORAGE LIMIT EXCEEDED'}), 413
         # If the note's notebook was also trashed, move it to unfiled
         if n.notebook_id:
             nb = Notebook.query.filter_by(id=n.notebook_id, user_id=user_id).first()
@@ -1120,7 +1111,6 @@ def notes_restore_note(note_id):
         return jsonify({'success': True})
     finally:
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
 
 @app.route('/notes/api/trash', methods=['DELETE'])
 @login_required
@@ -1217,16 +1207,17 @@ def notes_list_trash():
 @limiter.limit("30 per minute")
 @login_required
 def notes_search_users():
-    """Search for users with E2EE keys (for sending notes)."""
+    """Look up a user with E2EE keys by exact (case-insensitive) username, for
+    sending notes. No substring listing: that would enumerate usernames."""
     q = request.args.get('q', '').strip()
     if not q or len(q) < 2:
         return jsonify({'users': []})
     user_id = session['logged_in_user_id']
     results = User.query.filter(
-        User.username.ilike(f'%{escape_like_pattern(q[:128])}%', escape='\\'),
+        db.func.lower(User.username) == q[:128].lower(),
         User.has_e2ee_keys == True,
         User.id != user_id
-    ).limit(10).all()
+    ).limit(1).all()
     return jsonify({'users': [{'username': u.username} for u in results]})
 
 @app.route('/notes/api/notes/send', methods=['POST'])

@@ -4,8 +4,9 @@ Flask-WTF==1.2.1
 Flask-Limiter==4.1.1
 APScheduler==3.10.4
 # AUDIT FIX M9: cryptography 42.0.8 ships an OpenSSL vulnerable to
-# CVE-2024-6119 (X.509 name-check DoS); 43.0.1+ closes it.
-cryptography==43.0.3
+# CVE-2024-6119 (X.509 name-check DoS); 43.0.1+ closes it. 43.0.3's bundled
+# OpenSSL is affected by CVE-2024-12797 (fixed in 44.0.1).
+cryptography==44.0.3
 python-dotenv==1.0.1
 qrcode[pil]==8.2
 Pillow==12.3.0

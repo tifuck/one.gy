@@ -7,7 +7,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -72,6 +75,14 @@ type Server struct {
 
 func NewServer() *Server {
 	return &Server{methods: map[string]Handler{}, conns: map[*conn]bool{}}
+}
+
+// HelloProof is the engine's answer to ipc.hello {nonce}: hex
+// HMAC-SHA256(secret, "onegy-engine-hello:" + nonce).
+func HelloProof(secret, nonce string) string {
+	m := hmac.New(sha256.New, []byte(secret))
+	m.Write([]byte("onegy-engine-hello:" + nonce))
+	return hex.EncodeToString(m.Sum(nil))
 }
 
 // Handle registers a method (before Serve).
@@ -204,9 +215,18 @@ func (s *Server) dispatch(ctx context.Context, c *conn, line []byte) (resp, afte
 	if req.Method == "ipc.hello" {
 		var in struct {
 			Secret string `json:"secret"`
+			Nonce  string `json:"nonce"`
 		}
 		if err = Params(req.Params, &in); err == nil {
-			if s.Secret == "" || subtle.ConstantTimeCompare([]byte(in.Secret), []byte(s.Secret)) == 1 {
+			if in.Secret == "" && in.Nonce != "" {
+				// The engine proves it holds the secret before the app sends
+				// it (or a password): a program squatting the pipe cannot.
+				res := map[string]string{}
+				if s.Secret != "" {
+					res["proof"] = HelloProof(s.Secret, in.Nonce)
+				}
+				result = res
+			} else if s.Secret == "" || subtle.ConstantTimeCompare([]byte(in.Secret), []byte(s.Secret)) == 1 {
 				s.mu.Lock()
 				c.trusted = true
 				s.mu.Unlock()

@@ -39,7 +39,7 @@ func Preview(ctx context.Context, env *Env, p PreviewParams) (reconcile.Preview,
 			rules = &d
 		}
 	}
-	tree, err := scan.Run(ctx, scan.Options{Root: p.Root, FSKind: p.FSKind, RootRules: rules, IncludeHiddenSystem: p.IncludeHiddenSystem})
+	tree, err := scan.Run(ctx, scan.Options{Root: p.Root, FSKind: p.FSKind, CaseSensitive: p.CaseSensitive, RootRules: rules, IncludeHiddenSystem: p.IncludeHiddenSystem})
 	if err != nil {
 		return reconcile.Preview{}, err
 	}

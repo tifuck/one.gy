@@ -850,7 +850,7 @@ func (r *Runner) clearMassDecisions() {
 // input gathers one pass: local scan, remote subtree, base rows.
 func (r *Runner) input(ctx context.Context, row *state.SyncRow, cfg Config) (*reconcile.Input, error) {
 	db := r.env.Exec.DB
-	tree, err := scan.Run(ctx, scan.Options{Root: row.LocalRoot, FSKind: row.FSKind, DB: db, SyncID: row.ID,
+	tree, err := scan.Run(ctx, scan.Options{Root: row.LocalRoot, FSKind: row.FSKind, CaseSensitive: row.CaseSensitive, DB: db, SyncID: row.ID,
 		IncludeHiddenSystem: cfg.IncludeHiddenSystem, Progress: r.scanned})
 	if err != nil {
 		return nil, err

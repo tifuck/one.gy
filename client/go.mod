@@ -1,6 +1,6 @@
 module github.com/tifuck/one.gy/client
 
-go 1.22
+go 1.27
 
 require (
 	github.com/Microsoft/go-winio v0.6.2

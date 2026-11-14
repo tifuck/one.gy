@@ -129,3 +129,39 @@ func TestReadOnlyIntegrityAndLimits(t *testing.T) {
 		lf("b.txt", "L2", "x").bf("b.txt", "u3", "L2", "x", 1).rf("u3", "root", "b.txt", "x", 1, 1).rf("u2", "root", "b.txt", "z", 1, 2)
 	eq(t, "occupied", summary(w.plan(t)), "download b (2).txt")
 }
+
+// A file synced end-to-end encrypted whose node one.gy now lists as standard
+// moves in neither direction. A different (standard) node at its path is a
+// replacement: the local edit is kept as a conflict copy, never uploaded into it.
+func TestE2EEDowngradeStalls(t *testing.T) {
+	e2ee := func(w *world) *world {
+		for _, b := range w.base {
+			b.E2EE = true
+		}
+		for i := range w.remote {
+			w.remote[i].E2EE = true
+		}
+		return w
+	}
+	w := e2ee(newWorld().bf("a", "u1", "L1", "h", 1).lf("a", "L1", "h2").rf("u1", "root", "a", "h", 1, 1))
+	eq(t, "e2ee edit", summary(w.plan(t)), "upload a @u1")
+
+	w.remote[0].E2EE = false
+	p := w.plan(t)
+	eq(t, "edit over standard", summary(p))
+	eq(t, "edit over standard issue", issueKinds(p), "integrity a")
+	if p.Issues[0].Message != DowngradeMessage || strings.Join(p.Issues[0].Actions, ",") != "keep_remote,ignore" {
+		t.Errorf("issue %+v", p.Issues[0])
+	}
+
+	w = e2ee(newWorld().bf("a", "u1", "L1", "h", 1).lf("a", "L1", "h").rf("u1", "root", "a", "evil", 2, 2))
+	w.remote[0].E2EE = false
+	p = w.plan(t)
+	eq(t, "standard download", summary(p))
+	eq(t, "standard download issue", issueKinds(p), "integrity a")
+
+	w = e2ee(newWorld().bf("a", "u1", "L1", "h", 1).lf("a", "L1", "h2")).rf("u2", "root", "a", "evil", 1, 3)
+	p = w.plan(t)
+	eq(t, "replaced by standard", summary(p), "conflict a>a (conflict from DEV 2026-11-08 1432)")
+	eq(t, "replaced by standard issue", issueKinds(p))
+}

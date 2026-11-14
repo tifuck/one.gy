@@ -18,6 +18,10 @@ class _StorageManagerNodes:
         if algorithm:
             config['host_key_algorithm'] = algorithm
         node.set_config(config)
+        # The running backend must enforce the pin from its next handshake on;
+        # callers bump the backends version after committing so other workers
+        # rebuild theirs from the stored config.
+        backend._config['host_key_sha256'] = fingerprint
         print(f'[STORAGE] Pinned SSH host key fingerprint for node {node.name}: {fingerprint}')
         return True
 
@@ -265,6 +269,7 @@ class _StorageManagerNodes:
                     elif health_ok:
                         if backend and self._pin_ssh_host_key_if_needed(node, backend):
                             db.session.commit()
+                            self._bump_backends_version()
                         node.status = 'online'
                         node.last_seen_at = datetime.now(timezone.utc)
                     elif health_ok is False:
@@ -364,6 +369,7 @@ class _StorageManagerNodes:
                     if entry['reachable']:
                         if self._pin_ssh_host_key_if_needed(node, backend):
                             db.session.commit()
+                            self._bump_backends_version()
                         node.status = 'online'
                         node.last_seen_at = now
                         # AUDIT FIX M7: reachable probe clears the failure streak.

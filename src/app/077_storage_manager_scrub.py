@@ -482,10 +482,62 @@ class _StorageManagerScrub:
         #   Phase C (locked)   -- apply verdicts with concurrency-safe conditional
         #                         UPDATEs (skip rows a concurrent writer moved out
         #                         of 'synced'), self-heal notes, then commit.
+        self._encrypt_legacy_plaintext_thumbnails()
         return self._run_integrity_scrub_locked(
             max_items=max_items, max_checksum_items=max_checksum_items,
             max_deep_verify_items=max_deep_verify_items, max_seconds=max_seconds,
             min_reverify_age_seconds=min_reverify_age_seconds)
+
+    # Legacy plaintext thumbnails re-encrypted per scrub pass. Each one requeues
+    # its remote replicas, so this also bounds the re-upload burst.
+    LEGACY_THUMBNAIL_ENCRYPT_BATCH = 50
+
+    def _encrypt_legacy_plaintext_thumbnails(self, limit=None):
+        """Re-encrypt up to `limit` local non-E2EE thumbnails still stored as
+        plain JPEG (written before thumbnails were encrypted at rest).
+        save_thumbnail() requeues every remote replica, so the replication loop
+        overwrites the plaintext copies on remote nodes. Idempotent: thumbnails
+        that are already tokens are skipped."""
+        limit = self.LEGACY_THUMBNAIL_ENCRYPT_BATCH if limit is None else limit
+        _backends, local_backend, _local_node_id, _version = self._backend_state_snapshot()
+        if local_backend is None:
+            return 0
+        try:
+            names = sorted(n for n in (local_backend.list_files('thumbnails') or [])
+                           if n.endswith('.jpg') and not _is_internal_storage_artifact(n))
+        except Exception as e:
+            print(f'[SCRUB] Could not list local thumbnails for re-encryption: {e}')
+            return 0
+        encrypted = 0
+        for name in names:
+            if encrypted >= limit:
+                break
+            file_id = name[:-len('.jpg')]
+            try:
+                with open(local_backend.get_path('thumbnails', name), 'rb') as f:
+                    if f.read(len(_THUMBNAIL_FERNET_PREFIX)) == _THUMBNAIL_FERNET_PREFIX:
+                        continue
+                file_obj = db.session.get(File, file_id)
+                if file_obj is None or file_obj.is_e2e_encrypted or not file_obj.has_thumbnail:
+                    continue
+                data = local_backend.get_data('thumbnails', name)
+                data_sum = hashlib.sha256(data).hexdigest()
+                if file_obj.thumbnail_checksum and file_obj.thumbnail_checksum != data_sum:
+                    # Not the authoritative bytes: the scrub/replication repair
+                    # restores them first, a later pass encrypts the result.
+                    continue
+                if self.save_thumbnail(file_id, data, replace_checksum=data_sum):
+                    db.session.commit()
+                    encrypted += 1
+            except Exception as e:
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+                print(f'[SCRUB] Could not re-encrypt legacy thumbnail {name}: {e}')
+        if encrypted:
+            print(f'[SCRUB] Re-encrypted {encrypted} legacy plaintext thumbnail(s); remote copies requeued')
+        return encrypted
 
     def _scrub_persist(self, model, replica, values, snapshot=None):
         """Apply a scrub verdict to a replica with a concurrency-safe conditional

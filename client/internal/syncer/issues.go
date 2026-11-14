@@ -351,7 +351,7 @@ func (r *Runner) applyActions(ctx context.Context, x *exec.Executor, in *reconci
 		case a.verb == "keep_remote" && n != nil && n.Kind == localfs.KindFile:
 			op = reconcile.Op{Kind: reconcile.Download, Path: a.path, EntryKind: localfs.KindFile, RemoteID: n.ID, RemoteName: n.Name, Size: n.Size,
 				SHA256: n.SHA256, ContentVersion: n.ContentVersion, PayloadChecksum: n.PayloadChecksum, Local: &reconcile.Expect{Absent: true},
-				Base: base[a.path], Reason: "keep the one.gy version (user decision)"}
+				Downgrade: true, Base: base[a.path], Reason: "keep the one.gy version (user decision)"}
 			if e != nil {
 				op.Local = expectOf(e)
 			}

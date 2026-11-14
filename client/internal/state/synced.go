@@ -8,7 +8,9 @@ import (
 
 // SyncedRow is the last agreed state of one item (plan 7.1 "synced"): the
 // base of the three-way compare. RelPath is the local path ('/'-separated),
-// Kind "file" | "folder", RemoteName the one.gy name it was synced under.
+// Kind "file" | "folder", RemoteName the one.gy name it was synced under,
+// E2EE whether the file was synced end-to-end encrypted (a server that
+// later reports it unencrypted is not believed without the user).
 type SyncedRow struct {
 	SyncID               string
 	RelPath              string
@@ -22,9 +24,10 @@ type SyncedRow struct {
 	RemoteChangeSeq      int64
 	Mode                 int64
 	RemoteName           string
+	E2EE                 bool
 }
 
-const syncedCols = `sync_id, rel_path, kind, remote_id, local_fid, size, mtime_ns, plain_sha256, remote_content_version, remote_change_seq, mode, remote_name`
+const syncedCols = `sync_id, rel_path, kind, remote_id, local_fid, size, mtime_ns, plain_sha256, remote_content_version, remote_change_seq, mode, remote_name, e2ee`
 
 // ListSynced returns the base rows of a sync, ordered by path.
 func (s *DB) ListSynced(ctx context.Context, syncID string) ([]*SyncedRow, error) {
@@ -37,7 +40,7 @@ func (s *DB) ListSynced(ctx context.Context, syncID string) ([]*SyncedRow, error
 	for rows.Next() {
 		var r SyncedRow
 		if err := rows.Scan(&r.SyncID, &r.RelPath, &r.Kind, &r.RemoteID, &r.LocalFID, &r.Size, &r.MtimeNs, &r.PlainSHA256,
-			&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName); err != nil {
+			&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName, &r.E2EE); err != nil {
 			return nil, err
 		}
 		out = append(out, &r)
@@ -51,7 +54,7 @@ func SyncedByRemote(tx *sql.Tx, syncID, remoteID string) (*SyncedRow, error) {
 	var r SyncedRow
 	err := tx.QueryRow(`SELECT `+syncedCols+` FROM synced WHERE sync_id = ? AND remote_id = ? AND remote_id != ''`, syncID, remoteID).Scan(
 		&r.SyncID, &r.RelPath, &r.Kind, &r.RemoteID, &r.LocalFID, &r.Size, &r.MtimeNs, &r.PlainSHA256,
-		&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName)
+		&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName, &r.E2EE)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -66,7 +69,7 @@ func (s *DB) SyncedByPath(ctx context.Context, syncID, relPath string) (*SyncedR
 	var r SyncedRow
 	err := s.QueryRowContext(ctx, `SELECT `+syncedCols+` FROM synced WHERE sync_id = ? AND rel_path = ?`, syncID, relPath).Scan(
 		&r.SyncID, &r.RelPath, &r.Kind, &r.RemoteID, &r.LocalFID, &r.Size, &r.MtimeNs, &r.PlainSHA256,
-		&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName)
+		&r.RemoteContentVersion, &r.RemoteChangeSeq, &r.Mode, &r.RemoteName, &r.E2EE)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -78,9 +81,9 @@ func (s *DB) SyncedByPath(ctx context.Context, syncID, relPath string) (*SyncedR
 
 // PutSynced inserts or replaces a base row.
 func PutSynced(tx *sql.Tx, r *SyncedRow) error {
-	_, err := tx.Exec(`INSERT OR REPLACE INTO synced (`+syncedCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := tx.Exec(`INSERT OR REPLACE INTO synced (`+syncedCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.SyncID, r.RelPath, r.Kind, r.RemoteID, r.LocalFID, r.Size, r.MtimeNs, r.PlainSHA256,
-		r.RemoteContentVersion, r.RemoteChangeSeq, r.Mode, r.RemoteName)
+		r.RemoteContentVersion, r.RemoteChangeSeq, r.Mode, r.RemoteName, r.E2EE)
 	return err
 }
 

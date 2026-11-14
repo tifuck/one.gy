@@ -257,6 +257,10 @@ class MainWindow {
   // App unlocked: sign the site view in with a one-use device ticket
   // (sent as a header, never in the URL) and open pathname.
   unlockSite({ url, ticket }, pathname = this.takeResumePath()) {
+    if (originOf(url) !== this.opts.serverOrigin()) {
+      console.error('[WINDOW] refusing a web session URL outside the server origin');
+      return;
+    }
     this.siteLocked = false;
     const next = new URLSearchParams({ next: pathname });
     const wc = this.site.webContents;

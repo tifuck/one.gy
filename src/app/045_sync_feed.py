@@ -129,6 +129,7 @@ def _sync_feed_before_flush(session, flush_context, instances):
                for group in (session.new, session.dirty, session.deleted) for obj in group):
         return
     _tree_wraps_drop_stale(session)
+    _retire_file_ids(session, [obj.id for obj in session.deleted if isinstance(obj, File)])
     stamps, tombstones = _sync_collect(session)
     if not stamps and not tombstones:
         return
@@ -146,6 +147,18 @@ def _sync_feed_before_flush(session, flush_context, instances):
         session.info.pop('_sync_feed_busy', None)
 
 
+def _retire_file_ids(session, ids):
+    """Record hard-deleted File ids (RetiredFileId) in session's transaction so
+    the id is never handed out again (376 _sync_check_target). Covers every File
+    hard delete: ORM deletes via the flush listener, bulk/raw ones via
+    _bump_sync_seq_bulk(deleted=True)."""
+    ids = {str(i) for i in ids if i}
+    if not ids:
+        return
+    ids -= {row[0] for row in session.query(RetiredFileId.id).filter(RetiredFileId.id.in_(ids))}
+    session.add_all([RetiredFileId(id=i) for i in sorted(ids)])
+
+
 def _bump_sync_seq_bulk(user_id, model, ids, deleted=False):
     """Seq bump for bulk query.update()/delete() or raw SQL on File/Folder, which
     bypass the flush listener. Call it in the same transaction as the write.
@@ -159,6 +172,8 @@ def _bump_sync_seq_bulk(user_id, model, ids, deleted=False):
         return None
     kind = 'file' if model is File else 'folder'
     if deleted:
+        if model is File:
+            _retire_file_ids(db.session, ids)
         if not user_id:
             return None
         seq = _allocate_sync_seq(db.session, user_id)

@@ -445,21 +445,15 @@ def _restore_trashed_file(file, user):
 @app.route('/trash/restore/<file_id>', methods=['POST'])
 @login_required
 def restore_file(file_id):
-    """Restore a file from trash"""
+    """Restore a file from trash (trashed bytes already count toward quota)."""
     user = _current_session_user()
-    quota_lock = _acquire_user_quota_lock(user.id)
-    lifecycle_lock = None
+    lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
     try:
-        _refresh_quota_snapshot()
-        lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
         db.session.rollback()
         user = db.session.get(User, user.id)
         file = File.query.filter_by(id=file_id, registered_user_id=user.id, is_trashed=True).first()
         if not file:
             return jsonify({'error': 'File not found in trash'}), 404
-
-        if not user.has_storage_available(_quota_bytes_for_file(file)):
-            return _storage_limit_json(user)
     
         _restore_trashed_file(file, user)
         db.session.commit()
@@ -468,32 +462,23 @@ def restore_file(file_id):
         return jsonify({'success': True})
     finally:
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
 
 @app.route('/trash/restore-all', methods=['POST'])
 @login_required
 def restore_all_files():
-    """Restore all files and folders from trash"""
+    """Restore all files and folders from trash (trashed bytes already count
+    toward quota)."""
     user = _current_session_user()
 
-    # AUDIT FIX D9: hold the per-user quota lock across the check AND the apply.
-    # Without it two concurrent restores each measured pre-restore usage, both
-    # passed, and the account ended up over its storage limit.
-    quota_lock = _acquire_user_quota_lock(user.id)
     lifecycle_lock = None
     tree_lock = None
     try:
-        _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
         tree_lock = _acquire_user_folder_tree_lock(user.id)
         db.session.rollback()
         user = db.session.get(User, user.id)
         restored_files = 0
         restored_folders = 0
-        required_bytes = 0
-        folder_file_ids = set()
-        # AUDIT FIX (finding 9): shared counted-id set (see bulk_restore).
-        counted_quota_ids = set()
 
         # Restore top-level trashed folders first (recursively restores contents)
         trashed_folders = Folder.query.filter_by(
@@ -501,18 +486,6 @@ def restore_all_files():
             is_trashed=True,
             parent_id=None
         ).all()
-
-        for folder in trashed_folders:
-            file_ids, folder_bytes = _folder_restore_file_ids_and_size(folder, counted_quota_ids)
-            folder_file_ids.update(file_ids)
-            required_bytes += folder_bytes
-
-        for file in File.query.filter_by(registered_user_id=user.id, is_trashed=True).all():
-            if file.id not in folder_file_ids:
-                required_bytes += _quota_bytes_for_file(file)
-
-        if required_bytes > 0 and not user.has_storage_available(required_bytes):
-            return _storage_limit_json(user)
 
         # AUDIT FIX D10: restore ancestors before descendants so a child never
         # re-parents itself to the root just because its parent is still trashed.
@@ -569,7 +542,6 @@ def restore_all_files():
     finally:
         _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
 
 @app.route('/trash/empty', methods=['POST'])
 @limiter.limit("5 per minute")
@@ -680,16 +652,13 @@ def permanent_delete_file(file_id):
 @app.route('/trash/restore-folder/<int:folder_id>', methods=['POST'])
 @login_required
 def restore_folder(folder_id):
-    """Restore a folder and its entire contents from trash"""
+    """Restore a folder and its entire contents from trash (trashed bytes
+    already count toward quota)."""
     user = _current_session_user()
     
-    # AUDIT FIX D9: hold the per-user quota lock across the check AND the apply
-    # so two concurrent folder restores cannot both pass a pre-restore check.
-    quota_lock = _acquire_user_quota_lock(user.id)
     lifecycle_lock = None
     tree_lock = None
     try:
-        _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
         tree_lock = _acquire_user_folder_tree_lock(user.id)
         db.session.rollback()
@@ -697,10 +666,6 @@ def restore_folder(folder_id):
         folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=True).first()
         if not folder:
             return jsonify({'error': 'Folder not found in trash'}), 404
-
-        _, required_bytes = _folder_restore_file_ids_and_size(folder)
-        if required_bytes > 0 and not user.has_storage_available(required_bytes):
-            return _storage_limit_json(user)
 
         folder_name = folder.name
 
@@ -718,7 +683,6 @@ def restore_folder(folder_id):
     finally:
         _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
 
 @app.route('/trash/delete-folder/<int:folder_id>', methods=['POST'])
 @login_required
@@ -767,27 +731,18 @@ def bulk_restore():
     if id_error:
         return jsonify({'error': id_error}), 400
 
-    # AUDIT FIX D9: hold the per-user quota lock across the check AND the apply.
-    quota_lock = _acquire_user_quota_lock(user.id)
+    # Trashed bytes already count toward quota, so restoring needs no room.
     lifecycle_lock = None
     tree_lock = None
     try:
-        _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
         tree_lock = _acquire_user_folder_tree_lock(user.id)
         db.session.rollback()
         user = db.session.get(User, user.id)
         restored = 0
-        required_bytes = 0
-        folder_file_ids = set()
-        # AUDIT FIX (finding 9): shared counted-id set so nested folder
-        # selections [parent, child] count overlapping subtree bytes once
-        # instead of double-blocking a legal restore at the storage limit.
-        counted_quota_ids = set()
 
         # AUDIT Tier 1: bulk-load trashed folders and files once instead of one
-        # SELECT per ID across the quota-check pass + the restore pass, and
-        # bulk-load the original-parent folders we need to validate in a single
+        # SELECT per ID, and bulk-load the original-parent folders we need to validate in a single
         # query.
         try:
             folder_ids_int = [int(fid) for fid in folder_ids]
@@ -811,18 +766,6 @@ def bulk_restore():
                     File.is_trashed == True,
                 ).all()
             }
-
-        for folder in folders_map.values():
-            file_id_set, folder_bytes = _folder_restore_file_ids_and_size(folder, counted_quota_ids)
-            folder_file_ids.update(file_id_set)
-            required_bytes += folder_bytes
-
-        for file in files_map.values():
-            if file.id not in folder_file_ids:
-                required_bytes += _quota_bytes_for_file(file)
-
-        if required_bytes > 0 and not user.has_storage_available(required_bytes):
-            return _storage_limit_json(user)
 
         # Bulk-load all original-parent folders we'll need to validate, in one query.
         _original_folder_ids = {
@@ -883,7 +826,6 @@ def bulk_restore():
     finally:
         _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
 
 @app.route('/trash/bulk-delete', methods=['POST'])
 @login_required

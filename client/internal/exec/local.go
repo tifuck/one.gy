@@ -266,13 +266,18 @@ func (x *Executor) linkRow(tx *sql.Tx, o reconcile.Op, n *state.RemoteNode) erro
 	}
 	row.RemoteID, row.RemoteName, row.RemoteChangeSeq = o.RemoteID, o.RemoteName, n.Seq
 	if kind == "file" {
-		row.PlainSHA256, row.RemoteContentVersion = o.SHA256, n.ContentVersion
+		row.PlainSHA256, row.RemoteContentVersion, row.E2EE = o.SHA256, n.ContentVersion, n.IsE2E
 	}
 	if old, err := x.baseRow(tx, o.Base); err != nil {
 		return err
-	} else if old != nil && old.RelPath != o.Path {
-		if err := state.MoveSynced(tx, x.s.ID, old.RelPath, o.Path); err != nil {
-			return err
+	} else if old != nil {
+		if old.RemoteID == row.RemoteID {
+			row.E2EE = row.E2EE || old.E2EE // a node no longer E2EE stays an issue for the next pass
+		}
+		if old.RelPath != o.Path {
+			if err := state.MoveSynced(tx, x.s.ID, old.RelPath, o.Path); err != nil {
+				return err
+			}
 		}
 	}
 	row.SyncID = x.s.ID

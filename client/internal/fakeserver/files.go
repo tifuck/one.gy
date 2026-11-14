@@ -546,6 +546,20 @@ func (s *Server) EditFile(id string, plain []byte) {
 	}
 }
 
+// MakeStandard turns an E2EE file into a standard one with plain content
+// (the website's make-public, or a server dropping the encryption).
+func (s *Server) MakeStandard(id string, plain []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.files[id]
+	if n == nil {
+		return
+	}
+	n.Name, n.IsE2E = s.name(n), false
+	n.EncryptedName, n.NameNonce, n.EncryptedFileKey, n.FileKeyNonce, n.StoredExtension = "", "", "", "", ""
+	s.setContent(n, nil, plain)
+}
+
 // Rename renames a node (E2EE names re-encrypted with its own key).
 func (s *Server) Rename(kind, id, name string) {
 	s.mu.Lock()

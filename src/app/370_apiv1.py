@@ -45,6 +45,13 @@ def _apiv1_ips_within_caller(cleaned_ips, caller_ips):
             return False
     return True
 
+def _apiv1_key_perms_within_caller(target):
+    """A manage_keys key may only change or revoke keys holding no permission it lacks."""
+    return all(g.api_key.has_permission(perm) for perm in ApiKey.VALID_PERMISSIONS
+               if target.has_permission(perm))
+
+_APIV1_STRONGER_KEY_ERROR = 'Cannot change an API key that holds permissions your key does not'
+
 @app.route('/apiv1/keys', methods=['POST'])
 @csrf.exempt
 @api_key_required
@@ -116,6 +123,8 @@ def apiv1_revoke_key(key_id):
     api_key = ApiKey.query.filter_by(id=key_id, user_id=user.id, is_active=True).first()
     if not api_key:
         return jsonify({'error': 'API key not found'}), 404
+    if not _apiv1_key_perms_within_caller(api_key):
+        return jsonify({'error': _APIV1_STRONGER_KEY_ERROR}), 403
 
     api_key.is_active = False
     db.session.commit()
@@ -133,6 +142,8 @@ def apiv1_update_key(key_id):
     api_key = ApiKey.query.filter_by(id=key_id, user_id=user.id, is_active=True).first()
     if not api_key:
         return jsonify({'error': 'API key not found'}), 404
+    if not _apiv1_key_perms_within_caller(api_key):
+        return jsonify({'error': _APIV1_STRONGER_KEY_ERROR}), 403
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -161,10 +172,12 @@ def apiv1_update_key(key_id):
     # Update IP whitelist if provided
     if 'allowed_ips' in data:
         allowed_ips_raw = data['allowed_ips']
-        caller_ips = g.api_key.get_allowed_ips_list()
-        ip_scope_error = 'Your API key is IP-restricted; allowed_ips must be a non-empty subset of its own allowed_ips'
+        # Only narrow: within the calling key's whitelist and the target's current one.
+        ip_limits = [ips for ips in (g.api_key.get_allowed_ips_list(), api_key.get_allowed_ips_list()) if ips]
+        ip_scope_error = ('allowed_ips may only narrow: it must be a non-empty subset of your key\'s '
+                          'and this key\'s current allowed_ips')
         if allowed_ips_raw is None or (isinstance(allowed_ips_raw, list) and len(allowed_ips_raw) == 0):
-            if caller_ips:
+            if ip_limits:
                 return jsonify({'error': ip_scope_error}), 403
             api_key.allowed_ips = None
         else:
@@ -173,7 +186,7 @@ def apiv1_update_key(key_id):
             cleaned_ips, ip_error = _validate_ip_whitelist(allowed_ips_raw)
             if ip_error:
                 return jsonify({'error': ip_error}), 400
-            if caller_ips and (not cleaned_ips or not _apiv1_ips_within_caller(cleaned_ips, caller_ips)):
+            if any(not cleaned_ips or not _apiv1_ips_within_caller(cleaned_ips, limit) for limit in ip_limits):
                 return jsonify({'error': ip_scope_error}), 403
             api_key.allowed_ips = json.dumps(cleaned_ips) if cleaned_ips else None
 
@@ -1033,13 +1046,11 @@ def apiv1_list_trash():
 @api_key_required
 @api_permission_required('restore')
 def apiv1_restore_file(file_id):
-    """Restore a file from trash."""
+    """Restore a file from trash (trashed bytes already count toward quota)."""
     user = g.api_user
-    quota_lock = _acquire_user_quota_lock(user.id)
     lifecycle_lock = None
     tree_lock = None
     try:
-        _refresh_quota_snapshot()
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
         tree_lock = _acquire_user_folder_tree_lock(user.id)
         db.session.rollback()
@@ -1063,18 +1074,12 @@ def apiv1_restore_file(file_id):
                     id=folder_restore_id, user_id=user.id, is_trashed=True).first()
             if not folder:
                 return jsonify({'error': 'File not found in trash'}), 404
-            _, required_bytes = _folder_restore_file_ids_and_size(folder)
-            if required_bytes > 0 and not user.has_storage_available(required_bytes):
-                return jsonify({'error': f'Storage limit exceeded. You have {user.get_storage_remaining_gb():.2f}GB remaining.'}), 413
             _restore_folder_to_original_parent(folder, user)
             restore_folder_recursive(folder.id)
             touch_folder(folder.parent_id)
             db.session.commit()
             print(f'[API] Restored folder subtree: {_log_safe(folder.name)} (id {folder.id}) by user: {user.username}')
             return jsonify({'success': True, 'restored': 'folder', 'id': folder.id})
-
-        if not user.has_storage_available(_quota_bytes_for_file(file)):
-            return jsonify({'error': f'Storage limit exceeded. You have {user.get_storage_remaining_gb():.2f}GB remaining.'}), 413
 
         if file.original_folder_id:
             original_folder = Folder.query.filter_by(id=file.original_folder_id, user_id=user.id).first()
@@ -1103,7 +1108,6 @@ def apiv1_restore_file(file_id):
     finally:
         _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
-        _release_user_quota_lock(quota_lock)
 
 @app.route('/apiv1/trash/<file_id>', methods=['DELETE'])
 @csrf.exempt

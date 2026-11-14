@@ -50,6 +50,7 @@ type RemoteNode struct {
 	Size            int64
 	SHA256          string
 	Mode            uint32 // from the encrypted meta (0 = unknown)
+	E2EE            bool   // files: end-to-end encrypted (is_e2e)
 	ReadOnly        bool   // a backup folder of another device (applies to its subtree)
 }
 

@@ -147,7 +147,7 @@ def create_welcome_folder(user):
             pass
 
 @app.route('/register', methods=['GET', 'POST'])
-@limiter.limit("5 per minute", methods=["POST"])
+@limiter.limit("5 per minute", methods=["POST"], key_func=get_remote_address)
 def register():
     # Check if registration is enabled
     if not get_setting('allow_registration'):
@@ -203,7 +203,6 @@ def register():
             return redirect(url_for('register'))
         
         # SECURITY: Validate username format and length
-        import re as _re_username
         if len(username) > 80:
             if is_ajax:
                 return jsonify({'error': 'USERNAME MUST BE 80 CHARACTERS OR LESS'}), 400
@@ -214,7 +213,7 @@ def register():
                 return jsonify({'error': 'USERNAME MUST BE AT LEAST 3 CHARACTERS'}), 400
             flash('USERNAME MUST BE AT LEAST 3 CHARACTERS', 'error')
             return redirect(url_for('register'))
-        if not _re_username.fullmatch(r'[a-zA-Z0-9_\-.]+', username):
+        if not _USERNAME_RE.fullmatch(username):
             if is_ajax:
                 return jsonify({'error': 'USERNAME MAY ONLY CONTAIN LETTERS, NUMBERS, UNDERSCORES, HYPHENS, AND DOTS'}), 400
             flash('USERNAME MAY ONLY CONTAIN LETTERS, NUMBERS, UNDERSCORES, HYPHENS, AND DOTS', 'error')
@@ -594,6 +593,20 @@ def _json_string_fields_valid(data, fields):
     return True
 
 
+_USERNAME_RE = re.compile(r'[a-zA-Z0-9_\-.]+')
+
+
+def _find_login_user(username):
+    """The User a client-supplied sign-in name refers to, or None. Names register()
+    could never have accepted are not looked up at all: the case- and
+    accent-insensitive DB collation would match 'ａｄｍｉｎ' or 'àdmin' to 'admin'
+    while the lockout counters (keyed on username.strip().lower()) start fresh."""
+    username = username.strip() if isinstance(username, str) else ''
+    if len(username) > 80 or not _USERNAME_RE.fullmatch(username):
+        return None
+    return User.query.filter_by(username=username).first()
+
+
 def _build_opaque_prelogin_salt(username):
     """Return a deterministic pseudo-salt for opaque pre-login responses.
 
@@ -834,7 +847,7 @@ def _clear_failed_login(normalized_username):
 
 
 @app.route('/auth/pre-login', methods=['POST'])
-@limiter.limit("15 per minute")
+@limiter.limit("15 per minute", key_func=get_remote_address)
 def pre_login():
     """Return an opaque split-key pre-login response for any username.
 
@@ -853,8 +866,9 @@ def pre_login():
     if not username:
         return jsonify({'error': 'USERNAME REQUIRED'}), 400
 
-    # Exactly one DB query on BOTH branches so the query count is not a signal.
-    user = User.query.filter_by(username=username).first()
+    # Exactly one DB query for every name that could exist, so the query count
+    # is not a signal (invalid names skip it, which reveals nothing new).
+    user = _find_login_user(username)
 
     # Compute the opaque salt on both branches so the HMAC work (timing) is flat.
     auth_token_salt = _build_opaque_prelogin_salt(username)
@@ -867,7 +881,7 @@ def pre_login():
     })
 
 @app.route('/login', methods=['GET', 'POST'])
-@limiter.limit("10 per minute", methods=["POST"])
+@limiter.limit("10 per minute", methods=["POST"], key_func=get_remote_address)
 def login():
     if request.method == 'POST':
         is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
@@ -928,7 +942,7 @@ def login():
                 flash('CAPTCHA REQUIRED. SOLVE THE CAPTCHA AND RETRY.', 'error')
                 return redirect(url_for('login'))
 
-        user = User.query.filter_by(username=username).first()
+        user = _find_login_user(username)
         
         # Split-key only: compare SHA-256(auth_token) with the stored hash in
         # constant time. Raw passwords are never accepted. Unknown users compare

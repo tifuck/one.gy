@@ -207,6 +207,10 @@ var migrations = []string{
 		master_wrap TEXT NOT NULL,
 		master_nonce TEXT NOT NULL
 	);`,
+	// 6: whether a synced file was end-to-end encrypted, taken from the
+	// cached nodes for rows synced before.
+	`ALTER TABLE synced ADD COLUMN e2ee INTEGER NOT NULL DEFAULT 0;
+	UPDATE synced SET e2ee = 1 WHERE kind = 'file' AND remote_id IN (SELECT id FROM remote_node WHERE kind = 'file' AND is_e2e = 1);`,
 }
 
 // remoteNodeDDL is part of migration 1 (live table + snapshot staging table).

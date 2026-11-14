@@ -136,8 +136,6 @@ def _can_access_file_via_short_code(file):
         public_folder, browsable_folder = _check_file_folder_access(file)
         if public_folder or browsable_folder:
             return True
-        if file.password_hash:
-            return True
         return is_owner
 
     return True
@@ -236,7 +234,7 @@ def download_file_logic(file_id):
         elif browsable_folder:
             # File is accessible through its browsable folder (E2E + browsable)
             print(f'[DOWNLOAD] File {_log_safe(file.orig_name)} accessible via browsable folder: {_log_safe(browsable_folder.name)}')
-        elif not is_owner and not file.password_hash:
+        elif not is_owner:
             return render_template('notfound.html',
                 title='FILE NOT FOUND',
                 subtitle='THE LINK MAY BE INVALID OR THE FILE MAY HAVE BEEN REMOVED',

@@ -533,13 +533,12 @@ class _SSHBackend(_StorageBackend):
             except Exception:
                 self._close()
         import paramiko
-        import socket as _socket
         hostname = self._config['hostname']
         port = self._config.get('port', 22)
         username = self._config['username']
         remote_base = self._config.get('remote_path', '/opt/onegy-storage')
         # Create a socket with a connect timeout to avoid blocking forever
-        sock = _socket.create_connection((hostname, port), timeout=self._CONNECT_TIMEOUT)
+        sock = _connect_storage_node_socket(hostname, port, self._CONNECT_TIMEOUT)
         try:
             self._transport = paramiko.Transport(sock)
             self._transport.set_keepalive(self._KEEPALIVE_INTERVAL)
@@ -575,12 +574,11 @@ class _SSHBackend(_StorageBackend):
             except Exception:
                 self._close_thread()
         import paramiko
-        import socket as _socket
         hostname = self._config['hostname']
         port = self._config.get('port', 22)
         username = self._config['username']
         remote_base = self._config.get('remote_path', '/opt/onegy-storage')
-        sock = _socket.create_connection((hostname, port), timeout=self._CONNECT_TIMEOUT)
+        sock = _connect_storage_node_socket(hostname, port, self._CONNECT_TIMEOUT)
         try:
             transport = paramiko.Transport(sock)
             transport.set_keepalive(self._KEEPALIVE_INTERVAL)

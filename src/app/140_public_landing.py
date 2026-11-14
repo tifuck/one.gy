@@ -160,10 +160,13 @@ def generate_captcha_image(text):
     except Exception:
         font = ImageFont.load_default()
 
-    # Measure text to center it
+    # Measure text to center it (as drawn below: glyph by glyph with random gaps)
     bbox = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = (width - tw) // 2
+    th = bbox[3] - bbox[1]
+    char_widths = [b[2] - b[0] for b in (draw.textbbox((0, 0), ch, font=font) for ch in text)]
+    char_gaps = [1 + _secrets_cap.randbelow(4) for _ in text]
+    tw = sum(char_widths) + sum(char_gaps[:-1])
+    x = max(0, (width - tw) // 2)
     y = (height - th) // 2 - bbox[1]
 
     # Draw subtle grid lines for visual noise
@@ -191,7 +194,7 @@ def generate_captcha_image(text):
 
     # Draw each character individually with slight random offsets for a natural look
     char_x = x
-    for ch in text:
+    for ch, ch_width, ch_gap in zip(text, char_widths, char_gaps):
         offset_y = _secrets_cap.randbelow(5) - 2  # -2..+2
         char_color = (
             190 + _secrets_cap.randbelow(51),
@@ -199,8 +202,7 @@ def generate_captcha_image(text):
             190 + _secrets_cap.randbelow(51),
         )
         draw.text((char_x, y + offset_y), ch, font=font, fill=char_color)
-        ch_bbox = draw.textbbox((0, 0), ch, font=font)
-        char_x += ch_bbox[2] - ch_bbox[0] + 1 + _secrets_cap.randbelow(4)
+        char_x += ch_width + ch_gap
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
@@ -317,16 +319,12 @@ def _validate_captcha_response(captcha_input):
 def captcha():
     """Generate a math captcha image and store the answer in the session"""
     import secrets as _secrets_cap
-    # AUDIT FIX L1: CSPRNG-backed problem generation.
+    # AUDIT FIX L1: CSPRNG-backed problem generation. A three-digit and a
+    # two-digit operand: no answer is likelier than 1 in 900 for a blind guess.
     op = _secrets_cap.choice(('+', '-'))
-    if op == '+':
-        a = 1 + _secrets_cap.randbelow(20)
-        b = 1 + _secrets_cap.randbelow(20)
-        answer = a + b
-    else:
-        a = 5 + _secrets_cap.randbelow(26)
-        b = 1 + _secrets_cap.randbelow(a)
-        answer = a - b
+    a = 100 + _secrets_cap.randbelow(900)
+    b = 10 + _secrets_cap.randbelow(90)
+    answer = a + b if op == '+' else a - b
 
     display_text = f'{a} {op} {b} = ?'
     _store_captcha_challenge(answer)

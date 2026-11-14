@@ -5,6 +5,9 @@ package ipc
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -147,6 +150,15 @@ func TestSecretGate(t *testing.T) {
 	}
 	if got := call(`{"jsonrpc":"2.0","id":3,"method":"ipc.hello","params":{"secret":"wrong"}}`); !strings.Contains(got, `"forbidden"`) {
 		t.Fatalf("wrong secret: %s", got)
+	}
+	// The engine proves the secret to the app first; that alone trusts nothing.
+	m := hmac.New(sha256.New, []byte(s.Secret))
+	m.Write([]byte("onegy-engine-hello:n1"))
+	if got := call(`{"jsonrpc":"2.0","id":6,"method":"ipc.hello","params":{"nonce":"n1"}}`); !strings.Contains(got, `"proof":"`+hex.EncodeToString(m.Sum(nil))+`"`) {
+		t.Fatalf("proof: %s", got)
+	}
+	if got := call(`{"jsonrpc":"2.0","id":7,"method":"account.webUnlockKey"}`); !strings.Contains(got, `"forbidden"`) {
+		t.Fatalf("after proof: %s", got)
 	}
 	call(`{"jsonrpc":"2.0","id":4,"method":"ipc.hello","params":{"secret":"` + s.Secret + `"}}`)
 	if got := call(`{"jsonrpc":"2.0","id":5,"method":"account.webUnlockKey"}`); !strings.Contains(got, `"key"`) {

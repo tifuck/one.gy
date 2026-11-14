@@ -9,6 +9,11 @@ import (
 
 // The three-way matrix of plan 7.7 per sync type (plan 6.1).
 
+// DowngradeMessage: one.gy lists a file synced end-to-end encrypted as a
+// standard file. Neither side's content moves until the user keeps the
+// one.gy version (keep_remote) or stops syncing the file.
+const DowngradeMessage = "one.gy now lists this end-to-end encrypted file as not encrypted; it is not synced until you choose."
+
 func (r *run) decideBase(it *item) {
 	b, n := it.b, it.rn
 	ld, rd := it.l == nil, n == nil
@@ -16,6 +21,11 @@ func (r *run) decideBase(it *item) {
 	file := it.kind == localfs.KindFile
 	if !rd && !it.replaced && file && n.ContentVersion < b.RemoteContentVersion {
 		r.issue("integrity", b.RelPath, "one.gy served an older version than this computer already synced; it was not applied.", "retry", "ignore")
+		r.stallPath(b.RelPath)
+		return
+	}
+	if !rd && !it.replaced && file && n.Kind == localfs.KindFile && b.E2EE && !n.E2EE {
+		r.issue("integrity", b.RelPath, DowngradeMessage, "keep_remote", "ignore")
 		r.stallPath(b.RelPath)
 		return
 	}

@@ -94,6 +94,17 @@ def rename_file(file_id):
     print(f'[FILE] Renamed file: {old_name} -> {log_name} by user: {user.username}')
     return jsonify({'success': True, 'new_name': file.orig_name if file.is_e2e_encrypted else new_name})
 
+# Audio Range previews decrypt the whole file to a temp copy per request.
+_AUDIO_PREVIEW_MAX_CONCURRENT = 2
+_AUDIO_PREVIEW_SLOTS = threading.BoundedSemaphore(_AUDIO_PREVIEW_MAX_CONCURRENT)
+
+
+def _audio_preview_busy():
+    resp = make_response('Audio preview busy, try again shortly', 503)
+    resp.headers['Retry-After'] = '5'
+    return resp
+
+
 @app.route('/file/<file_id>/preview')
 @limiter.limit(download_rate_limit)
 def file_preview(file_id):
@@ -108,13 +119,13 @@ def file_preview(file_id):
 
     # Guest: check temp uploads owned by this guest session
     if not file and 'user_id' in session:
-        file = File.query.filter_by(id=file_id, user_id=session['user_id'], registered_user_id=None, is_temp_upload=True).first()
+        file = File.query.filter_by(id=file_id, user_id=session['user_id'], registered_user_id=None, is_temp_upload=True, is_trashed=False).first()
 
     # Cookie-based: check temp uploads owned by this manager cookie
     if not file:
         manager_cookie = request.cookies.get('onegy_manager')
         if manager_cookie:
-            file = File.query.filter_by(id=file_id, manager_cookie_id=manager_cookie, registered_user_id=None, is_temp_upload=True).first()
+            file = File.query.filter_by(id=file_id, manager_cookie_id=manager_cookie, registered_user_id=None, is_temp_upload=True, is_trashed=False).first()
 
     if not file:
         abort(404)
@@ -164,19 +175,29 @@ def file_preview(file_id):
             MAX_AUDIO_PREVIEW_BYTES = 50 * 1024 * 1024  # 50 MB
             if file.size > MAX_AUDIO_PREVIEW_BYTES:
                 abort(403)
-            import tempfile as _tempfile
-            temp_dir = create_work_dir('audio_preview_')
+            if not _thumbnail_disk_space_ok(_ensure_onegy_temp_root(), file.size or 0):
+                return _audio_preview_busy()
+            if not _AUDIO_PREVIEW_SLOTS.acquire(blocking=False):
+                return _audio_preview_busy()
+            try:
+                temp_dir = create_work_dir('audio_preview_')
+            except Exception:
+                _AUDIO_PREVIEW_SLOTS.release()
+                raise
             temp_path = os.path.join(temp_dir, 'preview')
             try:
-                with open(temp_path, 'wb') as tf:
-                    for chunk in decrypt_file_chunked(
-                        encrypted_path,
-                        expected_size=file.size,
-                        expected_payload_checksum=file.payload_checksum,
-                        expected_disk_size=file.disk_size,
-                        file_id=file.id,
-                    ):
-                        tf.write(chunk)
+                try:
+                    with open(temp_path, 'wb') as tf:
+                        for chunk in decrypt_file_chunked(
+                            encrypted_path,
+                            expected_size=file.size,
+                            expected_payload_checksum=file.payload_checksum,
+                            expected_disk_size=file.disk_size,
+                            file_id=file.id,
+                        ):
+                            tf.write(chunk)
+                finally:
+                    _AUDIO_PREVIEW_SLOTS.release()
                 response = send_file(temp_path, mimetype=mimetype, conditional=True)
                 response.direct_passthrough = False
                 response.headers['Content-Disposition'] = safe_content_disposition(_preview_disposition, file.orig_name)

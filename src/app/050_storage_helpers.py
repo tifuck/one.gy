@@ -195,6 +195,93 @@ def _validate_local_node_addition(existing_local_count, config):
     return None
 
 
+import ipaddress as _ipaddress_ssrf
+# Cloud-metadata endpoints route to the hypervisor, not the network, so even
+# the opt-in private allowlist never unlocks them (100.100.100.200 is
+# Alibaba Cloud's, inside the CGNAT range).
+_STORAGE_METADATA_IPS = frozenset(('169.254.169.254', 'fd00:ec2::254', '100.100.100.200'))
+# Shared address space (RFC 6598): ipaddress classifies it as neither private
+# nor global, so it needs its own check.
+_STORAGE_CGNAT_NETWORK = _ipaddress_ssrf.ip_network('100.64.0.0/10')
+
+
+def _storage_node_ip_rejection(ip):
+    """Return why `ip` may not be a storage-node connect target, else None."""
+    if getattr(ip, 'ipv4_mapped', None):
+        ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 is 127.0.0.1
+    if str(ip) in _STORAGE_METADATA_IPS:
+        return f'CLOUD METADATA ENDPOINT ({ip})'
+    if ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local:
+        return f'LOOPBACK/MULTICAST/LINK-LOCAL ADDRESS ({ip})'
+    if ((ip.is_private or ip.is_reserved or (ip.version == 4 and ip in _STORAGE_CGNAT_NETWORK))
+            and not STORAGE_NODE_ALLOW_PRIVATE_HOSTS):
+        return (f'PRIVATE/RESERVED ADDRESS ({ip}): set '
+                'STORAGE_NODE_ALLOW_PRIVATE_HOSTS=true to opt in for LAN deployments')
+    return None
+
+
+def _resolve_storage_node_host(host_or_url):
+    """Resolve a storage node hostname or URL. Returns (ip_strings, reason):
+    reason is non-empty when the target is rejected; otherwise every returned
+    address passed _storage_node_ip_rejection()."""
+    from urllib.parse import urlparse as _urlparse_ssrf
+    if not host_or_url:
+        return [], 'EMPTY HOSTNAME'
+    value = str(host_or_url).strip()
+    if not value:
+        return [], 'EMPTY HOSTNAME'
+    # If a full URL was supplied (S3 endpoint_url), parse host out of it.
+    if '://' in value:
+        try:
+            parsed = _urlparse_ssrf(value)
+        except Exception:
+            return [], 'MALFORMED URL'
+        host = parsed.hostname
+    else:
+        host = value
+    if not host:
+        return [], 'EMPTY HOSTNAME'
+    host = host.strip().lower()
+    if host in ('localhost', 'localhost.localdomain'):
+        return [], 'LOOPBACK HOSTNAME NOT ALLOWED'
+    # If it's an IP literal, run it through ipaddress to classify.
+    try:
+        ip = _ipaddress_ssrf.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        reason = _storage_node_ip_rejection(ip)
+        if reason:
+            return [], f'NOT ALLOWED: {reason}'
+        return [str(ip)], None
+    # Hostname: resolve to detect metadata/loopback targets that are merely
+    # disguised by a DNS name. Use getaddrinfo to also catch IPv6.
+    try:
+        import socket as _socket_ssrf
+        infos = _socket_ssrf.getaddrinfo(host, None, type=_socket_ssrf.SOCK_STREAM)
+    except Exception:
+        return [], 'HOSTNAME COULD NOT BE RESOLVED'
+    addresses = []
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip_str = sockaddr[0]
+        if ip_str in addresses:
+            continue
+        try:
+            ip = _ipaddress_ssrf.ip_address(ip_str.split('%', 1)[0])
+        except ValueError:
+            return [], f'HOSTNAME RESOLVES TO AN UNPARSEABLE ADDRESS ({ip_str})'
+        reason = _storage_node_ip_rejection(ip)
+        if reason:
+            return [], f'HOSTNAME RESOLVES TO {reason}'
+        addresses.append(ip_str)
+    if not addresses:
+        return [], 'HOSTNAME COULD NOT BE RESOLVED'
+    return addresses, None
+
+
 def _validate_storage_node_host(host_or_url):
     """Validate that the given hostname or URL does not target a
     metadata/internal endpoint. Returns (ok, reason). If reason is non-empty,
@@ -207,76 +294,42 @@ def _validate_storage_node_host(host_or_url):
     multicast, link-local) are always rejected unless the operator has flipped
     the explicit env override.
     """
-    import ipaddress as _ipaddress_ssrf
-    from urllib.parse import urlparse as _urlparse_ssrf
-    if not host_or_url:
-        return False, 'EMPTY HOSTNAME'
-    value = str(host_or_url).strip()
-    if not value:
-        return False, 'EMPTY HOSTNAME'
-    # If a full URL was supplied (S3 endpoint_url), parse host out of it.
-    if '://' in value:
-        try:
-            parsed = _urlparse_ssrf(value)
-        except Exception:
-            return False, 'MALFORMED URL'
-        host = parsed.hostname
-    else:
-        host = value
-    if not host:
-        return False, 'EMPTY HOSTNAME'
-    host = host.strip().lower()
-    if host in ('localhost', 'localhost.localdomain'):
-        return False, 'LOOPBACK HOSTNAME NOT ALLOWED'
-    # If it's an IP literal, run it through ipaddress to classify.
-    try:
-        ip = _ipaddress_ssrf.ip_address(host)
-    except ValueError:
-        ip = None
-    if ip is not None and getattr(ip, 'ipv4_mapped', None):
-        ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 is 127.0.0.1
-    if ip is not None:
-        # Cloud-metadata endpoints are ALWAYS rejected. They route to the
-        # hypervisor, not the network, so even an opt-in private allowlist
-        # should not unlock them.
-        if str(ip) == '169.254.169.254' or str(ip) == 'fd00:ec2::254':
-            return False, 'CLOUD METADATA ENDPOINT NOT ALLOWED'
-        if ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local:
-            return False, 'LOOPBACK/MULTICAST/LINK-LOCAL ADDRESS NOT ALLOWED'
-        if (ip.is_private or ip.is_reserved) and not STORAGE_NODE_ALLOW_PRIVATE_HOSTS:
-            return False, ('PRIVATE/RESERVED ADDRESS NOT ALLOWED: set '
-                           'STORAGE_NODE_ALLOW_PRIVATE_HOSTS=true to opt in for LAN deployments')
-        return True, None
-    # Hostname: resolve to detect metadata/loopback targets that are merely
-    # disguised by a DNS name. Use getaddrinfo to also catch IPv6.
-    try:
-        import socket as _socket_ssrf
-        infos = _socket_ssrf.getaddrinfo(host, None)
-    except Exception:
-        return False, 'HOSTNAME COULD NOT BE RESOLVED'
-    seen = set()
-    for info in infos:
-        sockaddr = info[4]
-        if not sockaddr:
-            continue
-        ip_str = sockaddr[0]
-        if ip_str in seen:
-            continue
-        seen.add(ip_str)
-        try:
-            ip = _ipaddress_ssrf.ip_address(ip_str.split('%', 1)[0])
-        except ValueError:
-            continue
-        if getattr(ip, 'ipv4_mapped', None):
-            ip = ip.ipv4_mapped
-        if str(ip) in ('169.254.169.254', 'fd00:ec2::254'):
-            return False, f'HOSTNAME RESOLVES TO CLOUD METADATA ENDPOINT ({ip})'
-        if ip.is_loopback or ip.is_multicast or ip.is_unspecified or ip.is_link_local:
-            return False, f'HOSTNAME RESOLVES TO LOOPBACK/MULTICAST/LINK-LOCAL ({ip})'
-        if (ip.is_private or ip.is_reserved) and not STORAGE_NODE_ALLOW_PRIVATE_HOSTS:
-            return False, (f'HOSTNAME RESOLVES TO PRIVATE/RESERVED ADDRESS ({ip}): '
-                           'set STORAGE_NODE_ALLOW_PRIVATE_HOSTS=true to opt in')
+    _addresses, reason = _resolve_storage_node_host(host_or_url)
+    if reason:
+        return False, reason
     return True, None
+
+
+def _connect_storage_node_socket(hostname, port, timeout):
+    """Open a TCP connection to a storage node, re-validating the target at
+    connect time: the name is resolved here and only a validated address is
+    dialled, so a DNS answer that changed since the node was saved
+    (rebinding) cannot redirect the connection to an internal service."""
+    import socket as _socket_ssrf
+    addresses, reason = _resolve_storage_node_host(hostname)
+    if reason:
+        raise ValueError(f'STORAGE NODE HOST {hostname} REJECTED: {reason}')
+    last_error = None
+    for address in addresses:
+        try:
+            return _socket_ssrf.create_connection((address, port), timeout=timeout)
+        except OSError as e:
+            last_error = e
+    raise last_error
+
+
+# Non-E2EE thumbnails are stored as Fernet tokens so no storage node holds a
+# readable preview. Every token of the current format starts with this prefix
+# (version byte 0x80 + a 64-bit timestamp below 2**32); anything else is a
+# thumbnail written as plain JPEG before encryption was introduced.
+_THUMBNAIL_FERNET_PREFIX = b'gAAAAA'
+
+
+def _decode_stored_thumbnail(stored):
+    """Plain JPEG bytes from a stored non-E2EE thumbnail (token or legacy plaintext)."""
+    if not stored.startswith(_THUMBNAIL_FERNET_PREFIX):
+        return stored
+    return fernet.decrypt(stored)
 
 
 def _is_internal_storage_artifact(file_id):

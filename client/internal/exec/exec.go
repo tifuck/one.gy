@@ -111,6 +111,7 @@ type record struct {
 	Folder   *api.CreateFolderRequest   `json:"folder,omitempty"`
 	Up       *upState                   `json:"up,omitempty"`
 	SHA256   string                     `json:"sha256,omitempty"` // verified plaintext hash (downloads)
+	E2EE     bool                       `json:"e2ee,omitempty"`   // the downloaded node was end-to-end encrypted
 	Seq      int64                      `json:"seq,omitempty"`    // if_seq for the next step of a move
 	Node     *api.Node                  `json:"node,omitempty"`   // remote result
 	Debris   string                     `json:"debris,omitempty"`

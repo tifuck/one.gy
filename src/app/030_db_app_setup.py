@@ -165,11 +165,29 @@ app.config['MAX_RETENTION'] = timedelta(days=7)
 # Uses file-based storage in the temp dir so progress is shared across Gunicorn
 # workers. Temp paths carry a tag derived from basedir: PROD and DEV share one
 # host and must never share (or clean up) each other's progress/work files.
+import stat
 import threading
 
+def _ensure_private_tmp_dir(path):
+    """Create (or adopt) a fixed-name directory in the shared temp dir as 0700.
+
+    The names are predictable, so on hosts without PrivateTmp another local
+    user could pre-create them, or a symlink, to read or plant work files."""
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        raise RuntimeError(f'{path} is a symlink or not a directory; refusing to use it. Remove it and restart.')
+    if st.st_uid != os.geteuid():
+        raise RuntimeError(f'{path} is owned by uid {st.st_uid}, not {os.geteuid()}; refusing to use it. Remove it and restart.')
+    if stat.S_IMODE(st.st_mode) & 0o077:
+        os.chmod(path, 0o700)
+    return path
+
 _APP_TMP_TAG = hashlib.sha256(basedir.encode('utf-8')).hexdigest()[:12]
-_PROGRESS_DIR = os.path.join(tempfile.gettempdir(), f'fileshare_progress_{_APP_TMP_TAG}')
-os.makedirs(_PROGRESS_DIR, exist_ok=True)
+_PROGRESS_DIR = _ensure_private_tmp_dir(os.path.join(tempfile.gettempdir(), f'fileshare_progress_{_APP_TMP_TAG}'))
 
 # ─── Namespaced working directories ───────────────────────────────────────────
 # AUDIT FIX D7: working directories used to be created straight in /tmp with
@@ -188,11 +206,13 @@ _WORK_DIR_ALIVE_MARKER = '.onegy_alive'
 
 def _ensure_onegy_temp_root():
     try:
-        os.makedirs(ONEGY_TEMP_ROOT, exist_ok=True)
+        _ensure_private_tmp_dir(ONEGY_TEMP_ROOT)
     except Exception as e:
         print(f'[WARNING] Could not create work-dir root {ONEGY_TEMP_ROOT}: {e}')
         return tempfile.gettempdir()
     return ONEGY_TEMP_ROOT
+
+_ensure_private_tmp_dir(ONEGY_TEMP_ROOT)
 
 def touch_work_dir(path):
     """Refresh a working directory's liveness marker.

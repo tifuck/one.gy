@@ -167,6 +167,10 @@ app.config['SESSION_COOKIE_SECURE'] = True      # Only send over HTTPS
 app.config['SESSION_COOKIE_HTTPONLY'] = True     # Not accessible via JavaScript
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'   # Prevent CSRF via cross-site requests
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=6)
+# Bind session cookies to this deployment, so another instance that shares
+# SECRET_KEY (DEV vs PROD) cannot mint a cookie this one accepts.
+app.session_interface.salt = 'cookie-session:' + os.environ.get(
+    'DOMAIN', f"localhost:{os.environ.get('WEB_PORT', '5000')}").strip().lower()
 
 # Trust reverse proxy headers only when explicitly configured.
 # Default DEV/standalone Gunicorn deployments terminate TLS directly and must NOT
@@ -415,10 +419,12 @@ THUMBNAIL_CACHE_MAX_AGE = int(os.environ.get('THUMBNAIL_CACHE_MAX_AGE', '900'))
 #      starved everyone egressing from the same address.
 #   2. An authenticated attacker keyed on IP could rotate addresses to reset
 #      their budget on authenticated endpoints.
-# The key is now the signed session's user id when present, else the client
-# IP. The session cookie is signed with SECRET_KEY so the id cannot be forged,
-# and this reads NO database (it runs on every limited request). Anonymous
-# callers keep the historical IP key, so guest limits are unchanged.
+# The key is now the validated session user's id when present, else the client
+# IP. It goes through _current_session_user() (memoized per request, shared
+# with the dynamic limits), so a revoked or epoch-stale cookie counts as
+# anonymous. Anonymous callers keep the historical IP key, so guest limits are
+# unchanged; the anonymous auth routes pin key_func=get_remote_address so
+# holding many account cookies does not multiply sign-in attempts.
 #
 # Cross-worker coherence (AUDIT FIX H2, see the warning below): the default
 # RATELIMIT_STORAGE_URI is memory://, whose counters are per-process. This
@@ -432,9 +438,9 @@ THUMBNAIL_CACHE_MAX_AGE = int(os.environ.get('THUMBNAIL_CACHE_MAX_AGE', '900'))
 # regardless of this setting.
 def _rate_limit_key():
     try:
-        uid = session.get('logged_in_user_id')
-        if uid is not None and uid != '':
-            return f'user:{uid}'
+        user = _current_session_user()
+        if user is not None:
+            return f'user:{user.id}'
         device = _request_device_auth()[0]
         if device is not None:
             return f'device:{device.id}'

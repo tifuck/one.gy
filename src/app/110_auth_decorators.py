@@ -591,6 +591,14 @@ def _scope_folder_value(value):
     return value if value > 0 else None
 
 
+# Mutations that create in the drive root when this body field is omitted.
+_DEVICE_ROOT_DEFAULT_FIELDS = {
+    'apiv1_create_folder': 'parent_id',
+    'apiv1_sync_upload_file': 'folder_id',
+    'apiv1_sync_upload_session_create': 'folder_id',
+}
+
+
 def _device_request_folder_targets():
     """Folder ids (None = drive root) this device request reads content from or writes to."""
     targets = []
@@ -606,6 +614,9 @@ def _device_request_folder_targets():
         targets.append(_scope_folder_value(view_args['folder_id']))
     # is_json, not mimetype == 'application/json': routes parse +json bodies too.
     if request.is_json:
+        # Upload routes skip the default body cap; bound it before parsing
+        # (raises RequestEntityTooLarge).
+        _set_request_upload_cap(_DEFAULT_REQUEST_BODY_CAP)
         body = request.get_json(silent=True)
     elif request.mimetype in ('multipart/form-data', 'application/x-www-form-urlencoded'):
         # Before the first body read, or the route's truncation check counts 0 bytes.
@@ -617,11 +628,15 @@ def _device_request_folder_targets():
         body = request.form
     else:
         body = None
-    if hasattr(body, 'get'):
-        for key in ('folder_id', 'parent_id'):
-            if key in body:
-                targets.append(_scope_folder_value(body.get(key)))
-        file_folder(body.get('replace_file_id'))
+    if not hasattr(body, 'get'):
+        body = {}
+    for key in ('folder_id', 'parent_id'):
+        if key in body:
+            targets.append(_scope_folder_value(body.get(key)))
+    file_folder(body.get('replace_file_id'))
+    root_field = _DEVICE_ROOT_DEFAULT_FIELDS.get(request.endpoint)
+    if root_field and root_field not in body and not body.get('replace_file_id'):
+        targets.append(None)
     return targets
 
 
@@ -704,6 +719,8 @@ def device_auth_required(f):
             try:
                 scope_error = _device_scope_error()
             except RequestEntityTooLarge:
+                if request.is_json:
+                    return _sync_error(413, 'bad_request', 'Request body too large')
                 # Same answer as apiv1_sync_upload_file gives an unlocked device.
                 return _sync_error(400, 'bad_request', 'File too large for a one-shot upload; use an upload session', field='file')
             if scope_error:

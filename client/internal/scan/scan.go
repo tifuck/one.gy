@@ -89,6 +89,7 @@ func (t *Tree) IsStalled(rel string) bool {
 type Options struct {
 	Root                string
 	FSKind              string
+	CaseSensitive       bool // the file system's (Rules.CaseSensitive)
 	RootRules           *string
 	DB                  *state.DB
 	SyncID              string
@@ -138,6 +139,7 @@ func Run(ctx context.Context, o Options) (*Tree, error) {
 			}
 		}
 	}
+	s.t.Rules.CaseSensitive = o.CaseSensitive
 	if err := s.dir(""); err != nil {
 		return nil, err
 	}

@@ -47,16 +47,18 @@ class User(db.Model):
     keep_file_versions = db.Column(db.Boolean, nullable=False, default=True, server_default='1')
     
     def get_storage_used(self):
-        """Calculate total storage used by this user in bytes (files + notes +
-        previous file versions). Excludes trashed items so users can free quota by
-        trashing files; versions count whatever their live file's state.
+        """Calculate total storage used by this user in bytes: files and notes
+        (trashed ones included), previous file versions and note versions.
+        Trashing never frees quota (trashed items stay readable/restorable); only
+        emptying the trash, a permanent delete or the trash retention purge does,
+        so restoring from trash never needs room. Versions count whatever their
+        live file's state.
         Uses disk_size (actual on-disk encrypted size) when available for accurate
         quota tracking; falls back to size (logical/plaintext size) for older files."""
         file_total = db.session.query(
             db.func.sum(db.func.coalesce(File.disk_size, File.size))
         ).filter(
-            File.registered_user_id == self.id,
-            File.is_trashed == False
+            File.registered_user_id == self.id
         ).scalar() or 0
         live = db.aliased(File)
         version_total = db.session.query(
@@ -65,10 +67,12 @@ class User(db.Model):
             live.registered_user_id == self.id
         ).scalar() or 0
         note_total = db.session.query(db.func.sum(Note.size)).filter(
-            Note.user_id == self.id,
-            Note.is_trashed == False
+            Note.user_id == self.id
         ).scalar() or 0
-        return int(file_total or 0) + int(version_total or 0) + int(note_total or 0)
+        note_version_total = db.session.query(db.func.sum(NoteVersion.size)).filter(
+            NoteVersion.user_id == self.id
+        ).scalar() or 0
+        return int(file_total or 0) + int(version_total or 0) + int(note_total or 0) + int(note_version_total or 0)
     
     def get_storage_used_gb(self):
         """Get storage used in GB"""
@@ -518,6 +522,13 @@ class SyncTombstone(db.Model):
     __table_args__ = (
         db.Index('ix_synctombstone_user_seq', 'user_id', 'change_seq'),
     )
+
+class RetiredFileId(db.Model):
+    """Id of a hard-deleted File row (045 _retire_file_ids). A File id is never
+    reused: the sync API refuses a client-proposed file_id listed here, so an
+    old public link /f/<id> can never serve someone else's new upload."""
+    id = db.Column(db.String(36), primary_key=True)
+    retired_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 class SyncUploadSession(db.Model):
     """Resumable desktop sync upload (376_apiv1_sync_uploads.py). Parts live under

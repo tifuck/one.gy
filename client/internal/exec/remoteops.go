@@ -11,6 +11,7 @@ import (
 	"github.com/tifuck/one.gy/client/internal/account"
 	"github.com/tifuck/one.gy/client/internal/api"
 	"github.com/tifuck/one.gy/client/internal/localfs"
+	"github.com/tifuck/one.gy/client/internal/reconcile"
 	"github.com/tifuck/one.gy/client/internal/remote"
 	"github.com/tifuck/one.gy/client/internal/state"
 )
@@ -128,6 +129,9 @@ func (x *Executor) moveSteps(ctx context.Context, j *job, parent *int64) error {
 		}
 		if n == nil || n.IsTrashed {
 			return ErrSuperseded
+		}
+		if !n.IsE2E && o.Base != nil && o.Base.E2EE && o.Base.RemoteID == o.RemoteID { // a rename would send the name in plain text
+			return issuef("integrity", o.Path, reconcile.DowngradeMessage, "retry", "ignore")
 		}
 		name, ok := x.env.Tree.DisplayName(n)
 		if !ok {

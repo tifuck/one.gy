@@ -1,3 +1,25 @@
+def _rotate_descendant_share_tokens(root_folder):
+    """Give every folder below root_folder a new share_token and drop its
+    link-wrapped name key. Sub-folder links (/f/<child token>) resolve through
+    the shared ancestor, so revoking only the root's token left them working.
+    Trashed folders rotate too, since a restore would bring the old link back."""
+    visited = {root_folder.id}
+    stack = [root_folder.id]
+    while stack:
+        fid = stack.pop()
+        for sf in Folder.query.filter_by(parent_id=fid, user_id=root_folder.user_id).all():
+            if sf.id in visited:
+                continue
+            visited.add(sf.id)
+            if len(visited) > _MAX_FOLDER_TREE_NODES:
+                print(f'[WARNING] Share-token rotation from folder {root_folder.id} exceeded {_MAX_FOLDER_TREE_NODES} folders; truncating')
+                return
+            sf.share_token = str(uuid.uuid4())
+            sf.link_encrypted_name_key = None
+            sf.link_name_key_nonce = None
+            stack.append(sf.id)
+
+
 @app.route('/folder/<int:folder_id>/manage', methods=['GET', 'POST'])
 @login_required
 def manage_folder(folder_id):
@@ -86,13 +108,9 @@ def manage_folder(folder_id):
                     if not is_browsable:
                         if was_shared:
                             folder.share_token = str(uuid.uuid4())
-                            tree_ids = _collect_descendant_folder_ids([folder.id], include_roots=True)
-                            for tree_folder in Folder.query.filter(
-                                Folder.id.in_(list(tree_ids)),
-                                Folder.user_id == user.id,
-                            ).all():
-                                tree_folder.link_encrypted_name_key = None
-                                tree_folder.link_name_key_nonce = None
+                            folder.link_encrypted_name_key = None
+                            folder.link_name_key_nonce = None
+                            _rotate_descendant_share_tokens(folder)
                         folder.link_secret = None
                         folder.is_link_shared = False
                         cleared = _clear_e2e_link_keys_for_folder_tree(folder.id)
@@ -422,10 +440,10 @@ def move_file(file_id):
         file = File.query.filter_by(id=file_id, registered_user_id=user.id, is_trashed=False).first()
         if not file:
             return jsonify({'error': 'File not found'}), 404
-        if _backup_read_only(file.folder_id) or _backup_read_only(target_folder_id):
-            return _backup_read_only_error()
         if not _lock_live_folder_for_placement(target_folder_id, user.id):
             return jsonify({'error': 'Target folder not found'}), 404
+        if _backup_read_only(file.folder_id) or _backup_read_only(target_folder_id):
+            return _backup_read_only_error()
 
         _move_file_to_folder(file, target_folder_id)
         db.session.commit()
@@ -475,6 +493,9 @@ def move_folder(folder_id):
         folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
         if not folder:
             return jsonify({'error': 'Folder not found'}), 404
+        if target_folder_id is not None and not Folder.query.filter_by(
+                id=target_folder_id, user_id=user.id, is_trashed=False).first():
+            return jsonify({'error': 'Target folder not found'}), 404
         if _backup_read_only(folder.id) or _backup_read_only(target_folder_id):
             return _backup_read_only_error()
 
@@ -1181,6 +1202,7 @@ def make_file_private(file_id):
     temp_dir = None
     quota_lock = None
     rewrite_committed = False
+    _version_local_targets = []
     # AUDIT FIX (5th audit, concurrent staged rewrites): serialize same-file rewrites.
     _rewrite_lock = _acquire_file_rewrite_lock(file.id)
     
@@ -1275,6 +1297,12 @@ def make_file_private(file_id):
         if _prep_err:
             return _prep_err
 
+        # Standard versions are server-readable copies of the content being made private.
+        for _version in File.query.filter(File.version_of_id == file.id,
+                                          File.is_e2e_encrypted == False).all():
+            _version_local_targets.extend(storage.stage_payload_deletes(_file_payload_delete_keys(_version)))
+            db.session.delete(_version)
+
         # Save E2E encrypted thumbnail if provided (before commit so flag is correct)
         mp_enc_thumb = request.files.get('encrypted_thumbnail')
         mp_enc_thumb_nonce = request.form.get('thumbnail_nonce')
@@ -1332,6 +1360,7 @@ def make_file_private(file_id):
             raise
 
         rewrite_committed = True
+        storage.purge_staged_locals(_version_local_targets)
         # DB commit succeeded — safe to delete old plaintext thumbnail
         # Only delete the .jpg variant (old Fernet thumbnail), not .e2e (new E2E thumbnail)
         #
