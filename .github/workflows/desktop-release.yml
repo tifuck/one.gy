@@ -124,7 +124,18 @@ jobs:
 
       - name: Test the app
         working-directory: desktop/app
-        run: npm test
+        # Failures as an annotation too, like the client tests above.
+        run: |
+          set +e
+          npm test > test.log 2>&1
+          status=$?
+          cat test.log
+          if [ "$status" -ne 0 ]; then
+            msg="$(grep -E -B2 -A25 -- '^not ok|^# Subtest|^\s+not ok' test.log | grep -v '^# Subtest' | tr -d '\r' | head -c 30000 \
+              | sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }')"
+            echo "::error title=App tests failed::${msg}"
+          fi
+          exit "$status"
 
       # scripts/dist.js takes the version from client/VERSION (checked above)
       # and builds each Linux target in its own run (see electron-builder.yml).
