@@ -11,6 +11,20 @@ CLEANUP_DELETE_BATCH_SIZE = 500
 # candidates with chunked IN queries of this size instead of per-row lookups.
 _REVERSE_ORPHAN_CHUNK_SIZE = 500
 
+# Payloads already reported as lost (no local and no synced remote copy), so the
+# 5-minute scan logs each one once instead of every pass.
+_reported_lost_payloads = set()
+_LOCAL_REHYDRATE_ERROR = 'LOCAL PAYLOAD MISSING; RE-FETCHING FROM A SYNCED REMOTE COPY'
+
+
+def _report_lost_payloads(kind, ids):
+    """Log newly lost payloads once each; returns how many are lost in total."""
+    new_ids = [i for i in ids if (kind, i) not in _reported_lost_payloads]
+    for i in new_ids:
+        _reported_lost_payloads.add((kind, i))
+        print(f'[CLEANUP] [WARNING] {kind} {i}: no local or synced remote payload; metadata preserved for admin review')
+    return len(ids)
+
 # M7 FIX: how long a burned (max_downloads reached) file lingers after it is
 # marked pending_delete_at before cleanup_expired_files() hard-deletes the
 # row and payload. The grace exists purely so streams that legitimately
@@ -693,32 +707,26 @@ def cleanup_orphaned_files():
     # Detect reverse orphans: DB records whose local payload is missing.
     # Preserve metadata; the row may still be recoverable from a remote mirror,
     # and deleting metadata would make an otherwise valid remote payload unusable.
-    disk_filenames = set()
+    # An EMPTY listing is still a valid answer (disaster recovery: DB restored
+    # onto a fresh disk); only a failed listing skips the check. Re-fetches run
+    # through replication, which refuses to fill a low disk.
+    disk_filenames = None
     try:
         disk_filenames = set(storage.list_files())
     except Exception as e:
         print(f'[CLEANUP] Error listing files for reverse-orphan check: {e}')
     
     reverse_count = 0
-    if disk_filenames:
+    if disk_filenames is not None:
         local_node_id = getattr(storage, '_local_node_id', None)
         missing_ids = [file_id for file_id, filename in _file_rows if filename not in disk_filenames]
+        lost_ids = []
         for start in range(0, len(missing_ids), _REVERSE_ORPHAN_CHUNK_SIZE):
             chunk = missing_ids[start:start + _REVERSE_ORPHAN_CHUNK_SIZE]
             try:
                 live_ids = {row[0] for row in db.session.query(File.id).filter(File.id.in_(chunk)).all()}
                 if not live_ids:
                     continue
-                if local_node_id:
-                    FileReplica.query.filter(
-                        FileReplica.file_id.in_(live_ids),
-                        FileReplica.node_id == local_node_id,
-                        db.or_(FileReplica.status.is_(None), FileReplica.status != 'missing'),
-                    ).update({
-                        FileReplica.status: 'missing',
-                        FileReplica.last_error: 'LOCAL PAYLOAD MISSING DURING CLEANUP; METADATA PRESERVED',
-                        FileReplica.verified_at: datetime.now(timezone.utc),
-                    }, synchronize_session=False)
                 # If a synced remote replica exists, the file is still valid;
                 # it is simply not present on the current local/cache node.
                 remote_query = db.session.query(FileReplica.file_id).filter(
@@ -728,17 +736,41 @@ def cleanup_orphaned_files():
                 if local_node_id:
                     remote_query = remote_query.filter(FileReplica.node_id != local_node_id)
                 remote_synced = {row[0] for row in remote_query.distinct().all()}
+                if local_node_id:
+                    # A remote copy exists: hand the local row to replication
+                    # ('error' -> triage -> pending -> pulled back from the
+                    # remote). 'missing' is reserved for payloads with no copy
+                    # anywhere, because nothing ever revives a 'missing' row.
+                    rehydrate = live_ids & remote_synced
+                    if rehydrate:
+                        FileReplica.query.filter(
+                            FileReplica.file_id.in_(rehydrate),
+                            FileReplica.node_id == local_node_id,
+                            db.or_(FileReplica.status.is_(None), FileReplica.status.in_(('synced', 'missing'))),
+                        ).update({
+                            FileReplica.status: 'error',
+                            FileReplica.error_count: 0,
+                            FileReplica.last_error: _LOCAL_REHYDRATE_ERROR,
+                            FileReplica.verified_at: None,
+                        }, synchronize_session=False)
+                    lost = live_ids - remote_synced
+                    if lost:
+                        FileReplica.query.filter(
+                            FileReplica.file_id.in_(lost),
+                            FileReplica.node_id == local_node_id,
+                            db.or_(FileReplica.status.is_(None), FileReplica.status != 'missing'),
+                        ).update({
+                            FileReplica.status: 'missing',
+                            FileReplica.last_error: 'LOCAL PAYLOAD MISSING DURING CLEANUP; METADATA PRESERVED',
+                            FileReplica.verified_at: datetime.now(timezone.utc),
+                        }, synchronize_session=False)
                 db.session.commit()
             except Exception as e:
                 db.session.rollback()
                 print(f'[CLEANUP] Error checking reverse-orphan DB records: {e}')
                 continue
-            for file_id in chunk:
-                if file_id in live_ids and file_id not in remote_synced:
-                    reverse_count += 1
-                    print(f'[CLEANUP] File metadata preserved but no local or synced remote payload was found: {file_id}')
-        if reverse_count > 0:
-            print(f'[CLEANUP] Preserved {reverse_count} file DB records with missing payloads for admin review')
+            lost_ids.extend(file_id for file_id in chunk if file_id in live_ids and file_id not in remote_synced)
+        reverse_count = _report_lost_payloads('File', lost_ids)
     
     return count + thumb_count + reverse_count
 
@@ -794,31 +826,22 @@ def cleanup_orphaned_notes():
         print(f'[CLEANUP] Cleaned up {count} orphaned note files')
     
     # Phase 2: DB records with no local note file (reverse orphans)
-    disk_note_ids = set()
+    disk_note_ids = None
     try:
         disk_note_ids = set(storage.list_notes())
     except Exception as e:
         print(f'[CLEANUP] Error listing notes for reverse-orphan check: {e}')
     
     reverse_count = 0
-    if disk_note_ids:
+    if disk_note_ids is not None:
         local_node_id = getattr(storage, '_local_node_id', None)
         missing_rows = [row for row in _note_rows if row[0] not in disk_note_ids]
+        lost_ids = []
         for start in range(0, len(missing_rows), _REVERSE_ORPHAN_CHUNK_SIZE):
             chunk = missing_rows[start:start + _REVERSE_ORPHAN_CHUNK_SIZE]
             chunk_ids = [row[0] for row in chunk]
             remote_synced = {}
             try:
-                if local_node_id:
-                    NoteReplica.query.filter(
-                        NoteReplica.note_id.in_(chunk_ids),
-                        NoteReplica.node_id == local_node_id,
-                        db.or_(NoteReplica.status.is_(None), NoteReplica.status != 'missing'),
-                    ).update({
-                        NoteReplica.status: 'missing',
-                        NoteReplica.last_error: 'LOCAL NOTE PAYLOAD MISSING DURING CLEANUP; METADATA PRESERVED',
-                        NoteReplica.verified_at: datetime.now(timezone.utc),
-                    }, synchronize_session=False)
                 remote_query = db.session.query(
                     NoteReplica.note_id, NoteReplica.synced_version, NoteReplica.checksum
                 ).filter(
@@ -829,25 +852,49 @@ def cleanup_orphaned_notes():
                     remote_query = remote_query.filter(NoteReplica.node_id != local_node_id)
                 for replica_note_id, synced_version, checksum in remote_query.all():
                     remote_synced.setdefault(replica_note_id, []).append((synced_version, checksum))
+                # If a current synced remote replica exists, the note is valid;
+                # it is simply not present on the current local/cache node.
+                current_remote = set()
+                for note_id, note_content_version, note_content_checksum in chunk:
+                    note_version = int(note_content_version or 1)
+                    if any(
+                        synced_version == note_version
+                        and (not note_content_checksum or checksum == note_content_checksum)
+                        for synced_version, checksum in remote_synced.get(note_id, ())
+                    ):
+                        current_remote.add(note_id)
+                lost = set(chunk_ids) - current_remote
+                if local_node_id:
+                    # Same split as files: errored local rows are re-fetched by
+                    # the note self-heal; 'missing' only when no copy exists.
+                    if current_remote:
+                        NoteReplica.query.filter(
+                            NoteReplica.note_id.in_(current_remote),
+                            NoteReplica.node_id == local_node_id,
+                            db.or_(NoteReplica.status.is_(None), NoteReplica.status.in_(('synced', 'missing'))),
+                        ).update({
+                            NoteReplica.status: 'error',
+                            NoteReplica.error_count: 0,
+                            NoteReplica.last_error: _LOCAL_REHYDRATE_ERROR,
+                            NoteReplica.verified_at: None,
+                        }, synchronize_session=False)
+                    if lost:
+                        NoteReplica.query.filter(
+                            NoteReplica.note_id.in_(lost),
+                            NoteReplica.node_id == local_node_id,
+                            db.or_(NoteReplica.status.is_(None), NoteReplica.status != 'missing'),
+                        ).update({
+                            NoteReplica.status: 'missing',
+                            NoteReplica.last_error: 'LOCAL NOTE PAYLOAD MISSING DURING CLEANUP; METADATA PRESERVED',
+                            NoteReplica.verified_at: datetime.now(timezone.utc),
+                        }, synchronize_session=False)
                 db.session.commit()
             except Exception as e:
                 db.session.rollback()
                 print(f'[CLEANUP] Error checking reverse-orphan notes: {e}')
                 continue
-            for note_id, note_content_version, note_content_checksum in chunk:
-                # If a current synced remote replica exists, the note is valid;
-                # it is simply not present on the current local/cache node.
-                note_version = int(note_content_version or 1)
-                if any(
-                    synced_version == note_version
-                    and (not note_content_checksum or checksum == note_content_checksum)
-                    for synced_version, checksum in remote_synced.get(note_id, ())
-                ):
-                    continue
-                reverse_count += 1
-                print(f'[CLEANUP] Note metadata preserved but no local or current synced remote payload was found: {note_id}')
-        if reverse_count > 0:
-            print(f'[CLEANUP] Preserved {reverse_count} note DB records with missing payloads for admin review')
+            lost_ids.extend(sorted(lost))
+        reverse_count = _report_lost_payloads('Note', lost_ids)
     
     return count + reverse_count
 

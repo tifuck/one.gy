@@ -429,9 +429,14 @@ class _S3Backend(_StorageBackend):
             try:
                 with open(local_path, 'rb') as f:
                     put_kwargs['Body'] = f
-                    client.put_object(**put_kwargs)
+                    put_resp = client.put_object(**put_kwargs)
                 if _use_checksum and self._checksum_supported is None:
                     self._checksum_supported = True
+                # The provider validated ChecksumSHA256 against the bytes it
+                # received and echoed it back: the stored object is confirmed
+                # end-to-end, so the verification HEAD below would add nothing.
+                if _use_checksum and put_resp.get('ChecksumSHA256') == put_kwargs['ChecksumSHA256']:
+                    return True
             except Exception as upload_err:
                 # Check if the error is because the provider doesn't support checksums
                 if _use_checksum and self._checksum_supported is None:
@@ -564,8 +569,6 @@ class _S3Backend(_StorageBackend):
             # SIZE had never been confirmed. head_object failing means we know
             # nothing about the object, which is never a success. Fail the upload
             # in BOTH modes so the replica stays pending and is retried.
-            print(f'[STORAGE] [WARNING] S3 post-upload verification could not complete for '
-                  f'{category}/{file_id}; failing upload so it is retried: {e}')
             raise IOError(f'S3 post-upload verification failed for {category}/{file_id}: {e}')
         # AUDIT FIX (backend honesty): True only when the hash was confirmed
         # end-to-end; multipart accepted on size-only (verify disabled or

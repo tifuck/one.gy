@@ -205,19 +205,30 @@ class _StorageManagerFiles:
         """
         return [
             n.id for n in StorageNode.query.all()
-            if n.id != self._local_node_id
+            if n.id != self._local_node_id and n.node_type != 'local'
         ]
 
-    def reactivate_pending_remote_deletes_for_node(self, node_id):
-        """Clear deferred-delete backoff for a node that was re-enabled."""
+    def reactivate_pending_remote_deletes_for_node(self, node_id, parked_min_idle=None):
+        """Clear deferred-delete backoff for a node that was re-enabled.
+
+        parked_min_idle (timedelta) limits the reset to PARKED tombstones whose
+        last attempt is older than that, so a caller that runs on every health
+        check retries them periodically without defeating the cooldown or cap."""
         with self._state_lock:
             reset = 0
             try:
+                parked_cutoff = None
+                if parked_min_idle is not None:
+                    parked_cutoff = datetime.now(timezone.utc) - parked_min_idle
                 existing_remote_node_ids = {
                     n.id for n in StorageNode.query.all()
-                    if n.id != self._local_node_id
+                    if n.id != self._local_node_id and n.node_type != 'local'
                 }
-                for row in PendingRemoteDelete.query.all():
+                rows_query = PendingRemoteDelete.query
+                if parked_cutoff is not None:
+                    rows_query = rows_query.filter(
+                        PendingRemoteDelete.retry_count >= self.DEFERRED_DELETE_MAX_RETRIES)
+                for row in rows_query.all():
                     target_node_ids = self._decode_pending_remote_delete_node_ids(row.target_node_ids)
                     if not target_node_ids:
                         target_node_ids = set(existing_remote_node_ids)
@@ -232,6 +243,10 @@ class _StorageManagerFiles:
                     except Exception:
                         deleted_node_ids = set()
                     if node_id in deleted_node_ids:
+                        continue
+                    if parked_cutoff is not None and (
+                            (row.retry_count or 0) < self.DEFERRED_DELETE_MAX_RETRIES
+                            or (row.last_attempt is not None and _utc_aware(row.last_attempt) >= parked_cutoff)):
                         continue
                     if (row.retry_count or 0) != 0 or row.last_attempt is not None:
                         row.retry_count = 0

@@ -167,10 +167,16 @@ class _StorageManagerNotesThumbnails:
             if not replica:
                 replica = NoteReplica(note_id=note_id, node_id=node.id)
                 db.session.add(replica)
+            if replica.status == 'error':
+                # Self-heal retries a failing replica: keep its retry count and
+                # stamp the cooldown, or a note that keeps failing is re-queued
+                # every 10s cycle forever and never reaches the retry cap.
+                replica.verified_at = verified_at or datetime.now(timezone.utc)
+            else:
+                replica.verified_at = None
+                replica.error_count = 0
             replica.status = 'pending'
             replica.target_version = content_version
-            replica.verified_at = None
-            replica.error_count = 0
             replica.last_error = None
             remote_reset += 1
 

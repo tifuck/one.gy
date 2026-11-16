@@ -498,7 +498,6 @@ def capture_system_metrics_snapshot(force=False):
         cutoff = now - timedelta(days=45)
         SystemMetricSnapshot.query.filter(SystemMetricSnapshot.captured_at < cutoff).delete(synchronize_session=False)
         db.session.commit()
-        print(f'[ADMIN] Captured system metrics snapshot at {now.isoformat()}')
         return snapshot
 
 def build_admin_stats_history(window_key):

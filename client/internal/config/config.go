@@ -47,6 +47,19 @@ func DefaultSocket(stateDir string) string {
 	return filepath.Join(stateDir, "run", "engine.sock")
 }
 
+// RunningSocket is the endpoint the engine of stateDir wrote to engine.json
+// (it may run with another XDG_RUNTIME_DIR, e.g. as a systemd service), else
+// DefaultSocket.
+func RunningSocket(stateDir string) string {
+	var info struct {
+		Socket string `json:"socket"`
+	}
+	if b, err := os.ReadFile(infoPath(stateDir)); err == nil && json.Unmarshal(b, &info) == nil && info.Socket != "" {
+		return info.Socket
+	}
+	return DefaultSocket(stateDir)
+}
+
 func DBPath(stateDir string) string   { return filepath.Join(stateDir, "engine.db") }
 func LogDir(stateDir string) string   { return filepath.Join(stateDir, "logs") }
 func infoPath(stateDir string) string { return filepath.Join(stateDir, "engine.json") }

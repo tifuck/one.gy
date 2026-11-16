@@ -31,12 +31,9 @@ class _StorageManagerScrub:
         backends_snapshot = {}
         with self._state_lock:
             try:
-                _state_local_node_id = self._backend_state_snapshot()[2]
-                _all_nodes = StorageNode.query.all()
-                existing_remote_node_ids = {n.id for n in _all_nodes if n.id != _state_local_node_id}
-                enabled_remote_node_ids = {
-                    n.id for n in _all_nodes if n.is_enabled and n.id != _state_local_node_id
-                }
+                _all_nodes = [n for n in StorageNode.query.all() if n.node_type != 'local']
+                existing_remote_node_ids = {n.id for n in _all_nodes}
+                enabled_remote_node_ids = {n.id for n in _all_nodes if n.is_enabled}
                 batch_query = PendingRemoteDelete.query.filter(
                     # AUDIT FIX M6: skip parked tombstones (exhausted retries) so
                     # a permanently-failing target cannot churn the LIMIT-100
@@ -57,21 +54,18 @@ class _StorageManagerScrub:
                     return None
                 self._check_backends_freshness()
                 state_backends, _local_backend, state_local_node_id, _version = self._backend_state_snapshot()
-                existing_remote_node_ids = {
-                    n.id for n in StorageNode.query.all()
-                    if n.id != state_local_node_id
-                }
-                enabled_remote_node_ids = {
-                    n.id for n in StorageNode.query.filter_by(is_enabled=True).all()
-                    if n.id != state_local_node_id
-                }
+                # A local-disk node is never a remote delete target (in relay
+                # mode it is disabled and _local_node_id is None, so an id check
+                # alone left every tombstone waiting on it forever).
+                _remote_nodes = [n for n in StorageNode.query.all() if n.node_type != 'local']
+                existing_remote_node_ids = {n.id for n in _remote_nodes}
+                enabled_remote_node_ids = {n.id for n in _remote_nodes if n.is_enabled}
                 # AUDIT FIX (parked tombstones): a target that is merely OFFLINE
                 # is not a failing delete, it is a delete that has not been
                 # attempted yet. Snapshot node health so Phase C can tell the two
                 # apart and stop burning the retry budget on unreachable nodes.
                 unreachable_node_ids = {
-                    n.id for n in StorageNode.query.filter_by(is_enabled=True).all()
-                    if n.id != state_local_node_id and n.status in ('offline', 'error')
+                    n.id for n in _remote_nodes if n.is_enabled and n.status in ('offline', 'error')
                 }
                 backends_snapshot = state_backends
                 stage = {
@@ -130,6 +124,12 @@ class _StorageManagerScrub:
             # extant remote node remains a possible owner, including a
             # disabled node that cannot be contacted yet.
             target_node_ids = set(existing_remote_node_ids)
+        else:
+            # A target whose StorageNode row is gone (or the local disk) can
+            # never be deleted from. Drop it from the persisted set so the SQL
+            # actionable filter can prove a row waits only on disabled nodes
+            # instead of re-claiming it every cycle.
+            target_node_ids &= existing_remote_node_ids
         if not target_node_ids:
             stage['drop_ids'].append(item.id)
             return
@@ -227,9 +227,6 @@ class _StorageManagerScrub:
         attempt_deferred_count = 0
         disk_id = self._inflight_remote_disk_id(entry['category'], entry['file_id'])
         _unreachable = entry.get('unreachable_nodes', set())
-        for nid in entry['vanished']:
-            print(f'[STORAGE] Deferred delete target node {nid} no longer exists; '
-                  f"marking impossible for {entry['category']}/{entry['file_id']}")
         # AUDIT FIX H4: a tombstone outlives the row it deleted. If a live
         # row now exists under the same key but with a DIFFERENT generation
         # marker (re-created object, DB restore, regenerated thumbnail), the
@@ -237,11 +234,8 @@ class _StorageManagerScrub:
         # generation's remote copies (which then re-replicate as 'synced',
         # leaving the scrub's 7-day reverify floor to self-heal very slowly).
         # Drop the stale tombstone instead of deleting. NULL generation =
-        # legacy tombstone: keep the old delete-anyway behavior, logged.
-        if not entry.get('generation'):
-            print(f'[STORAGE] Deferred delete for {entry["category"]}/{entry["file_id"]} '
-                  f'has no generation marker (legacy tombstone); deleting without a re-creation check')
-        else:
+        # legacy tombstone: keep the old delete-anyway behavior.
+        if entry.get('generation'):
             _stale = False
             try:
                 with db.session.no_autoflush:
@@ -276,8 +270,6 @@ class _StorageManagerScrub:
             if not backend:
                 errors += 1
                 attempt_unreachable_count += 1
-                print(f'[STORAGE] Deferred delete waiting for unavailable node {nid} '
-                      f"for {entry['category']}/{entry['file_id']}")
                 continue
             acquired = False
             try:
@@ -288,8 +280,7 @@ class _StorageManagerScrub:
                 backend.delete(entry['category'], entry['file_id'])
                 newly_deleted.add(nid)
             except Exception as e:
-                print(f'[STORAGE] Deferred delete failed on node {nid} '
-                      f"for {entry['category']}/{entry['file_id']}: {e}")
+                entry['failure'] = f"{entry['category']}/{entry['file_id']} on node {nid}: {e}"
                 errors += 1
                 if nid in _unreachable:
                     attempt_unreachable_count += 1
@@ -311,6 +302,8 @@ class _StorageManagerScrub:
             processed = 0
             queued = 0
             warned = 0
+            parked = 0
+            failures = [entry['failure'] for entry in work if entry.get('failure')]
             try:
                 _now2 = datetime.now(timezone.utc)
                 for entry in work:
@@ -337,8 +330,6 @@ class _StorageManagerScrub:
                         # AUDIT FIX (finding 9): the cycle was deferred because
                         # the generation lookup errored, not because a delete
                         # failed — keep it queued without burning retry budget.
-                        print(f'[STORAGE] Deferred delete for {item.category}/{item.file_id} deferred '
-                              f'without penalty: generation lookup unavailable this cycle')
                         continue
                     # Nothing failed and what is left waits on disabled nodes:
                     # not a failed attempt, so no retry budget is burned.
@@ -355,37 +346,28 @@ class _StorageManagerScrub:
                     if (entry.get('attempt_error_count', 0) == 0
                             and (entry.get('attempt_unreachable_count', 0) > 0
                                  or entry.get('attempt_deferred_count', 0) > 0)):
-                        print(f'[STORAGE] Deferred delete for {item.category}/{item.file_id} deferred '
-                              f'without penalty: target node(s) unreachable or busy this cycle')
                         continue
                     item.retry_count = (item.retry_count or 0) + 1
                     if item.retry_count >= self.DEFERRED_DELETE_MAX_RETRIES:
                         # AUDIT FIX M6: terminal park — stop re-attempting this
-                        # tombstone (it is excluded from future batches) but keep
-                        # the row for operator action.
-                        warned += 1
-                        print(
-                            f'[STORAGE] [WARNING] Deferred delete PARKED for {item.category}/{item.file_id} '
-                            f'after {item.retry_count} failed attempts; no longer retried automatically — '
-                            f'fix the target node and run admin remote-cleanup / reset to re-activate'
-                        )
+                        # tombstone (it is excluded from future batches); the
+                        # health check retries parked rows every
+                        # EXHAUSTED_REPLICA_REVIVE_INTERVAL while the node is healthy.
+                        parked += 1
                     elif item.retry_count == self.DEFERRED_DELETE_WARN_RETRIES:
                         warned += 1
-                        print(
-                            f'[STORAGE] Deferred delete backlog warning for {item.category}/{item.file_id}: '
-                            f'{item.retry_count} failed attempts; keeping it queued until remote cleanup succeeds'
-                        )
-                    elif item.retry_count > self.DEFERRED_DELETE_WARN_RETRIES and item.retry_count % 5 == 0:
-                        print(
-                            f'[STORAGE] Deferred delete still pending for {item.category}/{item.file_id} '
-                            f'after {item.retry_count} failed attempts'
-                        )
                 db.session.commit()
-                if processed > 0 or queued > 0 or warned > 0:
+                if processed > 0 or failures or warned > 0 or parked > 0:
                     print(
                         f'[STORAGE] Processed {processed} deferred remote deletes '
-                        f'({errors} backend errors, {queued} still queued)'
+                        f'({errors} backend errors, {queued} still queued, {warned} at '
+                        f'{self.DEFERRED_DELETE_WARN_RETRIES} failed attempts)'
+                        + (f'; first failure: {failures[0]}' if failures else '')
                     )
+                if parked:
+                    print(f'[STORAGE] [WARNING] Deferred delete PARKED {parked} tombstone(s) after '
+                          f'{self.DEFERRED_DELETE_MAX_RETRIES} failed attempts; retried automatically every '
+                          f'{self.EXHAUSTED_REPLICA_REVIVE_INTERVAL} while the node passes health checks')
             except Exception as e:
                 print(f'[STORAGE] Failed to persist pending remote deletes: {e}')
                 try:
@@ -1109,6 +1091,7 @@ class _StorageManagerScrub:
             _heal_queue.append((item, model, label, reason))
             return True
 
+        probe_errors = []
         self._state_lock.acquire()
         try:
             for item in work:
@@ -1128,7 +1111,7 @@ class _StorageManagerScrub:
                         # the replica as-is; health checks and the next cycle
                         # handle node availability. Do not penalize a healthy
                         # replica for a transient connectivity blip.
-                        print(f'[SCRUB] Probe error for {kind} {item["disk_id"]} on node {item["node_id"]}: {item["probe_error"]}')
+                        probe_errors.append(f'{kind} {item["disk_id"]} on node {item["node_id"]}: {item["probe_error"]}')
                         continue
 
                     # ===== FILE (remote or local) =====
@@ -1162,6 +1145,8 @@ class _StorageManagerScrub:
                 self._state_lock.release()
             except RuntimeError:
                 pass
+        if probe_errors:
+            print(f'[SCRUB] {len(probe_errors)} probe error(s) left untouched this pass; first: {probe_errors[0]}')
         return _heal_queue
 
     def _scrub_file_verdict(self, item, model, kind, _now, stats):

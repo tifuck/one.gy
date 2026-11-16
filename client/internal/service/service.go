@@ -28,6 +28,9 @@ type Options struct {
 	StateDir string
 	API      api.Options // Version, InsecureTLS (devtls builds); proxy comes from settings
 	LogLevel string      // --log-level; overrides the setting when set
+	// SecretsFile (--secrets-file) keeps the secrets in this 0600 file instead
+	// of the OS key store (computers without one).
+	SecretsFile string
 }
 
 // Service is the running engine.
@@ -67,6 +70,9 @@ func New(ctx context.Context, opts Options) (*Service, error) {
 		return nil, err
 	}
 	s.ks = keystore.New(opts.StateDir, s.cfg.RequirePasswordOnStart)
+	if opts.SecretsFile != "" {
+		s.ks.UseFile(opts.SecretsFile)
+	}
 	s.acct = account.New(db, s.ks, s.cfg.apiOptions(opts.API))
 	s.acct.OnChange = s.onAccountChange
 	s.acct.OnRevoked = s.onRevoked

@@ -357,12 +357,26 @@ def increment_folder_download_counts(root_folder_id):
         db.session.rollback()
         print(f'[FOLDER DOWNLOAD] Warning: Failed to increment folder download counts: {e}')
 
+_DISK_USAGE_LOG_INTERVAL_SECONDS = 3600
+_DISK_USAGE_WARN_PERCENT = 90
+_DISK_USAGE_WARN_INTERVAL_SECONDS = 300
+_last_disk_usage_log = 0.0
+
+
 def check_storage():
+    """Log disk usage at most hourly (it runs on every upload), every 5 minutes
+    as a warning once usage reaches _DISK_USAGE_WARN_PERCENT."""
+    global _last_disk_usage_log
     try:
         stat = os.statvfs(basedir)
         total = stat.f_frsize * stat.f_blocks
         used = stat.f_frsize * (stat.f_blocks - stat.f_bavail)
         percent = (used / total) * 100
-        print(f'[STORAGE] Disk usage: {percent:.1f}% ({used / (1024**3):.2f} GB / {total / (1024**3):.2f} GB)')
+        warn = percent >= _DISK_USAGE_WARN_PERCENT
+        interval = _DISK_USAGE_WARN_INTERVAL_SECONDS if warn else _DISK_USAGE_LOG_INTERVAL_SECONDS
+        if time.time() - _last_disk_usage_log >= interval:
+            _last_disk_usage_log = time.time()
+            print(f'[STORAGE] {"[WARNING] " if warn else ""}Disk usage: {percent:.1f}% '
+                  f'({used / (1024**3):.2f} GB / {total / (1024**3):.2f} GB)')
     except Exception as e:
         print(f'[STORAGE] Failed to check storage: {e}')

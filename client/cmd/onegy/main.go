@@ -342,10 +342,12 @@ Usage:
   onegy upload <file>              Encrypt and upload a file
   onegy download <url>             Download and decrypt from a share URL
   onegy version                    Print version info
-  onegy daemon [flags]             Run the sync engine (used by ONE.GY Desktop)
-  onegy ipc call <method> [json]   Call the running sync engine (developer tool)
-  onegy ipc watch                  Print sync engine events (developer tool)
+  onegy daemon [flags]             Run the sync engine (ONE.GY Desktop, or a service;
+                                   --secrets-file on a server without a key store)
+  onegy ipc call <method> [json]   Call the running sync engine (any IPC method)
+  onegy ipc watch                  Print sync engine events
 
+%s
 Flags:
   --insecure                       Skip TLS certificate verification
 
@@ -360,7 +362,7 @@ Supported share URL formats:
 
 The server never sees your encryption key. All encryption
 and decryption happens locally on your machine.
-`, serverDomain, serverDomain)
+`, syncUsage, serverDomain, serverDomain)
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -379,6 +381,8 @@ func main() {
 			return
 		case "ipc":
 			os.Exit(runIPC(args[1:]))
+		case "login", "unlock", "lock", "logout", "status", "sync", "issues":
+			os.Exit(runSyncCLI(args[0], args[1:]))
 		}
 	}
 

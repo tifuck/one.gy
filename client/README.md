@@ -26,12 +26,61 @@ go build -tags devtls -o bin/onegy ./cmd/onegy  # allows `daemon --insecure-tls`
 - `onegy upload <file>` / `onegy download <url>`: anonymous E2EE temp upload and
   share-link download. These self-update from `/cli/version` unless the build is
   `-X main.bundled=1` (the desktop app's copy updates with the app).
-- `onegy daemon [--state-dir --socket --log-level --ipc-secret-stdin --insecure-tls]`:
+- `onegy daemon [--state-dir --socket --log-level --ipc-secret-stdin --secrets-file --insecure-tls]`:
   the sync engine (flags, single-instance lock, log file, IPC listener). Not on
   macOS yet (`localfs`/`watch` have no darwin port), so macOS builds ship the
   file commands only.
-- `onegy ipc call <method> [json]` / `onegy ipc watch`: developer tool for the
-  engine's JSON-RPC interface.
+- `onegy login | unlock | lock | logout | status | sync … | issues …`
+  (`cmd_sync.go`): folder sync without the desktop app. Thin front ends to the
+  running engine's IPC methods, the same ones the desktop app calls; `onegy`
+  without arguments prints them all.
+- `onegy ipc call <method> [json]` / `onegy ipc watch`: any method of the
+  engine's JSON-RPC interface (settings, versions, transfers, ignore rules…).
+  Clients find the engine through `<state dir>/engine.json`.
+
+## Headless (a server without a desktop)
+
+The engine is the same as in ONE.GY Desktop. Two things differ on a server:
+there is no OS key store (Secret Service needs a desktop session), and nothing
+starts the engine. `--secrets-file` keeps the device token, the local key and
+the request-signing key in `<state dir>/secrets.json` (0600) so syncing
+resumes after a reboot without the password. The master key never goes there:
+it stays sealed under a share only the server hands out with the password.
+Without the flag the engine starts locked after every restart until `onegy unlock`.
+
+```bash
+curl -fsSL https://one.gy/cli.sh | bash -s -- version     # installs ~/.onegy/bin/onegy
+sudo tee /etc/systemd/system/onegy.service <<EOF
+[Unit]
+Description=ONE.GY sync engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=$USER
+ExecStart=$HOME/.onegy/bin/onegy daemon --secrets-file
+Restart=on-failure
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable --now onegy
+~/.onegy/bin/onegy login
+~/.onegy/bin/onegy sync add ~/data /Servers/web1     # or --type backup|mirror|archive
+~/.onegy/bin/onegy lock                              # optional, see below
+~/.onegy/bin/onegy status
+```
+
+- Locked, the engine keeps syncing the sync folders without the master key,
+  but new files and folders take keys from a pool of 2000 made while unlocked;
+  when it runs out the sync waits for `onegy unlock`. Leave a server that
+  creates many files unlocked.
+- Updating: rerun the `cli.sh` line (it replaces a stale binary), then
+  `sudo systemctl restart onegy`. The sync commands and the daemon never
+  update themselves.
+- Large trees: raise `fs.inotify.max_user_watches` if a sync reports `watch_limit`.
+- Engine log: `~/.local/share/onegy/logs/engine.log`.
 
 ## Packages
 

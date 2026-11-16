@@ -12,7 +12,8 @@ The contract between `client/internal/ipc` (server; the engine is the
   (the pipe keeps its name from before the engine became `onegy daemon`).
 - Framing: one JSON object per line (`\n`-terminated, UTF-8). JSON-RPC 2.0.
 - The engine also accepts `--socket <path>` (tests, multiple instances) and
-  writes `<state dir>/engine.json` `{"pid", "socket", "version"}` once listening.
+  writes `<state dir>/engine.json` `{"pid", "socket", "version"}` once listening;
+  the `onegy` CLI connects to the socket named there.
 - State dir: Windows `%APPDATA%\ONE.GY`, Linux `$XDG_DATA_HOME/onegy`
   (default `~/.local/share/onegy`). Overridable with `--state-dir`.
 - IPC secret: the app starts the engine with `--ipc-secret-stdin` and writes a

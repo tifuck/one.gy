@@ -298,6 +298,9 @@ def _build_and_start_scheduler_jobs():
         'max_instances': 1,
         'misfire_grace_time': 3600,
     })
+    # max_instances=1 is intentional: a 10s replication tick that lands while a
+    # long cycle runs is skipped, and APScheduler warned about each one.
+    logging.getLogger('apscheduler.scheduler').setLevel(logging.ERROR)
     scheduler.add_job(func=cleanup_job,          trigger='interval', minutes=5,  id='cleanup_job',          replace_existing=True)
     scheduler.add_job(func=replication_job,      trigger='interval', seconds=10, id='replication_job',      replace_existing=True)
     scheduler.add_job(func=metrics_snapshot_job, trigger='interval', minutes=5,  id='metrics_snapshot_job', replace_existing=True)

@@ -1,5 +1,10 @@
 class _StorageManagerReplication:
 
+    # Pulling a payload from a remote node stages it on local disk. Leave this
+    # much free beyond the object itself, so a mass re-fetch (disaster recovery,
+    # or an upload folder that is an unmounted mount point) cannot fill the disk.
+    LOCAL_PULL_MIN_FREE_BYTES = 2 * 1024 ** 3
+
     # ---- Replication tracking ----
 
     def _mark_replica_synced(self, resource_type, resource_id, node_id):
@@ -691,10 +696,11 @@ class _StorageManagerReplication:
                 ).group_by(model.node_id).all():
                     parked_nodes.setdefault(node_id, {})[label] = count
             for node_id, counts in parked_nodes.items():
-                print(f'[ERROR] [REPLICATION] {self._node_name(node_id)} has PERMANENTLY PARKED replicas '
-                      f'({counts}) after {self.MAX_ERROR_RETRIES} failed attempts — replication will NOT '
-                      f'retry them without admin action (admin storage retry-errors). Until then that data '
-                      f'is not mirrored to this node.')
+                print(f'[ERROR] [REPLICATION] {self._node_name(node_id)} has PARKED replicas '
+                      f'({counts}) after {self.MAX_ERROR_RETRIES} failed attempts — that data is not mirrored '
+                      f'to this node until a retry succeeds (automatic every '
+                      f'{self.EXHAUSTED_REPLICA_REVIVE_INTERVAL} while the node is healthy, or admin storage '
+                      f'retry-errors).')
         except Exception as e:
             print(f'[STORAGE] Single-copy audit failed: {e}')
 
@@ -780,7 +786,10 @@ class _StorageManagerReplication:
             all_synced = [r for r in all_synced if r.node_id not in skip_nodes]
         if not all_synced:
             return []
-        if source_mode == 'primary' and primary_id:
+        # Repairing the primary itself (e.g. the local disk after a restore):
+        # it cannot be its own source, so 'primary' falls back to any mirror
+        # instead of declaring a payload that the mirrors hold 'missing'.
+        if source_mode == 'primary' and primary_id and primary_id not in (skip_nodes or ()):
             return [r for r in all_synced if r.node_id == primary_id]
         elif source_mode == 'primary_fallback' and primary_id:
             primary = [r for r in all_synced if r.node_id == primary_id]
@@ -1040,6 +1049,11 @@ class _StorageManagerReplication:
             if not sources:
                 result['status'] = 'missing'
                 result['error'] = f'NO SYNCED SOURCE AVAILABLE FOR {category}/{item_id}'
+                return result
+            _needed = max((getattr(s, 'size_bytes', None) or 0) for s in sources) + self.LOCAL_PULL_MIN_FREE_BYTES
+            if _statvfs_free_bytes(tmp_dir) < _needed:
+                result['status'] = 'error'
+                result['error'] = f'INSUFFICIENT LOCAL DISK SPACE TO STAGE {category}/{item_id} FROM A REMOTE NODE'
                 return result
 
             for source_replica in sources:

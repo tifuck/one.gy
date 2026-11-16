@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -38,6 +39,7 @@ func daemon(args []string) error {
 	logLevel := fs.String("log-level", "", "debug|info|warn|error (default: the log_level setting)")
 	insecure := fs.Bool("insecure-tls", false, "skip TLS certificate checks (devtls builds only)")
 	secretStdin := fs.Bool("ipc-secret-stdin", false, "read the IPC secret (first line of stdin); clients must present it with ipc.hello")
+	secretsFile := fs.Bool("secrets-file", false, "keep the device secrets in <state dir>/secrets.json (0600) instead of the OS key store, for servers without one")
 	version := fs.Bool("version", false, "print the version and exit")
 	fs.Parse(args)
 	if *version {
@@ -94,8 +96,13 @@ func daemon(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	svc, err := service.New(ctx, service.Options{StateDir: *stateDir, LogLevel: *logLevel,
-		API: api.Options{Version: config.Version, InsecureTLS: *insecure}})
+	opts := service.Options{StateDir: *stateDir, LogLevel: *logLevel,
+		API: api.Options{Version: config.Version, InsecureTLS: *insecure}}
+	if *secretsFile {
+		opts.SecretsFile = filepath.Join(*stateDir, "secrets.json")
+		slog.Info("device secrets are kept in a file (--secrets-file)")
+	}
+	svc, err := service.New(ctx, opts)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,6 @@
 package main
 
-// `onegy ipc` is a developer tool for the engine's JSON-RPC interface:
+// `onegy ipc` calls any method of the engine's JSON-RPC interface:
 //
 //	onegy ipc [--socket p | --state-dir d] call <method> [json params]
 //	onegy ipc [--socket p | --state-dir d] watch
@@ -34,7 +34,7 @@ func runIPC(args []string) int {
 			}
 			*stateDir = d
 		}
-		*socket = config.DefaultSocket(*stateDir)
+		*socket = config.RunningSocket(*stateDir)
 	}
 	rest := fs.Args()
 	switch {

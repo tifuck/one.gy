@@ -5,6 +5,14 @@ class _StorageManagerReplicationCycle:
     # this often for the same mismatch instead of on every 10s cycle.
     STALE_BACKEND_REFRESH_INTERVAL_SECONDS = 300
 
+    @staticmethod
+    def _has_replication_target(enabled_nodes):
+        """True when some enabled node is not the local disk. Local disk is
+        always a source (canonical node or relay staging), so ONE remote node is
+        enough: a disabled local node plus one S3 node is the relay topology,
+        and requiring two enabled nodes left its uploads on local disk forever."""
+        return any(n.node_type != 'local' for n in enabled_nodes)
+
     def _reconcile_notes_unlocked(self):
         """Note reconciliation for the replication cycle, run WITHOUT
         self._state_lock. reconcile_note_to_local falls back to downloading a
@@ -16,9 +24,10 @@ class _StorageManagerReplicationCycle:
         error rows."""
         healed_error_note_ids = set()
         try:
-            enabled_node_ids = [n.id for n in StorageNode.query.filter_by(is_enabled=True).all()]
-            if len(enabled_node_ids) <= 1:
+            enabled_nodes = StorageNode.query.filter_by(is_enabled=True).all()
+            if not self._has_replication_target(enabled_nodes):
                 return healed_error_note_ids
+            enabled_node_ids = [n.id for n in enabled_nodes]
             _preset_name, _preset = self._get_replication_preset()
             _batch_size = _preset['batch']
 
@@ -289,7 +298,7 @@ class _StorageManagerReplicationCycle:
         changed the node set. Returns None when there is no second node to replicate to."""
         import time as _time
         enabled_nodes = StorageNode.query.filter_by(is_enabled=True).all()
-        if len(enabled_nodes) <= 1:
+        if not self._has_replication_target(enabled_nodes):
             return None
 
         # Detect backend staleness (another worker may have added/removed nodes)
@@ -306,7 +315,7 @@ class _StorageManagerReplicationCycle:
                 self.refresh_backends()
                 # Re-query after refresh
                 enabled_nodes = StorageNode.query.filter_by(is_enabled=True).all()
-                if len(enabled_nodes) <= 1:
+                if not self._has_replication_target(enabled_nodes):
                     return None
                 cycle_backends, cycle_local_backend, cycle_local_node_id, _cycle_version = self._backend_state_snapshot()
         return enabled_nodes, cycle_backends, cycle_local_backend
@@ -545,10 +554,13 @@ class _StorageManagerReplicationCycle:
             print(f'[REPLICATION] Marked {thumb_missing_marked} thumbnail replicas as missing (source data gone)')
         if thumb_flag_cleared > 0:
             print(f'[REPLICATION] Cleared has_thumbnail flag on {thumb_flag_cleared} file(s) with no thumbnail source on any node')
-        if any(exhausted_counts.values()):
+        # Printed on change only: the same totals every 10s cycle buried the log.
+        if any(exhausted_counts.values()) and exhausted_counts != getattr(self, '_last_exhausted_counts', None):
             print(f'[REPLICATION] {exhausted_counts["file"]} file, {exhausted_counts["note"]} note and '
                   f'{exhausted_counts["thumbnail"]} thumbnail replicas exceeded max retries ({_MAX_ERROR_RETRIES}) '
-                  f'— skipping (admin action required)')
+                  f'— parked; retried automatically every {self.EXHAUSTED_REPLICA_REVIVE_INTERVAL} '
+                  f'while their node is healthy')
+        self._last_exhausted_counts = exhausted_counts
 
     def _triage_error_file_replicas(self, cycle_local_backend, _now, _error_cooldown):
         """Retryable error file replicas go back to pending when a source exists, else to missing.
@@ -914,9 +926,9 @@ class _StorageManagerReplicationCycle:
             if replica.error_count == self.MAX_ERROR_RETRIES:
                 print(f'[ERROR] [REPLICATION] {category}/{replica_id} on '
                       f'{self._node_name(replica.node_id)} has now failed '
-                      f'{replica.error_count} times and is PERMANENTLY PARKED — it will not be '
-                      f'retried automatically. This payload is no longer being mirrored to that '
-                      f'node; admin action is required (storage retry-errors). Last error: '
+                      f'{replica.error_count} times and is PARKED — it is not mirrored to that node '
+                      f'until a retry succeeds (automatic every {self.EXHAUSTED_REPLICA_REVIVE_INTERVAL} '
+                      f'while the node is healthy, or storage retry-errors). Last error: '
                       f'{replica.last_error}')
             return False
 

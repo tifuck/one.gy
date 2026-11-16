@@ -319,20 +319,20 @@ class _StorageManagerNodes:
                 self._ensure_local_backend_ready()
                 nodes = StorageNode.query.filter_by(is_enabled=True).all()
                 state_backends, state_local_backend, state_local_node_id, _version = self._backend_state_snapshot()
-                snapshot = []  # (node_id, node_type, backend)
+                snapshot = []  # (node_id, node_type, backend, probe_file_id)
                 for node in nodes:
                     backend = state_backends.get(node.id)
                     if (not backend and node.node_type == 'local'
                             and node.id == state_local_node_id and state_local_backend):
                         backend = state_local_backend
-                    snapshot.append((node.id, node.node_type, backend))
+                    snapshot.append((node.id, node.node_type, backend, self._health_probe_file_id(node, backend)))
             except Exception as e:
                 print(f'[STORAGE] Health check setup failed: {e}')
                 return
 
         # ── Phase B (UNLOCKED): probe each backend ──
         results = {}  # node_id -> {reachable, disk, backend, error}
-        for node_id, node_type, backend in snapshot:
+        for node_id, node_type, backend, probe_file_id in snapshot:
             entry = {'reachable': False, 'disk': None, 'backend': backend, 'error': None}
             if backend is None:
                 entry['reachable'] = None  # no backend at all
@@ -340,6 +340,13 @@ class _StorageManagerNodes:
                 continue
             try:
                 if backend.health_check():
+                    # head_bucket only proves the bucket answers. Object reads can
+                    # still be refused (403 under a B2 Class B cap or a key that
+                    # lost read access) while every per-item retry burns its
+                    # budget, so also read one known object. stat() raises on
+                    # anything but success or a clean 404.
+                    if probe_file_id:
+                        backend.stat('files', probe_file_id)
                     entry['reachable'] = True
                     if node_type in ('local', 'ssh'):
                         try:
@@ -389,6 +396,17 @@ class _StorageManagerNodes:
                         # admin runs reset_failed_replication_state. Now that the
                         # node is reachable again, give those exhausted replicas a
                         # fresh start so replication heals them automatically.
+                        if old_status == 'online':
+                            # A node that never went offline still recovers what
+                            # it parked: the replication cycle only revives after a
+                            # write succeeds, which never happens on a quiet site.
+                            recovered = self._recover_exhausted_replicas_for_node(
+                                node_id, min_idle=self.EXHAUSTED_REPLICA_REVIVE_INTERVAL)
+                            _revived = self.reactivate_pending_remote_deletes_for_node(
+                                node_id, parked_min_idle=self.EXHAUSTED_REPLICA_REVIVE_INTERVAL)
+                            if recovered or _revived:
+                                print(f'[STORAGE] Node {node.name} healthy — retrying {recovered} parked '
+                                      f'replica(s) and {_revived} parked remote delete(s)')
                         if old_status != 'online':
                             recovered = self._recover_exhausted_replicas_for_node(node_id)
                             if recovered:
@@ -445,6 +463,16 @@ class _StorageManagerNodes:
                     db.session.rollback()
                 except Exception:
                     pass
+
+    def _health_probe_file_id(self, node, backend):
+        """A file this S3 node is known to hold, for the object-level health
+        probe; None when there is none (or the node is not S3)."""
+        if not isinstance(backend, _S3Backend):
+            return None
+        row = db.session.query(FileReplica.file_id).filter(
+            FileReplica.node_id == node.id, FileReplica.status == 'synced',
+        ).order_by(FileReplica.id.desc()).first()
+        return f'{row[0]}.enc' if row else None
 
     def _backend_checksum_capability(self, backend):
         """Return the integrity capability of a backend for F7 admin visibility:
