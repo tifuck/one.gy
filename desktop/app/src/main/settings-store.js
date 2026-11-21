@@ -23,6 +23,7 @@ const DEFAULTS = Object.freeze({
   prevent_sleep: true,
   linux_x11: true, // GNOME on Wayland: run through XWayland so the tray popover can sit under the tray icon (main.js)
   lock_after_minutes: 30, // app lock after this much system idle time (0 = only on start, sleep and screen lock)
+  lock_on_hide: false, // also lock when the window is minimized or closed to the tray
   default_upload_folder: null, // {id, path}: one.gy folder for tray Upload…
   default_download_dir: '', // local folder for manual downloads ('' = ask)
   paused_until: null, // ms timestamp: tray "Pause for 1 hour" resumes then (main.js)
@@ -53,6 +54,7 @@ const VALIDATORS = {
   prevent_sleep: bool,
   linux_x11: bool,
   lock_after_minutes: oneOf(0, 5, 15, 30, 60, 240),
+  lock_on_hide: bool,
   default_upload_folder: (v) => {
     if (v === null) return null;
     if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;

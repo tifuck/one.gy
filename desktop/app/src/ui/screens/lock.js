@@ -1,10 +1,13 @@
 // Lock screen (engine-ipc.md "App lock"). Shown over an empty site view while
 // the app is locked; syncing inside this computer's sync folders goes on.
 // The PIN when one is set and still valid, else the password; the password
-// form can turn on a PIN for next time (opt-in). The main process closes the
+// form can turn on a PIN for next time (opt-in). Windows Hello or a
+// fingerprint, when on, is a button above either form. The main process closes the
 // panel and signs the site in once the app is unlocked.
 import { h, icon, clear, append, field, callout } from '../components/dom.js';
-import { pinFields, pinUsable, pinRules, PIN_TRIES } from '../components/pin.js';
+import {
+  pinFields, pinUsable, pinRules, pinErasedNote, capsHint, systemUsable, systemError, SYSTEM_LABEL, PIN_TRIES,
+} from '../components/pin.js';
 import { rpc, store, on, loadAccount } from '../store.js';
 
 const ERRORS = {
@@ -19,6 +22,7 @@ export function mount(container) {
   let note = null; // why the password is needed
   const a0 = store.account || {};
   if (mode === 'password' && a0.pin_set) note = 'Your PIN has expired. Enter your password once and the PIN works again.';
+  else if (mode === 'password') note = pinErasedNote(a0);
 
   const body = h('div', { class: 'rd-panel-body' });
   append(container, h('div', { class: 'adm-narrow' },
@@ -33,18 +37,50 @@ export function mount(container) {
   let touched = false; // the user started typing: keep the form
   body.addEventListener('input', () => { touched = true; });
 
+  let shownSystem = false;
   function render() {
     clear(body);
     const a = store.account || {};
+    shownSystem = systemUsable(a);
     const error = h('p', { class: 'rd-field-error', role: 'alert' });
     const submit = h('button', { type: 'submit', class: 'rd-btn rd-btn-primary' }, 'Unlock');
     const form = h('form', { class: 'dk-form', onsubmit: (e) => { e.preventDefault(); run(); } });
     let run;
+    if (systemUsable(a)) {
+      const label = SYSTEM_LABEL[a.system_unlock];
+      const status = h('p', { class: 'rd-field-hint', role: 'status' });
+      const btn = h('button', {
+        type: 'button',
+        class: 'rd-btn rd-btn-primary',
+        onclick: async () => {
+          btn.disabled = true;
+          error.textContent = '';
+          status.textContent = a.system_unlock === 'fingerprint' ? 'Touch the fingerprint reader.' : 'Verify with Windows Hello.';
+          try {
+            store.account = await rpc('account.systemUnlock');
+          } catch (err) {
+            status.textContent = '';
+            if (['pin_locked', 'pin_expired', 'system_unlock_not_set'].includes(err.code)) {
+              mode = 'password';
+              note = err.code === 'pin_expired' ? 'Quick unlock has expired. Enter your password once and it works again.'
+                : `${PIN_TRIES} failed unlocks in a row: the PIN and ${label} were turned off. Enter your password.`;
+              await loadAccount().catch(() => {});
+              render();
+              return;
+            }
+            error.textContent = (await systemError(err)) || '';
+          } finally {
+            btn.disabled = false;
+          }
+        },
+      }, `Unlock with ${label}`);
+      append(body, h('div', { class: 'dk-form' }, h('div', { class: 'dk-btn-row' }, btn), status));
+    }
     if (mode === 'pin') {
       const pin = h('input', {
-        class: 'form-input dk-pin-input', type: 'password', inputmode: 'numeric', autocomplete: 'off', maxlength: 64, 'aria-label': 'PIN',
+        class: 'form-input dk-pin-input', type: 'password', autocomplete: 'off', maxlength: 64, 'aria-label': 'PIN',
       });
-      append(form, field('PIN', pin, a.username ? `Signed in as ${a.username}.` : null), error,
+      append(form, field('PIN', pin, a.username ? `Signed in as ${a.username}.` : null), capsHint(pin), error,
         h('div', { class: 'dk-btn-row' }, submit,
           h('button', { type: 'button', class: 'rd-btn rd-btn-ghost', onclick: () => { mode = 'password'; note = null; render(); } }, 'Use my password instead')));
       run = async () => {
@@ -65,6 +101,7 @@ export function mount(container) {
             mode = 'password';
             note = {
               pin_locked: `${PIN_TRIES} wrong PINs in a row: the PIN was erased. Enter your password, then choose a new PIN.`,
+              pin_not_set: pinErasedNote(store.account),
               pin_expired: 'Your PIN has expired. Enter your password once and the PIN works again.',
               password_required: 'This computer needs your password once more.',
             }[err.code] || null;
@@ -87,7 +124,7 @@ export function mount(container) {
       wantPin.addEventListener('change', () => { pinForm.el.hidden = !wantPin.checked; });
       append(form,
         note ? callout('warn', 'lock', note) : null,
-        field('Password', password, a.username ? `Your one.gy password for ${a.username}.` : null),
+        field('Password', password, a.username ? `Your one.gy password for ${a.username}.` : null), capsHint(password),
         offer ? h('label', { class: 'rd-field-row' },
           h('div', { class: 'rd-field-text' }, h('span', { class: 'rd-field-label' }, 'Unlock with a PIN from now on'),
             h('p', { class: 'rd-field-hint' }, pinRules(null))), wantPin) : null,
@@ -123,9 +160,9 @@ export function mount(container) {
   // The engine may learn the PIN state after this mounted (strict start).
   return on('account', () => {
     const want = pinUsable(store.account) ? 'pin' : 'password';
-    if (!touched && want !== mode) {
+    if (!touched && (want !== mode || systemUsable(store.account) !== shownSystem)) {
       mode = want;
-      note = null;
+      note = want === 'password' ? pinErasedNote(store.account) : null;
       render();
     }
   });

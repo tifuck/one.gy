@@ -29,6 +29,9 @@ type devSec struct {
 	strict   bool
 	lock     bool
 	grant    string
+	pwAt     time.Time // last password unlock: PIN changes need no credential for 10 minutes
+	sysKind  string    // system unlock: "fingerprint" (token) or "hello" (accepted unchecked)
+	sysKey   string
 	Scope    json.RawMessage
 }
 
@@ -56,6 +59,16 @@ func (s *Server) DeviceScope() json.RawMessage {
 		}
 	}
 	return nil
+}
+
+// ExpirePasswordWindow makes every device's last password unlock old, so PIN
+// changes need the current PIN or the password.
+func (s *Server) ExpirePasswordWindow() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.sec {
+		d.pwAt = time.Time{}
+	}
 }
 
 // SignedDevices counts devices that enrolled a signing key.
@@ -103,7 +116,16 @@ func signatureOK(r *http.Request, k *ecdsa.PublicKey) bool {
 
 func (d *devSec) json() map[string]any {
 	return map[string]any{"lock_enabled": d.lock, "pin_set": d.pinProof != "", "pin_strict": d.strict,
-		"pin_attempts_left": 5 - d.failures, "signed_requests": d.pop != nil}
+		"pin_attempts_left": 5 - d.failures, "signed_requests": d.pop != nil, "system_unlock": d.sysKind}
+}
+
+// failed counts failed unlocks; the fifth erases the PIN, the system unlock and the grant.
+func (d *devSec) failed(n int) {
+	d.failures += n
+	if d.failures >= 5 {
+		d.failures = 5
+		d.pinProof, d.sysKind, d.sysKey, d.grant = "", "", "", ""
+	}
 }
 
 // securityRoute serves /apiv1/devices/self/* security routes; false = not one.
@@ -121,6 +143,57 @@ func (s *Server) securityRoute(w http.ResponseWriter, r *http.Request, d *devSec
 		d.grant = "dgr_" + e2ee.EncodeBase64(b)
 		return d.grant
 	}
+	// credential checks the password or else the PIN (writing the error); true = right.
+	credential := func(authToken, pinProof string) bool {
+		if authToken != "" {
+			if authToken != s.authToken {
+				fail(w, 401, "invalid_credentials")
+				return false
+			}
+			d.lock, d.pwAt = true, time.Now()
+			return true
+		}
+		if d.pinProof == "" {
+			fail(w, 409, "pin_locked")
+			return false
+		}
+		if pinProof != d.pinProof {
+			d.failed(1)
+			if d.failures >= 5 {
+				fail(w, 409, "pin_locked")
+				return false
+			}
+			writeJSON(w, 401, map[string]any{"error": "Wrong PIN", "code": "invalid_pin", "attempts_left": 5 - d.failures})
+			return false
+		}
+		return true
+	}
+	systemOK := func(proof string) bool {
+		if d.sysKind == "" {
+			fail(w, 409, "system_unlock_not_set")
+			return false
+		}
+		if d.sysKind == "fingerprint" && proof != d.sysKey {
+			d.failed(1)
+			if d.failures >= 5 {
+				fail(w, 409, "pin_locked")
+				return false
+			}
+			writeJSON(w, 401, map[string]any{"error": "System unlock failed", "code": "system_unlock_failed", "attempts_left": 5 - d.failures})
+			return false
+		}
+		return true
+	}
+	pinChangeOK := func() bool {
+		if str("auth_token") != "" || str("current_pin_proof") != "" {
+			return credential(str("auth_token"), str("current_pin_proof"))
+		}
+		if time.Since(d.pwAt) <= 10*time.Minute {
+			return true
+		}
+		fail(w, 401, "credential_required")
+		return false
+	}
 	switch {
 	case p == "/apiv1/devices/self/pop-key" && r.Method == "POST":
 		if d.pop != nil {
@@ -135,25 +208,12 @@ func (s *Server) securityRoute(w http.ResponseWriter, r *http.Request, d *devSec
 		writeJSON(w, 200, d.json())
 	case p == "/apiv1/devices/self/unlock" && r.Method == "POST":
 		switch {
-		case str("auth_token") != "":
-			if str("auth_token") != s.authToken {
-				fail(w, 401, "invalid_credentials")
+		case str("system_proof") != "" && str("auth_token") == "":
+			if !systemOK(str("system_proof")) {
 				return true
 			}
-			d.lock = true
-		case str("pin_proof") != "":
-			if d.pinProof == "" {
-				fail(w, 409, "pin_locked")
-				return true
-			}
-			if str("pin_proof") != d.pinProof {
-				d.failures++
-				if d.failures >= 5 {
-					d.pinProof, d.grant = "", ""
-					fail(w, 409, "pin_locked")
-					return true
-				}
-				writeJSON(w, 401, map[string]any{"error": "Wrong PIN", "code": "invalid_pin", "attempts_left": 5 - d.failures})
+		case str("auth_token") != "" || str("pin_proof") != "":
+			if !credential(str("auth_token"), str("pin_proof")) {
 				return true
 			}
 		default:
@@ -170,6 +230,12 @@ func (s *Server) securityRoute(w http.ResponseWriter, r *http.Request, d *devSec
 		out := d.json()
 		out["unlock_share"], out["master_share"], out["grant"] = d.share, d.mshare, newGrant()
 		writeJSON(w, 200, out)
+	case p == "/apiv1/devices/self/unlock-failed" && r.Method == "POST":
+		n, _ := in["count"].(float64)
+		if d.pinProof != "" || d.sysKind != "" {
+			d.failed(int(n))
+		}
+		writeJSON(w, 200, d.json())
 	case p == "/apiv1/devices/self/grant" && r.Method == "DELETE":
 		d.grant = ""
 		w.WriteHeader(204)
@@ -177,6 +243,13 @@ func (s *Server) securityRoute(w http.ResponseWriter, r *http.Request, d *devSec
 		fail(w, 403, "grant_required")
 	case p == "/apiv1/devices/self/grant" && r.Method == "POST":
 		writeJSON(w, 200, map[string]any{"grant_expires_at": "2099-01-01T00:00:00Z"})
+	case p == "/apiv1/devices/self/system-unlock" && r.Method == "DELETE":
+		d.sysKind, d.sysKey = "", ""
+		writeJSON(w, 200, d.json())
+	case (p == "/apiv1/devices/self/pin" || p == "/apiv1/devices/self/system-unlock") && !pinChangeOK():
+	case p == "/apiv1/devices/self/system-unlock" && r.Method == "PUT":
+		d.sysKind, d.sysKey, d.failures, d.lock = str("kind"), str("token")+str("public_key"), 0, true
+		writeJSON(w, 200, d.json())
 	case p == "/apiv1/devices/self/pin" && r.Method == "PUT":
 		d.pinProof, d.failures, d.lock = str("pin_proof"), 0, true
 		d.strict, _ = in["strict"].(bool)

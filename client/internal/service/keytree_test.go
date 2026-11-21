@@ -58,11 +58,19 @@ func TestLockedSyncUsesOnlyTheKeyTree(t *testing.T) {
 	if issues, _ := rc.call("issues.list", nil); len(issues.([]any)) != 0 {
 		t.Fatalf("waiting for unlock must not be an issue: %v", issues)
 	}
-	// Locked: nothing outside the sync decrypts.
-	l := rc.ok("remote.list", map[string]any{"folder_id": other})
-	if len(l["files"].([]any)) != 1 || l["files"].([]any)[0].(map[string]any)["name_error"] != true {
-		t.Fatalf("outside file readable while locked: %v", l)
+	// Locked: only the syncs already set up run; nothing else is reachable.
+	for method, params := range map[string]any{
+		"remote.list":     map[string]any{"folder_id": other},
+		"syncs.create":    map[string]any{"config": map[string]any{"local_path": t.TempDir(), "remote_folder_id": other}},
+		"manual.download": map[string]any{"folder_id": other, "dest": t.TempDir()},
+		"settings.set":    map[string]any{"web_unlock": true},
+	} {
+		if _, e := rc.call(method, params); errCode(e) != "app_locked" {
+			t.Fatalf("%s while locked: %v", method, e)
+		}
 	}
+	rc.ok("syncs.pause", map[string]any{})
+	rc.ok("syncs.resume", map[string]any{})
 
 	// Restart while locked: the folder keys come back with the unlock share.
 	stop()
@@ -79,6 +87,7 @@ func TestLockedSyncUsesOnlyTheKeyTree(t *testing.T) {
 	if s := rc.ok("account.status", nil); s["full_keys"] != true || s["app_locked"] != false {
 		t.Fatalf("after unlock %v", s)
 	}
+	rc.ok("remote.list", map[string]any{"folder_id": other})
 	rc.ok("engine.nudge", nil)
 	waitFor(t, "download after unlock", func() bool { return readFile(local, "web2.txt") == "waits for unlock" })
 }

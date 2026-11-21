@@ -22,6 +22,16 @@ func (s *Service) register() {
 			return res, rpcError(err)
 		})
 	}
+	// App locked: the syncs already set up keep running; everything else
+	// (new or changed syncs, other folders, restores, settings) waits.
+	unlocked := func(fn ipc.Handler) ipc.Handler {
+		return func(ctx context.Context, p json.RawMessage) (any, error) {
+			if s.acct.Restricted() {
+				return nil, account.ErrAppLocked
+			}
+			return fn(ctx, p)
+		}
+	}
 
 	h("engine.info", func(context.Context, json.RawMessage) (any, error) {
 		return map[string]any{"version": config.Version, "protocol": config.Protocol, "state_dir": s.opts.StateDir, "platform": runtime.GOOS}, nil
@@ -69,7 +79,7 @@ func (s *Service) register() {
 			return nil, err
 		}
 		if in.NewPin != "" {
-			if err := s.acct.SetPin(ctx, in.NewPin, in.PinStrict); err != nil {
+			if err := s.acct.SetPin(ctx, in.NewPin, in.PinStrict, account.Current{}); err != nil {
 				return nil, err
 			}
 		}
@@ -108,23 +118,63 @@ func (s *Service) register() {
 		return s.acct.Status(ctx), nil
 	})
 	h("account.setPin", func(ctx context.Context, p json.RawMessage) (any, error) {
+		// current_pin or password: who is changing it (not needed right after a password unlock).
 		var in struct {
 			Pin    string `json:"pin"`
 			Strict bool   `json:"strict"`
+			account.Current
 		}
 		if err := ipc.Params(p, &in); err != nil {
 			return nil, err
 		}
-		if err := s.acct.SetPin(ctx, in.Pin, in.Strict); err != nil {
+		if err := s.acct.SetPin(ctx, in.Pin, in.Strict, in.Current); err != nil {
 			return nil, err
 		}
 		s.pushScope(ctx)
 		return s.acct.Status(ctx), nil
 	})
-	h("account.removePin", func(ctx context.Context, _ json.RawMessage) (any, error) {
-		if err := s.acct.RemovePin(ctx); err != nil {
+	h("account.removePin", func(ctx context.Context, p json.RawMessage) (any, error) {
+		var in account.Current
+		if err := ipc.Params(p, &in); err != nil {
 			return nil, err
 		}
+		if err := s.acct.RemovePin(ctx, in); err != nil {
+			return nil, err
+		}
+		return s.acct.Status(ctx), nil
+	})
+	// Windows Hello / fingerprint. hwnd (Windows): the app window, so the
+	// Hello dialog opens over it.
+	h("account.enableSystemUnlock", func(ctx context.Context, p json.RawMessage) (any, error) {
+		var in struct {
+			account.Current
+			Hwnd uint64 `json:"hwnd"`
+		}
+		if err := ipc.Params(p, &in); err != nil {
+			return nil, err
+		}
+		if err := s.acct.EnableSystemUnlock(ctx, in.Current, in.Hwnd); err != nil {
+			return nil, err
+		}
+		return s.acct.Status(ctx), nil
+	})
+	h("account.disableSystemUnlock", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		if err := s.acct.DisableSystemUnlock(ctx); err != nil {
+			return nil, err
+		}
+		return s.acct.Status(ctx), nil
+	})
+	h("account.systemUnlock", func(ctx context.Context, p json.RawMessage) (any, error) {
+		var in struct {
+			Hwnd uint64 `json:"hwnd"`
+		}
+		if err := ipc.Params(p, &in); err != nil {
+			return nil, err
+		}
+		if err := s.acct.SystemUnlock(ctx, in.Hwnd); err != nil {
+			return nil, err
+		}
+		s.poller.Nudge()
 		return s.acct.Status(ctx), nil
 	})
 	h("account.webSession", func(ctx context.Context, _ json.RawMessage) (any, error) {
@@ -149,7 +199,7 @@ func (s *Service) register() {
 		return map[string]string{"master_key_b64": e2ee.EncodeBase64(key)}, nil
 	})
 
-	h("remote.list", func(ctx context.Context, p json.RawMessage) (any, error) {
+	h("remote.list", unlocked(func(ctx context.Context, p json.RawMessage) (any, error) {
 		var in struct {
 			FolderID *int64 `json:"folder_id"`
 		}
@@ -157,8 +207,8 @@ func (s *Service) register() {
 			return nil, err
 		}
 		return s.tree.List(ctx, zeroIsRoot(in.FolderID))
-	})
-	h("remote.createFolder", func(ctx context.Context, p json.RawMessage) (any, error) {
+	}))
+	h("remote.createFolder", unlocked(func(ctx context.Context, p json.RawMessage) (any, error) {
 		in := struct {
 			ParentID *int64 `json:"parent_id"`
 			Name     string `json:"name"`
@@ -171,13 +221,13 @@ func (s *Service) register() {
 			return nil, validationFailed([]problem{{Code: "invalid_name", Field: "name", Message: err.Error()}})
 		}
 		return s.tree.CreateFolder(ctx, zeroIsRoot(in.ParentID), in.Name, in.E2EE)
-	})
+	}))
 
 	h("settings.get", func(context.Context, json.RawMessage) (any, error) { return s.settings(), nil })
-	h("settings.set", s.settingsSet)
+	h("settings.set", unlocked(s.settingsSet))
 
 	h("syncs.list", s.syncsList)
-	h("syncs.validate", s.syncsValidate)
+	h("syncs.validate", unlocked(s.syncsValidate))
 	// Sync roots changed: the server's scope for a locked app follows.
 	withScope := func(fn ipc.Handler) ipc.Handler {
 		return func(ctx context.Context, p json.RawMessage) (any, error) {
@@ -188,23 +238,23 @@ func (s *Service) register() {
 			return res, err
 		}
 	}
-	h("syncs.create", withScope(s.syncsCreate))
-	h("syncs.update", withScope(s.syncsUpdate))
-	h("syncs.remove", withScope(s.syncsRemove))
+	h("syncs.create", unlocked(withScope(s.syncsCreate)))
+	h("syncs.update", unlocked(withScope(s.syncsUpdate)))
+	h("syncs.remove", unlocked(withScope(s.syncsRemove)))
 	h("syncs.pause", func(ctx context.Context, p json.RawMessage) (any, error) { return s.pauseResume(ctx, p, true) })
 	h("syncs.resume", func(ctx context.Context, p json.RawMessage) (any, error) { return s.pauseResume(ctx, p, false) })
 
-	h("syncs.preview", s.syncsPreview)
+	h("syncs.preview", unlocked(s.syncsPreview))
 	h("syncs.syncNow", s.syncsSyncNow)
 	h("syncs.verify", s.syncsVerify)
 	h("syncs.ignoreRules", s.syncsIgnoreRules)
-	h("syncs.setIgnoreRules", s.syncsSetIgnoreRules)
-	h("syncs.browse", s.syncsBrowse)
-	h("syncs.backupTarget", s.syncsBackupTarget)
-	h("syncs.clearDebris", s.syncsClearDebris)
+	h("syncs.setIgnoreRules", unlocked(s.syncsSetIgnoreRules))
+	h("syncs.browse", unlocked(s.syncsBrowse))
+	h("syncs.backupTarget", unlocked(s.syncsBackupTarget))
+	h("syncs.clearDebris", unlocked(s.syncsClearDebris))
 
-	h("versions.list", s.versionsList)
-	h("versions.restore", s.versionsRestore)
+	h("versions.list", unlocked(s.versionsList))
+	h("versions.restore", unlocked(s.versionsRestore))
 
 	h("transfers.list", s.transfersList)
 	h("transfers.pause", func(_ context.Context, p json.RawMessage) (any, error) { return s.transfersPause(p, true) })
@@ -216,11 +266,11 @@ func (s *Service) register() {
 	})
 
 	h("issues.list", s.issuesList)
-	h("issues.resolve", s.issuesResolve)
-	h("issues.resolveAll", s.issuesResolveAll)
+	h("issues.resolve", unlocked(s.issuesResolve))
+	h("issues.resolveAll", unlocked(s.issuesResolveAll))
 
-	h("manual.upload", s.manualUpload)
-	h("manual.download", s.manualDownload)
+	h("manual.upload", unlocked(s.manualUpload))
+	h("manual.download", unlocked(s.manualDownload))
 	h("activity.recent", s.activityRecent)
 	h("diagnostics.export", s.diagnosticsExport)
 }

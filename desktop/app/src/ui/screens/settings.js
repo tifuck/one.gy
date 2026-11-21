@@ -13,7 +13,9 @@ import {
   h, icon, clear, append, fill, field, row, select, switchInput, pageHead, nextId,
 } from '../components/dom.js';
 import { confirmDialog } from '../components/dialog.js';
-import { pinDialog, pinSummary } from '../components/pin.js';
+import {
+  pinDialog, removePinDialog, pinSummary, systemUnlockDialog, systemSummary, SYSTEM_LABEL,
+} from '../components/pin.js';
 import { pickRemote } from '../components/tree-picker.js';
 import { toast, toastError } from '../components/toast.js';
 import {
@@ -354,22 +356,27 @@ function security(rerender) {
   const pinActions = a.pin_set
     ? [
       button('Change PIN', async () => { if (await pinDialog({ title: 'Change PIN', strict: a.pin_strict })) rerender(); }),
-      button('Remove PIN', async () => {
-        if (!await confirmDialog({ title: 'Remove the PIN?', message: 'ONE.GY then asks for your password whenever it is locked.', confirmLabel: 'Remove PIN' })) return;
-        try {
-          store.account = await rpc('account.removePin');
-          toast('PIN removed', 'success');
-          rerender();
-        } catch (err) {
-          toastError(err);
-        }
-      })]
+      button('Remove PIN', async () => { if (await removePinDialog()) rerender(); })]
     : [button('Set up PIN', async () => { if (await pinDialog()) rerender(); })];
   return [
     panel('App lock', 'ONE.GY locks when it starts, when this computer sleeps or locks its screen, and after the idle time below. Syncing continues while it is locked.',
       action('Unlock with a PIN', pinSummary(a), ...pinActions),
+      a.system_unlock || a.system_unlock_available
+        ? action(`Unlock with ${SYSTEM_LABEL[a.system_unlock || a.system_unlock_available]}`, systemSummary(a), a.system_unlock
+          ? button('Turn off', async () => {
+            try {
+              store.account = await rpc('account.disableSystemUnlock');
+              toast('Turned off', 'success');
+              rerender();
+            } catch (err) {
+              toastError(err);
+            }
+          })
+          : button('Turn on', async () => { if (await systemUnlockDialog()) rerender(); }))
+        : null,
       row('Lock when idle for', 'It always locks on start, sleep and screen lock.', select([[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [240, '4 hours'], [0, 'Never']],
         store.app.lock_after_minutes, (v) => saveApp({ lock_after_minutes: Number(v) }))),
+      row('Lock when minimized or closed to the tray', 'Syncing goes on in the background.', switchInput(store.app.lock_on_hide, (v) => saveApp({ lock_on_hide: v }))),
       a.lock_enabled ? action('Lock now', 'Lock ONE.GY until you unlock it with your PIN or password.', button('Lock now', () => bridge('lockNow').catch(toastError), 'ghost', 'lock')) : null),
     panel('This computer', null,
       row('Ask for my password when ONE.GY starts', 'Your key is then kept in memory only, never in the system key store.', switchInput(s.require_password_on_start, (v) => saveEngine({ require_password_on_start: v }))),

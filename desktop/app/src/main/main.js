@@ -29,6 +29,9 @@ const RESUME_PANELS = new Set(['syncs', 'transfers', 'issues', 'settings', ...SE
 const MAX_PAUSE_MS = 24 * 60 * 60 * 1000;
 const RESIGN_EVERY_MS = 30 * 1000; // device mode: sign a site view that lost its session in again, at most this often
 const UPDATE_IDLE_S = 20 * 60; // a ready update restarts a visible window after this long without input
+// Wayland gives apps no system idle time (always 0, XWayland too), so there the
+// idle lock counts the time since the last input in this app's own windows.
+const NO_SYSTEM_IDLE = process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || Boolean(process.env.WAYLAND_DISPLAY));
 
 const APP_ID = 'gy.one.desktop';
 const ENGINE_EXE = process.platform === 'win32' ? 'onegy.exe' : 'onegy';
@@ -137,6 +140,8 @@ function start() {
     pausedUntil: null,
     blocker: null,
   };
+  let lastInput = Date.now();
+  if (NO_SYSTEM_IDLE) app.on('web-contents-created', (_e, wc) => wc.on('input-event', () => { lastInput = Date.now(); }));
   let window = null;
   let tray = null;
   let popover = null;
@@ -405,9 +410,13 @@ function start() {
     setTimeout(() => { if (siteMode === null) applySiteMode('plain'); }, SITE_DECIDE_MAX_MS);
     powerMonitor.on('lock-screen', lockNow);
     powerMonitor.on('suspend', lockNow);
+    const lockOnHide = () => { if (settings.get().lock_on_hide) lockNow(); };
+    win.on('minimize', lockOnHide);
+    win.on('hide', lockOnHide);
     setInterval(() => {
       const minutes = settings.get().lock_after_minutes;
-      if (minutes && powerMonitor.getSystemIdleTime() >= minutes * 60) lockNow();
+      const idleS = NO_SYSTEM_IDLE ? (Date.now() - lastInput) / 1000 : powerMonitor.getSystemIdleTime();
+      if (minutes && idleS >= minutes * 60) lockNow();
     }, IDLE_CHECK_MS);
     win.on('close', (e) => {
       if (state.quitting) return;

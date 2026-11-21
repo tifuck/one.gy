@@ -18,7 +18,7 @@ const { isUiUrl } = require('./protocol');
 const { removeSync } = require('./remove-sync');
 const { cleanInset, isSitePath } = require('./site-nav');
 const {
-  UI_METHODS, POPOVER_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS,
+  UI_METHODS, POPOVER_METHODS, SLOW_METHODS, SLOW_TIMEOUT_MS, HWND_METHODS,
 } = require('./ui-methods');
 const { mayUnlock } = require('./sync-status');
 
@@ -83,6 +83,7 @@ function registerIpc({
     if (typeof method !== 'string' || !UI_METHODS.has(method)) throw Object.assign(new Error(`Unknown method ${method}`), { code: 'forbidden' });
     if (params !== undefined && !isPlainObject(params)) throw Object.assign(new Error('params must be an object'), { code: 'validation_failed' });
     if (params !== undefined && JSON.stringify(params).length > MAX_PARAMS_BYTES) throw Object.assign(new Error('params too large'), { code: 'validation_failed' });
+    if (HWND_METHODS.has(method)) params = { ...params, hwnd: window.hwnd() };
     const call = engine.call(method, params, SLOW_METHODS.has(method) ? { timeoutMs: SLOW_TIMEOUT_MS } : undefined);
     if (REMOVES_SYNCS.has(method)) call.finally(() => sync.loadSyncs()).catch(() => {});
     return call;

@@ -96,18 +96,42 @@ func (c *Client) DropGrant(ctx context.Context) error {
 	return err
 }
 
-// SetPin sets the app lock PIN (needs a grant).
-func (c *Client) SetPin(ctx context.Context, pinProof string, strict bool) (*Security, error) {
+// SetPin sets the app lock PIN (needs a grant and cur).
+func (c *Client) SetPin(ctx context.Context, pinProof string, strict bool, cur PinCredential) (*Security, error) {
 	var out Security
-	_, err := c.jsonCall(ctx, request{method: "PUT", path: "/apiv1/devices/self/pin", idempotent: true},
-		map[string]any{"pin_proof": pinProof, "strict": strict}, &out)
+	_, err := c.jsonCall(ctx, request{method: "PUT", path: "/apiv1/devices/self/pin"},
+		map[string]any{"pin_proof": pinProof, "strict": strict, "current_pin_proof": cur.CurrentPinProof, "auth_token": cur.AuthToken}, &out)
 	return &out, err
 }
 
-// RemovePin stops using a PIN (needs a grant); the app lock asks for the password.
-func (c *Client) RemovePin(ctx context.Context) (*Security, error) {
+// RemovePin stops using a PIN (needs a grant and cur); the app lock asks for the password.
+func (c *Client) RemovePin(ctx context.Context, cur PinCredential) (*Security, error) {
 	var out Security
-	_, err := c.jsonCall(ctx, request{method: "DELETE", path: "/apiv1/devices/self/pin", idempotent: true}, nil, &out)
+	_, err := c.jsonCall(ctx, request{method: "DELETE", path: "/apiv1/devices/self/pin"}, cur, &out)
+	return &out, err
+}
+
+// SetSystemUnlock turns on Windows Hello (publicKey) or fingerprint (token)
+// unlock (needs a grant and cur).
+func (c *Client) SetSystemUnlock(ctx context.Context, kind, publicKey, token string, cur PinCredential) (*Security, error) {
+	var out Security
+	_, err := c.jsonCall(ctx, request{method: "PUT", path: "/apiv1/devices/self/system-unlock"},
+		map[string]any{"kind": kind, "public_key": publicKey, "token": token, "current_pin_proof": cur.CurrentPinProof, "auth_token": cur.AuthToken}, &out)
+	return &out, err
+}
+
+// RemoveSystemUnlock turns system unlock off (needs a grant).
+func (c *Client) RemoveSystemUnlock(ctx context.Context) (*Security, error) {
+	var out Security
+	_, err := c.jsonCall(ctx, request{method: "DELETE", path: "/apiv1/devices/self/system-unlock", idempotent: true}, nil, &out)
+	return &out, err
+}
+
+// UnlockFailed reports failed unlocks the app saw itself (a wrong finger);
+// they count like wrong PINs.
+func (c *Client) UnlockFailed(ctx context.Context, count int) (*Security, error) {
+	var out Security
+	_, err := c.jsonCall(ctx, request{method: "POST", path: "/apiv1/devices/self/unlock-failed"}, map[string]any{"count": count}, &out)
 	return &out, err
 }
 

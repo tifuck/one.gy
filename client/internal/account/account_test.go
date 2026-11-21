@@ -137,3 +137,17 @@ func TestRevokedWipesKeys(t *testing.T) {
 		t.Fatal("keys survived revocation")
 	}
 }
+
+func TestValidPin(t *testing.T) {
+	for _, pin := range []string{"k7x2", "Ab3dEf9h", "8r4n2q7w1z", "4f8a1c9e2b7d3x6y"} {
+		if ValidPin(pin) != nil {
+			t.Errorf("%q refused", pin)
+		}
+	}
+	for _, pin := range []string{"", "123", "0123456789abcdefg", "12 34", "12-34", "pässwort",
+		"1234", "4321", "abcd", "DCBA", "0000", "1212", "abab", "123123", "Password", "2580", "1004"} {
+		if ValidPin(pin) == nil {
+			t.Errorf("%q accepted", pin)
+		}
+	}
+}

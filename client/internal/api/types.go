@@ -148,13 +148,24 @@ type Security struct {
 	PinExpiresAt    *string `json:"pin_expires_at"` // the PIN stops working then (password once more)
 	PinStrict       bool    `json:"pin_strict"`
 	PinAttemptsLeft int     `json:"pin_attempts_left"`
+	PinErasedAt     *string `json:"pin_erased_at"` // five wrong PINs erased it (until a new PIN is set)
+	SystemUnlock    string  `json:"system_unlock"` // "hello", "fingerprint" or "" (off)
 	SignedRequests  bool    `json:"signed_requests"`
+}
+
+// PinCredential proves a PIN change or removal: the current PIN or the
+// password (neither within 10 minutes of a password unlock).
+type PinCredential struct {
+	CurrentPinProof string `json:"current_pin_proof,omitempty"`
+	AuthToken       string `json:"auth_token,omitempty"`
 }
 
 // UnlockRequest: none (share only), PinProof or AuthToken (share + grant).
 type UnlockRequest struct {
-	PinProof  string `json:"pin_proof,omitempty"`
-	AuthToken string `json:"auth_token,omitempty"`
+	PinProof    string `json:"pin_proof,omitempty"`
+	AuthToken   string `json:"auth_token,omitempty"`
+	SystemProof string `json:"system_proof,omitempty"` // Windows Hello signature or fingerprint token
+	SystemTs    int64  `json:"system_ts,omitempty"`    // Windows Hello: the signed timestamp
 }
 
 type UnlockResponse struct {

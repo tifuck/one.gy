@@ -19,6 +19,9 @@
     </div>
   </header>
 
+  {% for d in devices if d.pin_erased_at %}
+  <div class="rd-callout is-warn dk-note" role="alert"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><div>Quick unlock on <strong>{{ d.name }}</strong> was erased on {{ d.pin_erased_at.strftime('%b %d, %Y %H:%M') }} UTC after 5 failed unlocks (PIN, Windows Hello or fingerprint). If that wasn't you, someone tried to unlock that computer: change your password, or remove the device.</div></div>
+  {% endfor %}
   {% if devices %}
   <section class="rd-panel">
     <div class="rd-panel-body is-flush">

@@ -239,6 +239,13 @@ class MainWindow {
     return p;
   }
 
+  // The window's HWND on Windows (parents the Windows Hello dialog), else 0.
+  hwnd() {
+    if (process.platform !== 'win32' || !this.win || this.win.isDestroyed()) return 0;
+    const buf = this.win.getNativeWindowHandle();
+    return Number(buf.length >= 8 ? buf.readBigUInt64LE(0) : buf.readUInt32LE(0));
+  }
+
   // App lock: drop the site view (its sessionStorage keys die with it) and the
   // site cookies; the device-bound website session also ends server-side when
   // the grant is dropped. The panel shows the lock screen over the empty view.

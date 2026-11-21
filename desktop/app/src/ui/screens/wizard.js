@@ -236,6 +236,9 @@ export function mount(container, params = {}) {
       const { pin, strict } = f.value();
       try {
         store.account = await rpc('account.setPin', { pin, strict });
+      } catch (err) {
+        if (err.code === 'credential_required') throw new Error('Too long since you signed in. Skip this step and set up the PIN in Settings.');
+        throw err;
       } finally {
         f.clear();
       }

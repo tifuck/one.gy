@@ -488,6 +488,10 @@ class Device(db.Model):
     pin_failures = db.Column(db.Integer, nullable=False, default=0, server_default='0')
     pin_strict = db.Column(db.Boolean, nullable=False, default=False, server_default='0')   # unlock_share needs the PIN (or password)
     password_verified_at = db.Column(db.DateTime, nullable=True)    # last password unlock; the PIN works until + desktop_pin_max_age_days
+    pin_erased_at = db.Column(db.DateTime, nullable=True)           # five wrong PINs erased it (shown until a new PIN is set)
+    system_unlock_kind = db.Column(db.String(16), nullable=True)    # 'hello' (Windows Hello) or 'fingerprint' (Linux fprintd); NULL = off
+    system_unlock_key = db.Column(db.Text, nullable=True)           # hello: RSA SubjectPublicKeyInfo (base64); fingerprint: SHA-256(token) hex
+    system_unlock_ts = db.Column(db.BigInteger, nullable=False, default=0, server_default='0')  # last Windows Hello timestamp used (no replay)
     sync_scope = db.Column(db.Text, nullable=True)                  # JSON {"root": bool, "folders": [ids]}: reachable without a grant
     grant_hash = db.Column(db.String(64), nullable=True)            # SHA-256(grant) hex: the app is unlocked
     grant_expires_at = db.Column(db.DateTime, nullable=True)

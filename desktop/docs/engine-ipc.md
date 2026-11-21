@@ -150,13 +150,16 @@ merge); unknown keys are rejected.
 | `engine.nudge` | — | `{}`; poll the server now |
 | `engine.environment` | `{"on_battery": bool, "metered": bool}` | `{}`; the app reports power/network changes; syncs whose (inherited) `battery`/`metered` policy is `pause` pause while it holds |
 | `engine.clearCaches` | — | `{}`; drops unwrapped keys, cached capabilities and the remote tree cache, then takes a new snapshot |
-| `account.status` | — | `{"signed_in", "locked", "full_keys", "app_locked", "lock_enabled", "pin_set", "pin_expires_at", "pin_strict", "pin_attempts_left", "signed_requests", "hardware_key", "server", "username", "user_id", "device_id", "device_name", "storage_used", "storage_limit", "versioning"}` (see "App lock"; `versioning`: one.gy keeps previous versions on replace, from `GET /apiv1/me`) |
+| `account.status` | — | `{"signed_in", "locked", "full_keys", "app_locked", "lock_enabled", "pin_set", "pin_expires_at", "pin_strict", "pin_attempts_left", "pin_erased_at", "system_unlock", "system_unlock_available", "signed_requests", "hardware_key", "server", "username", "user_id", "device_id", "device_name", "storage_used", "storage_limit", "versioning"}` (see "App lock"; `versioning`: one.gy keeps previous versions on replace, from `GET /apiv1/me`) |
 | `account.authorize` | `{"server", "username", "password", "totp_code"?, "device_name"}` | `account.status`; the app is left unlocked so a PIN can be chosen |
 | `account.unlock` | `{"password", "new_pin"?, "pin_strict"?}` | `account.status`; opens the password-sealed keys (works offline), then unlocks the app online; `new_pin` (opt-in) also sets the PIN, validated before anything changes |
 | `account.appUnlock` | `{"pin"}` | `account.status`; errors `invalid_pin` (re-read `pin_attempts_left`), `pin_locked`, `pin_expired`, `pin_not_set` (use `account.unlock`) |
 | `account.appLock` | — | `account.status`; drops the grant (sync goes on inside the scope) |
-| `account.setPin` | `{"pin", "strict"}` | `account.status`; app unlocked; 6 to 64 characters |
-| `account.removePin` | — | `account.status`; app unlocked; the lock then asks for the password |
+| `account.setPin` | `{"pin", "strict", "current_pin"?, "password"?}` | `account.status`; app unlocked; 4 to 16 letters or digits, not easy to guess (repeats, runs, common PINs); `current_pin` or `password` unless the password was entered here in the last 10 minutes, else `credential_required`; a wrong one: `invalid_pin` (counts toward the five) or `invalid_credentials` |
+| `account.removePin` | `{"current_pin"?, "password"?}` | `account.status`; app unlocked; same credential rule as `account.setPin`; the lock then asks for the password |
+| `account.enableSystemUnlock` | `{"current_pin"?, "password"?}` | `account.status`; app unlocked; same credential rule as `account.setPin`; turns on `system_unlock_available` (Windows Hello creates its key, a fingerprint is checked once); `unavailable`, `cancelled`, `no_match` |
+| `account.disableSystemUnlock` | — | `account.status`; app unlocked |
+| `account.systemUnlock` | — | `account.status`; Windows Hello or a fingerprint; errors `cancelled` (not a failure), `no_match` (a wrong finger: counts as a failed unlock), `system_unlock_failed`, `pin_locked`, `pin_expired`, `system_unlock_not_set` |
 | `account.signOut` | `{"revoke": true}` | `{}`; pauses syncs, wipes keys, keeps files |
 | `account.webSession` | — | `{"ticket", "url"}` (main process only): load `url` with header `X-Onegy-Desktop-Ticket: <ticket>` to sign the site view in; `app_locked` while locked |
 | `account.webUnlockKey` | — | `{"master_key_b64"}` or error `locked`; only when `web_unlock` and the app is unlocked (`app_locked` otherwise) |
@@ -299,12 +302,27 @@ password once by this version.
 
 The app shows a lock screen (no site page) while `lock_enabled && app_locked`:
 at start, when the OS locks the screen or sleeps, after the idle time in the
-app setting `lock_after_minutes`, and from the tray. Unlocking is the PIN when
-`pin_set` and before `pin_expires_at`, else the password. The PIN is opt-in.
+app setting `lock_after_minutes` (system idle time; on Wayland, which has
+none, the time since the last input in the app's windows), when minimized or
+closed to the tray with the app setting `lock_on_hide`, and from the tray. Unlocking is the PIN when
+`pin_set` and before `pin_expires_at`, else the password; Windows Hello (Windows)
+or a fingerprint via fprintd (Linux) when `system_unlock` is on, within the
+same lifetime. Both are opt-in. Every failed unlock counts toward the same
+five, whatever the kind (a wrong finger is reported by the engine; Windows
+Hello keeps its own count inside Windows), and the fifth erases the PIN and
+the system unlock together. The main process adds the window's `hwnd` to
+`account.enableSystemUnlock` and `account.systemUnlock` on Windows so the Hello
+dialog opens over the app.
 The server limits it: it works only `desktop_pin_max_age_days` (admin setting,
 default 14) after the last password unlock on this computer, and five wrong
 PINs in a row erase it. After either, the password unlocks once (and a new PIN
 can be set). The engine refreshes the grant every 5 minutes while unlocked (server TTL 15 minutes).
+
+While `lock_enabled && app_locked` the engine refuses (`app_locked`) everything
+beyond running the syncs already set up: `remote.*`, `settings.set`,
+`syncs.validate|preview|browse|create|update|remove|setIgnoreRules|backupTarget|clearDebris`,
+`versions.*`, `issues.resolve*` and `manual.*`. Status, lists, pause/resume,
+sync now, verify, transfers and diagnostics keep working.
 
 A client subscribes by calling `engine.subscribe` (no params) on its connection.
 Right after the reply the engine sends one `status` event, so a new client

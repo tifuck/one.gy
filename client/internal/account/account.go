@@ -33,6 +33,7 @@ import (
 	"github.com/tifuck/one.gy/client/internal/devkey"
 	"github.com/tifuck/one.gy/client/internal/keystore"
 	"github.com/tifuck/one.gy/client/internal/state"
+	"github.com/tifuck/one.gy/client/internal/sysauth"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -44,13 +45,14 @@ var (
 	ErrPasswordNeeded  = errors.New("enter your password to unlock this computer")
 	ErrAlreadySignedIn = errors.New("already signed in; sign out first")
 	ErrWrongPassword   = errors.New("wrong password (if you changed it on the website, sign out and sign in again)")
+	ErrSystemUnlockOff = errors.New("Windows Hello or fingerprint unlock is not turned on for this computer")
 )
 
 const (
 	secretsName   = "secrets"
 	pinIterations = 200_000
-	pinMinLength  = 6
-	pinMaxLength  = 64
+	pinMinLength  = 4
+	pinMaxLength  = 16
 )
 
 // secrets is what the key store holds and what is sealed under the password
@@ -62,6 +64,7 @@ type secrets struct {
 	MasterKey   string `json:"master_key,omitempty"`
 	LocalKey    string `json:"local_key,omitempty"`
 	PopKey      string `json:"pop_key,omitempty"`
+	SysToken    string `json:"sys_token,omitempty"` // fingerprint unlock: sent after a match
 }
 
 // Status is the account.status IPC result.
@@ -75,6 +78,9 @@ type Status struct {
 	PinExpiresAt    *string `json:"pin_expires_at"`
 	PinStrict       bool    `json:"pin_strict"`
 	PinAttemptsLeft int     `json:"pin_attempts_left"`
+	PinErasedAt     *string `json:"pin_erased_at"`
+	SystemUnlock    string  `json:"system_unlock"`           // on: "hello" or "fingerprint"
+	SystemAvailable string  `json:"system_unlock_available"` // what this computer offers ("" = none)
 	SignedRequests  bool    `json:"signed_requests"`
 	HardwareKey     bool    `json:"hardware_key"`
 	Server          string  `json:"server"`
@@ -108,6 +114,11 @@ type Manager struct {
 	sec         api.Security
 	me          *api.Me
 	meAt        time.Time
+	sys         sysauth.Authenticator
+	sysToken    string // fingerprint unlock token (key store)
+	sysAvail    string // cached Kind() when Available
+	sysAvailAt  time.Time
+	failPending int // failed local unlocks not reported yet (offline)
 
 	// OnChange runs (in its own goroutine) after sign-in or lock state changes;
 	// OnRevoked after the server reported device_revoked.
@@ -116,7 +127,7 @@ type Manager struct {
 }
 
 func New(db *state.DB, ks *keystore.Store, opts api.Options) *Manager {
-	return &Manager{db: db, ks: ks, opts: opts}
+	return &Manager{db: db, ks: ks, opts: opts, sys: sysauth.Default()}
 }
 
 // Load restores the account at engine start from the key store: device token,
@@ -165,6 +176,7 @@ func (m *Manager) applySecretsLocked(s secrets) bool {
 	}
 	m.token = s.DeviceToken
 	m.client.SetToken(s.DeviceToken)
+	m.sysToken = s.SysToken
 	if k, err := e2ee.DecodeBase64(s.LocalKey); err == nil && len(k) == e2ee.KeySize {
 		m.localKey = k
 	}
@@ -188,7 +200,7 @@ func (m *Manager) applySecretsLocked(s secrets) bool {
 }
 
 func (m *Manager) secretsLocked(withMaster bool) secrets {
-	s := secrets{DeviceToken: m.token}
+	s := secrets{DeviceToken: m.token, SysToken: m.sysToken}
 	if m.localKey != nil {
 		s.LocalKey = e2ee.EncodeBase64(m.localKey)
 	}
@@ -216,12 +228,49 @@ func pinKeys(pin, deviceID string) string {
 	return e2ee.EncodeBase64(mac.Sum(nil))
 }
 
-// ValidPin checks a new PIN's length.
+// ValidPin checks a new PIN: 4 to 16 ASCII letters or digits. PINs set
+// before this rule keep unlocking; only new ones are checked.
 func ValidPin(pin string) error {
-	if n := utf8.RuneCountInString(pin); n < pinMinLength || n > pinMaxLength {
-		return &FieldError{Message: fmt.Sprintf("the PIN must be %d to %d characters", pinMinLength, pinMaxLength)}
+	ok := len(pin) >= pinMinLength && len(pin) <= pinMaxLength
+	for _, c := range pin {
+		ok = ok && (c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z')
+	}
+	if !ok {
+		return &FieldError{Message: fmt.Sprintf("the PIN must be %d to %d letters or digits", pinMinLength, pinMaxLength)}
+	}
+	if weakPin(pin) {
+		return &FieldError{Message: "this PIN is too easy to guess: avoid repeats, runs like 1234 or abcd, and common PINs"}
 	}
 	return nil
+}
+
+// Common PINs that repeats and runs do not already catch.
+var commonPins = map[string]bool{
+	"1004": true, "2000": true, "2001": true, "1122": true, "1313": true, "6969": true, "2580": true, "0852": true,
+	"112233": true, "password": true, "passw0rd": true, "qwerty": true, "qwertz": true, "azerty": true,
+	"asdf": true, "asdfgh": true, "zxcv": true, "qazwsx": true, "1q2w3e": true, "1q2w3e4r": true,
+	"abc123": true, "letmein": true, "welcome": true, "admin": true, "iloveyou": true, "monkey": true, "dragon": true,
+}
+
+// weakPin: a common PIN, a block of 1 to 3 characters repeated (1111, 1212,
+// 123123) or a run up or down (1234, 9876, abcd), ignoring case. Five tries
+// against the most common PINs is the realistic attack.
+func weakPin(pin string) bool {
+	p := strings.ToLower(pin)
+	if commonPins[p] {
+		return true
+	}
+	for n := 1; n <= 3 && 2*n <= len(p); n++ {
+		if strings.Repeat(p[:n], len(p)/n+1)[:len(p)] == p {
+			return true
+		}
+	}
+	up, down := true, true
+	for i := 1; i < len(p); i++ {
+		up = up && p[i] == p[i-1]+1
+		down = down && p[i] == p[i-1]-1
+	}
+	return up || down
 }
 
 // AuthorizeParams are the account.authorize IPC params.
@@ -621,19 +670,27 @@ func (m *Manager) unlockedApp(ctx context.Context, res *api.UnlockResponse) erro
 // pin_expired, pin_not_set, ErrPasswordNeeded.
 func (m *Manager) AppUnlock(ctx context.Context, pin string) error {
 	m.mu.Lock()
-	a, client, local := m.acct, m.client, m.localKey
+	a, client := m.acct, m.client
 	m.mu.Unlock()
 	if a == nil || !a.SignedIn || client == nil {
 		return ErrNotSignedIn
 	}
-	res, err := client.Unlock(ctx, api.UnlockRequest{PinProof: pinKeys(pin, a.DeviceID)})
+	return m.appUnlockWith(ctx, api.UnlockRequest{PinProof: pinKeys(pin, a.DeviceID)})
+}
+
+// appUnlockWith sends a PIN or system unlock proof, then installs the answer:
+// a grant, the scope set when the keys are closed, and the master key from
+// its sealed copy. Unreported local failures go first, so none is skipped.
+func (m *Manager) appUnlockWith(ctx context.Context, req api.UnlockRequest) error {
+	m.mu.Lock()
+	a, client, local := m.acct, m.client, m.localKey
+	m.mu.Unlock()
+	if err := m.flushFailures(ctx); err != nil {
+		return err
+	}
+	res, err := client.Unlock(ctx, req)
 	if err != nil {
-		var apiErr *api.Error
-		if errors.As(err, &apiErr) && apiErr.Code == "invalid_pin" {
-			m.mu.Lock()
-			m.sec.PinAttemptsLeft = apiErr.AttemptsLeft
-			m.mu.Unlock()
-		}
+		m.pinRefused(ctx, err)
 		return err
 	}
 	share, mshare, err := shares(res)
@@ -668,6 +725,165 @@ func (m *Manager) AppUnlock(ctx context.Context, pin string) error {
 	client.SetGrant(res.Grant)
 	m.changed()
 	return m.migrate(ctx)
+}
+
+// sysName names this device's Windows Hello key.
+func sysName(deviceID string) string { return "unlock-" + deviceID }
+
+// systemAvailable is the system check this computer offers ("" = none),
+// asked at most once a minute (fprintd answers over D-Bus).
+func (m *Manager) systemAvailable(ctx context.Context) string {
+	m.mu.Lock()
+	avail, at, sys := m.sysAvail, m.sysAvailAt, m.sys
+	m.mu.Unlock()
+	if time.Since(at) < time.Minute || sys == nil || sys.Kind() == "" {
+		return avail
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	avail = ""
+	if sys.Available(ctx) {
+		avail = sys.Kind()
+	}
+	m.mu.Lock()
+	m.sysAvail, m.sysAvailAt = avail, time.Now()
+	m.mu.Unlock()
+	return avail
+}
+
+// EnableSystemUnlock turns on Windows Hello or fingerprint unlock (app
+// unlocked, plus cur like a PIN change). Hello creates its key (Windows asks
+// to verify); a fingerprint is checked once and a random token goes to the
+// key store and, hashed, to the server.
+func (m *Manager) EnableSystemUnlock(ctx context.Context, cur Current, hwnd uint64) error {
+	m.mu.Lock()
+	a, client, sys := m.acct, m.client, m.sys
+	m.mu.Unlock()
+	if a == nil || !a.SignedIn || client == nil {
+		return ErrNotSignedIn
+	}
+	if client.Grant() == "" {
+		return ErrAppLocked
+	}
+	if sys.Kind() == "" || !sys.Available(ctx) {
+		return sysauth.ErrUnavailable
+	}
+	cred, err := pinCredential(a, cur)
+	if err != nil {
+		return err
+	}
+	pub, err := sys.Enroll(ctx, sysName(a.DeviceID), hwnd)
+	if err != nil {
+		return err
+	}
+	var token string
+	if sys.Kind() == sysauth.KindFingerprint {
+		token = randomHex(32)
+	}
+	sec, err := client.SetSystemUnlock(ctx, sys.Kind(), e2ee.EncodeBase64(pub), token, cred)
+	if err != nil {
+		if pub != nil {
+			sys.Remove(sysName(a.DeviceID))
+		}
+		m.pinRefused(ctx, err)
+		return err
+	}
+	m.mu.Lock()
+	m.sec, m.sysToken = *sec, token
+	m.mu.Unlock()
+	m.persist()
+	m.changed()
+	return nil
+}
+
+// DisableSystemUnlock turns it off (app unlocked) and drops the local key or token.
+func (m *Manager) DisableSystemUnlock(ctx context.Context) error {
+	m.mu.Lock()
+	a, client, sys := m.acct, m.client, m.sys
+	m.mu.Unlock()
+	if a == nil || !a.SignedIn || client == nil {
+		return ErrNotSignedIn
+	}
+	if client.Grant() == "" {
+		return ErrAppLocked
+	}
+	sec, err := client.RemoveSystemUnlock(ctx)
+	if err != nil {
+		return err
+	}
+	sys.Remove(sysName(a.DeviceID))
+	m.mu.Lock()
+	m.sec, m.sysToken = *sec, ""
+	m.mu.Unlock()
+	m.persist()
+	m.changed()
+	return nil
+}
+
+// SystemUnlock unlocks the app with Windows Hello (a signature over a fresh
+// timestamp) or a fingerprint (then the token). A wrong finger counts as a
+// failed unlock on the server, like a wrong PIN; a cancelled check does not.
+func (m *Manager) SystemUnlock(ctx context.Context, hwnd uint64) error {
+	m.mu.Lock()
+	a, client, sys, kind, token := m.acct, m.client, m.sys, m.sec.SystemUnlock, m.sysToken
+	m.mu.Unlock()
+	if a == nil || !a.SignedIn || client == nil {
+		return ErrNotSignedIn
+	}
+	if kind == "" || kind != sys.Kind() || (kind == sysauth.KindFingerprint && token == "") {
+		return ErrSystemUnlockOff
+	}
+	req := api.UnlockRequest{}
+	switch kind {
+	case sysauth.KindHello:
+		ts := time.Now().Unix()
+		sig, err := sys.Prove(ctx, sysName(a.DeviceID), []byte(fmt.Sprintf("onegy-system-unlock-v1\n%s\n%d", a.DeviceID, ts)), hwnd)
+		if err != nil {
+			return err
+		}
+		req.SystemProof, req.SystemTs = e2ee.EncodeBase64(sig), ts
+	default:
+		vctx, cancel := context.WithTimeout(ctx, time.Minute)
+		_, err := sys.Prove(vctx, sysName(a.DeviceID), nil, hwnd)
+		cancel()
+		if errors.Is(err, sysauth.ErrNoMatch) {
+			m.mu.Lock()
+			m.failPending++
+			m.mu.Unlock()
+			m.flushFailures(ctx)
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		req.SystemProof = token
+	}
+	return m.appUnlockWith(ctx, req)
+}
+
+// flushFailures reports failed local unlocks; a report the server cannot get
+// yet (offline) is retried before the next unlock.
+// shortcut: the pending count lives in memory, so an engine restart while
+// offline drops it; persist it in the state DB if that matters.
+func (m *Manager) flushFailures(ctx context.Context) error {
+	m.mu.Lock()
+	n, client := m.failPending, m.client
+	m.mu.Unlock()
+	if n == 0 || client == nil {
+		return nil
+	}
+	sec, err := client.UnlockFailed(ctx, min(n, 5))
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.failPending, m.sec = 0, *sec
+	m.mu.Unlock()
+	if !sec.PinSet && sec.SystemUnlock == "" && client.Grant() != "" {
+		m.lockLocal(ctx) // erased with the grant
+	}
+	m.changed()
+	return nil
 }
 
 // AppLock drops the grant (server first, best effort; it also expires on its
@@ -719,10 +935,52 @@ func (m *Manager) RefreshGrant(ctx context.Context) {
 	}
 }
 
-// SetPin sets or changes the app lock PIN (app unlocked). strict: the
+// Current proves who changes or removes the PIN: the current PIN or the
+// password. Neither is needed within 10 minutes of a password unlock.
+type Current struct {
+	Pin      string `json:"current_pin"`
+	Password string `json:"password"`
+}
+
+func pinCredential(a *state.Account, cur Current) (api.PinCredential, error) {
+	switch {
+	case cur.Password != "":
+		authToken, wrappingKey, err := e2ee.DeriveAuthAndWrappingKeys(cur.Password, a.AuthSalt)
+		if err != nil {
+			return api.PinCredential{}, err
+		}
+		clear(wrappingKey)
+		return api.PinCredential{AuthToken: authToken}, nil
+	case cur.Pin != "":
+		return api.PinCredential{CurrentPinProof: pinKeys(cur.Pin, a.DeviceID)}, nil
+	}
+	return api.PinCredential{}, nil
+}
+
+// pinRefused follows a refused PIN: tries left, or a PIN the server erased
+// (five wrong in a row) together with the grant, which locks the app.
+func (m *Manager) pinRefused(ctx context.Context, err error) {
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		return
+	}
+	switch apiErr.Code {
+	case "invalid_pin", "system_unlock_failed":
+		m.mu.Lock()
+		m.sec.PinAttemptsLeft = apiErr.AttemptsLeft
+		m.mu.Unlock()
+	case "pin_locked":
+		m.mu.Lock()
+		m.sec.PinSet, m.sec.SystemUnlock, m.meAt = false, "", time.Time{} // the next status asks /me (pin_erased_at)
+		m.mu.Unlock()
+		m.lockLocal(ctx)
+	}
+}
+
+// SetPin sets or changes the app lock PIN (app unlocked, plus cur). strict: the
 // server then gives the unlock share only with the PIN, so after a restart
 // syncing waits for it.
-func (m *Manager) SetPin(ctx context.Context, pin string, strict bool) error {
+func (m *Manager) SetPin(ctx context.Context, pin string, strict bool, cur Current) error {
 	if err := ValidPin(pin); err != nil {
 		return err
 	}
@@ -735,8 +993,13 @@ func (m *Manager) SetPin(ctx context.Context, pin string, strict bool) error {
 	if client.Grant() == "" {
 		return ErrAppLocked
 	}
-	sec, err := client.SetPin(ctx, pinKeys(pin, a.DeviceID), strict)
+	cred, err := pinCredential(a, cur)
 	if err != nil {
+		return err
+	}
+	sec, err := client.SetPin(ctx, pinKeys(pin, a.DeviceID), strict, cred)
+	if err != nil {
+		m.pinRefused(ctx, err)
 		return err
 	}
 	m.mu.Lock()
@@ -746,8 +1009,9 @@ func (m *Manager) SetPin(ctx context.Context, pin string, strict bool) error {
 	return nil
 }
 
-// RemovePin stops using a PIN: the app lock asks for the password again.
-func (m *Manager) RemovePin(ctx context.Context) error {
+// RemovePin stops using a PIN (app unlocked, plus cur): the app lock asks
+// for the password again.
+func (m *Manager) RemovePin(ctx context.Context, cur Current) error {
 	m.mu.Lock()
 	a, client := m.acct, m.client
 	m.mu.Unlock()
@@ -757,8 +1021,13 @@ func (m *Manager) RemovePin(ctx context.Context) error {
 	if client.Grant() == "" {
 		return ErrAppLocked
 	}
-	sec, err := client.RemovePin(ctx)
+	cred, err := pinCredential(a, cur)
 	if err != nil {
+		return err
+	}
+	sec, err := client.RemovePin(ctx, cred)
+	if err != nil {
+		m.pinRefused(ctx, err)
 		return err
 	}
 	m.mu.Lock()
@@ -800,6 +1069,15 @@ func (m *Manager) AppUnlocked() bool {
 	return client != nil && client.Grant() != ""
 }
 
+// Restricted reports an app lock in force (lock on, no grant): only the
+// syncs already set up may run.
+func (m *Manager) Restricted() bool {
+	m.mu.Lock()
+	a, client, lockOn := m.acct, m.client, m.sec.LockEnabled
+	m.mu.Unlock()
+	return a != nil && a.SignedIn && client != nil && client.Grant() == "" && (lockOn || a.AtRestSealed != "")
+}
+
 // KeysOpen reports whether sync can run (scope or full keys).
 func (m *Manager) KeysOpen() bool {
 	m.mu.Lock()
@@ -835,6 +1113,10 @@ func (m *Manager) SignOut(ctx context.Context, revoke bool) error {
 func (m *Manager) wipe(ctx context.Context) error {
 	ksErr := m.ks.Delete(secretsName)
 	m.mu.Lock()
+	if m.acct != nil && m.sys != nil {
+		m.sys.Remove(sysName(m.acct.DeviceID))
+	}
+	m.sysToken, m.failPending = "", 0
 	if m.popKey != nil {
 		devkey.Delete(m.popKey.Ref())
 	}
@@ -908,12 +1190,13 @@ func (m *Manager) Status(ctx context.Context) Status {
 	m.mu.Lock()
 	sec, hardware, full := m.sec, m.popKey != nil && m.popKey.Hardware(), m.masterKey != nil
 	m.mu.Unlock()
+	avail := m.systemAvailable(ctx)
 	st := Status{SignedIn: true, Locked: !open, FullKeys: full, AppLocked: client.Grant() == "", Server: a.ServerURL, Username: a.Username,
 		UserID: a.UserID, DeviceID: a.DeviceID, DeviceName: a.DeviceName,
 		// A device sealed at rest has been through a password unlock, which
 		// turns the lock on server-side; that holds before /me answers too.
 		LockEnabled: sec.LockEnabled || a.AtRestSealed != "", PinSet: sec.PinSet, PinExpiresAt: sec.PinExpiresAt, PinStrict: sec.PinStrict,
-		PinAttemptsLeft: sec.PinAttemptsLeft, SignedRequests: sec.SignedRequests, HardwareKey: hardware}
+		PinAttemptsLeft: sec.PinAttemptsLeft, PinErasedAt: sec.PinErasedAt, SystemUnlock: sec.SystemUnlock, SystemAvailable: avail, SignedRequests: sec.SignedRequests, HardwareKey: hardware}
 	if me != nil {
 		st.StorageUsed, st.StorageLimit, st.Versioning = me.StorageUsed, me.StorageLimit, me.Versioning
 	}

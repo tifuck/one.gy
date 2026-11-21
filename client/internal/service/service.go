@@ -21,6 +21,7 @@ import (
 	"github.com/tifuck/one.gy/client/internal/remote"
 	"github.com/tifuck/one.gy/client/internal/state"
 	"github.com/tifuck/one.gy/client/internal/syncer"
+	"github.com/tifuck/one.gy/client/internal/sysauth"
 )
 
 // Options are the engine's start-up parameters.
@@ -474,6 +475,14 @@ func rpcError(err error) error {
 		return ipc.Errorf("app_locked", err.Error())
 	case errors.Is(err, account.ErrPasswordNeeded):
 		return ipc.Errorf("password_required", err.Error())
+	case errors.Is(err, account.ErrSystemUnlockOff):
+		return ipc.Errorf("system_unlock_not_set", err.Error())
+	case errors.Is(err, sysauth.ErrUnavailable):
+		return ipc.Errorf("unavailable", err.Error())
+	case errors.Is(err, sysauth.ErrCancelled):
+		return ipc.Errorf("cancelled", err.Error())
+	case errors.Is(err, sysauth.ErrNoMatch):
+		return ipc.Errorf("no_match", err.Error())
 	case errors.Is(err, account.ErrWrongPassword):
 		return ipc.Errorf("invalid_credentials", err.Error())
 	case errors.Is(err, account.ErrAlreadySignedIn):
@@ -487,7 +496,7 @@ func rpcError(err error) error {
 	case errors.As(err, &apiErr):
 		switch apiErr.Code {
 		case "invalid_credentials", "totp_required", "invalid_totp", "captcha_required", "device_revoked", "not_found",
-			"invalid_pin", "pin_locked", "pin_not_set", "pin_required", "pin_expired", "password_required", "rate_limited":
+			"invalid_pin", "pin_locked", "pin_not_set", "pin_required", "pin_expired", "password_required", "credential_required", "rate_limited", "system_unlock_failed", "system_unlock_not_set":
 			return ipc.Errorf(apiErr.Code, apiErr.Message)
 		case "locked", "grant_required":
 			return ipc.Errorf("app_locked", "Unlock ONE.GY Desktop to do this")

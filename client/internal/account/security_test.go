@@ -10,6 +10,7 @@ import (
 	"github.com/tifuck/one.gy/client/e2ee"
 	"github.com/tifuck/one.gy/client/internal/api"
 	"github.com/tifuck/one.gy/client/internal/keystore"
+	"github.com/tifuck/one.gy/client/internal/sysauth"
 )
 
 func TestPinLockAndStrictRestart(t *testing.T) {
@@ -21,10 +22,10 @@ func TestPinLockAndStrictRestart(t *testing.T) {
 	if !m.AppUnlocked() {
 		t.Fatal("authorize should leave the app unlocked for the PIN step")
 	}
-	if err := m.SetPin(ctx, "123", false); err == nil {
+	if err := m.SetPin(ctx, "123", false, Current{}); err == nil {
 		t.Fatal("short PIN accepted")
 	}
-	if err := m.SetPin(ctx, "246810", false); err != nil {
+	if err := m.SetPin(ctx, "246810", false, Current{}); err != nil {
 		t.Fatal(err)
 	}
 	if ticket, err := m.WebSession(ctx); err != nil || ticket == "" {
@@ -55,7 +56,7 @@ func TestPinLockAndStrictRestart(t *testing.T) {
 	}
 
 	// Strict: after a restart the share needs the PIN, and so does the at-rest key.
-	if err := m.SetPin(ctx, "246810", true); err != nil {
+	if err := m.SetPin(ctx, "246810", true, Current{}); err != nil {
 		t.Fatal(err)
 	}
 	m2 := New(db, keystore.New(dir, false), api.Options{Version: "0.1.0", Transport: srv.Client().Transport})
@@ -160,10 +161,10 @@ func TestRemovePinReseals(t *testing.T) {
 	if err := m.Authorize(ctx, AuthorizeParams{Server: srv.URL, Username: "alice", Password: password, DeviceName: "PC"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SetPin(ctx, "246810", true); err != nil {
+	if err := m.SetPin(ctx, "246810", true, Current{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.RemovePin(ctx); err != nil {
+	if err := m.RemovePin(ctx, Current{}); err != nil {
 		t.Fatal(err)
 	}
 	if st := m.Status(ctx); st.PinSet || !st.LockEnabled {
@@ -220,5 +221,112 @@ func TestKeyPoolWhileLocked(t *testing.T) {
 	db.PoolClear(ctx)
 	if _, err := m.NewKey(ctx); !errors.Is(err, ErrNeedsUnlock) {
 		t.Fatalf("empty pool: %v", err)
+	}
+}
+
+func TestPinChangeNeedsCredential(t *testing.T) {
+	ctx := context.Background()
+	m, srv, _, _ := setup(t, false)
+	if err := m.Authorize(ctx, AuthorizeParams{Server: srv.URL, Username: "alice", Password: password, DeviceName: "PC"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetPin(ctx, "1111", false, Current{}); err == nil {
+		t.Fatal("a weak PIN was accepted")
+	}
+	if err := m.SetPin(ctx, "k7x2", false, Current{}); err != nil {
+		t.Fatalf("right after the password: %v", err)
+	}
+	srv.ExpirePasswordWindow()
+	if err := m.SetPin(ctx, "m4p9", false, Current{}); !api.IsCode(err, "credential_required") {
+		t.Fatalf("change without a credential: %v", err)
+	}
+	if err := m.SetPin(ctx, "m4p9", false, Current{Pin: "k7x2"}); err != nil {
+		t.Fatalf("change with the current PIN: %v", err)
+	}
+	if err := m.RemovePin(ctx, Current{Password: "wrong"}); !api.IsCode(err, "invalid_credentials") {
+		t.Fatalf("remove with a wrong password: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		if err := m.RemovePin(ctx, Current{Pin: "zzzz9"}); !api.IsCode(err, "invalid_pin") {
+			t.Fatalf("wrong current PIN %d: %v", i, err)
+		}
+	}
+	if err := m.RemovePin(ctx, Current{Pin: "zzzz9"}); !api.IsCode(err, "pin_locked") {
+		t.Fatalf("fifth wrong current PIN: %v", err)
+	}
+	if m.AppUnlocked() || m.Status(ctx).PinSet {
+		t.Fatal("an erased PIN must lock the app")
+	}
+}
+
+// fakeFinger is a fingerprint reader: match decides the next check.
+type fakeFinger struct{ match bool }
+
+func (f *fakeFinger) Kind() string                   { return sysauth.KindFingerprint }
+func (f *fakeFinger) Available(context.Context) bool { return true }
+func (f *fakeFinger) Enroll(ctx context.Context, name string, hwnd uint64) ([]byte, error) {
+	_, err := f.Prove(ctx, name, nil, hwnd)
+	return nil, err
+}
+func (f *fakeFinger) Prove(context.Context, string, []byte, uint64) ([]byte, error) {
+	if !f.match {
+		return nil, sysauth.ErrNoMatch
+	}
+	return nil, nil
+}
+func (f *fakeFinger) Remove(string) {}
+
+func TestFingerprintUnlockAndFailures(t *testing.T) {
+	ctx := context.Background()
+	m, srv, _, _ := setup(t, false)
+	finger := &fakeFinger{match: true}
+	m.sys = finger
+	if err := m.Authorize(ctx, AuthorizeParams{Server: srv.URL, Username: "alice", Password: password, DeviceName: "PC"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SystemUnlock(ctx, 0); !errors.Is(err, ErrSystemUnlockOff) {
+		t.Fatalf("system unlock before it is on: %v", err)
+	}
+	if err := m.EnableSystemUnlock(ctx, Current{}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if st := m.Status(ctx); st.SystemUnlock != "fingerprint" || st.SystemAvailable != "fingerprint" {
+		t.Fatalf("status %+v", st)
+	}
+	m.AppLock(ctx)
+	if err := m.SystemUnlock(ctx, 0); err != nil || !m.AppUnlocked() {
+		t.Fatalf("fingerprint unlock: %v", err)
+	}
+	if key, err := m.MasterKey(); err != nil || !bytes.Equal(key, srv.MasterKey()) {
+		t.Fatalf("fingerprint unlock must bring the master key back: %v", err)
+	}
+	if err := m.SetPin(ctx, "k7x2", false, Current{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wrong fingers and wrong PINs share one count; the fifth erases both.
+	m.AppLock(ctx)
+	finger.match = false
+	for i := 0; i < 3; i++ {
+		if err := m.SystemUnlock(ctx, 0); !errors.Is(err, sysauth.ErrNoMatch) {
+			t.Fatalf("wrong finger %d: %v", i, err)
+		}
+	}
+	if left := m.Status(ctx).PinAttemptsLeft; left != 2 {
+		t.Fatalf("attempts left after 3 wrong fingers: %d", left)
+	}
+	if err := m.AppUnlock(ctx, "zzzz9"); !api.IsCode(err, "invalid_pin") {
+		t.Fatalf("wrong PIN: %v", err)
+	}
+	m.SystemUnlock(ctx, 0)
+	if st := m.Status(ctx); st.PinSet || st.SystemUnlock != "" || m.AppUnlocked() {
+		t.Fatalf("five failed unlocks must erase the PIN and the system unlock: %+v", st)
+	}
+	finger.match = true
+	if err := m.SystemUnlock(ctx, 0); !errors.Is(err, ErrSystemUnlockOff) {
+		t.Fatalf("erased system unlock still works: %v", err)
+	}
+	if err := m.Unlock(ctx, password); err != nil || !m.AppUnlocked() {
+		t.Fatalf("password after erase: %v", err)
 	}
 }

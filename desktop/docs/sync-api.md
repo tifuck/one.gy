@@ -153,16 +153,22 @@ unlock turns `lock_enabled` on for good.
 |---|---|---|
 | `POST /apiv1/devices/self/unlock` | `{}` | `{"unlock_share", …security}`; `401 pin_required` when `pin_strict` |
 | same | `{"pin_proof"}` | `+ "master_share", "grant", "grant_expires_at"`; `401 invalid_pin` (`attempts_left`), `409 pin_locked` (5 wrong in a row: PIN erased), `409 pin_expired`, `409 pin_not_set` |
+| same | `{"system_proof", "system_ts"}` | like `pin_proof`: Windows Hello = base64 RSA PKCS#1 v1.5 SHA-256 signature of `onegy-system-unlock-v1\n<device id>\n<system_ts>` (unix seconds, ±300 s, larger than the last one used); fingerprint = the token (no `system_ts`); a wrong one `401 system_unlock_failed` (`attempts_left`) and counts with wrong PINs; `409 system_unlock_not_set` |
 | same | `{"auth_token"}` (password, split-key) | `+ "grant"`; resets the PIN's lifetime and failures; login lockout applies |
 | `POST /apiv1/devices/self/grant` | — | grant: slide its expiry → `{"grant_expires_at"}` |
 | `DELETE /apiv1/devices/self/grant` | — | `204`; the grant and its website sessions end |
-| `PUT /apiv1/devices/self/pin` | `{"pin_proof", "strict"}` | grant; `409 password_required` before any password unlock |
-| `DELETE /apiv1/devices/self/pin` | — | grant; back to password unlock |
+| `PUT /apiv1/devices/self/pin` | `{"pin_proof", "strict", "current_pin_proof"?, "auth_token"?}` | grant; `409 password_required` before any password unlock; the current PIN or the password unless the password unlocked this device in the last 10 minutes, else `401 credential_required`; wrong ones answer as in unlock (a wrong PIN counts toward the five) |
+| `DELETE /apiv1/devices/self/pin` | `{"current_pin_proof"?, "auth_token"?}` | grant + the same credential rule; back to password unlock |
+| `PUT /apiv1/devices/self/system-unlock` | `{"kind": "hello", "public_key"}` or `{"kind": "fingerprint", "token"}` + the credential rule of the PIN | grant; `public_key` = base64 SPKI of the Windows Hello RSA key (≥2048 bits); `token` ≥32 chars, the server keeps `SHA-256(token)` |
+| `DELETE /apiv1/devices/self/system-unlock` | — | grant |
+| `POST /apiv1/devices/self/unlock-failed` | `{"count": 1..5}` | failed unlocks the app saw (a wrong finger) count like wrong PINs; no grant needed |
 | `PUT /apiv1/devices/self/scope` | `{"root": bool, "folders": [ids ≤500]}` | grant; owned folders only |
 | `POST /apiv1/devices/self/web-session` | — | grant → `{"ticket": "wst_…", "expires_in": 60}` |
 
 security = `{"lock_enabled", "pin_set", "pin_expires_at", "pin_strict",
-"pin_attempts_left", "signed_requests"}` (also in `/apiv1/me` `device`).
+"pin_attempts_left", "pin_erased_at", "signed_requests"}` (also in `/apiv1/me` `device`;
+`pin_erased_at`: five failed unlocks erased the PIN and the system unlock, until a new PIN is set;
+`system_unlock`: `"hello"`, `"fingerprint"` or null).
 `pin_proof` = base64 `HMAC-SHA256(pin_key, "onegy-pin-proof-v1")` with
 `pin_key = PBKDF2-SHA256(pin, "onegy-pin-v1:<device id>", 200000, 32)`; the
 server keeps `SHA-256(pin_proof)`. The PIN works until the last password
