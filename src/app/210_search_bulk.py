@@ -315,6 +315,8 @@ def bulk_move():
     moved_folders = 0
     moved_e2e_ids = []
     moved_e2e_before = {}
+    moved_folder_tokens_before = {}
+    rewrap_folders = []
     affected_folder_ids = set()
 
     # AUDIT FIX D3 (cycle TOCTOU): serialize this user's folder re-parenting so a
@@ -373,6 +375,8 @@ def bulk_move():
                     tree_file.id,
                     (_effective_folder_share_info(tree_file.folder_id) or {}).get('share_token'),
                 )
+            for tree_fid, token in _folder_name_key_share_tokens(tree_ids, user.id).items():
+                moved_folder_tokens_before.setdefault(tree_fid, token)
             folder.parent_id = target_folder_id
             folder.original_parent_id = None  # explicit move supersedes the restore breadcrumb
             folder.updated_at = datetime.now(timezone.utc)
@@ -405,6 +409,7 @@ def bulk_move():
                 _clear_file_folder_link_key(moved_file)
                 if new_share and moved_file.encrypted_file_key:
                     moved_e2e_ids.append(moved_file.id)
+        rewrap_folders = _clear_moved_folder_name_link_keys(moved_folder_tokens_before)
 
         for fid in affected_folder_ids:
             touch_folder(fid)
@@ -419,11 +424,12 @@ def bulk_move():
     
     # If E2E files moved into a shared folder tree, tell client to generate link keys
     result = {'success': True, 'moved': total_moved}
-    if moved_e2e_ids and target_folder_id:
+    if (moved_e2e_ids or rewrap_folders) and target_folder_id:
         ancestor_info = get_shared_ancestor_info(target_folder_id)
         if ancestor_info:
             result['needs_link_keys'] = True
             result['ancestor_share_token'] = ancestor_info['share_token']
             result['ancestor_folder_id'] = ancestor_info['folder_id']
             result['file_ids'] = moved_e2e_ids
+            result['folders'] = rewrap_folders
     return jsonify(result)

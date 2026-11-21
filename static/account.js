@@ -161,6 +161,14 @@
     if (keyTotp) { keyTotp.hidden = !on; keyTotp.value = '' }
     if (keyTotpLabel) keyTotpLabel.hidden = !on
     if (keyTotpField) keyTotpField.hidden = !on
+    // Password change and account deletion ask for it too.
+    document.querySelectorAll('[data-tfa-field]').forEach(function (f) { f.hidden = !on })
+  }
+  /* The authenticator code of a modal's [data-tfa-field], or '' when 2FA is off. */
+  function tfaCode (id) {
+    var el = document.getElementById(id)
+    var field = el && el.closest('[data-tfa-field]')
+    return el && field && !field.hidden ? (el.value || '').trim() : ''
   }
 
   if (tfaEnable) tfaEnable.addEventListener('click', function () {
@@ -251,7 +259,7 @@
   // send new credentials without the re-wrapped master key.
   var pwChangeBtn = document.getElementById('pwChangeBtn')
   if (pwChangeBtn) pwChangeBtn.addEventListener('click', function () {
-    ;['pwCurrent', 'pwNew', 'pwConfirm'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = '' })
+    ;['pwCurrent', 'pwNew', 'pwConfirm', 'pwTotp'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = '' })
     openModal('pwModal')
     var el = document.getElementById('pwCurrent'); if (el) setTimeout(function () { el.focus() }, 60)
   })
@@ -270,6 +278,8 @@
     if (next.length > 1024) { need(newEl, 'PASSWORD MUST BE 1024 CHARACTERS OR LESS'); return }
     if (next === current) { need(newEl, 'NEW PASSWORD MUST BE DIFFERENT'); return }
     if (!hasCrypto || !window.OneGyCrypto) { toast('THIS BROWSER CANNOT CHANGE YOUR PASSWORD SECURELY', 'error'); return }
+    var pwTotpEl = document.getElementById('pwTotp'), pwTotp = tfaCode('pwTotp')
+    if (pwTotpEl && !pwTotpEl.closest('[data-tfa-field]').hidden && !pwTotp) { need(pwTotpEl, 'ENTER YOUR 6-DIGIT CODE'); return }
 
     pwSave.disabled = true
     try {
@@ -277,6 +287,7 @@
 
       // 1) Prove the CURRENT credentials, and get the current wrapping key.
       var payload = { new_password_length: next.length }
+      if (pwTotp) payload.totp_code = pwTotp
       var currentSplit = await OneGyCrypto.deriveAuthAndWrappingKeys(current, info.auth_token_salt)
       payload.current_auth_token = currentSplit.authToken
 
@@ -319,7 +330,7 @@
         try { await OneGyCrypto.storeMasterKeyInSession(masterKey) } catch (e) {}
       }
       _keyInfo = null
-      ;[curEl, newEl, confEl].forEach(function (el) { if (el) el.value = '' })
+      ;[curEl, newEl, confEl, pwTotpEl].forEach(function (el) { if (el) el.value = '' })
       closeModal(document.getElementById('pwModal'))
       toast('PASSWORD CHANGED. OTHER DEVICES SIGNED OUT', 'success')
       quRefresh()
@@ -593,7 +604,7 @@
   if (delAcct) delAcct.addEventListener('click', async function () {
     var ok = window.showConfirm ? await showConfirm('Delete account', 'Your account and all its data will be permanently removed.', 'Continue') : confirm('Delete account?')
     if (!ok) return
-    ;['delAcctPw', 'delAcctCaptcha'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = '' })
+    ;['delAcctPw', 'delAcctCaptcha', 'delAcctTotp'].forEach(function (id) { var el = document.getElementById(id); if (el) el.value = '' })
     reloadDelAcctCaptcha()
     openModal('delAcctModal')
     var el = document.getElementById('delAcctPw'); if (el) setTimeout(function () { el.focus() }, 60)
@@ -603,12 +614,16 @@
   if (delAcctConfirm) delAcctConfirm.addEventListener('click', async function () {
     var pwEl = document.getElementById('delAcctPw'), capEl = document.getElementById('delAcctCaptcha')
     var pw = pwEl ? pwEl.value : '', cap = capEl ? (capEl.value || '').trim() : ''
+    var totpEl = document.getElementById('delAcctTotp'), totp = tfaCode('delAcctTotp')
     if (!pw) { need(pwEl, 'ENTER YOUR PASSWORD'); return }
+    if (totpEl && !totpEl.closest('[data-tfa-field]').hidden && !totp) { need(totpEl, 'ENTER YOUR 6-DIGIT CODE'); return }
     if (!cap) { need(capEl, 'SOLVE THE CAPTCHA'); return }
     delAcctConfirm.disabled = true
     try {
       var proof = await credentialProof(pw)
-      var d = await parse(await jpost('/delete-account', proofBody(proof, { captcha: cap })), function (v) { return v.success === true && typeof v.redirect === 'string' })
+      var extra = { captcha: cap }
+      if (totp) extra.totp_code = totp
+      var d = await parse(await jpost('/delete-account', proofBody(proof, extra)), function (v) { return v.success === true && typeof v.redirect === 'string' })
       try { if (window.OneGyCrypto && OneGyCrypto.clearSessionKeys) OneGyCrypto.clearSessionKeys() } catch (e) {}
       window.location.href = d.redirect || '/'
     } catch (e) {

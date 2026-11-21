@@ -13,10 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/tifuck/one.gy/client/internal/api"
 	"github.com/tifuck/one.gy/client/internal/config"
 )
 
@@ -38,7 +40,7 @@ func platform() string {
 }
 
 // httpClient returns an HTTP client.
-// Pass insecure=true to skip TLS verification (for dev/self-signed certs).
+// insecure skips TLS verification (dev/self-signed certs; devtls builds only).
 func httpClient(insecure bool) *http.Client {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
@@ -49,7 +51,7 @@ func httpClient(insecure bool) *http.Client {
 		TLSHandshakeTimeout:   15 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 	}
-	if insecure {
+	if insecure && api.DevTLS {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	return &http.Client{
@@ -137,6 +139,65 @@ func fileHash(path string) (string, error) {
 type versionResponse struct {
 	SHA256      string `json:"sha256"`
 	DownloadURL string `json:"download_url"`
+	Version     string `json:"version"`
+}
+
+// parseVersion reads MAJOR.MINOR.PATCH[-pre] (client/VERSION's format).
+func parseVersion(s string) (nums [3]int, pre string, ok bool) {
+	s, pre, _ = strings.Cut(s, "-")
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 {
+		return nums, "", false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 || p == "" || (len(p) > 1 && p[0] == '0') {
+			return nums, "", false
+		}
+		nums[i] = n
+	}
+	return nums, pre, true
+}
+
+// newerVersion reports whether a is a strictly later release than b (semver
+// precedence; a pre-release sorts before its release).
+func newerVersion(a, b string) bool {
+	an, ap, aok := parseVersion(a)
+	bn, bp, bok := parseVersion(b)
+	if !aok || !bok {
+		return false
+	}
+	for i := range an {
+		if an[i] != bn[i] {
+			return an[i] > bn[i]
+		}
+	}
+	switch {
+	case ap == bp:
+		return false
+	case ap == "":
+		return true
+	case bp == "":
+		return false
+	}
+	as, bs := strings.Split(ap, "."), strings.Split(bp, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		if as[i] == bs[i] {
+			continue
+		}
+		x, xerr := strconv.Atoi(as[i])
+		y, yerr := strconv.Atoi(bs[i])
+		switch {
+		case xerr == nil && yerr == nil:
+			return x > y
+		case xerr == nil: // numeric identifiers sort first
+			return false
+		case yerr == nil:
+			return true
+		}
+		return as[i] > bs[i]
+	}
+	return len(as) > len(bs)
 }
 
 func fetchVersion(ctx context.Context, client *http.Client) (versionResponse, error) {
@@ -189,6 +250,11 @@ func checkForUpdate(client *http.Client, insecure bool) bool {
 
 	if currentHash == ver.SHA256 {
 		return false // already up to date
+	}
+	// AUDIT FIX (F2): a different hash alone is no update; never install an
+	// older or equal release (downgrade to a vulnerable build).
+	if !newerVersion(ver.Version, config.Version) {
+		return false
 	}
 
 	// Download new binary
@@ -288,7 +354,7 @@ func checkForUpdate(client *http.Client, insecure bool) bool {
 	finalManifestCtx, cancelFinalManifest := context.WithTimeout(context.Background(), 20*time.Second)
 	currentVer, err := fetchVersion(finalManifestCtx, client)
 	cancelFinalManifest()
-	if err != nil || currentVer.SHA256 != ver.SHA256 || currentVer.DownloadURL != ver.DownloadURL {
+	if err != nil || currentVer.SHA256 != ver.SHA256 || currentVer.DownloadURL != ver.DownloadURL || currentVer.Version != ver.Version {
 		fmt.Fprintf(os.Stderr, "Warning: update generation changed before installation; retry on the next run\n")
 		return false
 	}
@@ -349,7 +415,7 @@ Usage:
 
 %s
 Flags:
-  --insecure                       Skip TLS certificate verification
+  --insecure                       Skip TLS certificate verification (devtls builds only)
 
 Examples:
   onegy upload secret-doc.pdf
@@ -401,6 +467,11 @@ func main() {
 		}
 	}
 	args = filtered
+	// AUDIT FIX (F7): like the engine, release builds always verify certificates.
+	if insecure && !api.DevTLS {
+		fmt.Fprintf(os.Stderr, "Error: --insecure only works in devtls builds\n")
+		os.Exit(1)
+	}
 
 	if len(args) == 0 {
 		printUsage()

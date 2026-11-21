@@ -8,6 +8,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -107,11 +109,15 @@ func daemon(args []string) error {
 		return err
 	}
 	svc.SetIPCSecret(secret)
+	kb := make([]byte, 32)
+	rand.Read(kb)
+	helloKey := hex.EncodeToString(kb)
+	svc.SetIPCHelloKey(helloKey)
 	ln, err := ipc.Listen(*socket)
 	if err != nil {
 		return err
 	}
-	if err := config.WriteEngineInfo(*stateDir, *socket); err != nil {
+	if err := config.WriteEngineInfo(*stateDir, *socket, helloKey); err != nil {
 		ln.Close()
 		return err
 	}

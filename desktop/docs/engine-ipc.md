@@ -12,8 +12,13 @@ The contract between `client/internal/ipc` (server; the engine is the
   (the pipe keeps its name from before the engine became `onegy daemon`).
 - Framing: one JSON object per line (`\n`-terminated, UTF-8). JSON-RPC 2.0.
 - The engine also accepts `--socket <path>` (tests, multiple instances) and
-  writes `<state dir>/engine.json` `{"pid", "socket", "version"}` once listening;
-  the `onegy` CLI connects to the socket named there.
+  writes `<state dir>/engine.json` `{"pid", "socket", "version", "hello_key"}`
+  (0600) once listening; the `onegy` CLI connects to the socket named there and
+  first calls `ipc.hello {"nonce"}`: unless `key_proof` is
+  `hex(HMAC-SHA256(hello_key, "onegy-engine-hello:" + nonce))` it sends nothing
+  (no password) to a program squatting the socket or pipe name. Clients also
+  refuse a socket whose server is another OS user (Linux `SO_PEERCRED`, Windows
+  pipe server process token).
 - State dir: Windows `%APPDATA%\ONE.GY`, Linux `$XDG_DATA_HOME/onegy`
   (default `~/.local/share/onegy`). Overridable with `--state-dir`.
 - IPC secret: the app starts the engine with `--ipc-secret-stdin` and writes a
@@ -158,7 +163,7 @@ merge); unknown keys are rejected.
 | `remote.list` | `{"folder_id": null}` | `{"folder": node|null, "folders": [...], "files": [...]}`, names decrypted, + `size_plain` |
 | `remote.createFolder` | `{"parent_id", "name", "e2ee": true}` | folder node |
 | `syncs.list` | — | `[Sync]` |
-| `syncs.validate` | `{"local_path", "remote_folder_id"?, "type"}`; `remote_folder_id` omitted (not `null`, which is the drive root) = local checks only, no `remote` in the result | `{"ok", "errors": [{"code","message"}], "warnings": [...], "fs": {"kind","case_sensitive","free_bytes"}, "local": {"files","bytes"}, "remote": {"files","bytes"}}` |
+| `syncs.validate` | `{"local_path", "remote_folder_id"?, "type", "initial"?}`; `remote_folder_id` omitted (not `null`, which is the drive root) = local checks only, no `remote` in the result | `{"ok", "errors": [{"code","message"}], "warnings": [...], "fs": {"kind","case_sensitive","free_bytes"}, "local": {"files","bytes"}, "remote": {"files","bytes"}}` |
 | `syncs.preview` | `{"config": Sync-without-id, "initial": "merge"|"local_source"|"remote_source"}`; `config.ignore_rules` (optional string) = `.onegyignore` text that applies from the first scan; `syncs.create` writes it to the root | `{"uploads": {"count","bytes"}, "downloads": {"count","bytes"}, "conflicts", "deletions", "items": [{"action","path","size"}] (≤200)}` |
 | `syncs.create` | `{"config", "initial"}`; `config.ignore_rules` as for preview (else the defaults, unless the folder already has a `.onegyignore`) | `Sync` |
 | `syncs.update` | `{"id", "patch"}` | `Sync` |
@@ -197,7 +202,9 @@ Notes:
   `system_path`, `state_dir_overlap`, `local_overlap`, `remote_missing`,
   `remote_overlap`, `remote_read_only` (inside another device's backup; only
   a mirror may use it), `backup_nested` (a backup inside a backup),
-  `full_exclusive`, `full_needs_root`, `remote_root_needs_full`, and
+  `full_exclusive`, `full_needs_root`, `remote_root_needs_full`, `home_dir`
+  (a non-empty home folder as a `mirror` or with `initial: remote_source`:
+  everything not on one.gy would be deleted; otherwise a warning), and
   `not_signed_in` / `locked` / `offline` when the one.gy side could not be
   checked. Warning codes: `home_dir`, `cloud_folder`, `fat`, `network_fs`,
   `low_space`, `quota`, `local_count_partial`. `syncs.create` / `syncs.update`
@@ -227,7 +234,11 @@ Notes:
 - `mass_delete` issues add `"detail": {"side": "local"|"remote", "count": n}`
   (`side` = where the items were deleted). `keep_local` / `keep_remote` mean
   that side's state wins: propagate the deletes, or bring the items back from
-  the other side; `open` reviews them.
+  the other side; `open` reviews them. Items no synced row covers count too
+  (a mirror reverting local additions, a first run with `initial`
+  `local_source`/`remote_source`): `side` is then the side whose state would
+  win, the percentage is of the items on the side being deleted, and keeping
+  them leaves them in place.
 - `issues.resolve`: `retry` clears the backoff and wakes the sync; `ignore` adds
   an exact-path rule (`-pR:<path>`) to the root `.onegyignore`; `rename` renames
   the local item to `name` in the same folder; `keep_both` / `keep_remote` /

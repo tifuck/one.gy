@@ -127,6 +127,10 @@ func (s *Server) securityRoute(w http.ResponseWriter, r *http.Request, d *devSec
 			fail(w, 409, "conflict")
 			return true
 		}
+		if !hasGrant {
+			fail(w, 403, "grant_required")
+			return true
+		}
 		d.pop = parsePop(str("public_key"))
 		writeJSON(w, 200, d.json())
 	case p == "/apiv1/devices/self/unlock" && r.Method == "POST":

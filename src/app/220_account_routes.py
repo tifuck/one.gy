@@ -85,22 +85,31 @@ def _api_key_step_up_error(user, data, action):
                                     password=data.get('password') or data.get('current_password'),
                                     auth_token=data.get('auth_token') or data.get('current_auth_token')):
         return jsonify({'error': f'PASSWORD IS REQUIRED TO {action}'}), 403
+    failure = _totp_step_up_failure(user, data.get('totp_code'), action, 'API key')
+    if failure:
+        return jsonify({'error': failure[0]}), failure[1]
+    return None
+
+
+def _totp_step_up_failure(user, totp_code, action, what):
+    """(message, status) when 2FA is on and totp_code fails the /verify-2fa
+    lockout/replay/consume pipeline; None when 2FA is off or the code holds."""
     if not user.two_factor_enabled:
         return None
-    totp_code = (data.get('totp_code') or '').strip()
+    totp_code = (totp_code or '').strip() if isinstance(totp_code, str) else ''
     if not totp_code:
-        return jsonify({'error': f'2FA CODE IS REQUIRED TO {action}'}), 400
+        return f'2FA CODE IS REQUIRED TO {action}', 400
     lock_remaining = _totp_lockout_remaining(user.id)
     if lock_remaining > 0:
-        print(f'[AUTH] API key 2FA blocked by lockout for user: {user.username} ({lock_remaining}s remaining)')
-        return jsonify({'error': f'TOO MANY INVALID 2FA CODES. TRY AGAIN IN {lock_remaining} SECONDS.'}), 429
+        print(f'[AUTH] {what} 2FA blocked by lockout for user: {user.username} ({lock_remaining}s remaining)')
+        return f'TOO MANY INVALID 2FA CODES. TRY AGAIN IN {lock_remaining} SECONDS.', 429
     totp = pyotp.TOTP(_decrypt_totp_secret(user.two_factor_secret, user))
     if (_totp_is_replayed(user.id, totp_code)
             or not totp.verify(totp_code, valid_window=1)
             or not _totp_try_consume(user.id, totp_code)):
-        print(f'[AUTH] API key 2FA code rejected for user: {user.username}')
+        print(f'[AUTH] {what} 2FA code rejected for user: {user.username}')
         _record_failed_totp(user.id)
-        return jsonify({'error': 'INVALID 2FA CODE'}), 400
+        return 'INVALID 2FA CODE', 400
     _clear_failed_totp(user.id)
     return None
 
@@ -347,7 +356,7 @@ def change_password():
         return redirect(url_for('account') + '#section-security')
 
     if is_ajax and (data is None or not _json_string_fields_valid(data, (
-            'current_password', 'new_password', 'confirm_password'))):
+            'current_password', 'new_password', 'confirm_password', 'totp_code'))):
         return _chpw_fail('INVALID REQUEST', 400)
 
     # AUDIT FIX C3: validate the client key blobs BEFORE anything is written.
@@ -364,6 +373,11 @@ def change_password():
     # Verify current credentials: split-key auth_token only (same flow as login)
     if not _verify_user_credentials(user, auth_token=current_auth_token):
         return _chpw_fail('CURRENT PASSWORD IS INCORRECT', 403)
+    # AUDIT FIX (C2): same 2FA step-up as API key creation.
+    _totp_failure = _totp_step_up_failure(user, data.get('totp_code') if data else None,
+                                          'CHANGE THE PASSWORD', 'Password change')
+    if _totp_failure:
+        return _chpw_fail(*_totp_failure)
 
     if not (new_auth_token and new_auth_salt):
         print(f'[AUTH] Change password rejected for user {user.username}: '
@@ -487,14 +501,16 @@ def delete_account():
         data = request.get_json(silent=True)
         if not isinstance(data, dict):  # a JSON array/scalar has no .get()
             data = None
-        elif not _json_string_fields_valid(data, ('password', 'auth_token', 'captcha')):
+        elif not _json_string_fields_valid(data, ('password', 'auth_token', 'captcha', 'totp_code')):
             return jsonify({'error': 'INVALID REQUEST'}), 400
         password = data.get('password') if data else None
         captcha_input = (data.get('captcha') or '').strip() if data else ''
+        totp_code = data.get('totp_code') if data else None
     else:
         data = None
         password = request.form.get('password')
         captcha_input = (request.form.get('captcha') or '').strip()
+        totp_code = request.form.get('totp_code')
 
     # Validate captcha
     captcha_ok, captcha_error = _validate_captcha_response(captcha_input)
@@ -525,6 +541,14 @@ def delete_account():
         if is_ajax:
             return jsonify({'error': 'INCORRECT PASSWORD'}), 403
         flash('INCORRECT PASSWORD', 'error')
+        return redirect(url_for('account') + '#section-danger')
+
+    # AUDIT FIX (C2): same 2FA step-up as API key creation.
+    totp_failure = _totp_step_up_failure(user, totp_code, 'DELETE THE ACCOUNT', 'Account deletion')
+    if totp_failure:
+        if is_ajax:
+            return jsonify({'error': totp_failure[0]}), totp_failure[1]
+        flash(totp_failure[0], 'error')
         return redirect(url_for('account') + '#section-danger')
 
     username = user.username

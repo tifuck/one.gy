@@ -809,7 +809,7 @@ class _StorageManagerNodeAdmin:
     def _purge_stale_temp_files(self):
         """Remove old temp/cache files left in the local payload dirs. Returns bytes freed."""
         freed = 0
-        _temp_prefixes = ('.cache_', '.remote_', 'repl_')
+        _temp_prefixes = ('.cache_', '.remote_', 'repl_', '.s3_verify_', '.scrub_dv_')
         _temp_suffixes = ('.sftp_tmp', '.tmp')
         _temp_max_age = 600  # 10 minutes
         _now_ts = time.time()
@@ -1223,6 +1223,16 @@ class _StorageManagerNodeAdmin:
                                 continue
                             report['totals']['keys_with_actions'] += 1
                             disk_id = plan.get('file_id')
+                            # AUDIT FIX (S2): a key nested under this prefix (another
+                            # node's data, or a foreign object) is never ours to delete.
+                            if not _storage_cleanup_id_valid(disk_id):
+                                print(f'[STORAGE] Cleanup skipped unrecognised key on node {node_id}: {plan.get("key")!r}')
+                                plan['action'] = 'skip'
+                                plan['reason'] = 'unrecognised_key'
+                                category_report['actions'].append(plan)
+                                category_report['keys_skipped'] += 1
+                                report['totals']['skipped'] += 1
+                                continue
 
                             # Reconciliation: never delete a target a concurrent
                             # write has made current. Applies to whole-key purges
@@ -1283,6 +1293,11 @@ class _StorageManagerNodeAdmin:
                         current_ids = backend.list_files(category)
                         for file_id in current_ids:
                             if not _is_internal_storage_artifact(file_id):
+                                continue
+                            if not _storage_cleanup_id_valid(file_id):
+                                # AUDIT FIX (S2): skip, don't abort the category on an odd key.
+                                print(f'[STORAGE] Cleanup skipped unrecognised key on node {node_id}: {category}/{file_id!r}')
+                                report['totals']['skipped'] += 1
                                 continue
                             category_report['artifact_keys_seen'] += 1
                             action = {

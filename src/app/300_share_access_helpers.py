@@ -113,7 +113,8 @@ def is_folder_in_browsable_ancestor(folder, require_password=True):
     AUDIT FIX P9: `require_password=False` finds the ancestor whose share EXISTS
     without demanding the share password first. ONLY check_folder_access() may
     use it, because it immediately runs _folder_share_password_ok() on the
-    returned ancestor and renders the password prompt. Every other caller keeps
+    returned ancestor and renders the password prompt, plus the owner-only
+    set_folder_link_secret (the caller owns the tree). Every other caller keeps
     the default, so no route becomes reachable without the password."""
     cache = _walker_cache('browsable_ancestor' if require_password else 'browsable_ancestor_nopw')
     key = folder.id if folder else None

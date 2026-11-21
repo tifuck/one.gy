@@ -96,8 +96,10 @@ func (r *run) localOnly(p string, e *localEntry) {
 	it := &item{kind: e.Kind, lpath: p, l: e}
 	switch {
 	case !r.k.up:
+		r.newDeletes[len(r.ops)] = true
 		r.deleteLocal(it, "download-only sync: local additions are reverted")
 	case r.k.down && r.initial() == "remote_source":
+		r.newDeletes[len(r.ops)] = true
 		r.deleteLocal(it, "one.gy is the source")
 	case r.localDests[r.key(p)]:
 		r.conflictCopy(e, nil, r.lp(p), nil, "a one.gy item arrives at this name")
@@ -122,6 +124,7 @@ func (r *run) remoteOnly(rn *rnode) {
 	}
 	switch {
 	case r.k.up && r.initial() == "local_source" && r.cfg.Type != "archive" && !rn.readOnly:
+		r.newDeletes[len(r.ops)] = true
 		r.add(Op{Kind: TrashRemote, Path: rn.path, EntryKind: rn.Kind, RemoteID: rn.ID, RemoteSeq: rn.Seq, Size: rn.Size,
 			Reason: "this computer is the source (moved to the one.gy trash)"})
 		if rn.Kind == localfs.KindDir {

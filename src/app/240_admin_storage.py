@@ -79,6 +79,56 @@ def _storage_node_location(node_type, config):
     return tuple(str(config.get(key) or default).strip()
                  for key, default in _STORAGE_NODE_LOCATION_KEYS.get(node_type, ()))
 
+def _storage_node_port_error(config):
+    # AUDIT FIX (S5): an unvalidated port reached paramiko as-is.
+    if 'port' not in config or config.get('port') in (None, ''):
+        return None
+    port = config.get('port')
+    if isinstance(port, bool):
+        return 'SSH PORT MUST BE AN INTEGER BETWEEN 1 AND 65535'
+    try:
+        port_num = int(str(port).strip())
+    except (TypeError, ValueError):
+        return 'SSH PORT MUST BE AN INTEGER BETWEEN 1 AND 65535'
+    if not 1 <= port_num <= 65535:
+        return 'SSH PORT MUST BE AN INTEGER BETWEEN 1 AND 65535'
+    config['port'] = port_num
+    return None
+
+def _storage_location_paths_nest(a, b):
+    a = '/' + '/'.join(part for part in str(a).split('/') if part and part != '.')
+    b = '/' + '/'.join(part for part in str(b).split('/') if part and part != '.')
+    if a == b:
+        return True
+    a, b = a.rstrip('/') + '/', b.rstrip('/') + '/'
+    return a.startswith(b) or b.startswith(a)
+
+def _storage_node_location_conflict(node_type, config, exclude_node_id=None):
+    """Name of an existing node whose location equals or nests inside this one, else None.
+    AUDIT FIX (S2): two nodes aliasing one store were counted as distinct copies by
+    local purge and node-removal exclusivity checks."""
+    if node_type not in _STORAGE_NODE_LOCATION_KEYS:
+        return None
+
+    def _norm(cfg):
+        loc = _storage_node_location(node_type, cfg)
+        if node_type == 'ssh':
+            try:
+                port = int(loc[1])
+            except (TypeError, ValueError):
+                port = loc[1]
+            return (loc[0].lower().rstrip('.'), port), loc[2]
+        return (loc[0].lower().rstrip('/'), loc[1].lower()), loc[2]
+
+    mine_key, mine_path = _norm(config)
+    for other in StorageNode.query.filter_by(node_type=node_type).all():
+        if exclude_node_id is not None and other.id == exclude_node_id:
+            continue
+        other_key, other_path = _norm(other.get_config())
+        if other_key == mine_key and _storage_location_paths_nest(mine_path, other_path):
+            return other.name
+    return None
+
 def _storage_node_has_placed_replicas(node_id):
     """True while any replica row claims an object is (being) stored on the node."""
     return any(
@@ -139,6 +189,9 @@ def admin_api_storage_nodes_create():
             return jsonify({'error': 'SSH HOSTNAME IS REQUIRED'}), 400
         if not config.get('username'):
             return jsonify({'error': 'SSH USERNAME IS REQUIRED'}), 400
+        port_error = _storage_node_port_error(config)
+        if port_error:
+            return jsonify({'error': port_error}), 400
         # AUDIT FIX H1: SSRF / metadata-endpoint defense
         host_ok, host_err = _validate_storage_node_host(config.get('hostname'))
         if not host_ok:
@@ -175,6 +228,11 @@ def admin_api_storage_nodes_create():
             host_ok, host_err = _validate_storage_node_host(endpoint_url)
             if not host_ok:
                 return jsonify({'error': f'S3 ENDPOINT REJECTED: {host_err}'}), 400
+
+    _alias_of = _storage_node_location_conflict(node_type, config)
+    if _alias_of:
+        print(f'[ADMIN] Rejected storage node add: location overlaps node {_alias_of!r}')
+        return jsonify({'error': f'THIS LOCATION IS THE SAME AS, OR NESTED INSIDE, EXISTING NODE {_alias_of!r}. TWO NODES MUST NOT SHARE STORAGE'}), 409
 
     try:
         node = storage.add_node(name, node_type, config, is_primary=is_primary)
@@ -240,6 +298,10 @@ def admin_api_storage_nodes_update(node_id):
         config_key_error = _storage_node_config_key_error(node.node_type, new_config)
         if config_key_error:
             return jsonify({'error': config_key_error}), 400
+        if node.node_type == 'ssh':
+            port_error = _storage_node_port_error(new_config)
+            if port_error:
+                return jsonify({'error': port_error}), 400
         for k, v in new_config.items():
             # Blank otherwise means "keep the stored value" (secrets are never
             # sent back); an S3 prefix, though, can legitimately be cleared.
@@ -286,6 +348,11 @@ def admin_api_storage_nodes_update(node_id):
                 and _storage_node_has_placed_replicas(node.id)):
             print(f'[ADMIN] Rejected location change for storage node {node_id}: it still holds synced replicas')
             return jsonify({'error': 'CANNOT CHANGE THE LOCATION (HOST, PORT, PATH, ENDPOINT, BUCKET OR PREFIX) OF A NODE THAT HOLDS SYNCED DATA. ADD A NEW NODE INSTEAD'}), 409
+        if _storage_node_location(node.node_type, existing_config) != old_location:
+            _alias_of = _storage_node_location_conflict(node.node_type, existing_config, exclude_node_id=node.id)
+            if _alias_of:
+                print(f'[ADMIN] Rejected location change for storage node {node_id}: overlaps node {_alias_of!r}')
+                return jsonify({'error': f'THIS LOCATION IS THE SAME AS, OR NESTED INSIDE, EXISTING NODE {_alias_of!r}. TWO NODES MUST NOT SHARE STORAGE'}), 409
         node.set_config(existing_config)
 
     db.session.commit()

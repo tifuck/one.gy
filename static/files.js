@@ -1077,7 +1077,7 @@
       // is undecryptable for recipients until its key is wrapped for the link.
       // genLinkKeys swallows per-file errors, so its result is the only signal.
       var linkRes = null
-      if (type === 'folder' && data.needs_link_keys && data.ancestor_share_token && data.file_ids) linkRes = await genLinkKeys(data.file_ids, 'folder', data.ancestor_share_token)
+      if (type === 'folder' && data.needs_link_keys && data.ancestor_share_token && data.file_ids) linkRes = mergeLinkRes(await genLinkKeys(data.file_ids, 'folder', data.ancestor_share_token), await genFolderNameLinkKeys(data.folders, data.ancestor_share_token))
       if (type === 'file' && data.needs_link_key && data.ancestor_share_token && data.file_id) linkRes = await genLinkKeys([data.file_id], 'folder', data.ancestor_share_token)
       if (linkRes && !linkRes.success) {
         var missed = Math.max((linkRes.total || 0) - (linkRes.keyed || 0), 1)
@@ -1122,7 +1122,7 @@
       // Key whatever the server DID move before reporting a partial move: those
       // files already lost their previous folder-link keys.
       var linkRes = null
-      if (data.needs_link_keys && data.ancestor_share_token && data.file_ids) linkRes = await genLinkKeys(data.file_ids, 'folder', data.ancestor_share_token)
+      if (data.needs_link_keys && data.ancestor_share_token && data.file_ids) linkRes = mergeLinkRes(await genLinkKeys(data.file_ids, 'folder', data.ancestor_share_token), await genFolderNameLinkKeys(data.folders, data.ancestor_share_token))
       if (Number(data.moved) !== expected) throw new Error('ONLY ' + Number(data.moved || 0) + ' OF ' + expected + ' ITEMS MOVED')
       clearSel()
       if (linkRes && !linkRes.success) {
@@ -1779,6 +1779,31 @@
       }
       return { success: keyed === fileIds.length, keyed: keyed, total: fileIds.length, error: firstError }
     } catch (e) { return { success: false, keyed: 0, total: fileIds.length, error: 'LINK KEY GENERATION FAILED' } }
+  }
+  // Moved E2EE folders lost their link name-key wrap; re-wrap it for the new share.
+  async function genFolderNameLinkKeys (folders, shareToken) {
+    if (!folders || !folders.length || !shareToken) return { success: true, keyed: 0, total: 0 }
+    if (!haveKeys()) return { success: false, keyed: 0, total: folders.length, error: 'E2E KEYS NOT AVAILABLE' }
+    var keyed = 0, firstError = ''
+    try {
+      var masterKey = await OneGyCrypto.getMasterKeyFromSession()
+      if (!masterKey) return { success: false, keyed: 0, total: folders.length, error: 'E2E KEYS NOT AVAILABLE' }
+      var linkKey = (await OneGyCrypto.deriveLinkSecret(masterKey, 'folder', shareToken)).linkKey
+      for (var i = 0; i < folders.length; i++) {
+        var fo = folders[i]
+        try {
+          var nameKey = await OneGyCrypto.unwrapFolderNameKey(fo.encrypted_name_key, fo.name_key_nonce, masterKey)
+          var wrapped = await OneGyCrypto.wrapFolderNameKeyForLink(nameKey, linkKey)
+          var r = await fetch('/folder/' + fo.id + '/name-link-key', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': csrf() }, body: JSON.stringify({ encrypted_name_key: wrapped.encryptedNameKey, nonce: wrapped.nonce }) })
+          if (r.ok) keyed++
+          else if (!firstError) firstError = 'FOLDER ' + fo.id + ' NAME LINK KEY HTTP ' + r.status
+        } catch (e) { if (!firstError) firstError = 'FOLDER ' + fo.id + ' NAME LINK KEY FAILED' }
+      }
+    } catch (e) { if (!firstError) firstError = 'FOLDER NAME LINK KEY GENERATION FAILED' }
+    return { success: keyed === folders.length, keyed: keyed, total: folders.length, error: firstError }
+  }
+  function mergeLinkRes (a, b) {
+    return { success: a.success && b.success, keyed: a.keyed + b.keyed, total: a.total + b.total, error: a.error || b.error }
   }
 
   // ---- Modals / confirm ----------------------------------------------------

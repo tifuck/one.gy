@@ -211,7 +211,6 @@ def apiv1_upload():
     user = g.api_user
     temp_dir = None
     quota_lock = None
-    lifecycle_lock = None
     upload_idempotency_lock = None
     upload_idempotency_database_lock = None
     file_id = str(uuid.uuid4())
@@ -240,7 +239,7 @@ def apiv1_upload():
         # be resolved before the body is parsed against that quota.
         _header_upload_id = (request.headers.get('X-Upload-Id') or '').strip()
         if _header_upload_id:
-            _header_key = _header_upload_id if len(_header_upload_id) <= 64 else hashlib.sha256(_header_upload_id.encode('utf-8')).hexdigest()
+            _header_key = _bounded_upload_key(_header_upload_id)
             _existing_upload = _find_existing_upload_by_key(_header_key, registered_user_id=user.id)
             if _existing_upload:
                 print(f'[API] Reused existing upload for idempotency key before body parse: {_header_key}')
@@ -278,7 +277,7 @@ def apiv1_upload():
             return _backup_read_only_error()
 
         if client_upload_id:
-            upload_key = client_upload_id if len(client_upload_id) <= 64 else hashlib.sha256(client_upload_id.encode('utf-8')).hexdigest()
+            upload_key = _bounded_upload_key(client_upload_id)
             upload_scope = _build_upload_idempotency_scope(upload_key, registered_user_id=user.id)
             # Bounded waits, like /upload: retries of one upload_id must not park
             # every worker thread behind the request that is still encrypting.
@@ -345,9 +344,10 @@ def apiv1_upload():
         # rejected if it would push the user over quota. Lock ordering
         # (quota -> lifecycle -> folder tree) is preserved: the lifecycle lock
         # taken in critical section 2 is acquired while holding the quota lock.
-        quota_lock = _acquire_user_quota_lock(user.id)
+        quota_lock = _acquire_finalize_quota_lock(user.id)
+        if quota_lock is None:
+            return _api_upload_busy()
         try:
-            _refresh_quota_snapshot()
             user = db.session.get(User, user.id)
             if not user.has_storage_available(total_size):
                 return jsonify({'error': f'Storage limit exceeded. You have {user.get_storage_remaining_gb():.2f}GB remaining.'}), 413
@@ -394,27 +394,19 @@ def apiv1_upload():
             if existing_upload:
                 print(f'[API] Reused existing upload for implicit idempotency key: {upload_key}')
                 return jsonify(_api_upload_payload(existing_upload)), 200
-        storage.store_file(encrypted_filename, temp_encrypted_path)
 
-        # --- Quota critical section 2: recheck + commit under lock ---
-        # Re-acquire the per-user quota flock for the authoritative recheck and
-        # metadata commit. If a concurrent same-user upload committed during the
-        # I/O window and there is no longer room, release the staged payload and
-        # reject. Both quota_lock and lifecycle_lock are released by the outer
-        # finally (lifecycle first, then quota) to keep LIFO release order.
-        quota_lock = _acquire_user_quota_lock(user.id)
-        _refresh_quota_snapshot()
+        # --- Quota critical section 2: recheck + publish + commit under lock ---
+        # AUDIT FIX (U1): the bounded lock, fresh snapshot and recheck come BEFORE
+        # store_file, and _commit_new_upload adds the File row first so the
+        # FileReplica rows store_file records commit with it (a later snapshot
+        # refresh used to roll them back). It takes the lifecycle lock itself;
+        # quota_lock is released by the outer finally.
+        quota_lock = _acquire_finalize_quota_lock(user.id)
+        if quota_lock is None:
+            return _api_upload_busy()
         user = db.session.get(User, user.id)
         if not user.has_storage_available(api_disk_size):
-            storage.delete_file(encrypted_filename)
             return jsonify({'error': f'Storage limit exceeded. You have {user.get_storage_remaining_gb():.2f}GB remaining.'}), 413
-        lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
-        if not _lock_live_folder_for_placement(folder_id, user.id):
-            db.session.rollback()
-            _release_lifecycle_lock(lifecycle_lock)
-            lifecycle_lock = None
-            storage.delete_file(encrypted_filename)
-            return jsonify({'error': 'Folder not found'}), 404
 
         file_record = File(
             id=file_id,
@@ -435,50 +427,14 @@ def apiv1_upload():
             payload_checksum=api_payload_checksum,
             disk_size=api_disk_size
         )
-        db.session.add(file_record)
-        # AUDIT FIX H4: drop any stale tombstone for this key before the row can
-        # replicate (belt and braces; Phase B also checks).
-        _clear_pending_remote_deletes_for('files', [file_record.filename, file_record.id])
-        touch_folder(folder_id)
-        try:
-            db.session.commit()
-        except _IdempotencyIntegrityError as _key_err:
-            # AUDIT FIX M9: uq_file_upload_key_registered is the DB-level
-            # backstop behind the flock + GET_LOCK idempotency locks. Losing
-            # that race is an idempotent retry, not a failure: serve the row
-            # the winner committed (or release trashed duplicates and retry
-            # once) instead of failing after the payload was stored.
-            if not upload_key or 'upload_idempotency_key' not in str(getattr(_key_err, 'orig', _key_err)).lower():
-                db.session.rollback()
-                storage.delete_file(encrypted_filename)
-                raise
-            db.session.rollback()
-            existing_upload, conflict_action = _resolve_upload_key_unique_conflict(
-                upload_key, registered_user_id=user.id)
-            if conflict_action == 'retry':
-                print(f'[API] Released trashed duplicate idempotency rows for key {upload_key}; retrying insert')
-                db.session.add(file_record)
-                _clear_pending_remote_deletes_for('files', [file_record.filename, file_record.id])
-                touch_folder(folder_id)
-                try:
-                    db.session.commit()
-                except Exception:
-                    db.session.rollback()
-                    storage.delete_file(encrypted_filename)
-                    raise
-            elif existing_upload is not None:
-                storage.delete_file(encrypted_filename)
-                print(f'[API] Reused existing upload for idempotency key (DB unique backstop): {upload_key}')
-                return jsonify(_api_upload_payload(existing_upload)), 200
-            else:
-                storage.delete_file(encrypted_filename)
-                raise RuntimeError(
-                    f'API UPLOAD CONFLICT: idempotency key {upload_key} is held by a live file row outside '
-                    f'this request\'s dedup scope; refusing to create a duplicate')
-        except Exception:
-            db.session.rollback()
-            storage.delete_file(encrypted_filename)
-            raise
+        commit_outcome, committed_row = _commit_new_upload(
+            file_record, temp_encrypted_path, user.id, {'registered_user_id': user.id}, log_prefix='API')
+        if commit_outcome == 'folder_missing':
+            return jsonify({'error': 'Folder not found'}), 404
+        if commit_outcome == 'db_error':
+            return jsonify({'error': 'Upload failed'}), 500
+        if commit_outcome == 'reused':
+            return jsonify(_api_upload_payload(committed_row)), 200
 
         if total_files == 1:
             _schedule_thumbnail_bg(file_id, log_prefix='API')
@@ -544,7 +500,6 @@ def apiv1_upload():
                 shutil.rmtree(temp_dir)
             except Exception as e:
                 print(f'[API] Warning: Failed to cleanup temp directory: {e}')
-        _release_lifecycle_lock(lifecycle_lock)
         _release_user_quota_lock(quota_lock)
         _release_upload_idempotency_database_lock(upload_idempotency_database_lock)
         _release_upload_idempotency_lock(upload_idempotency_lock)

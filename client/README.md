@@ -16,16 +16,17 @@ cross-checks against it through `../tests/crypto_helper.js`).
 go test ./... && go build ./cmd/onegy
 bash build.sh                                   # CLI builds for /static/cli/ (DOMAIN from ../.env)
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/onegy   # release cross-compile
-go build -tags devtls -o bin/onegy ./cmd/onegy  # allows `daemon --insecure-tls` (local DEV server only)
+go build -tags devtls -o bin/onegy ./cmd/onegy  # allows `daemon --insecure-tls` and `--insecure` (local DEV server only)
 ./bin/onegy daemon --state-dir /tmp/e --socket /tmp/e.sock      # run the engine by hand
-./bin/onegy ipc --socket /tmp/e.sock call engine.info           # talk to a running engine
+./bin/onegy ipc --state-dir /tmp/e call engine.info             # talk to a running engine
 ```
 
 ## Commands
 
 - `onegy upload <file>` / `onegy download <url>`: anonymous E2EE temp upload and
   share-link download. These self-update from `/cli/version` unless the build is
-  `-X main.bundled=1` (the desktop app's copy updates with the app).
+  `-X main.bundled=1` (the desktop app's copy updates with the app), and only
+  to a strictly newer `version` than their own (never a downgrade).
 - `onegy daemon [--state-dir --socket --log-level --ipc-secret-stdin --secrets-file --insecure-tls]`:
   the sync engine (flags, single-instance lock, log file, IPC listener). Not on
   macOS yet (`localfs`/`watch` have no darwin port), so macOS builds ship the
@@ -36,7 +37,8 @@ go build -tags devtls -o bin/onegy ./cmd/onegy  # allows `daemon --insecure-tls`
   without arguments prints them all.
 - `onegy ipc call <method> [json]` / `onegy ipc watch`: any method of the
   engine's JSON-RPC interface (settings, versions, transfers, ignore rules…).
-  Clients find the engine through `<state dir>/engine.json`.
+  Clients find the engine through `<state dir>/engine.json` and check, before
+  sending anything, that it proves the key written there (`ipc.DialEngine`).
 
 ## Headless (a server without a desktop)
 

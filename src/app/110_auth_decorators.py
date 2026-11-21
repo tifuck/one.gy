@@ -52,6 +52,10 @@ _revoked_sid_lock = threading.Lock()
 _revoked_sid_loaded = False
 # Truthy, so callers that only test truthiness still fail closed.
 _REVOCATION_CHECK_FAILED = object()
+# AUDIT FIX (C1): absolute session lifetime from sign-in. Cookies are re-signed on
+# every response, so idle expiry alone never ends a session that keeps being used;
+# revocation records and cache entries are kept this long so they outlive any cookie.
+SESSION_MAX_AGE = timedelta(days=7)
 
 
 def _hash_session_sid(sid):
@@ -61,7 +65,7 @@ def _hash_session_sid(sid):
 def _remember_revoked_sid_locked(sid_hash, now):
     """Caller must hold _revoked_sid_lock."""
     _revoked_sid_cache.add(sid_hash)
-    _revoked_sid_expiry[sid_hash] = now + app.config['PERMANENT_SESSION_LIFETIME'].total_seconds()
+    _revoked_sid_expiry[sid_hash] = now + SESSION_MAX_AGE.total_seconds()
 
 
 def _load_revoked_sids(force=False):
@@ -156,6 +160,7 @@ def _mint_session_sid():
     """Assign a fresh per-session id. Call right after a successful login."""
     sid = secrets.token_urlsafe(24)
     session['sid'] = sid
+    session['auth_at'] = int(time.time())
     return sid
 
 
@@ -173,7 +178,8 @@ def _revoke_current_session():
                 sid_hash=sid_hash,
                 user_id=session.get('logged_in_user_id'),
                 revoked_at=datetime.now(timezone.utc),
-                expires_at=datetime.now(timezone.utc) + app.config['PERMANENT_SESSION_LIFETIME'],
+                # auth_at <= revoked_at, so no cookie of this sid outlives it (C1).
+                expires_at=datetime.now(timezone.utc) + SESSION_MAX_AGE,
             ))
             db.session.commit()
         return True
@@ -221,6 +227,56 @@ def _prune_revoked_sessions():
     if removed:
         print(f'[CLEANUP] Pruned {removed} expired session revocation record(s)')
     return removed
+
+
+def _session_too_old():
+    try:
+        return time.time() - float(session['auth_at']) > SESSION_MAX_AGE.total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
+def _drop_dead_session():
+    """AUDIT FIX (C1): clear a revoked, epoch-stale or over-age session before any
+    other hook or view, so its cookie is never re-signed (and so revived after its
+    revocation record is pruned) by a route that only reads the session. Guests
+    keep their temp-upload id. Revocation-check failures leave the session alone
+    (the auth decorators answer 503)."""
+    if 'logged_in_user_id' not in session:
+        return None
+    if 'auth_at' not in session:
+        # Minted before auth_at existed: its revocation record may already be
+        # pruned, so it cannot be told apart from a revived stolen cookie. One
+        # re-login per user on upgrade.
+        print(f'[AUTH] Pre-upgrade session without auth_at ended for user {session.get("logged_in_user_id")}')
+        _clear_auth_session()
+        return None
+    if _session_too_old():
+        print(f'[AUTH] Session older than {SESSION_MAX_AGE.days} days ended for user {session.get("logged_in_user_id")}')
+        _clear_auth_session()
+        return None
+    if request.endpoint == 'static':
+        # Static files skip the DB checks; the age cap alone bounds a revoked
+        # cookie refreshed here to its revocation record's lifetime.
+        return None
+    if _current_session_user() is not None:
+        return None
+    # Only a memoized None is definitive; a failed revocation check is not memoized.
+    cached = getattr(g, '_current_session_user_cache', None)
+    if cached is not None and cached[1] is None:
+        _clear_auth_session()
+    return None
+
+
+def _clear_auth_session():
+    guest_user_id = session.get('user_id')
+    session.clear()
+    if guest_user_id:
+        session['user_id'] = guest_user_id
+
+
+# Before every other hook: one that answers early still saves (re-signs) the session.
+app.before_request_funcs.setdefault(None, []).insert(0, _drop_dead_session)
 
 
 def _current_session_user():

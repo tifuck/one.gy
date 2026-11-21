@@ -48,5 +48,16 @@ func Listen(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-// Dial connects to an engine socket.
-func Dial(path string) (net.Conn, error) { return net.DialTimeout("unix", path, 5*time.Second) }
+// Dial connects to an engine socket run by the current user (on Linux the
+// server's uid is checked too: a socket another user placed is refused).
+func Dial(path string) (net.Conn, error) {
+	c, err := net.DialTimeout("unix", path, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkPeer(c); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("refusing %s: %w", path, err)
+	}
+	return c, nil
+}

@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tifuck/one.gy/client/internal/api"
+	"github.com/tifuck/one.gy/client/internal/config"
 	"github.com/tifuck/one.gy/client/internal/fakeserver"
 	"github.com/tifuck/one.gy/client/internal/ipc"
 	"github.com/tifuck/one.gy/client/internal/service"
@@ -31,8 +33,12 @@ func startEngine(t *testing.T, srv *fakeserver.Server, stateDir, sock string, se
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.SetIPCHelloKey("key-" + stateDir)
 	ln, err := ipc.Listen(sock)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.WriteEngineInfo(stateDir, sock, "key-"+stateDir); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -88,7 +94,7 @@ func TestHeadlessSync(t *testing.T) {
 	stop := startEngine(t, srv, stateDir, sock, true)
 	run := func(input, cmd string, args ...string) error {
 		stdin = bufio.NewReader(strings.NewReader(input))
-		return syncCommand(cmd, append(args, "--socket", sock))
+		return syncCommand(cmd, append(args, "--state-dir", stateDir))
 	}
 
 	if err := run("bad\n", "login", "--user", "carol", "--server", srv.URL); errCode(err) != "invalid_credentials" {
@@ -117,7 +123,7 @@ func TestHeadlessSync(t *testing.T) {
 	oldFile(t, filepath.Join(local, "b.txt"), "two")
 	waitUntil(t, "upload after restart", func() bool { return uploaded(srv, "Work/Inbox/b.txt", "two") })
 	var st accountStatus
-	if err := (engine{sock}).call("account.status", nil, &st); err != nil || !st.SignedIn || st.Locked {
+	if err := (engine{sock, config.HelloKey(stateDir)}).call("account.status", nil, &st); err != nil || !st.SignedIn || st.Locked {
 		t.Fatalf("status after restart: %+v %v", st, err)
 	}
 	for _, cmd := range [][]string{{"status"}, {"sync", "list"}, {"issues"}, {"sync", "pause"}, {"sync", "resume"}} {
@@ -142,20 +148,20 @@ func TestHeadlessRestartWithoutSecretsFile(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "engine.sock")
 	stop := startEngine(t, srv, stateDir, sock, false)
 	stdin = bufio.NewReader(strings.NewReader("pw\n"))
-	if err := syncCommand("login", []string{"--user", "carol", "--server", srv.URL, "--socket", sock}); err != nil {
+	if err := syncCommand("login", []string{"--user", "carol", "--server", srv.URL, "--state-dir", stateDir}); err != nil {
 		t.Fatal(err)
 	}
 	stop()
 	startEngine(t, srv, stateDir, sock, false)
 	var st accountStatus
-	if err := (engine{sock}).call("account.status", nil, &st); err != nil || !st.Locked {
+	if err := (engine{sock, config.HelloKey(stateDir)}).call("account.status", nil, &st); err != nil || !st.Locked {
 		t.Fatalf("expected closed keys: %+v %v", st, err)
 	}
 	stdin = bufio.NewReader(strings.NewReader("pw\n"))
-	if err := syncCommand("unlock", []string{"--socket", sock}); err != nil {
+	if err := syncCommand("unlock", []string{"--state-dir", stateDir}); err != nil {
 		t.Fatal(err)
 	}
-	if err := (engine{sock}).call("account.status", nil, &st); err != nil || st.Locked {
+	if err := (engine{sock, config.HelloKey(stateDir)}).call("account.status", nil, &st); err != nil || st.Locked {
 		t.Fatalf("unlock: %+v %v", st, err)
 	}
 }
@@ -170,5 +176,48 @@ func TestParseArgs(t *testing.T) {
 	}
 	if _, err := parseArgs([]string{"--type"}, []string{"type"}, nil); err == nil {
 		t.Fatal("missing value accepted")
+	}
+}
+
+// AUDIT FIX (F4): a program at the engine's socket that cannot prove the key
+// of engine.json never receives the password.
+func TestCLIRefusesUnprovenEngine(t *testing.T) {
+	stateDir := t.TempDir()
+	sock := filepath.Join(t.TempDir(), "engine.sock")
+	got := make(chan string, 1)
+	fake := ipc.NewServer() // no HelloKey: answers ipc.hello without key_proof
+	fake.Handle("account.unlock", func(_ context.Context, p json.RawMessage) (any, error) {
+		got <- string(p)
+		return map[string]any{}, nil
+	})
+	ln, err := ipc.Listen(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go fake.Serve(ctx, ln)
+	defer fake.Close()
+	if err := config.WriteEngineInfo(stateDir, sock, "the-real-key"); err != nil {
+		t.Fatal(err)
+	}
+	stdin = bufio.NewReader(strings.NewReader("pw\n"))
+	if err := syncCommand("unlock", []string{"--state-dir", stateDir}); err == nil || !strings.Contains(err.Error(), "did not prove") {
+		t.Fatalf("unproven engine accepted: %v", err)
+	}
+	fake.HelloKey = "another-key"
+	stdin = bufio.NewReader(strings.NewReader("pw\n"))
+	if err := syncCommand("unlock", []string{"--state-dir", stateDir}); err == nil {
+		t.Fatal("engine with the wrong key accepted")
+	}
+	select {
+	case p := <-got:
+		t.Fatalf("password sent to an unproven engine: %s", p)
+	default:
+	}
+	fake.HelloKey = "the-real-key"
+	stdin = bufio.NewReader(strings.NewReader("pw\n"))
+	if err := syncCommand("unlock", []string{"--state-dir", stateDir}); err != nil {
+		t.Fatalf("proven engine refused: %v", err)
 	}
 }

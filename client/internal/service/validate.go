@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -165,6 +166,16 @@ func (s *Service) remoteAncestors(ctx context.Context, id *int64) (map[int64]boo
 	return out, nil
 }
 
+func emptyDir(p string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, err = f.Readdirnames(1)
+	return errors.Is(err, io.EOF)
+}
+
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -180,8 +191,9 @@ func humanBytes(n int64) string {
 
 // validateSync applies every setup rule. excludeID skips that sync in the
 // overlap checks (updates); checkRemote false runs the local checks only.
-// An error return means the check itself could not run.
-func (s *Service) validateSync(ctx context.Context, localPath string, remoteID *int64, typ, excludeID string, checkRemote bool) (*validateResult, error) {
+// initial is the first-run strategy ("" = not known). An error return means
+// the check itself could not run.
+func (s *Service) validateSync(ctx context.Context, localPath string, remoteID *int64, typ, initial, excludeID string, checkRemote bool) (*validateResult, error) {
 	r := &validateResult{Errors: []problem{}, Warnings: []problem{}, FS: fsInfo{Kind: "unknown"}}
 
 	if !oneOf(typ, syncTypes...) {
@@ -212,7 +224,12 @@ func (s *Service) validateSync(ctx context.Context, localPath string, remoteID *
 		r.fail("system_path", "system folders cannot be synced")
 	}
 	if home, err := os.UserHomeDir(); err == nil && samePath(real, filepath.Clean(home)) {
-		r.warn("home_dir", "this syncs your whole home folder, including app settings and caches")
+		if (typ == "mirror" || initial == "remote_source") && !emptyDir(real) {
+			// AUDIT FIX (F1): one.gy as the source deletes everything here that is not on one.gy.
+			r.fail("home_dir", "your home folder cannot be replaced by a one.gy folder: everything here that is not on one.gy would be deleted")
+		} else {
+			r.warn("home_dir", "this syncs your whole home folder, including app settings and caches")
+		}
 	}
 	if within(real, s.opts.StateDir) || within(s.opts.StateDir, real) {
 		r.fail("state_dir_overlap", "the folder overlaps the ONE.GY Desktop data folder")

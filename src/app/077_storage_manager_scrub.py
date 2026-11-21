@@ -639,14 +639,16 @@ class _StorageManagerScrub:
                 key = (file_id, exclude_node_id)
                 if key not in _file_size_cache:
                     _file_size_cache[key] = self._tracked_file_size_bytes(
-                        file_id, exclude_node_id=exclude_node_id)
+                        file_id, exclude_node_id=exclude_node_id, allow_local=False)
                 return _file_size_cache[key]
 
             def _expected_file_checksum(file_id, exclude_node_id):
                 key = (file_id, exclude_node_id)
                 if key not in _file_checksum_cache:
+                    # AUDIT FIX (S1): no authority -> None (skip the verdict), never a
+                    # hash of the local copy, which may be the corrupt one.
                     _file_checksum_cache[key] = self._tracked_file_checksum_hex(
-                        file_id, exclude_node_id=exclude_node_id)
+                        file_id, exclude_node_id=exclude_node_id, allow_local=False)
                 return _file_checksum_cache[key]
 
             def _thumb_authority_checksum(file_id, thumb_type, exclude_node_id):
@@ -676,21 +678,25 @@ class _StorageManagerScrub:
             # category cannot starve the others (mutable lists so closures can
             # decrement the local budgets).
             _total_checksum_budget = max(0, int(max_checksum_items or 0))
-            # AUDIT FIX F-3 (5th audit): give each LOCAL category its own budget
-            # instead of one shared bucket. Previously all three local categories
-            # shared a single budget while each remote category got a full one, so
-            # local bit-rot checksum coverage ran at ~1/3 the rate of any single
-            # remote category. There are now 6 independent buckets (3 remote + 3
-            # local); the total still stays bounded by integrity_scrub_checksum_batch_size.
-            _base_budget, _remainder = divmod(_total_checksum_budget, 6)
-            _category_budgets = [
+            # The budget only limits checksums that cost something extra: a hash
+            # exec on an SSH node. A local hash is disk I/O alone (the pass stays
+            # bounded by integrity_scrub_max_seconds) and S3 returns the SHA-256
+            # in the head_object the audit sends anyway, so those are taken for
+            # every audited row. Budgeting them meant ~8 local hashes per pass
+            # while every other row got a size-only audit that still stamped
+            # verified_at, so a full hash pass over a large library took about a
+            # year. A budget of 0 still disables all checksum verification.
+            # shortcut: local hashing has no byte budget; add one if a sweep of
+            # the whole payload volume ever saturates the disk.
+            _base_budget, _remainder = divmod(_total_checksum_budget, 3)
+            file_csum_budget, note_csum_budget, thumb_csum_budget = [
                 _base_budget + (1 if index < _remainder else 0)
-                for index in range(6)
+                for index in range(3)
             ]
-            file_csum_budget, note_csum_budget, thumb_csum_budget = _category_budgets[:3]
-            local_file_csum_budget = [_category_budgets[3]]
-            local_note_csum_budget = [_category_budgets[4]]
-            local_thumb_csum_budget = [_category_budgets[5]]
+            _local_budget = max(0, int(max_items or 0)) if _total_checksum_budget else 0
+            local_file_csum_budget = [_local_budget]
+            local_note_csum_budget = [_local_budget]
+            local_thumb_csum_budget = [_local_budget]
 
             self._scrub_remote_work(
                 work, backends, local_node_id, max_items, checksum_enabled, _reverify_clause,
@@ -720,6 +726,13 @@ class _StorageManagerScrub:
                            _expected_file_size, _expected_file_checksum, _thumb_authority_checksum,
                            file_csum_budget, note_csum_budget, thumb_csum_budget):
         """Phase A work items for synced remote file, note and thumbnail replicas."""
+        # S3 checksums ride on the audit's own head_object, so they do not spend
+        # the budget (a budget of 0 still disables them).
+        _csum_on = (file_csum_budget + note_csum_budget + thumb_csum_budget) > 0
+
+        def _csum_free(backend):
+            return _csum_on and isinstance(backend, _S3Backend)
+
         # ---- remote files ----
         for r in FileReplica.query.filter(
             FileReplica.status == 'synced',
@@ -730,9 +743,9 @@ class _StorageManagerScrub:
             if not backend:
                 continue
             exp_sum = _expected_file_checksum(r.file_id, r.node_id) if checksum_enabled else None
-            want_csum = bool(checksum_enabled and exp_sum and file_csum_budget > 0
+            want_csum = bool(checksum_enabled and exp_sum and (file_csum_budget > 0 or _csum_free(backend))
                              and hasattr(backend, 'checksum'))
-            if want_csum:
+            if want_csum and not _csum_free(backend):
                 file_csum_budget -= 1
             work.append({
                 'kind': 'remote_file', 'replica': r, 'node_id': r.node_id,
@@ -758,7 +771,7 @@ class _StorageManagerScrub:
                 continue
             note_version = int(note_obj.content_version or 1)
             exp_sum = note_obj.content_checksum or self._tracked_note_checksum_hex(
-                r.note_id, exclude_node_id=r.node_id)
+                r.note_id, exclude_node_id=r.node_id, allow_local=False)
             # DB-only prechecks (version / recorded checksum) -- no network.
             precheck_bad = (
                 (r.synced_version or 0) != note_version
@@ -766,8 +779,8 @@ class _StorageManagerScrub:
                 or bool(exp_sum and r.checksum != exp_sum)
             )
             want_csum = bool(checksum_enabled and not precheck_bad and exp_sum
-                             and note_csum_budget > 0 and hasattr(backend, 'checksum'))
-            if want_csum:
+                             and (note_csum_budget > 0 or _csum_free(backend)) and hasattr(backend, 'checksum'))
+            if want_csum and not _csum_free(backend):
                 note_csum_budget -= 1
             work.append({
                 'kind': 'remote_note', 'replica': r, 'node_id': r.node_id,
@@ -796,9 +809,9 @@ class _StorageManagerScrub:
             # the local copy itself hashes to the authoritative value.
             auth_sum = _thumb_authority_checksum(r.file_id, r.thumb_type, r.node_id)
             exp_sum = auth_sum if checksum_enabled else None
-            want_csum = bool(checksum_enabled and exp_sum and thumb_csum_budget > 0
+            want_csum = bool(checksum_enabled and exp_sum and (thumb_csum_budget > 0 or _csum_free(backend))
                              and hasattr(backend, 'checksum'))
-            if want_csum:
+            if want_csum and not _csum_free(backend):
                 thumb_csum_budget -= 1
             work.append({
                 'kind': 'remote_thumb', 'replica': r, 'node_id': r.node_id,

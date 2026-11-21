@@ -119,12 +119,11 @@ func errCode(err error) string {
 	return ""
 }
 
-type engine struct{ socket string }
+// engine is the engine of a state dir: its socket and the key it proves
+// itself with (engine.json), checked before any request (passwords).
+type engine struct{ socket, key string }
 
 func openEngine(a cliArgs) (engine, error) {
-	if s := a.flags["socket"]; s != "" {
-		return engine{s}, nil
-	}
 	dir := a.flags["state-dir"]
 	if dir == "" {
 		d, err := config.DefaultStateDir()
@@ -133,21 +132,24 @@ func openEngine(a cliArgs) (engine, error) {
 		}
 		dir = d
 	}
-	return engine{config.RunningSocket(dir)}, nil
+	e := engine{socket: a.flags["socket"], key: config.HelloKey(dir)}
+	if e.socket == "" {
+		e.socket = config.RunningSocket(dir)
+	}
+	return e, nil
 }
 
 // call runs one IPC method and decodes its result into out (nil = ignore).
 func (e engine) call(method string, params, out any) error {
-	c, err := ipc.Dial(e.socket)
+	c, r, err := ipc.DialEngine(e.socket, e.key)
 	if err != nil {
-		return fmt.Errorf("the sync engine is not running (%v); start it with `onegy daemon --secrets-file` or its service", err)
+		return fmt.Errorf("the sync engine is not running or could not be verified (%v); start it with `onegy daemon --secrets-file` or its service", err)
 	}
 	defer c.Close()
 	req, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	if _, err := c.Write(append(req, '\n')); err != nil {
 		return err
 	}
-	r := bufio.NewReaderSize(c, 1<<20)
 	for {
 		line, err := r.ReadBytes('\n')
 		if err != nil {

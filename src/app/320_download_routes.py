@@ -133,10 +133,13 @@ def _can_access_file_via_short_code(file):
         return False
 
     if not file.is_public:
-        public_folder, browsable_folder = _check_file_folder_access(file)
-        if public_folder or browsable_folder:
+        if is_owner:
             return True
-        return is_owner
+        public_folder, browsable_folder = _check_file_folder_access(file)
+        if not (public_folder or browsable_folder):
+            return False
+        # AUDIT FIX (SC): same E2EE upload-boundary rule as download_file_logic.
+        return file.is_e2e_encrypted or not _e2e_upload_boundary_for_folder(db.session.get(Folder, file.folder_id))
 
     return True
 

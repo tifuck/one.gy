@@ -942,7 +942,7 @@ class _StorageManagerNodes:
         verified_local_notes = set()
         for nid in local_note_candidates:
             checked += 1
-            if _local_copy_matches('notes', nid, self._tracked_note_checksum_hex(nid, exclude_node_id=node_id)):
+            if _local_copy_matches('notes', nid, self._tracked_note_checksum_hex(nid, exclude_node_id=node_id, allow_local=False)):
                 verified_local_notes.add(nid)
         failed += len((set(exclusive_note_ids) & local_note_candidates) - verified_local_notes)
         losing_note_ids = {
@@ -996,7 +996,7 @@ class _StorageManagerNodes:
                 if self._verify_remote_replica_payload(
                     replica, backend, 'notes', replica.note_id,
                     int(note_obj.size) if note_obj and note_obj.size is not None else None,
-                    self._tracked_note_checksum_hex(replica.note_id, exclude_node_id=node_id),
+                    self._tracked_note_checksum_hex(replica.note_id, exclude_node_id=node_id, allow_local=False),
                     'NODE REMOVAL SAFETY CHECK', update_replica=True,
                 ):
                     notes_with_survivor.add(replica.note_id)

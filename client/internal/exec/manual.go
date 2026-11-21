@@ -88,7 +88,7 @@ func ManualDownload(ctx context.Context, env *Env, fileID, localDir string) (str
 			defer os.Remove(tmp + ".enc")
 			defer os.Remove(tmp + ".plain")
 			var got *fetched
-			if got, err = x.fetch(t.Observe(tctx), n, tmp+".enc", tmp+".plain", t); err == nil {
+			if got, err = x.fetch(t.Observe(tctx), n, tmp+".enc", tmp+".plain", t, true); err == nil {
 				x.finishPlain(tmp+".plain", got.meta)
 				err = placeFree(tmp+".plain", localDir, local)
 			}

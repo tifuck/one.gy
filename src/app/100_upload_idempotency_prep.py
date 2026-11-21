@@ -1,3 +1,11 @@
+def _bounded_upload_key(upload_key):
+    """A client upload key that fits File.upload_idempotency_key (String(64)):
+    longer keys are replaced by their SHA-256 hex digest."""
+    if not upload_key or len(upload_key) <= 64:
+        return upload_key
+    return hashlib.sha256(upload_key.encode('utf-8')).hexdigest()
+
+
 def _build_upload_idempotency_scope(upload_key, registered_user_id=None, user_id=None, manager_cookie=None):
     if not upload_key:
         return None
@@ -159,7 +167,7 @@ def _upload_idempotent_reuse_response(existing_upload, manager_cookie=None):
             max_age=7 * 24 * 3600,
             secure=True,
             samesite='Strict',
-            httponly=False,
+            httponly=True,
             path='/'
         )
     return resp
@@ -583,9 +591,38 @@ def _write_zip_skip_manifest(zf, skipped_names, used_names=None):
     except Exception as e:
         print(f'[ZIP] Warning: failed to write skip manifest: {e}')
 
+# AUDIT FIX D2: a ZIP slot is held until its stream ends, so a stalled or
+# trickling reader must not keep one for hours. A write blocked this long
+# aborts (socket timeout), and the whole stream must sustain a minimum rate.
+_ZIP_STREAM_STALL_SECONDS = 120
+_ZIP_STREAM_MIN_SECONDS = 15 * 60
+_ZIP_STREAM_MIN_BYTES_PER_SECOND = 256 * 1024
+
+
+def _zip_stream_deadline_seconds(zip_size):
+    return max(_ZIP_STREAM_MIN_SECONDS, int(zip_size or 0) / _ZIP_STREAM_MIN_BYTES_PER_SECOND)
+
+
+def _iter_zip_chunks_with_deadline(temp_zip_path, zip_size, log_prefix):
+    deadline = time.monotonic() + _zip_stream_deadline_seconds(zip_size)
+    for chunk in _iter_file_chunks(temp_zip_path):
+        if time.monotonic() > deadline:
+            print(f'{log_prefix} ZIP stream too slow (below {_ZIP_STREAM_MIN_BYTES_PER_SECOND} B/s); '
+                  'aborting to free its slot')
+            raise TimeoutError('ZIP stream deadline exceeded')
+        yield chunk
+
+
 def _build_zip_download_response(temp_zip_path, temp_zip_dir, zip_filename, file_ids, log_prefix,
                                  incomplete_count=0, release_zip_reservation=None):
     zip_size = os.path.getsize(temp_zip_path)
+    client_sock = request.environ.get('gunicorn.socket') if has_request_context() else None
+    if client_sock is not None:
+        try:
+            # gthread resets this with setblocking() before the next keep-alive request.
+            client_sock.settimeout(_ZIP_STREAM_STALL_SECONDS)
+        except Exception as e:
+            print(f'{log_prefix} Warning: could not set ZIP stream stall timeout: {e}')
 
     def _finalize(completed):
         # AUDIT FIX P11: the ZIP concurrency slot (and its disk reservation) is
@@ -611,7 +648,7 @@ def _build_zip_download_response(temp_zip_path, temp_zip_dir, zip_filename, file
         extra_headers = {'X-Incomplete-Archive': str(incomplete_count)}
 
     return _build_streaming_response(
-        lambda: _iter_file_chunks(temp_zip_path),
+        lambda: _iter_zip_chunks_with_deadline(temp_zip_path, zip_size, log_prefix),
         'application/zip',
         disposition='attachment',
         filename=zip_filename,

@@ -265,6 +265,10 @@
         <input type="password" id="pwConfirm" class="form-input" autocomplete="new-password" minlength="6">
         <p class="rd-field-hint">At least 6 characters. All your other devices will be signed out.</p>
       </div>
+      <div class="rd-field" data-tfa-field{% if not user.two_factor_enabled %} hidden{% endif %}>
+        <label class="rd-field-label" for="pwTotp">Authenticator code</label>
+        <input type="text" id="pwTotp" class="form-input acc-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000">
+      </div>
       <div class="acc-form-foot">
         <button type="button" class="rd-btn rd-btn-ghost" data-rd-modal-close>Cancel</button>
         <button type="submit" class="rd-btn rd-btn-primary" id="pwSaveBtn">Change password</button>
@@ -362,6 +366,10 @@
         <label class="rd-field-label" for="delAcctPw">Password</label>
         <input type="password" id="delAcctPw" class="form-input" autocomplete="current-password">
       </div>
+      <div class="rd-field" data-tfa-field{% if not user.two_factor_enabled %} hidden{% endif %}>
+        <label class="rd-field-label" for="delAcctTotp">Authenticator code</label>
+        <input type="text" id="delAcctTotp" class="form-input acc-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000">
+      </div>
       <div class="rd-field">
         <label class="rd-field-label" for="delAcctCaptcha">Solve the captcha</label>
         <div class="acc-captcha">
@@ -424,7 +432,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
 <script src="{{ versioned_static('quick-unlock.js') }}" defer></script>
 <script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>

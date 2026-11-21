@@ -72,6 +72,19 @@ _totp_failure_lock = _totp_threading.Lock()
 _TOTP_FAILURE_THRESHOLD = 5
 _TOTP_LOCK_DURATION = 300
 _TOTP_FAILURE_RESET_AFTER = 900
+# AUDIT FIX (C3): each consecutive lockout doubles the lock, up to a day; the
+# count is forgotten only on a verified code or after a day without failures.
+_TOTP_LOCK_MAX_DURATION = 24 * 3600
+_TOTP_LOCKOUT_DECAY = 24 * 3600
+
+
+def _totp_failure_entry_stale(entry, now):
+    """True once the failure window, the lock and the lockout memory have all lapsed."""
+    last_fail = float(entry.get('last_fail', 0) or 0)
+    return (last_fail + _TOTP_FAILURE_RESET_AFTER < now
+            and float(entry.get('lock_until', 0) or 0) < now
+            and (not int(entry.get('lockouts', 0) or 0) or last_fail + _TOTP_LOCKOUT_DECAY < now))
+
 
 def _totp_is_replayed(user_id, code):
     """Return True if this TOTP code has already been used for this user recently."""
@@ -141,8 +154,7 @@ def _totp_try_consume(user_id, code):
 def _totp_failure_purge_locked():
     now = time.time()
     stale = [uid for uid, entry in _totp_failure_map.items()
-             if entry.get('last_fail', 0) + _TOTP_FAILURE_RESET_AFTER < now
-             and entry.get('lock_until', 0) < now]
+             if _totp_failure_entry_stale(entry, now)]
     for uid in stale:
         _totp_failure_map.pop(uid, None)
 
@@ -152,9 +164,7 @@ def _totp_lockout_remaining(user_id):
     locks = _acquire_security_state_locks([('totp_failure', state_key)])
     try:
         entry = _read_security_state('totp_failure', state_key)
-        if (not _security_state_fresh(entry, now)
-                or (float(entry.get('last_fail', 0)) + _TOTP_FAILURE_RESET_AFTER < now
-                    and float(entry.get('lock_until', 0)) < now)):
+        if not _security_state_fresh(entry, now) or _totp_failure_entry_stale(entry, now):
             _write_security_state('totp_failure', state_key, None)
             with _totp_failure_lock:
                 _totp_failure_map.pop(user_id, None)
@@ -172,18 +182,24 @@ def _record_failed_totp(user_id):
     locks = _acquire_security_state_locks([('totp_failure', state_key)])
     try:
         entry = _read_security_state('totp_failure', state_key) or {'fails': 0}
+        lockouts = int(entry.get('lockouts', 0) or 0)
+        if float(entry.get('last_fail', 0) or 0) + _TOTP_LOCKOUT_DECAY < now:
+            lockouts = 0
         # A FINISHED lock starts a fresh window (same rule as login lockouts);
         # otherwise every post-cooldown mistake would re-arm a full lock.
         if (entry.get('last_fail', 0) + _TOTP_FAILURE_RESET_AFTER < now
                 or 0 < float(entry.get('lock_until', 0) or 0) <= now):
             entry = {'fails': 0}
+        entry['lockouts'] = lockouts
         entry['fails'] = int(entry.get('fails', 0)) + 1
         entry['last_fail'] = now
         if entry['fails'] >= _TOTP_FAILURE_THRESHOLD:
-            entry['lock_until'] = now + _TOTP_LOCK_DURATION
+            entry['lock_until'] = now + min(_TOTP_LOCK_DURATION * 2 ** min(lockouts, 20), _TOTP_LOCK_MAX_DURATION)
+            entry['lockouts'] = lockouts + 1
         entry['retain_until'] = max(
             entry['last_fail'] + _TOTP_FAILURE_RESET_AFTER,
             entry.get('lock_until', 0),
+            entry['last_fail'] + _TOTP_LOCKOUT_DECAY if entry['lockouts'] else 0,
         )
         _write_security_state('totp_failure', state_key, entry)
         with _totp_failure_lock:
@@ -972,12 +988,15 @@ def api_recovery_key_login():
                      '(NEW_RECOVERY_KEY_HASH, NEW_RECOVERY_WRAPPED_MASTER_KEY, NEW_RECOVERY_KEY_NONCE)'
         }), 400
 
+    # AUDIT FIX (C4): raw-password login no longer exists, so a recovery that
+    # wrote a password_hash would leave the account unusable. Every recovery
+    # upgrades to split-key credentials.
+    if not (new_auth_token and new_auth_salt):
+        print(f'[AUTH] Recovery rejected for user {_log_safe(username)}: new auth_token and auth_salt are required')
+        return jsonify({'error': 'SPLIT-KEY CREDENTIALS REQUIRED FOR RECOVERY'}), 400
+
     # AUDIT FIX M10: identical bounded password-length policy on all three paths.
-    if new_auth_token and new_auth_salt:
-        _pw_len_ok, _pw_len_err = _validate_asserted_password_length(new_password_length, new_password)
-    else:
-        _pw_len_ok, _pw_len_err = _validate_asserted_password_length(
-            len(new_password) if isinstance(new_password, str) else None)
+    _pw_len_ok, _pw_len_err = _validate_asserted_password_length(new_password_length, new_password)
     if not _pw_len_ok:
         return jsonify({'error': _pw_len_err}), 400
 
@@ -1018,20 +1037,17 @@ def api_recovery_key_login():
         return _wrap_err
 
     # ── Build + validate EVERYTHING before touching the User row ──────────
-    rotates_credentials = bool((new_auth_token and new_auth_salt) or new_password)
-
-    # AUDIT FIX C3 INVARIANT (fast path): rotating credentials on an account
-    # with E2EE keys REQUIRES the re-wrapped master key.
-    if rotates_credentials:
-        if not (new_encrypted_master_key and new_master_key_nonce and new_master_key_salt):
-            print(f'[AUTH] Recovery REJECTED for user {username}: credential rotation without '
-                  're-wrapped master key would permanently brick the vault')
-            return jsonify({
-                'error': 'RE-WRAPPED MASTER KEY IS REQUIRED (ENCRYPTED_MASTER_KEY, MASTER_KEY_NONCE, MASTER_KEY_SALT)'
-            }), 400
-        if not all(isinstance(v, str) and v for v in
-                   (new_encrypted_master_key, new_master_key_nonce, new_master_key_salt)):
-            return jsonify({'error': 'RE-WRAPPED MASTER KEY IS MALFORMED'}), 400
+    # AUDIT FIX C3 INVARIANT (fast path): rotating credentials (every recovery)
+    # on an account with E2EE keys REQUIRES the re-wrapped master key.
+    if not (new_encrypted_master_key and new_master_key_nonce and new_master_key_salt):
+        print(f'[AUTH] Recovery REJECTED for user {username}: credential rotation without '
+              're-wrapped master key would permanently brick the vault')
+        return jsonify({
+            'error': 'RE-WRAPPED MASTER KEY IS REQUIRED (ENCRYPTED_MASTER_KEY, MASTER_KEY_NONCE, MASTER_KEY_SALT)'
+        }), 400
+    if not all(isinstance(v, str) and v for v in
+               (new_encrypted_master_key, new_master_key_nonce, new_master_key_salt)):
+        return jsonify({'error': 'RE-WRAPPED MASTER KEY IS MALFORMED'}), 400
 
     # AUDIT FIX M3: serialize the whole read-decide-write per user with the same
     # scoped flock the /api/keys POST and _create_user_api_key use.
@@ -1056,19 +1072,13 @@ def api_recovery_key_login():
                   'rotated by a concurrent change while this request waited on the lock')
             return jsonify({'error': 'RECOVERY FAILED'}), 403
 
-        pending = {}
-        if new_auth_token and new_auth_salt:
-            import hashlib as _hashlib_recovery
-            pending['auth_token_hash'] = _hashlib_recovery.sha256(new_auth_token.encode('utf-8')).hexdigest()
-            pending['auth_token_salt'] = new_auth_salt
-            pending['split_key_version'] = 1
-            pending['password_hash'] = 'split-key-v1'
-        elif user.split_key_version and user.split_key_version >= 1:
-            print(f'[AUTH] Recovery rejected for split-key v1 user {username}: '
-                  'new auth_token and auth_salt are required')
-            return jsonify({'error': 'SPLIT-KEY CREDENTIALS REQUIRED FOR RECOVERY'}), 400
-        else:
-            pending['password_hash'] = generate_password_hash(new_password, method='pbkdf2:sha256')
+        import hashlib as _hashlib_recovery
+        pending = {
+            'auth_token_hash': _hashlib_recovery.sha256(new_auth_token.encode('utf-8')).hexdigest(),
+            'auth_token_salt': new_auth_salt,
+            'split_key_version': 1,
+            'password_hash': 'split-key-v1',
+        }
 
         if new_encrypted_master_key:
             pending['encrypted_master_key'] = new_encrypted_master_key

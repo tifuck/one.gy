@@ -200,7 +200,38 @@ def _sync_file_id_ever_used(file_id):
 
 
 def _sync_find_existing(upload_id):
-    return _find_existing_upload_by_key(upload_id, registered_user_id=g.api_user.id)
+    """The live synced file created with this upload_id. AUDIT FIX (U4): only rows
+    the sync loader serves (no temp/website-only rows)."""
+    return _sync_owned_files_query(g.api_user.id).filter(
+        File.upload_idempotency_key == upload_id, File.is_trashed == False,
+    ).populate_existing().order_by(File.upload_time.desc()).first()
+
+
+def _sync_record_oneshot_replace(spec, file_id):
+    """AUDIT FIX (U4): a replace keeps the file's create upload_id, so a repeat of
+    a one-shot replace is answered by a committed session row (until it expires,
+    like session uploads). Best effort; the replace itself is committed."""
+    file = _sync_load_owned_file(file_id)
+    if file is None:
+        return
+    uid = g.api_user.id
+    try:
+        stale = SyncUploadSession.query.filter_by(user_id=uid, upload_id=spec['upload_id']).first()
+        if stale is not None:
+            stale_id = stale.id
+            db.session.delete(stale)
+            db.session.flush()
+            _sync_remove_dir(_sync_session_dir(stale_id))
+        db.session.add(SyncUploadSession(
+            user_id=uid, device_id=g.device.id, upload_id=spec['upload_id'], file_id=file_id,
+            folder_id=file.folder_id, replace_file_id=file_id, base_content_version=spec['base_content_version'],
+            mode=spec['mode'], chunk_count=1, cipher_size=int(file.disk_size or 0),
+            cipher_sha256=(file.payload_checksum or '0' * 64)[:64], parts_received='[]',
+            expires_at=_sync_session_expiry(), state='committed', committed_file_id=file_id))
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f'[SYNC-UPLOAD] Could not record replace upload {_log_safe(spec["upload_id"])}: {e}')
 
 
 # ─── Commit (create or replace) ──────────────────────────────────────────────
@@ -314,9 +345,6 @@ def _sync_replace_file(spec, payload_path, sums, thumbnail_part, thumbnail_nonce
     size, disk_size, content_hash, payload_checksum = sums
     uid = g.api_user.id
     file_id = spec['replace_file_id']
-    # The per-owner unique index also covers trashed rows; release their claim
-    # on this key before the row below takes it (commits on its own).
-    _release_trashed_upload_idempotency_keys(spec['upload_id'], registered_user_id=uid)
     rewrite_lock = _acquire_file_rewrite_lock(file_id)
     quota_lock = lifecycle_lock = None
     try:
@@ -343,7 +371,6 @@ def _sync_replace_file(spec, payload_path, sums, thumbnail_part, thumbnail_nonce
             file.encrypted_meta = spec['encrypted_meta']
             file.meta_nonce = spec['meta_nonce']
             file.content_version = int(file.content_version or 1) + 1
-            file.upload_idempotency_key = spec['upload_id']
             # The old thumbnail shows old content; a new one is published after the swap.
             file.has_thumbnail = False
             file.encrypted_thumbnail_nonce = None
@@ -442,6 +469,10 @@ def apiv1_sync_upload_file():
             existing = _sync_find_existing(spec['upload_id'])
             if existing:
                 return _sync_existing_response(existing)
+            done = SyncUploadSession.query.filter_by(user_id=g.api_user.id, upload_id=spec['upload_id'],
+                                                     state='committed').first()
+            if done is not None:
+                return _sync_committed_session_response(done)
             error = _sync_check_target(spec)
             if error:
                 return error
@@ -450,7 +481,9 @@ def apiv1_sync_upload_file():
             part.save(staged_path)
             if os.path.getsize(staged_path) > SYNC_SMALL_UPLOAD_MAX:
                 return _sync_error(400, 'bad_request', 'File too large for a one-shot upload; use an upload session', field='file')
-            resp, _file_id = _sync_commit_upload(spec, staged_path, work_dir, thumb_part, thumb_nonce)
+            resp, committed_id = _sync_commit_upload(spec, staged_path, work_dir, thumb_part, thumb_nonce)
+            if committed_id and spec['replace_file_id']:
+                _sync_record_oneshot_replace(spec, committed_id)
             return resp
 
         return _sync_with_upload_key(spec['upload_id'], work)
@@ -803,6 +836,13 @@ def apiv1_sync_upload_complete(session_id):
             return _sync_committed_session_response(session)
         if not _sync_session_open(session):
             return _sync_error(404, 'not_found', 'Upload session not found')
+        # AUDIT FIX (U3): push the expiry out under the row lock so cleanup cannot
+        # delete the session (and its parts) while it is being assembled.
+        session = _sync_load_session(session_id, for_update=True)
+        if not _sync_session_open(session):
+            return _sync_error(404, 'not_found', 'Upload session not found')
+        session.expires_at = _sync_session_expiry()
+        db.session.commit()
         existing = _sync_find_existing(session.upload_id)
         if existing:
             # Committed before the session row was updated (crash, lost response).
@@ -871,22 +911,44 @@ def apiv1_sync_upload_session_delete(session_id):
 def _cleanup_expired_sync_upload_sessions():
     """Delete sessions idle past sync_upload_session_ttl with their parts, then
     staging dirs no session row owns (one-shot work dirs, crash leftovers)."""
-    now = datetime.now(timezone.utc)
     try:
-        expired = [row[0] for row in db.session.query(SyncUploadSession.id).filter(
-            SyncUploadSession.expires_at < now).all()]
-        if expired:
-            SyncUploadSession.query.filter(SyncUploadSession.id.in_(expired)).delete(synchronize_session=False)
-            db.session.commit()
-        live = {row[0] for row in db.session.query(SyncUploadSession.id).all()}
+        candidates = db.session.query(SyncUploadSession.id, SyncUploadSession.user_id,
+                                      SyncUploadSession.upload_id).filter(
+            SyncUploadSession.expires_at < datetime.now(timezone.utc)).all()
         db.session.rollback()
     except Exception as e:
         db.session.rollback()
         print(f'[SYNC-UPLOAD] Session cleanup failed: {e}')
         return 0
     root = _sync_sessions_root()
-    for sid in expired:
-        _sync_remove_dir(os.path.join(root, sid))
+    expired = []
+    for sid, uid, upload_id in candidates:
+        # AUDIT FIX (U3): a held upload key means /complete (or another write of
+        # this upload) is running; skip it, and re-check the expiry under the lock.
+        lock = _acquire_upload_idempotency_lock(
+            _build_upload_idempotency_scope(upload_id, registered_user_id=uid), timeout=0)
+        if lock is None:
+            continue
+        try:
+            deleted = SyncUploadSession.query.filter(
+                SyncUploadSession.id == sid,
+                SyncUploadSession.expires_at < datetime.now(timezone.utc)).delete(synchronize_session=False)
+            db.session.commit()
+            if deleted:
+                _sync_remove_dir(os.path.join(root, sid))
+                expired.append(sid)
+        except Exception as e:
+            db.session.rollback()
+            print(f'[SYNC-UPLOAD] Could not remove expired session {sid}: {e}')
+        finally:
+            _release_upload_idempotency_lock(lock)
+    try:
+        live = {row[0] for row in db.session.query(SyncUploadSession.id).all()}
+        db.session.rollback()
+    except Exception as e:
+        db.session.rollback()
+        print(f'[SYNC-UPLOAD] Session cleanup failed: {e}')
+        return len(expired)
     min_idle = max(get_numeric_setting('sync_upload_session_ttl'), _SYNC_ORPHAN_MIN_AGE_SECONDS)
     orphans = 0
     for name in os.listdir(root):

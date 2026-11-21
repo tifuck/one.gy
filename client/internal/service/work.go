@@ -57,7 +57,7 @@ func (s *Service) syncsPreview(ctx context.Context, params json.RawMessage) (any
 	if len(errs) > 0 {
 		return nil, validationFailed(errs)
 	}
-	res, err := s.validateSync(ctx, c.LocalPath, c.RemoteFolderID, c.Type, "", true)
+	res, err := s.validateSync(ctx, c.LocalPath, c.RemoteFolderID, c.Type, in.Initial, "", true)
 	if err != nil {
 		return nil, err
 	}

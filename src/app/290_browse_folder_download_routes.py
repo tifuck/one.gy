@@ -57,10 +57,18 @@ def browse_folder_download_file(share_token, file_id, filename=None):
     print(f'[BROWSE DOWNLOAD] Serving file: {_log_safe(file.orig_name)} from folder: {_log_safe(folder.name)}')
     
     if file.is_e2e_encrypted:
+        # AUDIT FIX (CL): like download_encrypted, the ciphertext container is
+        # sent (disk_size bytes); refuse a truncated payload before counting it.
+        if not _payload_disk_size_matches(file_path, file.disk_size):
+            print(f'[ERROR] [BROWSE DOWNLOAD] Disk-size mismatch for {file.id} -- refusing to stream truncated download')
+            return render_template('notfound.html',
+                title='FILE UNAVAILABLE',
+                subtitle='THE ENCRYPTED FILE FAILED AN INTEGRITY CHECK',
+                detail='THE STORED FILE DATA DOES NOT MATCH ITS RECORDED SIZE'), 500
         if request.method == 'HEAD':
             return _build_streaming_response(
                 lambda: iter(()), safe_served_mimetype(file.orig_name),
-                disposition='attachment', filename=file.orig_name, content_length=file.size,
+                disposition='attachment', filename=file.orig_name, content_length=file.disk_size,
                 headers={'Cache-Control': 'no-cache, no-store, must-revalidate', 'X-Accel-Buffering': 'no'})
         success, error = check_and_increment_download(file)
         if not success:
@@ -84,7 +92,7 @@ def browse_folder_download_file(share_token, file_id, filename=None):
             mimetype,
             disposition='attachment',
             filename=file.orig_name,
-            content_length=file.size,
+            content_length=file.disk_size,
             headers={
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
                 'X-Accel-Buffering': 'no'

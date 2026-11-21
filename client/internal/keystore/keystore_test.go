@@ -71,3 +71,28 @@ func TestStore(t *testing.T) {
 		t.Fatal("delete")
 	}
 }
+
+// AUDIT FIX (F6): Delete on a corrupt secrets file removes the file and
+// reports write failures instead of leaving the secrets behind.
+func TestDeleteCorruptAndFailing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.json")
+	s := New("/state/x", false)
+	s.UseFile(path)
+	os.WriteFile(path, []byte(`{"secrets":"token-and-key"`), 0o600) // truncated
+	if err := s.Delete("secrets"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("corrupt secrets file left on disk")
+	}
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		return // directory permissions do not stop root (or Windows)
+	}
+	s.Set("secrets", "v")
+	os.Chmod(dir, 0o500)
+	defer os.Chmod(dir, 0o700)
+	if err := s.Delete("secrets"); err == nil {
+		t.Fatal("failed delete not reported")
+	}
+}

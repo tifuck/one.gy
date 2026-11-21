@@ -21,16 +21,12 @@
  *   the keychain. With a client-only secret the server never sees any key
  *   material for this blob in any form.
  *
- * Migration:
- *   Legacy blobs are raw base64 (no prefix) and were encrypted under the
- *   cookie-derived key. _loadKeychain() detects them, decrypts with the legacy
- *   cookie key while the cookie is still present, and immediately re-saves the
- *   entries under the client-only key ('v2:' prefix). Existing guest-upload
- *   passphrases therefore keep working across the upgrade; nothing is dropped.
- *   If the cookie is already gone the legacy blob was undecryptable before
- *   this change too (graceful empty keychain — unchanged behavior). The
- *   `onegy_manager` cookie itself is untouched: it remains the server-side
- *   manager credential and is still readable via getManagerCookie().
+ * Legacy blobs:
+ *   Pre-F5 blobs (raw base64, no 'v2:' prefix, cookie-derived key) are
+ *   dropped. F5 reached PROD on 2026-09-23 and temp uploads live at most
+ *   MAX_RETENTION (7 days), so every passphrase such a blob holds is for a
+ *   file that is gone. The `onegy_manager` cookie is HttpOnly now: it is only
+ *   the server-side manager credential.
  *
  * Security properties:
  *   - Passphrases never leave the browser (not in cookies, not on the server)
@@ -46,7 +42,6 @@
  *   TempKeychain.store(fileId, passphrase)  -> void
  *   TempKeychain.remove(fileId)             -> void
  *   TempKeychain.clear()                    -> void
- *   TempKeychain.getManagerCookie()         -> cookie string or null
  */
 
 const TempKeychain = (function() {
@@ -54,7 +49,6 @@ const TempKeychain = (function() {
 
   const STORAGE_KEY = 'onegy_keychain'
   const SECRET_KEY = 'onegy_kc_secret'
-  const COOKIE_NAME = 'onegy_manager'
   const V2_PREFIX = 'v2:'
   const HKDF_SALT = 'onegy-temp-keychain'
   const HKDF_INFO = 'aes-key'
@@ -70,16 +64,6 @@ const TempKeychain = (function() {
       sessionStorage.setItem(STORAGE_KEY, legacy)
       localStorage.removeItem(STORAGE_KEY)
       return legacy
-    } catch (e) {
-      return null
-    }
-  }
-
-  // ─── Cookie Reader (legacy migration + server manager credential) ────
-  function _getCookie() {
-    try {
-      const match = document.cookie.match(new RegExp('(?:^|;\\s*)' + COOKIE_NAME + '=([^;]*)'))
-      return match ? decodeURIComponent(match[1]) : null
     } catch (e) {
       return null
     }
@@ -181,19 +165,6 @@ const TempKeychain = (function() {
     }
   }
 
-  // LEGACY (AUDIT FIX F5): key derived from the server-minted cookie. Used
-  // ONLY to decrypt pre-migration blobs — never for new writes.
-  async function _deriveLegacyCookieKey() {
-    const cookie = _getCookie()
-    if (!cookie) return null
-    try {
-      return await _deriveKeyFromBytes(_hexToBytes(cookie))
-    } catch (e) {
-      console.error('[KEYCHAIN] Legacy cookie key derivation failed:', e)
-      return null
-    }
-  }
-
   // ─── Encrypt / Decrypt Keychain ──────────────────────────────────
   async function _decryptBlob(stored, key) {
     if (!key || !stored) return null
@@ -218,24 +189,13 @@ const TempKeychain = (function() {
     const stored = _readStoredKeychainBlob()
     if (!stored) return {}
 
-    if (stored.indexOf(V2_PREFIX) === 0) {
-      // Current format: client-only key.
-      const key = await _deriveClientKey()
-      return (await _decryptBlob(stored.slice(V2_PREFIX.length), key)) || {}
+    if (stored.indexOf(V2_PREFIX) !== 0) {
+      // Pre-F5 blob: its files have all expired (see header).
+      try { sessionStorage.removeItem(STORAGE_KEY) } catch (e) {}
+      return {}
     }
-
-    // Legacy (pre-F5) blob: cookie-derived key.
-    const legacyKey = await _deriveLegacyCookieKey()
-    const data = await _decryptBlob(stored, legacyKey)
-    if (data) {
-      // Opportunistic migration: re-encrypt the entries under the client-only
-      // key immediately, so guest-upload passphrases survive even after the
-      // cookie rotates/expires (the old design lost them exactly then).
-      await _saveKeychain(data)
-      return data
-    }
-    // Cookie gone or wrong: same graceful empty result as the old code.
-    return {}
+    const key = await _deriveClientKey()
+    return (await _decryptBlob(stored.slice(V2_PREFIX.length), key)) || {}
   }
 
   async function _saveKeychain(data) {
@@ -270,17 +230,6 @@ const TempKeychain = (function() {
   async function get(fileId) {
     if (!fileId) return null
     try {
-      const stored = _readStoredKeychainBlob()
-      if (stored && stored.indexOf(V2_PREFIX) !== 0) {
-        // Loading a legacy blob migrates it (a write), so it must queue behind
-        // store/remove or it can overwrite a newer entry with its old snapshot.
-        let found = null
-        _mutationChain = _mutationChain.then(async function() {
-          try { found = (await _loadKeychain())[fileId] || null } catch (e) {}
-        })
-        await _mutationChain
-        return found
-      }
       const keychain = await _loadKeychain()
       return keychain[fileId] || null
     } catch (e) {
@@ -352,15 +301,10 @@ const TempKeychain = (function() {
     _cachedSecretHex = null
   }
 
-  function getManagerCookie() {
-    return _getCookie()
-  }
-
   return {
     get: get,
     store: store,
     remove: remove,
-    clear: clear,
-    getManagerCookie: getManagerCookie
+    clear: clear
   }
 })()

@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -54,7 +55,9 @@ func (s *Store) SetMemoryOnly(on bool) {
 	s.memoryOnly = on
 	if on {
 		for name := range s.mem {
-			s.remove(name)
+			if err := s.remove(name); err != nil {
+				slog.Error("keystore: could not remove the stored copy", "name", name, "err", err)
+			}
 		}
 	}
 }
@@ -89,12 +92,13 @@ func (s *Store) Set(name, value string) (persisted bool) {
 	return s.save(name, value) == nil
 }
 
-// Delete removes the memory and key-store copies.
-func (s *Store) Delete(name string) {
+// Delete removes the memory and key-store copies. An error means a stored
+// copy may be left (the caller reports it).
+func (s *Store) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.mem, name)
-	s.remove(name)
+	return s.remove(name)
 }
 
 func (s *Store) load(name string) (string, error) {
@@ -128,17 +132,32 @@ func (s *Store) save(name, value string) error {
 	return s.writeFile(all)
 }
 
-func (s *Store) remove(name string) {
+func (s *Store) remove(name string) error {
 	if s.file == "" {
-		keyring.Delete(service, s.prefix+name)
-		return
-	}
-	if all, err := s.readFile(); err == nil {
-		if _, ok := all[name]; ok {
-			delete(all, name)
-			s.writeFile(all)
+		if err := keyring.Delete(service, s.prefix+name); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+			return err
 		}
+		return nil
 	}
+	all, err := s.readFile()
+	var se *json.SyntaxError
+	var te *json.UnmarshalTypeError
+	if errors.As(err, &se) || errors.As(err, &te) {
+		// AUDIT FIX (F6): a corrupt file cannot be edited; it holds only
+		// secrets, so drop it rather than leave the token and keys behind.
+		if err := os.Remove(s.file); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, ok := all[name]; !ok {
+		return nil
+	}
+	delete(all, name)
+	return s.writeFile(all)
 }
 
 func (s *Store) readFile() (map[string]string, error) {

@@ -791,6 +791,9 @@ _SETTING_DEFAULTS = {
     'health_check_interval': '300',
     'integrity_scrub_interval': '900',
     'integrity_scrub_batch_size': '500',
+    # Remote hashes per scrub pass that cost an exec on the node (SSH), split
+    # across files/notes/thumbnails. Local and S3 checksums are free and taken
+    # for every audited row. 0 disables all scrub checksum verification.
     'integrity_scrub_checksum_batch_size': '50',
     # S3 COST FIX: minimum age (seconds) before an already-verified replica is
     # re-probed by the scrub. Every replica is checksum-validated at UPLOAD time

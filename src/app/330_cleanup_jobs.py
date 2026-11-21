@@ -27,14 +27,13 @@ def _report_lost_payloads(kind, ids):
 
 # M7 FIX: how long a burned (max_downloads reached) file lingers after it is
 # marked pending_delete_at before cleanup_expired_files() hard-deletes the
-# row and payload. The grace exists purely so streams that legitimately
-# reserved a slot BEFORE the cap was hit can finish draining; the marker
-# already stops all NEW download attempts immediately. Sized to exceed the
-# longest stream a worker can legally keep open -- gunicorn.conf.py uses
-# timeout=7200s (it kills any longer request itself) plus
-# graceful_timeout=300s -- so no stream that WOULD have finished can ever be
-# truncated by the deferred delete. If the gunicorn timeout is raised,
-# raise this with it.
+# row and payload. The grace exists so streams that legitimately reserved a
+# slot BEFORE the cap was hit can finish draining; the marker already stops
+# all NEW download attempts immediately.
+# AUDIT FIX G2: gthread's timeout does NOT bound a streaming response, so the
+# grace alone cannot cover a long stream. After it, the delete is further
+# deferred while any process still holds the payload (or its .cache_ copy)
+# open -- see _burned_payload_in_use().
 DOWNLOAD_LIMIT_DELETE_GRACE = timedelta(seconds=7200 + 300 + 300)
 
 
@@ -144,6 +143,9 @@ def cleanup_expired_files():
                 File.pending_delete_at < now - DOWNLOAD_LIMIT_DELETE_GRACE,
             ).first()
             if not file:
+                continue
+            if _burned_payload_in_use(file.filename):
+                print(f'[CLEANUP] Download-limit burned file {file.id} still being streamed; deferring delete')
                 continue
             item_targets = storage.stage_payload_deletes(_file_payload_delete_keys(file))
             print(f'[CLEANUP] Download-limit burned file deleting: {file.orig_name} (ID: {file.id})')
@@ -381,7 +383,33 @@ def cleanup_stale_lock_files():
                 pass
     if reaped > 0:
         print(f'[CLEANUP] Reaped {reaped} idle advisory lock file(s) from instance/locks')
+    cleanup_expired_thumbnail_failure_markers()
     return reaped
+
+
+def cleanup_expired_thumbnail_failure_markers():
+    """Remove failed-render markers past their retry window (they are inert by then)."""
+    marker_dir = _thumbnail_failure_marker_dir()
+    if not os.path.isdir(marker_dir):
+        return 0
+    cutoff = time.time() - THUMBNAIL_FAILURE_RETRY_SECONDS
+    removed = 0
+    try:
+        entries = list(os.scandir(marker_dir))
+    except OSError as e:
+        print(f'[CLEANUP] Could not scan thumbnail failure markers: {e}')
+        return 0
+    for entry in entries:
+        try:
+            if (entry.name.endswith('.failed') and entry.is_file(follow_symlinks=False)
+                    and entry.stat(follow_symlinks=False).st_mtime < cutoff):
+                os.unlink(entry.path)
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        print(f'[CLEANUP] Removed {removed} expired thumbnail failure marker(s)')
+    return removed
 
 
 def cleanup_stale_security_state():
@@ -588,15 +616,47 @@ def _local_payload_path(filename):
     return os.path.join(app.config['UPLOAD_FOLDER'], filename)
 
 
+def _burned_payload_in_use(filename):
+    """True while a stream still reads the local payload or its remote-read cache copy."""
+    if not filename:
+        return False
+    return any(_path_held_open_by_any_process(path) for path in (
+        _local_payload_path(filename),
+        os.path.join(app.config['UPLOAD_FOLDER'], f'.cache_{filename}'),
+    ))
+
+
+# Orphan reaping deletes a payload on EVERY mirror, permanently, purely because
+# the database has no row for it. A pass that would reap most of what is on disk
+# means the database is wrong (empty, or not this instance's), not that the disk
+# is dirty, so it is refused and nothing is deleted.
+# shortcut: fixed thresholds, no override. A refusal that is legitimate (a crash
+# while deleting most of a small instance) leaves local files to remove by hand.
+ORPHAN_REAP_SANITY_MIN = 100
+
+
+def _orphan_reap_refused(kind, orphan_count, listed_count):
+    if orphan_count <= ORPHAN_REAP_SANITY_MIN or orphan_count * 2 <= listed_count:
+        return False
+    print(f'[ERROR] [CLEANUP] Refusing to reap {orphan_count} of {listed_count} local {kind} payloads as orphans: '
+          f'most of the disk has no database row, so the database is suspect (empty or wrong one), '
+          f'not the disk. Nothing was deleted.')
+    return True
+
+
+
 def cleanup_orphaned_files():
     # Only load needed columns (id, filename) -- avoids loading LargeBinary thumbnail data
     _file_rows = db.session.query(File.id, File.filename).all()
     db_filenames = {row[1] for row in _file_rows}
     
     count = 0
+    orphans = []
+    listed = 0
     
     try:
         for filename in storage.list_files():
+            listed += 1
             if filename not in db_filenames:
                 # Skip .dec temp files used by in-progress large file downloads
                 if filename.endswith('.dec'):
@@ -632,34 +692,38 @@ def cleanup_orphaned_files():
                     continue
                 if age < 300:
                     continue
-                # AUDIT FIX D2: db_filenames was snapshotted BEFORE the (possibly
-                # multi-minute, paginated remote) storage listing above. A file
-                # committed after that snapshot would look like an orphan here.
-                # Re-check against a fresh snapshot immediately before deleting.
-                if not _file_filename_still_orphaned(filename):
-                    print(f'[CLEANUP] Skipping {filename}: a File row now references it (committed during the scan)')
-                    continue
-                # AUDIT FIX (residual delete race): even after the fresh DB
-                # re-check, an in-flight reader/writer that opened the payload
-                # a moment ago would have its file pulled out from under it.
-                # 'Held open' is the liveness signal the re-check cannot give,
-                # and taking it INSIDE the storage lock makes the probe and the
-                # unlink one critical section against every in-process storage
-                # writer that uses the same lock; cross-process writers are
-                # covered by their own flock/atomic-replace.
-                try:
-                    with storage._state_lock:
-                        if _path_held_open_by_any_process(_local_payload_path(filename)):
-                            print(f'[CLEANUP] Skipping orphaned file {filename}: still open by a live reader/writer')
-                            continue
-                        deleted = storage.delete_file(filename)
-                    if deleted:
-                        print(f'[CLEANUP] Deleted orphaned file: {filename}')
-                        count += 1
-                    else:
-                        print(f'[CLEANUP] Could not durably schedule deletion for orphaned file: {filename}')
-                except Exception as e:
-                    print(f'[CLEANUP] Failed to delete orphaned file {filename}: {e}')
+                orphans.append(filename)
+        if _orphan_reap_refused('file', len(orphans), listed):
+            orphans = []
+        for filename in orphans:
+            # AUDIT FIX D2: db_filenames was snapshotted BEFORE the (possibly
+            # multi-minute, paginated remote) storage listing above. A file
+            # committed after that snapshot would look like an orphan here.
+            # Re-check against a fresh snapshot immediately before deleting.
+            if not _file_filename_still_orphaned(filename):
+                print(f'[CLEANUP] Skipping {filename}: a File row now references it (committed during the scan)')
+                continue
+            # AUDIT FIX (residual delete race): even after the fresh DB
+            # re-check, an in-flight reader/writer that opened the payload
+            # a moment ago would have its file pulled out from under it.
+            # 'Held open' is the liveness signal the re-check cannot give,
+            # and taking it INSIDE the storage lock makes the probe and the
+            # unlink one critical section against every in-process storage
+            # writer that uses the same lock; cross-process writers are
+            # covered by their own flock/atomic-replace.
+            try:
+                with storage._state_lock:
+                    if _path_held_open_by_any_process(_local_payload_path(filename)):
+                        print(f'[CLEANUP] Skipping orphaned file {filename}: still open by a live reader/writer')
+                        continue
+                    deleted = storage.delete_file(filename)
+                if deleted:
+                    print(f'[CLEANUP] Deleted orphaned file: {filename}')
+                    count += 1
+                else:
+                    print(f'[CLEANUP] Could not durably schedule deletion for orphaned file: {filename}')
+            except Exception as e:
+                print(f'[CLEANUP] Failed to delete orphaned file {filename}: {e}')
     except Exception as e:
         print(f'[CLEANUP] Error listing files for orphan cleanup: {e}')
     
@@ -669,11 +733,14 @@ def cleanup_orphaned_files():
     # Cleanup orphaned thumbnails
     db_file_ids = {row[0] for row in _file_rows}
     thumb_count = 0
+    thumb_orphans = []
+    thumb_listed = 0
     
     try:
         for filename in storage.list_thumbnails():
             if _is_internal_storage_artifact(filename):
                 continue
+            thumb_listed += 1
             file_id_part = filename.rsplit('.', 1)[0] if '.' in filename else filename
             if file_id_part not in db_file_ids:
                 # AUDIT FIX D1: unknown mtime fails CLOSED (never delete).
@@ -683,21 +750,25 @@ def cleanup_orphaned_files():
                     continue
                 if age < 300:
                     continue
-                # AUDIT FIX D2: re-check the DB right before deleting -- the id
-                # set was snapshotted before the storage listing ran.
-                if not _file_id_still_orphaned(file_id_part):
-                    print(f'[CLEANUP] Skipping thumbnail {filename}: its File row now exists (committed during the scan)')
-                    continue
-                try:
-                    with storage._state_lock:
-                        deleted = storage._delete_thumbnail_by_basename(filename)
-                    if deleted:
-                        print(f'[CLEANUP] Deleted orphaned thumbnail: {filename}')
-                        thumb_count += 1
-                    else:
-                        print(f'[CLEANUP] Could not durably schedule deletion for orphaned thumbnail: {filename}')
-                except Exception as e:
-                    print(f'[CLEANUP] Failed to delete orphaned thumbnail {filename}: {e}')
+                thumb_orphans.append((filename, file_id_part))
+        if _orphan_reap_refused('thumbnail', len(thumb_orphans), thumb_listed):
+            thumb_orphans = []
+        for filename, file_id_part in thumb_orphans:
+            # AUDIT FIX D2: re-check the DB right before deleting -- the id
+            # set was snapshotted before the storage listing ran.
+            if not _file_id_still_orphaned(file_id_part):
+                print(f'[CLEANUP] Skipping thumbnail {filename}: its File row now exists (committed during the scan)')
+                continue
+            try:
+                with storage._state_lock:
+                    deleted = storage._delete_thumbnail_by_basename(filename)
+                if deleted:
+                    print(f'[CLEANUP] Deleted orphaned thumbnail: {filename}')
+                    thumb_count += 1
+                else:
+                    print(f'[CLEANUP] Could not durably schedule deletion for orphaned thumbnail: {filename}')
+            except Exception as e:
+                print(f'[CLEANUP] Failed to delete orphaned thumbnail {filename}: {e}')
     except Exception as e:
         print(f'[CLEANUP] Error listing thumbnails for orphan cleanup: {e}')
     
@@ -784,10 +855,13 @@ def cleanup_orphaned_notes():
     _note_rows = db.session.query(Note.id, Note.content_version, Note.content_checksum).all()
     db_note_ids = {row[0] for row in _note_rows}
     count = 0
+    orphans = []
+    listed = 0
     
     # Phase 1: disk files with no DB record
     try:
         for filename in storage.list_notes():
+            listed += 1
             if filename not in db_note_ids:
                 if _is_internal_storage_artifact(filename):
                     continue
@@ -802,24 +876,28 @@ def cleanup_orphaned_notes():
                     continue
                 if age < 300:
                     continue
-                note_lock = _acquire_note_rewrite_lock(filename)
-                try:
-                    # The row can be published while the storage listing is in
-                    # flight. Recheck under the same lock used by note saves.
-                    if not _note_id_still_orphaned(filename):
-                        print(f'[CLEANUP] Skipping note {filename}: its Note row now exists (committed during the scan)')
-                        continue
-                    with storage._state_lock:
-                        deleted = storage.delete_note(filename)
-                    if deleted:
-                        print(f'[CLEANUP] Deleted orphaned note file: {filename}')
-                        count += 1
-                    else:
-                        print(f'[CLEANUP] Could not durably schedule deletion for orphaned note: {filename}')
-                except Exception as e:
-                    print(f'[CLEANUP] Failed to delete orphaned note {filename}: {e}')
-                finally:
-                    _release_note_rewrite_lock(note_lock)
+                orphans.append(filename)
+        if _orphan_reap_refused('note', len(orphans), listed):
+            orphans = []
+        for filename in orphans:
+            note_lock = _acquire_note_rewrite_lock(filename)
+            try:
+                # The row can be published while the storage listing is in
+                # flight. Recheck under the same lock used by note saves.
+                if not _note_id_still_orphaned(filename):
+                    print(f'[CLEANUP] Skipping note {filename}: its Note row now exists (committed during the scan)')
+                    continue
+                with storage._state_lock:
+                    deleted = storage.delete_note(filename)
+                if deleted:
+                    print(f'[CLEANUP] Deleted orphaned note file: {filename}')
+                    count += 1
+                else:
+                    print(f'[CLEANUP] Could not durably schedule deletion for orphaned note: {filename}')
+            except Exception as e:
+                print(f'[CLEANUP] Failed to delete orphaned note {filename}: {e}')
+            finally:
+                _release_note_rewrite_lock(note_lock)
     except Exception as e:
         print(f'[CLEANUP] Error listing notes for orphan cleanup: {e}')
     if count > 0:

@@ -30,7 +30,11 @@ def api_notifications_active():
     # from /login after registration must not swallow on_register.
     just_logged_in = bool(logged_in_user_id and session.get('just_logged_in'))
     just_registered = bool(logged_in_user_id and session.get('just_registered'))
-    if logged_in_user_id:
+    # AUDIT FIX (N2): this GET is CSRF-exempt; a cross-site request must not
+    # consume the one-shot flags (or the session state below) for the real page.
+    first_party = (request.headers.get('Sec-Fetch-Site') in ('same-origin', 'none')
+                   or request.headers.get('X-Requested-With') == 'XMLHttpRequest')
+    if logged_in_user_id and first_party:
         session.pop('just_logged_in', None)
         session.pop('just_registered', None)
 
@@ -92,7 +96,7 @@ def api_notifications_active():
             'display_trigger': trigger,
         })
 
-    if active_changed:
+    if active_changed and first_party:
         session['_session_notif_active'] = list(session_active)
 
     return _notif_nocache(jsonify(result))

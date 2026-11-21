@@ -428,7 +428,7 @@ THUMBNAIL_CACHE_MAX_AGE = int(os.environ.get('THUMBNAIL_CACHE_MAX_AGE', '900'))
 #
 # Cross-worker coherence (AUDIT FIX H2, see the warning below): the default
 # RATELIMIT_STORAGE_URI is memory://, whose counters are per-process. This
-# deployment runs GUNICORN_WORKERS=1 (gthread, 8 threads), so memory:// IS
+# deployment runs GUNICORN_WORKERS=1 (gthread, 32 threads), so memory:// IS
 # process-wide and authoritative here — no Redis (or any other service) is
 # required. CONDITIONAL deployment note: only if an operator actually scales
 # GUNICORN_WORKERS above 1 must RATELIMIT_STORAGE_URI point at a shared

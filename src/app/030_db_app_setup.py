@@ -44,21 +44,26 @@ def redact_database_uri(uri=None):
 app.config['SQLALCHEMY_DATABASE_URI'] = get_configured_database_uri()
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # AUDIT Tier 1: explicit pool sizing for MariaDB. Defaults (pool_size=5,
-# max_overflow=10) can be saturated by Gunicorn (8 threads) + APScheduler
+# max_overflow=10) can be saturated by Gunicorn (32 threads) + APScheduler
 # replication workers (up to 10 in 'unlimited' preset) running in parallel.
 # pool_pre_ping detects stale connections; pool_recycle=3600 forestalls
 # wait_timeout disconnects on MariaDB.
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_pre_ping': True,
-    'pool_size': 10,
-    'max_overflow': 20,
+    'pool_size': 20,
+    'max_overflow': 30,
     'pool_timeout': 30,
 }
+# AUDIT FIX (O6): a slow ALTER/CREATE INDEX on a big table outlasts the 60s
+# request read timeout and failed the boot. Only the separate `flask db-upgrade`
+# process (start.sh, run.py, setup.sh) gets the long timeout.
+_DB_SCHEMA_UPGRADE_PROCESS = 'db-upgrade' in sys.argv[1:]
+_DB_SCHEMA_UPGRADE_READ_TIMEOUT_SECONDS = 3 * 3600
 if get_database_backend_name() == 'mysql':
     app.config['SQLALCHEMY_ENGINE_OPTIONS']['pool_recycle'] = 3600
     app.config['SQLALCHEMY_ENGINE_OPTIONS']['connect_args'] = {
         'connect_timeout': 10,
-        'read_timeout': 60,
+        'read_timeout': _DB_SCHEMA_UPGRADE_READ_TIMEOUT_SECONDS if _DB_SCHEMA_UPGRADE_PROCESS else 60,
         'write_timeout': 60,
     }
 elif not ALLOW_SQLITE_APP_DB:

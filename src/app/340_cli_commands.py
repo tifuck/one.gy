@@ -516,9 +516,15 @@ def cleanup_remote_staging_files():
     for directory in [app.config['UPLOAD_FOLDER'], NOTES_DIR, THUMBNAILS_DIR]:
         try:
             for filename in os.listdir(directory):
+                if filename.endswith(_PRESERVED_PAYLOAD_SUFFIX):
+                    print(f'[CLEANUP] [WARNING] Preserved payload copy awaiting manual recovery: '
+                          f'{os.path.join(directory, filename)}')
+                    continue
                 if not (
                     filename.startswith('.cache_') or
                     filename.startswith('.remote_') or
+                    filename.startswith('.s3_verify_') or
+                    filename.startswith('.scrub_dv_') or
                     filename.startswith('repl_') or
                     filename.endswith('.sftp_tmp') or
                     filename.endswith('.s3_tmp') or

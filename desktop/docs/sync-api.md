@@ -76,7 +76,9 @@ base64 (standard alphabet). Opaque to the server. Clients must reject a node
 whose decrypted meta has a different `file_id` or a lower `content_version`
 than the node. A website edit (`save-content`) bumps `content_version`, may
 rotate the file key (new `encrypted_file_key`) and clears `encrypted_meta`; the
-client backfills it with `/meta` after downloading and verifying.
+client backfills it with `/meta` after downloading and verifying, except for a
+new version of a file it already synced (unproven: it could be an older
+container served again, so the client does not vouch for it).
 
 ## Devices
 
@@ -120,11 +122,11 @@ Server: `src/app/378_apiv1_device_security.py` (routes) and
 
 **Signed requests.** `authorize` takes an optional `pop_public_key` (base64 DER
 SubjectPublicKeyInfo, ECDSA P-256). Devices authorized before this enroll one
-once with `POST /apiv1/devices/self/pop-key {"public_key"}` (`409` when one
-exists). From then on every device-token request must carry
-`X-Onegy-Pop-Ts: <unix seconds>` (±300 s) and `X-Onegy-Pop-Sig: <base64 DER
-ECDSA/SHA-256>` over `"<ts>\n<METHOD>\n<path>"` + `"?<raw query>"` when there
-is one (decoded path, raw query); else `401 invalid_signature` (not a
+once with `POST /apiv1/devices/self/pop-key {"public_key"}` (needs a live grant,
+else `403 grant_required`; `409` when one exists). From then on every
+device-token request must carry `X-Onegy-Pop-Ts: <unix seconds>` (±300 s)
+and `X-Onegy-Pop-Sig: <base64 DER ECDSA/SHA-256>` over
+`"<ts>\n<METHOD>\n<path>"` + `"?<raw query>"` when there is one (decoded path, raw query); else `401 invalid_signature` (not a
 revocation). The engine keeps the key in the TPM on Windows when it can (it
 self-checks a signature first), else as a software key in the OS key store.
 A token copied off the computer is then useless.
@@ -290,7 +292,8 @@ The client may propose the new file's id (`file_id`, UUID v4) so the encrypted
 meta can include it; a taken id → `409 conflict`. Without it the server
 generates one. `upload_id` (≤64 chars) is the idempotency key, unique per user:
 repeating a committed upload returns `200 {"existing": true, "node": …}`
-(also for a replace: the replaced file then carries that `upload_id`).
+(also for a replace, until `sync_upload_session_ttl` after it; a replaced file
+keeps the `upload_id` it was created with).
 `encrypted_meta` + `meta_nonce` are optional but go together. Writes into a
 backup folder of another device → `403 read_only`.
 

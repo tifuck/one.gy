@@ -209,6 +209,7 @@ func (s *Service) syncsValidate(ctx context.Context, params json.RawMessage) (an
 		LocalPath      string          `json:"local_path"`
 		RemoteFolderID json.RawMessage `json:"remote_folder_id"` // omitted = local checks only; null = drive root
 		Type           string          `json:"type"`
+		Initial        string          `json:"initial"`
 	}
 	if err := ipc.Params(params, &in); err != nil {
 		return nil, err
@@ -222,7 +223,7 @@ func (s *Service) syncsValidate(ctx context.Context, params json.RawMessage) (an
 			return nil, validationFailed([]problem{{Code: "invalid", Field: "remote_folder_id", Message: "remote_folder_id must be a folder id or null"}})
 		}
 	}
-	return s.validateSync(ctx, in.LocalPath, zeroIsRoot(remoteID), in.Type, "", in.RemoteFolderID != nil)
+	return s.validateSync(ctx, in.LocalPath, zeroIsRoot(remoteID), in.Type, in.Initial, "", in.RemoteFolderID != nil)
 }
 
 func (s *Service) syncsCreate(ctx context.Context, params json.RawMessage) (any, error) {
@@ -260,7 +261,7 @@ func (s *Service) syncsCreate(ctx context.Context, params json.RawMessage) (any,
 		id := t["folder_id"].(int64)
 		c.RemoteFolderID = &id
 	}
-	res, err := s.validateSync(ctx, c.LocalPath, c.RemoteFolderID, c.Type, "", true)
+	res, err := s.validateSync(ctx, c.LocalPath, c.RemoteFolderID, c.Type, in.Initial, "", true)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +379,7 @@ func (s *Service) syncsUpdate(ctx context.Context, params json.RawMessage) (any,
 		return nil, validationFailed(errs)
 	}
 	if c.Type != cur.Type {
-		res, err := s.validateSync(ctx, row.LocalRoot, row.RemoteRootID, c.Type, row.ID, true)
+		res, err := s.validateSync(ctx, row.LocalRoot, row.RemoteRootID, c.Type, "", row.ID, true)
 		if err != nil {
 			return nil, err
 		}

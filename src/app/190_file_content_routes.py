@@ -49,19 +49,9 @@ def rename_file(file_id):
     if not new_name:
         return jsonify({'error': 'File name required'}), 400
     
-    # Sanitize filename: strip whitespace and remove path traversal sequences
-    new_name = new_name.strip()
-    if not new_name:
-        return jsonify({'error': 'File name required'}), 400
-    
-    # Remove path separators and traversal sequences
-    new_name = new_name.replace('/', '_').replace('\\', '_')
-    new_name = new_name.replace('..', '_')
-    # Remove null bytes
-    new_name = new_name.replace('\x00', '')
-    # Limit length to prevent excessively long names
-    if len(new_name) > 255:
-        new_name = new_name[:255]
+    # AUDIT FIX (N1): same name rules as uploads and the API (control chars,
+    # separators, '..', NUL; keeps the extension when truncating).
+    new_name = sanitize_plaintext_name(new_name)
     if not new_name:
         return jsonify({'error': 'Invalid file name'}), 400
     

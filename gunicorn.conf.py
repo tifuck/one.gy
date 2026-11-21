@@ -27,7 +27,11 @@ keyfile = os.path.join(basedir, 'key.pem')
 # multi-minute encryption of large files.
 worker_class = 'gthread'
 workers = int(os.environ.get('GUNICORN_WORKERS', '1'))
-threads = int(os.environ.get('GUNICORN_THREADS', '8'))
+# AUDIT FIX G1: responses are unbuffered (nginx proxy_buffering off, or direct
+# NAT clients), so each slow reader pins a thread for the whole download; 8
+# threads let a handful of slow clients stall the site. Streams release their
+# DB connection before the body is sent, so this does not scale DB usage 1:1.
+threads = int(os.environ.get('GUNICORN_THREADS', '32'))
 # gunicorn >= 26 opens $HOME/.gunicorn/gunicorn.ctl by default; PROD and DEV share
 # root's HOME, so the second instance would clobber the first's socket.
 control_socket_disable = True

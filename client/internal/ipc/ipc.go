@@ -67,6 +67,11 @@ type Server struct {
 	// programs of the same user cannot ask for keys or website tickets.
 	Secret string
 
+	// HelloKey, when set, proves the engine to CLI clients: they read it from
+	// the user's private engine.json and check ipc.hello {nonce}'s key_proof
+	// before sending a password (DialEngine).
+	HelloKey string
+
 	mu    sync.Mutex
 	conns map[*conn]bool
 	ln    net.Listener
@@ -224,6 +229,9 @@ func (s *Server) dispatch(ctx context.Context, c *conn, line []byte) (resp, afte
 				res := map[string]string{}
 				if s.Secret != "" {
 					res["proof"] = HelloProof(s.Secret, in.Nonce)
+				}
+				if s.HelloKey != "" {
+					res["key_proof"] = HelloProof(s.HelloKey, in.Nonce)
 				}
 				result = res
 			} else if s.Secret == "" || subtle.ConstantTimeCompare([]byte(in.Secret), []byte(s.Secret)) == 1 {

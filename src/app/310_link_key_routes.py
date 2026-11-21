@@ -18,6 +18,9 @@ def regenerate_file_link(file_id):
     admin_ok = bool(requesting_user) and bool(requesting_user.is_admin)
     if not (guest_ok or cookie_ok or registered_ok or admin_ok):
         return jsonify({'error': 'ACCESS DENIED'}), 403
+    # AUDIT FIX (B5b): the PK rotation tombstones the file for the owning device.
+    if _backup_read_only(file.folder_id):
+        return _backup_read_only_error()
 
     rewrite_lock = _acquire_file_rewrite_lock(file.id)
     lifecycle_lock = _acquire_file_lifecycle_lock(file)
@@ -100,6 +103,16 @@ def regenerate_file_link(file_id):
                 db.text('UPDATE file SET id = :new_id, filename = :new_filename WHERE id = :old_id'),
                 {'new_id': new_id, 'new_filename': new_filename, 'old_id': old_id}
             )
+            # AUDIT FIX (A1): versions and open/committed sync uploads reference
+            # the live id without an FK; left on old_id the versions were reaped.
+            db.session.execute(
+                db.text('UPDATE file SET version_of_id = :new_id WHERE version_of_id = :old_id'),
+                {'new_id': new_id, 'old_id': old_id}
+            )
+            SyncUploadSession.query.filter_by(replace_file_id=old_id).update(
+                {'replace_file_id': new_id, 'file_id': new_id}, synchronize_session=False)
+            SyncUploadSession.query.filter_by(committed_file_id=old_id).update(
+                {'committed_file_id': new_id}, synchronize_session=False)
             # The old id served the old link: it may never come back as a new file.
             _retire_file_ids(db.session, [old_id])
             # Desktop sync: the old id is gone (tombstone) and a new node appears.
@@ -285,7 +298,9 @@ def set_folder_link_secret(folder_id):
     # If this folder is inside a browsable ancestor's tree, mark the ancestor
     target_folder = folder
     if not folder.is_browsable:
-        browsable_ancestor = is_folder_in_browsable_ancestor(folder)
+        # AUDIT FIX (OT): owner-only route; a password-protected ancestor share
+        # still owns the tree, so the child must use its token.
+        browsable_ancestor = is_folder_in_browsable_ancestor(folder, require_password=False)
         if browsable_ancestor:
             if browsable_ancestor.is_link_shared:
                 # Ancestor already marked — return its share_token for HKDF derivation

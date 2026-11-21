@@ -96,7 +96,7 @@
 var MUSIC_DISABLED = {{ 'true' if music_disabled else 'false' }};
 try { if (!MUSIC_DISABLED) localStorage.setItem('onegy_last_page', JSON.stringify({ page: '/music' })) } catch(e) {}</script>
 {% if not music_disabled %}
-<script src="{{ versioned_static('crypto.js') }}" defer></script>
+<script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-core.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-ui.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-fullscreen.js') }}" defer></script>

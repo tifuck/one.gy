@@ -86,12 +86,12 @@ def apiv1_device_pop_key():
     device = g.device
     if device.pop_public_key:
         return _sync_error(409, 'conflict', 'This device already signs its requests')
-    # A locked app's stolen token must not swap in its own key. Devices without
-    # the app lock (pre-lock clients migrating on start) already have full access.
-    if device.lock_enabled:
-        err = _device_require_grant()
-        if err:
-            return err
+    # A stolen token must not enroll its own key first, lock or no lock: the
+    # grant proves the password or PIN (AUDIT FIX C5). A lock-less device gets
+    # one with its first password unlock, which also turns the lock on.
+    err = _device_require_grant()
+    if err:
+        return err
     if not _valid_pop_public_key(data.get('public_key') or ''):
         return _sync_error(400, 'bad_request', 'public_key must be a base64 P-256 public key', field='public_key')
     device.pop_public_key = data['public_key']

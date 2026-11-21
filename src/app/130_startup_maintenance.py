@@ -276,12 +276,18 @@ def _startup_reconcile_note_state():
             source_path = storage.get_note_path(note_id)
             if source_path and os.path.isfile(source_path):
                 disk_size = os.path.getsize(source_path)
-                checksum = note_checksum
-                if not checksum or note_size is None or int(note_size or 0) != int(disk_size):
-                    checksum = storage._sha256_file(source_path)
+                # AUDIT FIX (O1): only fill NULL fields. A recorded checksum is never
+                # replaced by the local hash: on mismatch the DB stays as-is, so
+                # queue_note_replication pulls a verified remote instead of
+                # spreading corrupt local bytes over good replicas.
+                local_checksum = None
+                if not note_checksum or note_size is None:
+                    local_checksum = storage._sha256_file(source_path)
                 needs_version = (not note_version) or int(note_version) < 1
-                needs_checksum = (note_checksum != checksum)
-                needs_size = (note_size is None or int(note_size) != int(disk_size))
+                needs_checksum = (not note_checksum and bool(local_checksum)
+                                  and (note_size is None or int(note_size) == int(disk_size)))
+                checksum = local_checksum if needs_checksum else note_checksum
+                needs_size = note_size is None and (needs_checksum or local_checksum == note_checksum)
                 if needs_version or needs_checksum or needs_size:
                     # Only materialise the ORM row when something actually changes.
                     note_obj = db.session.get(Note, note_id)

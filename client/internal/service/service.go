@@ -139,6 +139,9 @@ func (s *Service) Serve(ctx context.Context, ln net.Listener) error {
 // SetIPCSecret requires ipc.hello with secret on every connection ("" = off).
 func (s *Service) SetIPCSecret(secret string) { s.rpc.Secret = secret }
 
+// SetIPCHelloKey sets the key ipc.hello {nonce} proves for CLI clients.
+func (s *Service) SetIPCHelloKey(key string) { s.rpc.HelloKey = key }
+
 // grantLoop keeps an unlocked app's grant alive (server TTL 15 min).
 func (s *Service) grantLoop(ctx context.Context) {
 	t := time.NewTicker(5 * time.Minute)

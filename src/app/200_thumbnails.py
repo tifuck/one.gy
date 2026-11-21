@@ -189,8 +189,13 @@ VIDEO_THUMB_FULL_MAX_BYTES = 512 * 1024 * 1024
 THUMBNAIL_DISK_FREE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
 THUMBNAIL_MAX_CONCURRENT = 2
 THUMBNAIL_SLOT_TIMEOUT_SECONDS = 30.0
-THUMBNAIL_SAME_FILE_WAIT_SECONDS = 1.0
 _THUMBNAIL_SEMAPHORE = threading.BoundedSemaphore(THUMBNAIL_MAX_CONCURRENT)
+# AUDIT FIX T1: an HTTP GET only renders cheap thumbnails inline (text heads,
+# small images); everything else goes to the background queue. A failed render
+# leaves a marker keyed by the file's content so it is not retried on every
+# request; the marker also expires so a transient failure heals.
+THUMBNAIL_INLINE_MAX_BYTES = 4 * 1024 * 1024
+THUMBNAIL_FAILURE_RETRY_SECONDS = 24 * 3600
 
 # AUDIT FIX A18: 'svg' is NOT in the image set. Pillow cannot decode SVG, so
 # every SVG upload used to burn a full decrypt plus a thread on a guaranteed
@@ -239,6 +244,52 @@ def _is_thumbnailable_name(filename):
 
 
 app.jinja_env.globals['is_thumbnailable_name'] = _is_thumbnailable_name
+
+
+def _thumbnail_inline_ok(file_record):
+    ext = _get_compound_ext(file_record.orig_name or '')
+    if ext in _THUMB_TEXT_EXTS:
+        return True
+    return (ext in _THUMB_IMAGE_EXTS and file_record.size is not None
+            and file_record.size <= THUMBNAIL_INLINE_MAX_BYTES)
+
+
+def _thumbnail_failure_marker_dir():
+    return os.path.join(app.instance_path, 'thumbnail_failures')
+
+
+def _thumbnail_failure_marker_path(file_id):
+    return os.path.join(_thumbnail_failure_marker_dir(),
+                        f'{secure_filename(str(file_id)) or "unknown"}.failed')
+
+
+def _thumbnail_content_key(file_record):
+    return (f'{file_record.content_hash or ""}:{file_record.payload_checksum or ""}:'
+            f'{file_record.size or 0}')
+
+
+def _thumbnail_failure_marked(file_record):
+    """True when this exact content failed to render recently."""
+    file_id = getattr(file_record, 'id', None)
+    if not file_id:
+        return False
+    path = _thumbnail_failure_marker_path(file_id)
+    try:
+        if time.time() - os.path.getmtime(path) > THUMBNAIL_FAILURE_RETRY_SECONDS:
+            return False
+        with open(path, 'r') as marker:
+            return marker.read() == _thumbnail_content_key(file_record)
+    except (OSError, ValueError):
+        return False
+
+
+def _mark_thumbnail_failed(file_id, content_key):
+    try:
+        os.makedirs(_thumbnail_failure_marker_dir(), exist_ok=True)
+        with open(_thumbnail_failure_marker_path(file_id), 'w') as marker:
+            marker.write(content_key)
+    except OSError as e:
+        print(f'[THUMBNAIL] Could not record failed render for {file_id}: {e}')
 
 
 _THUMBNAIL_BG_PENDING = set()
@@ -368,18 +419,18 @@ def generate_thumbnail(file_record, wait=True, refresh_snapshot=True):
 
     wait=True (upload/save background threads): block up to
     THUMBNAIL_SLOT_TIMEOUT_SECONDS for a render slot.
-    wait=False (HTTP GET fill): never wait on the global render queue, but allow
-    up to one second for an upload-time render of this SAME file to commit. The
-    next visible-tile request retries longer work. refresh_snapshot=False is
+    wait=False (HTTP GET fill): never wait; render inline only when cheap
+    (_thumbnail_inline_ok) and a slot and the file's lock are free, otherwise
+    queue a background render. refresh_snapshot=False is
     reserved for the welcome-file path, where the File row is still part of a
     larger uncommitted transaction that must not be rolled back before rendering."""
     file_id = getattr(file_record, 'id', None)
+    if _thumbnail_failure_marked(file_record):
+        return False
+    if not wait and not _thumbnail_inline_ok(file_record):
+        _schedule_thumbnail_bg(file_id)
+        return False
     generation_lock = _acquire_thumbnail_generation_lock(file_id, wait=wait)
-    if not generation_lock and not wait:
-        deadline = time.monotonic() + THUMBNAIL_SAME_FILE_WAIT_SECONDS
-        while not generation_lock and time.monotonic() < deadline:
-            time.sleep(0.05)
-            generation_lock = _acquire_thumbnail_generation_lock(file_id, wait=False)
     if not generation_lock:
         if not wait:
             _schedule_thumbnail_bg(file_id)
@@ -423,6 +474,7 @@ def _generate_thumbnail_locked(file_record):
     safe_name = file_record.orig_name
     extension = _get_compound_ext(file_record.orig_name)
     expected_content_hash = file_record.content_hash
+    content_key = _thumbnail_content_key(file_record)
     image_extensions = _THUMB_IMAGE_EXTS
     image_formats = sorted({'JPEG' if ext in ('jpg', 'jpeg') else ext.upper()
                             for ext in image_extensions})
@@ -446,6 +498,7 @@ def _generate_thumbnail_locked(file_record):
         max_thumbnail_size = 20 * 1024 * 1024  # 20MB
         if file_record.size and file_record.size > max_thumbnail_size:
             print(f'[THUMBNAIL] Skipping thumbnail for large file: {file_record.orig_name} ({file_record.size} bytes)')
+            _mark_thumbnail_failed(file_id, content_key)
             return False
     
     try:
@@ -506,6 +559,7 @@ def _generate_thumbnail_locked(file_record):
                         print(f'[THUMBNAIL] Skipping video thumbnail for {file_record.orig_name}: '
                               f'the {VIDEO_THUMB_HEAD_BYTES} byte head was not decodable and the file '
                               f'({encrypted_size} bytes) is too large to materialise in full')
+                        _mark_thumbnail_failed(file_id, content_key)
                         return False
                     if not _thumbnail_disk_space_ok(temp_root, encrypted_size):
                         return False
@@ -516,6 +570,7 @@ def _generate_thumbnail_locked(file_record):
                 if not frame_extracted:
                     print(f'[THUMBNAIL] ffmpeg failed to extract frame from: {file_record.orig_name} '
                           f'({"full copy" if materialised_full else "bounded head"})')
+                    _mark_thumbnail_failed(file_id, content_key)
                     return False
                 
                 # Resize the extracted frame with Pillow (same as image thumbnails)
@@ -527,6 +582,7 @@ def _generate_thumbnail_locked(file_record):
                     img.thumbnail((200, 200), Image.LANCZOS)
                 except (Image.DecompressionBombError, Image.DecompressionBombWarning) as _bomb_err:
                     print(f'[THUMBNAIL] Rejected oversized video frame for {file_record.orig_name}: {_bomb_err}')
+                    _mark_thumbnail_failed(file_id, content_key)
                     return False
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
@@ -556,6 +612,7 @@ def _generate_thumbnail_locked(file_record):
                         img = ImageOps.exif_transpose(img)
                     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as _bomb_err:
                         print(f'[THUMBNAIL] Rejected decompression bomb for {file_record.orig_name}: {_bomb_err}')
+                        _mark_thumbnail_failed(file_id, content_key)
                         return False
                     # Convert to RGB if necessary (e.g., PNG with alpha)
                     if img.mode in ('RGBA', 'P', 'LA'):
@@ -735,6 +792,7 @@ def _generate_thumbnail_locked(file_record):
         
     except Exception as e:
         print(f'[THUMBNAIL] Error generating thumbnail for {safe_name}: {e}')
+        _mark_thumbnail_failed(file_id, content_key)
         try:
             db.session.rollback()
         except Exception:

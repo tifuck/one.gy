@@ -245,12 +245,55 @@ def _ensure_model_indexes():
                 pass
             missing.append(index_name)
             print(f'[WARNING] [DB] Could not create index {index_name} on {table_name}: {e}')
+    _ensure_column_unique_constraints()
     _ensure_unique_indexes()
     if ensured:
         print(f'[DB] Ensured {ensured} index definitions exist')
     if missing:
         print(f'[WARNING] [DB] {len(missing)} index definition(s) are MISSING and queries against them '
               f'will table-scan: {", ".join(sorted(set(missing)))}')
+
+
+def _ensure_column_unique_constraints():
+    """AUDIT FIX (O5): a unique=True column added by ADD COLUMN never got its UNIQUE
+    key (table.indexes does not hold column-level UniqueConstraints). Create the
+    missing ones; duplicate rows only cost a warning, never the boot."""
+    inspector = inspect(db.engine)
+    table_names = set(inspector.get_table_names())
+    for table in db.metadata.sorted_tables:
+        if table.name not in table_names:
+            continue
+        wanted = [c for c in table.constraints
+                  if isinstance(c, db.UniqueConstraint) and c.name not in _MODEL_UNIQUE_INDEX_NAMES]
+        if not wanted:
+            continue
+        try:
+            existing_columns = {col['name'] for col in inspector.get_columns(table.name)}
+            present = {frozenset(uc['column_names']) for uc in inspector.get_unique_constraints(table.name)}
+            present |= {frozenset(ix['column_names']) for ix in inspector.get_indexes(table.name) if ix.get('unique')}
+        except Exception as e:
+            print(f'[WARNING] [DB] Could not inspect unique keys on {table.name}: {e}')
+            continue
+        for constraint in wanted:
+            columns = [col.name for col in constraint.columns]
+            if not columns or frozenset(columns) in present or not set(columns) <= existing_columns:
+                continue
+            index_name = (constraint.name or f'uq_{table.name}_{"_".join(columns)}')[:64]
+            quoted_columns = ', '.join(_quote_identifier(col) for col in columns)
+            try:
+                db.session.execute(text(
+                    f'CREATE UNIQUE INDEX {_quote_identifier(index_name)} ON {_quote_identifier(table.name)} ({quoted_columns})'
+                ))
+                db.session.commit()
+                present.add(frozenset(columns))
+                print(f'[DB] Created unique index {index_name} on {table.name}')
+            except Exception as e:
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+                print(f'[WARNING] [DB] Could not create unique index {index_name} on {table.name} '
+                      f'(duplicate rows?); uniqueness is NOT enforced: {e}')
 
 
 def _collapse_duplicate_replica_rows(rows, model):
@@ -706,7 +749,21 @@ def _run_post_schema_data_migrations():
                 if not os.path.isfile(_disk_path):
                     continue
                 try:
-                    setattr(tf, _attr, _sha256_file(_disk_path))
+                    _local_sum = _sha256_file(_disk_path)
+                    # AUDIT FIX (O7): local bytes become the authority only when no
+                    # recorded replica checksum disagrees with them.
+                    _disagree = ThumbnailReplica.query.filter(
+                        ThumbnailReplica.file_id == tf.id,
+                        ThumbnailReplica.thumb_type == ('e2e' if _is_e2e else 'jpg'),
+                        ThumbnailReplica.status == 'synced',
+                        ThumbnailReplica.checksum.isnot(None),
+                        ThumbnailReplica.checksum != _local_sum,
+                    ).first()
+                    if _disagree is not None:
+                        print(f'[DB] Skipped thumbnail checksum backfill for {tf.id}{_ext}: '
+                              f'local bytes disagree with the replica on node {_disagree.node_id}')
+                        continue
+                    setattr(tf, _attr, _local_sum)
                     batch_changed = True
                     thumb_csum_filled += 1
                 except Exception as e:

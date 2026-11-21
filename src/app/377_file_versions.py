@@ -376,6 +376,19 @@ def _delete_file_version(user_id, file_id, version_id):
     return None
 
 
+def _delete_file_versions_of(live_ids):
+    """AUDIT FIX (V1): delete the version rows of live files hard-deleted in the
+    caller's transaction. Returns their payload delete keys to stage with it."""
+    live_ids = [fid for fid in live_ids if fid]
+    keys = []
+    for start in range(0, len(live_ids), 500):
+        for version in File.query.filter(File.version_of_id.in_(live_ids[start:start + 500])).options(
+                db.defer(File.thumbnail_data), db.defer(File.encrypted_thumbnail_data)).all():
+            keys.extend(_file_payload_delete_keys(version))
+            db.session.delete(version)
+    return keys
+
+
 def _session_versions_user():
     user = _current_session_user()
     return user.id if user else None

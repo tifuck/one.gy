@@ -60,6 +60,17 @@ func RunningSocket(stateDir string) string {
 	return DefaultSocket(stateDir)
 }
 
+// HelloKey is the key the engine of stateDir proves itself with ("" = none).
+func HelloKey(stateDir string) string {
+	var info struct {
+		HelloKey string `json:"hello_key"`
+	}
+	if b, err := os.ReadFile(infoPath(stateDir)); err == nil && json.Unmarshal(b, &info) == nil {
+		return info.HelloKey
+	}
+	return ""
+}
+
 func DBPath(stateDir string) string   { return filepath.Join(stateDir, "engine.db") }
 func LogDir(stateDir string) string   { return filepath.Join(stateDir, "logs") }
 func infoPath(stateDir string) string { return filepath.Join(stateDir, "engine.json") }
@@ -73,8 +84,9 @@ func EnsureStateDir(stateDir string) error {
 }
 
 // WriteEngineInfo atomically writes <state>/engine.json once the engine listens.
-func WriteEngineInfo(stateDir, socket string) error {
-	b, err := json.Marshal(map[string]any{"pid": os.Getpid(), "socket": socket, "version": Version})
+// helloKey lets CLI clients verify the engine (ipc.DialEngine).
+func WriteEngineInfo(stateDir, socket, helloKey string) error {
+	b, err := json.Marshal(map[string]any{"pid": os.Getpid(), "socket": socket, "version": Version, "hello_key": helloKey})
 	if err != nil {
 		return err
 	}

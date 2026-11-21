@@ -370,27 +370,57 @@ def _move_file_to_folder(file, target_folder_id):
     touch_folder(target_folder_id)
 
 
+def _folder_name_key_share_tokens(tree_ids, user_id):
+    """{folder_id: effective share token} for the live E2EE-named folders in tree_ids."""
+    folders = Folder.query.filter(
+        Folder.id.in_(list(tree_ids)),
+        Folder.user_id == user_id,
+        Folder.is_trashed == False,
+        db.or_(Folder.encrypted_name_key != None, Folder.link_encrypted_name_key != None),
+    ).all()
+    return {f.id: (_effective_folder_share_info(f.id) or {}).get('share_token') for f in folders}
+
+
+def _clear_moved_folder_name_link_keys(old_share_tokens):
+    """AUDIT FIX (E16): a moved folder whose share token changed drops its stale
+    link name-key wrap. Returns the folders the client must re-wrap for the new share."""
+    rewrap = []
+    for fid, old_token in old_share_tokens.items():
+        moved = db.session.get(Folder, fid)
+        new_share = _effective_folder_share_info(fid)
+        if moved is None or old_token == (new_share or {}).get('share_token'):
+            continue
+        moved.link_encrypted_name_key = None
+        moved.link_name_key_nonce = None
+        if new_share and moved.encrypted_name_key:
+            rewrap.append({'id': moved.id, 'encrypted_name_key': moved.encrypted_name_key,
+                           'name_key_nonce': moved.name_key_nonce})
+    return rewrap
+
+
 def _move_folder_to_parent(folder, target_folder_id, user_id):
     """Re-parent a live folder. Caller holds the lifecycle + folder tree locks
-    and commits. Returns (error_message, http_status, moved_e2e_ids); the error
-    is None on success."""
+    and commits. Returns (error_message, http_status, moved_e2e_ids,
+    rewrap_folders); the error is None on success."""
     folder_id = folder.id
     # Cannot move a folder into itself
     if target_folder_id == folder_id:
-        return 'Cannot move a folder into itself', 400, []
+        return 'Cannot move a folder into itself', 400, [], []
 
     # Cannot move to a descendant (would create a cycle).
     # _folder_ancestor_ids is cycle- and depth-bounded.
     if target_folder_id is not None:
         target_chain = _folder_ancestor_ids(target_folder_id)
         if folder_id in target_chain or not _folder_ancestry_complete(target_chain):
-            return 'Cannot move a folder into one of its subfolders', 400, []
+            return 'Cannot move a folder into one of its subfolders', 400, [], []
 
     # Verify target folder exists and belongs to user
     if target_folder_id is not None:
         target_folder = Folder.query.filter_by(id=target_folder_id, user_id=user_id, is_trashed=False).first()
         if not target_folder:
-            return 'Target folder not found', 404, []
+            return 'Target folder not found', 404, [], []
+    if _backup_move_would_nest(folder, target_folder_id):
+        return 'Backups cannot be nested inside other backups', 409, [], []
 
     tree_ids = _collect_descendant_folder_ids([folder.id], include_roots=True)
     tree_files = File.query.filter(
@@ -404,6 +434,7 @@ def _move_folder_to_parent(folder, target_folder_id, user_id):
         f.id: (_effective_folder_share_info(f.folder_id) or {}).get('share_token')
         for f in tree_files
     }
+    old_folder_tokens = _folder_name_key_share_tokens(tree_ids, user_id)
 
     # E2E mixing is allowed — users can freely move folders regardless of encryption types
     source_parent_id = folder.parent_id
@@ -417,9 +448,10 @@ def _move_folder_to_parent(folder, target_folder_id, user_id):
             _clear_file_folder_link_key(tree_file)
             if new_share and tree_file.encrypted_file_key:
                 moved_e2e_ids.append(tree_file.id)
+    rewrap_folders = _clear_moved_folder_name_link_keys(old_folder_tokens)
     touch_folder(source_parent_id)
     touch_folder(target_folder_id)
-    return None, 200, moved_e2e_ids
+    return None, 200, moved_e2e_ids, rewrap_folders
 
 
 @app.route('/file/<file_id>/move', methods=['POST'])
@@ -499,7 +531,7 @@ def move_folder(folder_id):
         if _backup_read_only(folder.id) or _backup_read_only(target_folder_id):
             return _backup_read_only_error()
 
-        move_error, move_status, moved_e2e_ids = _move_folder_to_parent(folder, target_folder_id, user.id)
+        move_error, move_status, moved_e2e_ids, rewrap_folders = _move_folder_to_parent(folder, target_folder_id, user.id)
         if move_error:
             return jsonify({'error': move_error}), move_status
         db.session.commit()
@@ -514,11 +546,12 @@ def move_folder(folder_id):
     if target_folder_id is not None:
         ancestor_info = get_shared_ancestor_info(target_folder_id)
         if ancestor_info:
-            if moved_e2e_ids:
+            if moved_e2e_ids or rewrap_folders:
                 result['needs_link_keys'] = True
                 result['ancestor_share_token'] = ancestor_info['share_token']
                 result['ancestor_folder_id'] = ancestor_info['folder_id']
                 result['file_ids'] = moved_e2e_ids
+                result['folders'] = rewrap_folders
     return jsonify(result)
 
 @app.route('/file/<file_id>/properties', methods=['GET'])

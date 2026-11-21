@@ -52,11 +52,16 @@ func (x *Executor) downloadSteps(ctx context.Context, j *job, t *Transfer) error
 		if !n.IsE2E && o.Base != nil && o.Base.E2EE && o.Base.RemoteID == o.RemoteID && !o.Downgrade {
 			return issuef("integrity", o.Path, reconcile.DowngradeMessage, "retry", "ignore")
 		}
+		// AUDIT FIX (F5): a synced file's new version without meta is unproven
+		// (a website edit, or an older container served again): never vouch
+		// for it with a backfilled meta other devices would then trust.
+		noMeta := n.IsE2E && n.EncryptedMeta == "" && o.Base != nil && o.Base.RemoteID == o.RemoteID && o.Base.PlainSHA256 != "" &&
+			n.ContentVersion != o.Base.RemoteContentVersion
 		plain := x.tmpPath(j.row.ID, ".plain")
 		if o.Kind == reconcile.VerifyLink {
 			plain = ""
 		}
-		got, err := x.fetch(t.Observe(ctx), n, x.tmpPath(j.row.ID, ".enc"), plain, t)
+		got, err := x.fetch(t.Observe(ctx), n, x.tmpPath(j.row.ID, ".enc"), plain, t, !noMeta)
 		if err != nil {
 			return err
 		}
@@ -170,7 +175,8 @@ type fetched struct {
 }
 
 // fetch downloads and verifies node content. plainPath "" only hashes.
-func (x *Executor) fetch(ctx context.Context, n *state.RemoteNode, encPath, plainPath string, t *Transfer) (*fetched, error) {
+// backfill stores meta for E2EE content that has none.
+func (x *Executor) fetch(ctx context.Context, n *state.RemoteNode, encPath, plainPath string, t *Transfer, backfill bool) (*fetched, error) {
 	c, err := x.client()
 	if err != nil {
 		return nil, err
@@ -246,7 +252,7 @@ func (x *Executor) fetch(ctx context.Context, n *state.RemoteNode, encPath, plai
 	if meta != nil && meta.PlainSHA256 != sum {
 		return nil, issuef("integrity", "", "The downloaded file does not match its encrypted metadata; it was not applied.", "retry", "ignore")
 	}
-	if n.IsE2E && meta == nil {
+	if n.IsE2E && meta == nil && backfill {
 		x.backfillMeta(ctx, c, n, key, sum, plainSizeOf(plainPath, n))
 	}
 	return &fetched{sha: sum, meta: meta}, nil

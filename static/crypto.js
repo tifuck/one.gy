@@ -53,15 +53,22 @@ const OneGyCrypto = (function() {
   const _IN_WORKER = typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope
   // This script's own (versioned) URL, captured while it runs: the worker is
   // started from it. An unversioned URL would be cached for a year.
-  const _SELF_URL = (function() {
-    if (!_IS_PAGE) return ''
-    if (document.currentScript && document.currentScript.src) return document.currentScript.src
+  const _SELF_SCRIPT = (function() {
+    if (!_IS_PAGE) return null
+    if (document.currentScript && document.currentScript.src) return document.currentScript
     const scripts = document.getElementsByTagName('script')
     for (let i = 0; i < scripts.length; i++) {
-      if (/\/crypto\.js(\?|$)/.test(scripts[i].src || '')) return scripts[i].src
+      if (/\/crypto\.js(\?|$)/.test(scripts[i].src || '')) return scripts[i]
     }
-    return ''
+    return null
   })()
+  const _SELF_URL = _SELF_SCRIPT ? _SELF_SCRIPT.src : ''
+  // Versioned highlight.js URLs from the page (data-hljs / data-hljs-enhance on
+  // this script tag), for the same reason.
+  const _HLJS_URLS = {
+    core: (_SELF_SCRIPT && _SELF_SCRIPT.dataset && _SELF_SCRIPT.dataset.hljs) || '',
+    enhance: (_SELF_SCRIPT && _SELF_SCRIPT.dataset && _SELF_SCRIPT.dataset.hljsEnhance) || ''
+  }
 
   let _worker = null
   let _workerMsgId = 0
@@ -1949,9 +1956,9 @@ const OneGyCrypto = (function() {
   function loadHighlighter () {
     if (typeof hljs !== 'undefined') return Promise.resolve(hljs)
     if (!_hljsReady) {
-      const base = '/static/vendor/highlight/'
-      _hljsReady = _addScript(base + 'highlight.min.js')
-        .then(() => _addScript(base + 'hljs-enhance.js').catch(() => {}))
+      if (!_HLJS_URLS.core) return Promise.resolve(null)
+      _hljsReady = _addScript(_HLJS_URLS.core)
+        .then(() => (_HLJS_URLS.enhance ? _addScript(_HLJS_URLS.enhance).catch(() => {}) : null))
         .then(() => (typeof hljs !== 'undefined' ? hljs : null), () => { _hljsReady = null; return null })
     }
     return _hljsReady

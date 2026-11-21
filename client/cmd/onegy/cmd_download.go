@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"net/url"
@@ -393,7 +395,15 @@ func writeDecryptedFile(src io.Reader, fileKey []byte, outputPath string) (int64
 	// The hard link is an atomic no-clobber publication because the temporary
 	// file and destination are on the same filesystem.
 	if err := os.Link(tmpOutputPath, outputPath); err != nil {
-		return 0, fmt.Errorf("could not publish decrypted file: %w", err)
+		if errors.Is(err, fs.ErrExist) {
+			return 0, fmt.Errorf("could not publish decrypted file: %w", err)
+		}
+		// AUDIT FIX (F8): FAT/exFAT/SMB have no hard links; a no-replace
+		// rename publishes just as atomically without clobbering.
+		if rerr := renameNoReplace(tmpOutputPath, outputPath); rerr != nil {
+			return 0, fmt.Errorf("could not publish decrypted file: %w (link: %v)", rerr, err)
+		}
+		return written, nil
 	}
 	if err := os.Remove(tmpOutputPath); err != nil {
 		return 0, fmt.Errorf("file was saved as %s, but temporary file cleanup failed: %w", outputPath, err)

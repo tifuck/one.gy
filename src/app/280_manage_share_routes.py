@@ -129,6 +129,13 @@ def manage_post(token):
         # An expiry would let cleanup delete a file of a read-only backup.
         if expires and expires != 'never' and _backup_read_only(file.folder_id):
             return _backup_read_only_error()
+        # AUDIT FIX (B5): so would a download limit (deleted when reached).
+        try:
+            _sets_max_dl = int(request.form.get('max_downloads') or 0) > 0
+        except (ValueError, TypeError):
+            _sets_max_dl = False
+        if _sets_max_dl and _backup_read_only(file.folder_id):
+            return _backup_read_only_error()
 
         # Only update public if the public field was explicitly submitted
         if 'public' in request.form:
@@ -243,7 +250,7 @@ def delete_file(token):
         file_size = file.size
         file_is_temp_upload = file.is_temp_upload
         file_registered_user_id = file.registered_user_id
-        paths_to_delete = _file_payload_delete_keys(file)
+        paths_to_delete = _file_payload_delete_keys(file) + _delete_file_versions_of([file.id])
 
         # Stage remote-delete intent with the metadata deletion.
         local_targets = storage.stage_payload_deletes(paths_to_delete)

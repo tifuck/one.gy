@@ -471,7 +471,9 @@ func (m *Manager) migrate(ctx context.Context) error {
 	m.mu.Lock()
 	client, pop, scopeSealed := m.client, m.popKey, m.acct.AtRestSealed != ""
 	m.mu.Unlock()
-	if pop == nil {
+	// Enrolling a signing key needs a grant (password or PIN unlock), even on
+	// a device without the app lock; until then it is retried after the next unlock.
+	if pop == nil && client.Grant() != "" {
 		k, err := devkey.New(randomHex(8))
 		if err != nil {
 			return err
@@ -823,6 +825,7 @@ func (m *Manager) SignOut(ctx context.Context, revoke bool) error {
 		}
 	}
 	if err := m.wipe(ctx); err != nil {
+		m.changed()
 		return err
 	}
 	m.changed()
@@ -830,7 +833,7 @@ func (m *Manager) SignOut(ctx context.Context, revoke bool) error {
 }
 
 func (m *Manager) wipe(ctx context.Context) error {
-	m.ks.Delete(secretsName)
+	ksErr := m.ks.Delete(secretsName)
 	m.mu.Lock()
 	if m.popKey != nil {
 		devkey.Delete(m.popKey.Ref())
@@ -848,7 +851,13 @@ func (m *Manager) wipe(ctx context.Context) error {
 		m.acct.AtRestSealed, m.acct.AtRestNonce, m.acct.AtRestPIN = "", "", false
 	}
 	m.mu.Unlock()
-	return m.db.SignOutAccount(ctx)
+	if err := m.db.SignOutAccount(ctx); err != nil {
+		return err
+	}
+	if ksErr != nil {
+		return fmt.Errorf("signed out, but the stored device secrets could not be removed: %w", ksErr)
+	}
+	return nil
 }
 
 // revoked handles 401 device_revoked from any API call.

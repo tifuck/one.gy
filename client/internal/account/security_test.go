@@ -128,10 +128,28 @@ func TestLegacyDeviceMigrates(t *testing.T) {
 	raw, _ := ks.Get(secretsName)
 	var s secrets
 	json.Unmarshal([]byte(raw), &s)
-	if after.AtRestSealed == "" || s.MasterKey != "" || s.PopKey == "" || s.LocalKey == "" {
+	if after.AtRestSealed == "" || s.MasterKey != "" || s.LocalKey == "" {
 		t.Fatalf("not migrated: sealed=%v secrets=%+v", after.AtRestSealed != "", s)
 	}
-	if srv.SignedDevices() != 2 {
+	// Enrolling the signing key needs a grant, so it waits for the password.
+	if s.PopKey != "" || srv.SignedDevices() != 1 {
+		t.Fatalf("signing key enrolled without a grant (%d)", srv.SignedDevices())
+	}
+	// The shared test DB still holds the first device's password copy: replace
+	// it with this device's own, as a real legacy device would have.
+	_, wrap, err := e2ee.DeriveAuthAndWrappingKeys(password, after.AuthSalt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m2.sealPassword(ctx, wrap); err != nil {
+		t.Fatal(err)
+	}
+	if err := m2.Unlock(ctx, password); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = ks.Get(secretsName)
+	json.Unmarshal([]byte(raw), &s)
+	if s.PopKey == "" || srv.SignedDevices() != 2 {
 		t.Fatalf("legacy device did not enroll a signing key (%d)", srv.SignedDevices())
 	}
 }

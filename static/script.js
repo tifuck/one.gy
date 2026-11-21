@@ -1034,9 +1034,9 @@ async function _onUploadSuccess(result, opts) {
 async function _finishE2EGuestUpload(response, passphrase, ui) {
   const downloadUrl = response.download_url || '';
   const fullShareUrl = downloadUrl ? (downloadUrl.startsWith('http') ? downloadUrl : window.location.origin + downloadUrl) + '#passphrase=' + btoa(unescape(encodeURIComponent(passphrase))) : '';
-  // Persist for the current browser session and VERIFY it landed —
-  // the keychain write is silently a no-op without the onegy_manager
-  // cookie, and this passphrase is the only way to decrypt the upload.
+  // Persist for the current browser session and VERIFY it landed: a write
+  // can fail (storage full/blocked), and this passphrase is the only way to
+  // decrypt the upload.
   const persisted = await _storePassphraseVerified(response.file_id, passphrase);
 
   let copied = false;

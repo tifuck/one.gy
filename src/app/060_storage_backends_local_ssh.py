@@ -155,18 +155,24 @@ class _LocalBackend(_StorageBackend):
             # neither the source nor the destination existed afterwards.
             # Preserve a recoverable copy instead: move the staged bytes back
             # to the caller's source path when it is free; if that restore
-            # fails, leave the .tmp sibling in place (it is reaped by the age-
-            # guarded temp sweep only after 10 minutes) rather than destroying
-            # the only remaining copy. Only a tmp file that was never
+            # fails, keep the staged bytes as a '.preserved' sibling rather
+            # than destroying the only remaining copy. Only a tmp file that was never
             # populated (source still present) is safe to remove.
             if os.path.exists(tmp_path):
                 if not os.path.exists(local_path):
                     try:
                         shutil.move(tmp_path, local_path)
                     except OSError as restore_err:
-                        print(f'[STORAGE] [WARNING] put_move failed and restore to '
-                              f'{local_path} also failed ({restore_err}); staged copy '
-                              f'left at {tmp_path}')
+                        # AUDIT FIX (S7): a '.tmp' name would be reaped by the temp
+                        # sweeps; give the only copy a name they never delete.
+                        kept_path = tmp_path
+                        try:
+                            kept_path = tmp_path[:-len('.tmp')] + _PRESERVED_PAYLOAD_SUFFIX
+                            os.replace(tmp_path, kept_path)
+                        except OSError:
+                            kept_path = tmp_path
+                        print(f'[ERROR] [STORAGE] put_move failed and restore to {local_path} also failed '
+                              f'({restore_err}); the ONLY copy is preserved at {kept_path} -- recover it manually')
                 else:
                     try:
                         os.remove(tmp_path)

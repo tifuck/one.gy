@@ -270,6 +270,26 @@ def _backup_subtree_read_only(folder_id):
     return query.first() is not None
 
 
+def _backup_in_ancestors(folder_id):
+    """True when folder_id or one of its ancestors is a backup folder."""
+    return any(folder is not None and folder.is_backup
+               for folder in (db.session.get(Folder, fid) for fid in _folder_ancestor_ids(folder_id)))
+
+
+def _backup_in_subtree(folder_id, include_root=True, trashed=False):
+    """True when folder_id (unless include_root is False) or a descendant is a backup folder."""
+    ids = _collect_descendant_folder_ids([folder_id], include_roots=include_root, trashed=trashed)
+    return bool(ids) and db.session.query(Folder.id).filter(
+        Folder.id.in_(list(ids)), Folder.is_backup == True).first() is not None
+
+
+def _backup_move_would_nest(folder, parent_id):
+    """Backups never nest: True when folder's subtree holds a backup and parent_id
+    is, or lies inside, one (a device may write into its own backup)."""
+    return (parent_id is not None and _backup_in_subtree(folder.id, trashed=bool(folder.is_trashed))
+            and _backup_in_ancestors(parent_id))
+
+
 def _backup_items_read_only(user_id, file_ids, folder_ids, subtree=False):
     """True when one of the user's listed live files (by its folder) or folders
     (with its subtree when subtree, e.g. for a trash) is read-only."""
@@ -1015,9 +1035,10 @@ def apiv1_sync_folder_move(folder_id):
             return error
         if _backup_read_only(folder.id) or _backup_read_only(target_id):
             return _backup_read_only_error()
-        move_error, move_status, _moved = _move_folder_to_parent(folder, target_id, uid)
+        move_error, move_status, _moved, _rewrap = _move_folder_to_parent(folder, target_id, uid)
         if move_error:
-            return _sync_error(move_status, 'not_found' if move_status == 404 else 'bad_request', move_error)
+            code = {404: 'not_found', 409: 'conflict'}.get(move_status, 'bad_request')
+            return _sync_error(move_status, code, move_error)
         db.session.commit()
     finally:
         _release_user_folder_tree_lock(tree_lock)
@@ -1168,10 +1189,7 @@ def apiv1_sync_folder_backup(folder_id):
         if folder.is_backup and folder.backup_device_id != g.device.id:
             return _backup_read_only_error()
         if enabled and not folder.is_backup:
-            above = [db.session.get(Folder, fid) for fid in _folder_ancestor_ids(folder.parent_id)]
-            below = _collect_descendant_folder_ids([folder.id], include_roots=False)
-            if any(f is not None and f.is_backup for f in above) or (below and db.session.query(Folder.id).filter(
-                    Folder.id.in_(list(below)), Folder.is_backup == True).first()):
+            if _backup_in_ancestors(folder.parent_id) or _backup_in_subtree(folder.id, include_root=False):
                 return _sync_error(409, 'conflict', 'Backups cannot be nested inside other backups',
                                    current=_sync_folder_node(folder))
             folder.is_backup = True

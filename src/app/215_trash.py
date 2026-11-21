@@ -93,9 +93,11 @@ def _restore_folder_to_original_parent(folder, user):
     original_parent = Folder.query.filter_by(id=folder.original_parent_id, user_id=user.id).first()
     # The original parent may have been moved under this folder's restored
     # descendants while it sat in the trash; re-parenting would form a cycle.
-    # A read-only backup never takes a restored folder back: it stays at the root.
+    # A read-only backup never takes a restored folder back, nor may backups nest:
+    # it stays at the root.
     if (original_parent and not original_parent.is_trashed
             and not _backup_read_only(original_parent.id)
+            and not _backup_move_would_nest(folder, original_parent.id)
             and not _parent_would_form_cycle(folder.id, folder.original_parent_id)):
         # While this folder sat detached in the trash, a retried creation may have
         # reused its dedupe token under the same parent; re-parenting would then
@@ -231,6 +233,7 @@ def permanently_delete_folder_recursive(folder_id, _paths_to_delete=None, retent
             File.registered_user_id == root_folder.user_id,
             File.is_trashed == True,
         ).all()
+        purged_file_ids = []
         for file in files_in_folders:
             # AUDIT FIX D5: honour each FILE's own retention window.
             if retention_cutoff is not None:
@@ -243,6 +246,8 @@ def permanently_delete_folder_recursive(folder_id, _paths_to_delete=None, retent
                     continue
             _paths_to_delete.extend(_file_payload_delete_keys(file))
             db.session.delete(file)
+            purged_file_ids.append(file.id)
+        _paths_to_delete.extend(_delete_file_versions_of(purged_file_ids))
 
         # Detach any surviving (live, or other-owner) rows so the folder delete
         # below cannot orphan them behind a dangling folder_id.
@@ -567,6 +572,7 @@ def empty_trash():
             paths_to_delete.extend(_file_payload_delete_keys(file))
             db.session.delete(file)
             deleted_files += 1
+        paths_to_delete.extend(_delete_file_versions_of([file.id for file in trashed_files]))
 
         # Delete all trashed folder DB records (top-level ones cascade via recursive helper)
         trashed_folders = Folder.query.filter_by(
@@ -634,7 +640,7 @@ def permanent_delete_file(file_id):
         if not file:
             return jsonify({'error': 'File not found in trash'}), 404
 
-        paths_to_delete = _file_payload_delete_keys(file)
+        paths_to_delete = _file_payload_delete_keys(file) + _delete_file_versions_of([file.id])
         orig_name = file.orig_name
 
         # Stage delete intent atomically with the metadata deletion.
@@ -874,6 +880,7 @@ def bulk_permanent_delete():
                 paths_to_delete.extend(_file_payload_delete_keys(file))
                 db.session.delete(file)
                 deleted += 1
+            paths_to_delete.extend(_delete_file_versions_of([file.id for file in files_to_purge]))
 
         local_targets = storage.stage_payload_deletes(paths_to_delete)
         db.session.commit()

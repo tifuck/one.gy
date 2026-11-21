@@ -31,13 +31,13 @@ def music_api_toggle_like(song_id):
         if existing:
             MusicLike.query.filter_by(user_id=user_id, song_id=song_id).delete(synchronize_session=False)
             db.session.commit()
-            print(f'[MUSIC] User {user_id} unliked song {song_id}')
+            print(f'[MUSIC] User {user_id} unliked song {_log_safe(song_id)}')
         return jsonify({'liked': False})
     if not existing:
         db.session.add(MusicLike(user_id=user_id, song_id=song_id, liked_at=datetime.now(timezone.utc)))
         try:
             db.session.commit()
-            print(f'[MUSIC] User {user_id} liked song {song_id}')
+            print(f'[MUSIC] User {user_id} liked song {_log_safe(song_id)}')
         except _IntegrityError:
             # A concurrent request inserted the same like first.
             db.session.rollback()
@@ -150,7 +150,7 @@ def music_api_create_playlist():
     )
     db.session.add(playlist)
     db.session.commit()
-    print(f'[MUSIC] User {user_id} created playlist "{name}" (id={playlist.id})')
+    print(f'[MUSIC] User {user_id} created playlist "{_log_safe(name)}" (id={playlist.id})')
     return jsonify({
         'id': playlist.id, 'name': playlist.name, 'description': playlist.description,
         'song_count': 0, 'cover_path': None,
@@ -261,7 +261,7 @@ def music_api_playlist_songs(playlist_id):
             # A concurrent add of the same song won uq_playlist_song.
             db.session.rollback()
             return jsonify({'error': 'SONG ALREADY IN PLAYLIST'}), 409
-        print(f'[MUSIC] Added song {song_id} to playlist {playlist_id}')
+        print(f'[MUSIC] Added song {_log_safe(song_id)} to playlist {playlist_id}')
         return jsonify({'success': True, 'position': entry.position})
     elif action == 'remove':
         song_id = data.get('song_id')
@@ -275,7 +275,7 @@ def music_api_playlist_songs(playlist_id):
         db.session.delete(entry)
         playlist.updated_at = datetime.now(timezone.utc)
         db.session.commit()
-        print(f'[MUSIC] Removed song {song_id} from playlist {playlist_id}')
+        print(f'[MUSIC] Removed song {_log_safe(song_id)} from playlist {playlist_id}')
         return jsonify({'success': True})
     elif action == 'reorder':
         song_ids = data.get('song_ids', [])
@@ -319,6 +319,8 @@ def music_api_sync_push():
     device_id = _music_json_str(data.get('device_id'))
     device_name = _music_json_str(data.get('device_name'), default='Unknown Device',
                                   truncate_to=_MUSIC_DEVICE_NAME_MAX) or 'Unknown Device'
+    if _LOG_UNSAFE_RE.search(device_name):
+        device_name = 'Unknown Device'  # AUDIT FIX (M1): never store control characters
     state = data.get('state')
 
     if not _music_valid_device_id(device_id):
@@ -558,7 +560,7 @@ def music_api_sync_transfer():
         sync.transfer_to = target_device_id
         sync.active_device_id = target_device_id
         sync.updated_at = datetime.now(timezone.utc)
-        print(f'[MUSIC] User {user_id} requested transfer to device {target_device_id[:8]}')
+        print(f'[MUSIC] User {user_id} requested transfer to device {_log_safe(target_device_id[:8])}')
     else:
         # Clear transfer flag (called by accepting device after it takes over)
         sync.transfer_to = None
@@ -697,6 +699,9 @@ def music_api_sync_device_rename():
 
     if not _music_valid_device_id(device_id) or not name:
         return jsonify({'error': 'DEVICE ID AND NAME REQUIRED'}), 400
+    # AUDIT FIX (M1): stored names are shown and logged; no control characters.
+    if _LOG_UNSAFE_RE.search(name):
+        return jsonify({'error': 'INVALID DEVICE NAME'}), 400
 
     device = MusicDevice.query.filter_by(user_id=user_id, device_id=device_id).first()
     if not device:
@@ -704,7 +709,7 @@ def music_api_sync_device_rename():
 
     device.device_name = name
     db.session.commit()
-    print(f'[MUSIC] User {user_id} renamed device {device_id} to {name}')
+    print(f'[MUSIC] User {user_id} renamed device {_log_safe(device_id)} to {_log_safe(name)}')
 
     return jsonify({'ok': True, 'name': name})
 
@@ -736,7 +741,7 @@ def music_api_sync_device_delete():
         sync.transfer_to = None
 
     db.session.commit()
-    print(f'[MUSIC] User {user_id} deleted device {device_id}')
+    print(f'[MUSIC] User {user_id} deleted device {_log_safe(device_id)}')
 
     return jsonify({'ok': True})
 

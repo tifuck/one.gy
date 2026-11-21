@@ -40,6 +40,7 @@ type run struct {
 	localDests    map[string]bool // keys of planned local destinations
 	vacated       map[string]bool // keys of local paths planned to be moved away
 	trashedNew    []string        // new remote folders trashed by local_source
+	newDeletes    map[int]bool    // indexes of ops deleting items no base row covers (mirror, initial source)
 
 	localMoves, remoteMoves []move
 
@@ -156,7 +157,7 @@ func Reconcile(in *Input) *Plan {
 		trashed: in.Remote.Trashed, goneLocal: map[string]bool{}, base: in.Base, baseByID: map[string]*state.SyncedRow{}, baseByPath: map[string]*state.SyncedRow{},
 		kids: map[string][]*RemoteNode{}, remote: map[string]*rnode{}, remoteStalled: map[string]bool{}, roPaths: map[string]bool{},
 		localKeys: map[string][]string{}, claimedLocal: map[string]bool{}, claimedRemote: map[string]bool{},
-		stalledKeys: map[string]bool{}, taken: map[string]bool{}, localDests: map[string]bool{}, vacated: map[string]bool{}}
+		stalledKeys: map[string]bool{}, taken: map[string]bool{}, localDests: map[string]bool{}, vacated: map[string]bool{}, newDeletes: map[int]bool{}}
 	for _, b := range in.Base {
 		r.baseByPath[b.RelPath] = b
 		if b.RemoteID != "" {

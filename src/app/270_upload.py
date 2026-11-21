@@ -71,7 +71,8 @@ def upload():
                 return jsonify({'error': 'CSRF validation failed. Please refresh and try again.'}), 400
 
         progress_id = request.form.get('file_id') or str(uuid.uuid4())
-        upload_idempotency_key = (request.form.get('upload_id') or progress_id or '').strip() or None
+        # AUDIT FIX (U2): keys longer than the String(64) column are hashed, as on /apiv1/upload.
+        upload_idempotency_key = _bounded_upload_key((request.form.get('upload_id') or progress_id or '').strip() or None)
 
         # Handle both 'files' (multiple) and 'file' (single, e.g., E2E encrypted blob)
         if 'files' in request.files:
@@ -440,7 +441,7 @@ def upload():
                 max_age=7 * 24 * 3600,  # 7 days (matches max temp file lifetime)
                 secure=True,
                 samesite='Strict',
-                httponly=False,  # JS must read this for client-side keychain encryption
+                httponly=True,  # AUDIT FIX (U5): no JS reads it since the F5 keychain change
                 path='/'
             )
         return resp

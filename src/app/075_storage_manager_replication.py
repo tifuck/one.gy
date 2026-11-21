@@ -860,6 +860,23 @@ class _StorageManagerReplication:
                     print(f'[REPLICATION] Repair put failed for files/{item_id}: {e}')
         return put_checksum, False, None
 
+    def _local_replica_in_error(self, category, item_id, local_node_id):
+        if local_node_id is None:
+            return False
+        try:
+            if category == 'files':
+                row = FileReplica.query.filter_by(file_id=item_id, node_id=local_node_id).first()
+            elif category == 'notes':
+                row = NoteReplica.query.filter_by(note_id=item_id, node_id=local_node_id).first()
+            else:
+                base, _, ext = item_id.rpartition('.')
+                row = ThumbnailReplica.query.filter_by(
+                    file_id=base, thumb_type='e2e' if ext == 'e2e' else 'jpg', node_id=local_node_id,
+                ).first()
+        except Exception:
+            return True
+        return bool(row is not None and row.status == 'error')
+
     def _replicate_single_item(self, replica_id, category, item_id, target_node_id,
                                source_mode, primary_id, verify_checksum, use_threads=False,
                                expected_version=None, expected_checksum=None):
@@ -972,8 +989,15 @@ class _StorageManagerReplication:
                     src_backend.get(category, disk_id, dest_path)
 
             local_mismatch = False
+            # AUDIT FIX (S1): a local copy the scrub marked 'error' is suspect; with no
+            # authoritative checksum to re-prove it, never let it overwrite a remote.
+            if (not expected_checksum and local_backend and local_backend.exists(category, disk_id)
+                    and self._local_replica_in_error(category, item_id, _local_node_id)):
+                print(f'[REPLICATION] Local {category}/{item_id} is marked error and has no recorded '
+                      f'checksum; not using it as a source')
+                local_mismatch = True
             # Try local source first
-            if local_backend and local_backend.exists(category, disk_id):
+            elif local_backend and local_backend.exists(category, disk_id):
                 source_path = local_backend.get_path(category, disk_id)
                 try:
                     # AUDIT FIX (finding 4): hash the local source whenever a

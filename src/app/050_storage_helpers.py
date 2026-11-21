@@ -87,9 +87,13 @@ def _unique_download_tmp_path(final_path):
 # `orphan_key` and purged it -- inconsistent handling of an object we ourselves
 # created. Recognising it here makes every backend treat it as an internal
 # artifact: refuse to replicate it, and purge it during remote cleanup.
-_INTERNAL_STORAGE_ARTIFACT_PREFIXES = ('.cache_', '.remote_', 'repl_', '.health_probe')
+# AUDIT FIX (S7): '.preserved' marks the last copy kept after a failed put_move;
+# being an artifact keeps it out of replication and orphan cleanup, and the temp
+# sweeps never delete it.
+_INTERNAL_STORAGE_ARTIFACT_PREFIXES = ('.cache_', '.remote_', 'repl_', '.health_probe', '.s3_verify_', '.scrub_dv_')
 _INTERNAL_STORAGE_ARTIFACT_SUFFIXES = ('.sftp_tmp', '.s3_tmp', '.tmp', '.new', '.committed', '.meta',
-                                       '.health_probe')
+                                       '.health_probe', '.preserved')
+_PRESERVED_PAYLOAD_SUFFIX = '.preserved'
 
 # AUDIT FIX C2/M1/L3: Strict object-id and category validators used throughout
 # the storage layer to defend against path traversal in remote keys, SSH shell
@@ -126,12 +130,20 @@ def _validate_storage_args(category, file_id):
     _validate_storage_file_id(file_id)
 
 
+def _storage_cleanup_id_valid(file_id):
+    try:
+        _validate_storage_file_id(file_id)
+    except ValueError:
+        return False
+    return True
+
+
 # AUDIT FIX H1: SSRF defense. Admin-configured storage node hostnames and S3
 # endpoint_urls would otherwise allow the server to issue arbitrary outbound
-# connections to internal/metadata services. We reject loopback, link-local,
-# multicast, broadcast, and private-range targets unless an explicit env-var
-# allowlist is set (e.g. `STORAGE_NODE_ALLOW_PRIVATE_HOSTS=true` for
-# intra-LAN deployments).
+# connections to internal/metadata services. Cloud-metadata endpoints are always
+# rejected. Loopback/link-local/private-range targets are ALLOWED by default
+# (STORAGE_NODE_ALLOW_PRIVATE_HOSTS defaults to true for LAN nodes); set it to
+# false to reject them.
 STORAGE_NODE_ALLOW_PRIVATE_HOSTS = os.environ.get(
     'STORAGE_NODE_ALLOW_PRIVATE_HOSTS', 'true'
 ).strip().lower() in ('1', 'true', 'yes')

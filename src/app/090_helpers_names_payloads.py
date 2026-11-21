@@ -271,7 +271,9 @@ def safe_content_disposition(disposition, filename):
     Sanitizes the ASCII fallback and adds a UTF-8 filename* parameter."""
     # ASCII fallback: replace any characters that could break the header
     ascii_name = filename.encode('ascii', 'replace').decode('ascii')
-    ascii_name = ascii_name.replace('"', '_').replace('\\', '_').replace('\r', '').replace('\n', '')
+    # AUDIT FIX (N1): drop every control char (legacy names); gunicorn rejects them in headers.
+    ascii_name = ''.join(ch for ch in ascii_name if ch >= ' ' and ch != '\x7f')
+    ascii_name = ascii_name.replace('"', '_').replace('\\', '_')
     # RFC 5987 UTF-8 encoded filename
     utf8_name = urllib.parse.quote(filename, safe='')
     return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}"

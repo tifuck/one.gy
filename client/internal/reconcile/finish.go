@@ -163,47 +163,88 @@ func (r *run) suppressSubtreeDeletes() {
 	}
 }
 
-// massDelete holds back deletes of synced items when one pass would delete
-// more than MassDeleteCount items and MassDeletePercent of the sync on
-// either side, unless the user already answered.
+// massDelete holds back deletes when one pass would delete more than
+// MassDeleteCount items and MassDeletePercent of the sync on either side,
+// unless the user already answered. AUDIT FIX (F1): deletes of items no base
+// row covers (mirror reverts, initial source) count too; on a first run the
+// percentage is of the items on the side being deleted.
 func (r *run) massDelete() {
-	paths := make([]string, len(r.base))
-	for i, b := range r.base {
-		paths[i] = b.RelPath
+	sorted := func(ps []string) []string { sort.Strings(ps); return ps }
+	var basePaths, localPaths, remotePaths []string
+	for _, b := range r.base {
+		basePaths = append(basePaths, b.RelPath)
 	}
-	sort.Strings(paths)
-	rowsAt := func(o *Op) int {
-		if o.EntryKind != localfs.KindDir {
-			return 1
-		}
-		i := sort.SearchStrings(paths, o.Path+"/")
-		j := sort.SearchStrings(paths, o.Path+"0") // '0' follows '/'
-		return 1 + j - i
+	for p := range r.local.Entries {
+		localPaths = append(localPaths, p)
+	}
+	for _, rn := range r.remote {
+		remotePaths = append(remotePaths, rn.path)
+	}
+	basePaths, localPaths, remotePaths = sorted(basePaths), sorted(localPaths), sorted(remotePaths)
+	below := func(paths []string, p string) int {
+		i := sort.SearchStrings(paths, p+"/")
+		j := sort.SearchStrings(paths, p+"0") // '0' follows '/'
+		return j - i
+	}
+	counted := func(o *Op, i int, kind OpKind) bool {
+		return o.Kind == kind && (o.Base != nil || r.newDeletes[i])
 	}
 	for _, side := range []struct {
 		kind      OpKind
 		name, ans string
-		msg       string
+		msg, new  string
 		actions   []string
+		paths     []string // the items on the side the deletes happen
 	}{
-		{TrashRemote, "local", r.cfg.MassDeleteLocal, "%d items were deleted on this computer. Delete them on one.gy too?", []string{"keep_local", "keep_remote", "open"}},
-		{DeleteLocal, "remote", r.cfg.MassDeleteRemote, "%d items were deleted on one.gy. Delete them on this computer too?", []string{"keep_remote", "keep_local", "open"}},
+		{TrashRemote, "local", r.cfg.MassDeleteLocal, "%d items were deleted on this computer. Delete them on one.gy too?",
+			"%d items on one.gy are not on this computer. Move them to the one.gy trash?", []string{"keep_local", "keep_remote", "open"}, remotePaths},
+		{DeleteLocal, "remote", r.cfg.MassDeleteRemote, "%d items were deleted on one.gy. Delete them on this computer too?",
+			"%d items on this computer are not on one.gy. Delete them here?", []string{"keep_remote", "keep_local", "open"}, localPaths},
 	} {
-		n := 0
+		n, nNew := 0, 0
 		for i := range r.ops {
-			if o := &r.ops[i]; o.Kind == side.kind && o.Base != nil {
-				n += rowsAt(o)
+			o := &r.ops[i]
+			if !counted(o, i, side.kind) {
+				continue
+			}
+			c := 1
+			if o.EntryKind == localfs.KindDir {
+				if o.Base != nil {
+					c += below(basePaths, o.Path)
+				} else {
+					c += below(side.paths, o.Path)
+				}
+			}
+			n += c
+			if o.Base == nil {
+				nNew += c
 			}
 		}
-		if side.ans == "apply" || n <= r.cfg.MassDeleteCount || n*100 <= r.cfg.MassDeletePercent*len(r.base) {
+		total := len(r.base)
+		if total == 0 {
+			total = len(side.paths)
+		}
+		if side.ans == "restore" { // keep what no base row covers; base items were restored by decide
+			for i := range r.ops {
+				if o := &r.ops[i]; o.Kind == side.kind && r.newDeletes[i] {
+					o.Kind = ""
+				}
+			}
+			continue
+		}
+		if side.ans == "apply" || n <= r.cfg.MassDeleteCount || n*100 <= r.cfg.MassDeletePercent*total {
 			continue
 		}
 		for i := range r.ops {
-			if o := &r.ops[i]; o.Kind == side.kind && o.Base != nil {
+			if o := &r.ops[i]; counted(o, i, side.kind) {
 				o.Kind = ""
 			}
 		}
-		r.issues = append(r.issues, Issue{Kind: "mass_delete", Message: fmt.Sprintf(side.msg, n), Actions: side.actions,
+		msg := side.msg
+		if nNew == n {
+			msg = side.new
+		}
+		r.issues = append(r.issues, Issue{Kind: "mass_delete", Message: fmt.Sprintf(msg, n), Actions: side.actions,
 			Detail: map[string]any{"side": side.name, "count": n}})
 	}
 }

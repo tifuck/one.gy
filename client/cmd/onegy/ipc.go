@@ -2,8 +2,10 @@ package main
 
 // `onegy ipc` calls any method of the engine's JSON-RPC interface:
 //
-//	onegy ipc [--socket p | --state-dir d] call <method> [json params]
-//	onegy ipc [--socket p | --state-dir d] watch
+//	onegy ipc [--state-dir d] [--socket p] call <method> [json params]
+//	onegy ipc [--state-dir d] [--socket p] watch
+//
+// The engine proves itself with the key in <state dir>/engine.json first.
 
 import (
 	"bufio"
@@ -26,16 +28,17 @@ func runIPC(args []string) int {
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
-	if *socket == "" {
-		if *stateDir == "" {
-			d, err := config.DefaultStateDir()
-			if err != nil {
-				ipcFail(err)
-			}
-			*stateDir = d
+	if *stateDir == "" {
+		d, err := config.DefaultStateDir()
+		if err != nil {
+			ipcFail(err)
 		}
+		*stateDir = d
+	}
+	if *socket == "" {
 		*socket = config.RunningSocket(*stateDir)
 	}
+	key := config.HelloKey(*stateDir)
 	rest := fs.Args()
 	switch {
 	case len(rest) >= 2 && rest[0] == "call" && len(rest) <= 3:
@@ -43,9 +46,9 @@ func runIPC(args []string) int {
 		if len(rest) == 3 {
 			params = rest[2]
 		}
-		return ipcCall(*socket, rest[1], params)
+		return ipcCall(*socket, key, rest[1], params)
 	case len(rest) == 1 && rest[0] == "watch":
-		ipcWatch(*socket)
+		ipcWatch(*socket, key)
 		return 0
 	default:
 		fs.Usage()
@@ -58,11 +61,11 @@ func ipcFail(err error) {
 	os.Exit(1)
 }
 
-func ipcSend(socket, method, params string, id int) (*bufio.Reader, func()) {
+func ipcSend(socket, key, method, params string, id int) (*bufio.Reader, func()) {
 	if !json.Valid([]byte(params)) {
 		ipcFail(fmt.Errorf("params are not valid JSON"))
 	}
-	c, err := ipc.Dial(socket)
+	c, r, err := ipc.DialEngine(socket, key)
 	if err != nil {
 		ipcFail(err)
 	}
@@ -70,12 +73,12 @@ func ipcSend(socket, method, params string, id int) (*bufio.Reader, func()) {
 	if _, err := c.Write(append(req, '\n')); err != nil {
 		ipcFail(err)
 	}
-	return bufio.NewReaderSize(c, 1<<20), func() { c.Close() }
+	return r, func() { c.Close() }
 }
 
 // ipcCall prints the result (exit 0) or the error (exit 1) as indented JSON.
-func ipcCall(socket, method, params string) int {
-	r, done := ipcSend(socket, method, params, 1)
+func ipcCall(socket, key, method, params string) int {
+	r, done := ipcSend(socket, key, method, params, 1)
 	defer done()
 	for {
 		line, err := r.ReadBytes('\n')
@@ -103,8 +106,8 @@ func ipcCall(socket, method, params string) int {
 }
 
 // ipcWatch subscribes and prints one event per line until the engine goes away.
-func ipcWatch(socket string) {
-	r, done := ipcSend(socket, "engine.subscribe", "null", 1)
+func ipcWatch(socket, key string) {
+	r, done := ipcSend(socket, key, "engine.subscribe", "null", 1)
 	defer done()
 	for {
 		line, err := r.ReadBytes('\n')

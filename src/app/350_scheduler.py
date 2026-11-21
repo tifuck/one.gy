@@ -110,16 +110,37 @@ def replication_job():
         if not _scheduler_started or not _scheduler_owns_lease():
             print('[REPLICATION] Skipping cycle: scheduler lease not owned by this worker')
             return
-        _run_isolated_task('REPLICATION', 'run_replication_cycle', storage.run_replication_cycle)
-        if not _scheduler_owns_lease():
-            print('[REPLICATION] Aborting cycle: scheduler lease lost mid-run')
-        else:
-            _run_isolated_task('REPLICATION', 'process_pending_remote_deletes',
-                               storage.process_pending_remote_deletes)
+        try:
+            _mark_replication_progress()
+            _run_isolated_task('REPLICATION', 'run_replication_cycle', storage.run_replication_cycle)
+            if not _scheduler_owns_lease():
+                print('[REPLICATION] Aborting cycle: scheduler lease lost mid-run')
+            else:
+                _mark_replication_progress()
+                _run_isolated_task('REPLICATION', 'process_pending_remote_deletes',
+                                   storage.process_pending_remote_deletes)
+        finally:
+            _mark_replication_progress(active=False)
         try:
             db.session.remove()
         except Exception:
             pass
+
+# AUDIT FIX (SCH): time.monotonic() at which the running replication sub-task
+# started (None when idle). Each sub-task is bounded by _CYCLE_TIMEOUT, so one
+# running far longer is wedged and the watchdog stops renewing the lease for it.
+_replication_progress_at = None
+_scheduler_wedged_logged = False
+
+def _mark_replication_progress(active=True):
+    global _replication_progress_at
+    _replication_progress_at = time.monotonic() if active else None
+
+def _replication_wedged_seconds():
+    started = _replication_progress_at
+    if started is None:
+        return 0.0
+    return time.monotonic() - started
 
 @_skip_if_already_running
 def metrics_snapshot_job():
@@ -281,6 +302,7 @@ _SCHEDULER_LEASE_KEY = 'scheduler_lease'
 _SCHEDULER_LOCK_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), '.scheduler.lock')
 SCHEDULER_HEARTBEAT_INTERVAL = 15   # seconds between lease refresh attempts
 SCHEDULER_LEASE_TIMEOUT = 60        # owner considered dead/hung after this long without a heartbeat
+SCHEDULER_WEDGED_JOB_SECONDS = 2 * StorageManager._CYCLE_TIMEOUT  # replication sub-task with no progress for this long is wedged
 _SCHEDULER_INSTANCE_ID = f'{os.getpid()}:{uuid.uuid4().hex[:12]}'
 
 def _build_and_start_scheduler_jobs():
@@ -487,12 +509,35 @@ def _scheduler_watchdog_loop():
     """Per-worker watchdog: keep trying to own the lease; run the scheduler iff
     we own it. The loop itself IS the heartbeat — if this thread (or the whole
     process) stalls, the lease goes stale and another worker takes over."""
-    global _scheduler_lease_confirmed_at
+    global _scheduler_lease_confirmed_at, _scheduler_wedged_logged
     while True:
         # Worker is shutting down: stop running/re-starting the scheduler and
         # let this watchdog thread exit so it can't resurrect jobs mid-teardown.
         if _scheduler_shutting_down:
             return
+        wedged_for = _replication_wedged_seconds()
+        if wedged_for > SCHEDULER_WEDGED_JOB_SECONDS:
+            # Never renew (or re-claim) the lease for a wedged job, so another
+            # worker can take over; jobs keep running here until it does.
+            if not _scheduler_wedged_logged:
+                print(f'[SCHEDULER] Replication job has made no progress for {int(wedged_for)}s '
+                      f'(limit {SCHEDULER_WEDGED_JOB_SECONDS}s); no longer refreshing the lease')
+                _scheduler_wedged_logged = True
+            if _scheduler_started:
+                still_owner = False
+                try:
+                    with app.app_context():
+                        still_owner = _scheduler_owns_lease()
+                except Exception as e:
+                    print(f'[SCHEDULER] Watchdog iteration error: {e}')
+                if not still_owner:
+                    print('[SCHEDULER] Lease lost while the replication job is wedged — stopping local scheduler')
+                    _stop_scheduler_jobs()
+            time.sleep(SCHEDULER_HEARTBEAT_INTERVAL)
+            continue
+        if _scheduler_wedged_logged:
+            print('[SCHEDULER] Replication job is no longer wedged; resuming lease refresh')
+            _scheduler_wedged_logged = False
         owns = None
         try:
             with app.app_context():

@@ -157,6 +157,7 @@ python3 -c "
 import hashlib, json, os, sys
 
 outdir = sys.argv[1]
+version = sys.argv[2]
 manifest = {}
 
 for dirname in sorted(os.listdir(outdir)):
@@ -167,7 +168,8 @@ for dirname in sorted(os.listdir(outdir)):
         manifest[dirname] = {
             'sha256': h,
             'download_url': '/static/cli/' + dirname + '/onegy',
-            'size': os.path.getsize(binary_path)
+            'size': os.path.getsize(binary_path),
+            'version': version
         }
 
 manifest_path = os.path.join(outdir, 'manifest.json')
@@ -177,7 +179,7 @@ with open(manifest_path, 'w') as f:
 print('  manifest.json written with', len(manifest), 'platforms')
 for plat, info in manifest.items():
     print(f'    {plat}: {info[\"sha256\"][:16]}... ({info[\"size\"]} bytes)')
-" "$STAGING"
+" "$STAGING" "$VERSION"
 
 python3 - "$STAGING" "${TARGETS[@]}" <<'PY'
 import hashlib

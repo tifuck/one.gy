@@ -9,7 +9,9 @@ APScheduler==3.10.4
 cryptography==44.0.3
 python-dotenv==1.0.1
 qrcode[pil]==8.2
-Pillow==12.3.0
+# Pillow 13.0.0 fixes the October 2026 advisory batch (incl. CVE-2026-112400
+# GIF memory exhaustion); thumbnails decode untrusted images.
+Pillow==13.0.0
 # gunicorn <= 26.0.0 is affected by request smuggling (CVE-2024-6827 in 22.x,
 # AIKIDO-2026-10742 through 25.3.0, AIKIDO-2026-332632 through 26.0.0).
 gunicorn==26.2.0

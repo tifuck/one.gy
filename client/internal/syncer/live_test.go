@@ -56,7 +56,7 @@ func (l *live) start() {
 		l.t.Fatal(err)
 	}
 	for i := 0; i < 100; i++ {
-		if _, err := os.Stat(l.sock); err == nil {
+		if _, err := os.Stat(filepath.Join(l.state, "engine.json")); err == nil { // written once listening
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -68,7 +68,7 @@ func (l *live) start() {
 func (l *live) call(method string, params any) any {
 	l.t.Helper()
 	b, _ := json.Marshal(params)
-	out, err := osexec.Command(filepath.Join(l.bin, "onegy"), "ipc", "--socket", l.sock, "call", method, string(b)).Output()
+	out, err := osexec.Command(filepath.Join(l.bin, "onegy"), "ipc", "--state-dir", l.state, "call", method, string(b)).Output()
 	if err != nil {
 		msg := ""
 		if ee, ok := err.(*osexec.ExitError); ok {

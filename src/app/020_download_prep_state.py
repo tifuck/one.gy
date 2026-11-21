@@ -682,6 +682,9 @@ def _reserve_prep_download_slot(prep_id, state):
         reserved_bytes = max(0, int(state.get('orig_size', 0) or 0))
         already_reserved = sum(item['reserved_bytes'] for item in reservations)
         free = _prep_free_disk_bytes()
+        if reserved_bytes and free is not None and _prep_and_zip_share_filesystem():
+            # AUDIT FIX D1: ZIP builds draw on the same free space; lock order is prep -> zip.
+            already_reserved += _zip_reserved_bytes()
         if (reserved_bytes and free is not None
                 and (free - already_reserved) < (reserved_bytes + _PREP_DOWNLOAD_FREE_SPACE_RESERVE)):
             if changed:
@@ -1012,6 +1015,32 @@ def _statvfs_free_bytes(path):
     return stat.f_frsize * stat.f_bavail
 
 
+def _prep_and_zip_share_filesystem():
+    """True when prepared plaintext and ZIP work dirs live on one filesystem."""
+    try:
+        return os.stat(app.config['UPLOAD_FOLDER']).st_dev == os.stat(_ensure_onegy_temp_root()).st_dev
+    except OSError:
+        return True
+
+
+def _zip_reserved_bytes():
+    """Bytes held by live ZIP builds. Caller may hold the prep lock (order: prep -> zip)."""
+    zip_lock = _acquire_scoped_lock('zip_build_reservations', prefix='zip')
+    try:
+        reservations, _reaped = _active_zip_reservations_locked(_read_zip_reservations_locked())
+        return sum(item['estimated_bytes'] for item in reservations)
+    finally:
+        _release_scoped_lock(zip_lock)
+
+
+def _prep_reserved_bytes_locked():
+    """Bytes held by prepared downloads. Caller MUST hold the prep_reservations lock."""
+    reservations, changed = _active_prep_reservations_locked(_read_prep_reservations_locked())
+    if changed:
+        _write_prep_reservations_locked(reservations)
+    return sum(item['reserved_bytes'] for item in reservations)
+
+
 def _acquire_zip_slot(estimated_bytes=0):
     """Reserve a ZIP-build slot AND its estimated disk footprint.
 
@@ -1021,9 +1050,15 @@ def _acquire_zip_slot(estimated_bytes=0):
     ZIP construction or streaming."""
     estimated_bytes = max(0, int(estimated_bytes or 0))
     reservation_lock = None
+    prep_lock = None
     try:
         client_key, is_user = _download_client()
         client_cap = _ZIP_DOWNLOAD_MAX_CONCURRENT_PER_USER if is_user else _ZIP_DOWNLOAD_MAX_CONCURRENT_PER_IP
+        # AUDIT FIX D1: count prepared-download plaintext on a shared filesystem;
+        # the prep lock is taken first, matching _reserve_prep_download_slot().
+        share_fs = bool(estimated_bytes) and _prep_and_zip_share_filesystem()
+        if share_fs:
+            prep_lock = _acquire_scoped_lock('prep_reservations', prefix='prep')
         reservation_lock = _acquire_scoped_lock('zip_build_reservations', prefix='zip')
         reservations, reaped = _active_zip_reservations_locked(
             _read_zip_reservations_locked())
@@ -1039,6 +1074,8 @@ def _acquire_zip_slot(estimated_bytes=0):
             print(f'[ZIP] Rejected ZIP build: {client_builds} build(s) already in flight for this client (limit {client_cap})')
             return None, _zip_slot_busy_response()
         reserved_bytes = sum(item['estimated_bytes'] for item in reservations)
+        if share_fs:
+            reserved_bytes += _prep_reserved_bytes_locked()
         if estimated_bytes:
             free = _free_disk_bytes()
             if free is not None and (free - reserved_bytes) < (estimated_bytes + _ZIP_DOWNLOAD_FREE_SPACE_RESERVE):
@@ -1071,6 +1108,7 @@ def _acquire_zip_slot(estimated_bytes=0):
         }), 503)
     finally:
         _release_scoped_lock(reservation_lock)
+        _release_scoped_lock(prep_lock)
 
 
 def _release_zip_slot(reservation_id):

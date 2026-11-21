@@ -121,7 +121,7 @@ class _StorageManagerReads:
         vs. keep-but-refuse-to-serve)."""
         return expected_size is not None or bool(expected_checksum)
 
-    def _cache_payload_valid(self, cache_path, expected_size, expected_checksum, label):
+    def _cache_payload_valid(self, cache_path, expected_size, expected_checksum, label, remember=False):
         """Validate a cached/staged payload against authoritative expectations.
 
         AUDIT FIX (unknown must not mean valid): with expected_size None and a
@@ -142,15 +142,46 @@ class _StorageManagerReads:
             return False
         try:
             if expected_size is not None and os.path.getsize(cache_path) != int(expected_size):
+                if remember:
+                    self._forget_local_integrity(cache_path)
                 return False
             if expected_checksum:
+                # AUDIT FIX (S3): remember=True reuses the stat-signature verdict cache
+                # so repeat reads of a staged .cache_<id> do not re-hash it every time.
+                if remember:
+                    return self._remember_payload_checksum(cache_path, expected_checksum)
                 return self._sha256_file(cache_path) == expected_checksum
         except Exception as e:
             print(f'[STORAGE] Cache validation failed for {label}: {e}')
             return False
         return True
 
+    def _remember_payload_checksum(self, path, expected_checksum):
+        """True when path hashes to expected_checksum; a positive verdict is cached
+        against the file's stat signature (same cache as _verify_local_file_integrity)."""
+        entry = (self._local_integrity_signature(os.stat(path)), expected_checksum)
+        with self._local_integrity_cache_lock:
+            if self._local_integrity_cache.get(path) == entry:
+                return True
+        if self._sha256_file(path) != expected_checksum:
+            self._forget_local_integrity(path)
+            return False
+        try:
+            unchanged = self._local_integrity_signature(os.stat(path)) == entry[0]
+        except OSError:
+            unchanged = False
+        if unchanged:
+            with self._local_integrity_cache_lock:
+                cache = self._local_integrity_cache
+                cache.pop(path, None)
+                while len(cache) >= self.LOCAL_INTEGRITY_CACHE_MAX_ENTRIES:
+                    cache.pop(next(iter(cache)))
+                cache[path] = entry
+        return True
+
     def _discard_cache_payload(self, cache_path):
+        if cache_path:
+            self._forget_local_integrity(cache_path)
         try:
             if cache_path and os.path.isfile(cache_path):
                 os.remove(cache_path)
@@ -186,18 +217,31 @@ class _StorageManagerReads:
         staging private; os.replace publishes atomically."""
         import tempfile as _tempfile
         cache_dir = os.path.dirname(cache_path) or '.'
-        tmp_fd, tmp_path = _tempfile.mkstemp(prefix='.remote_', dir=cache_dir)
-        os.close(tmp_fd)
+        # AUDIT FIX (S3): single-flight across workers -- concurrent cold reads of one
+        # object wait for the first stager and then reuse its verified copy.
+        stage_lock = _acquire_scoped_lock(cache_path, prefix='cache_stage')
         try:
-            backend.get(category, disk_id, tmp_path)
-            if not self._cache_payload_valid(tmp_path, expected_size, expected_checksum, label):
+            if (expected_checksum and os.path.isfile(cache_path)
+                    and self._cache_payload_valid(cache_path, expected_size, expected_checksum, label, remember=True)):
+                return True
+            needed = int(expected_size or 0) + self.LOCAL_PULL_MIN_FREE_BYTES
+            if _statvfs_free_bytes(cache_dir) < needed:
+                raise IOError(f'INSUFFICIENT LOCAL DISK SPACE TO STAGE {label} INTO THE READ CACHE')
+            tmp_fd, tmp_path = _tempfile.mkstemp(prefix='.remote_', dir=cache_dir)
+            os.close(tmp_fd)
+            try:
+                backend.get(category, disk_id, tmp_path)
+                if not self._cache_payload_valid(tmp_path, expected_size, expected_checksum, label):
+                    self._discard_cache_payload(tmp_path)
+                    return False
+                self._forget_local_integrity(cache_path)
+                os.replace(tmp_path, cache_path)
+                return True
+            except Exception:
                 self._discard_cache_payload(tmp_path)
-                return False
-            os.replace(tmp_path, cache_path)
-            return True
-        except Exception:
-            self._discard_cache_payload(tmp_path)
-            raise
+                raise
+        finally:
+            _release_scoped_lock(stage_lock)
 
     def _current_file_read_replicas(self, filename):
         """Ordered read sources for a file: fully-matching replicas first, then
@@ -564,7 +608,8 @@ class _StorageManagerReads:
         # Check local cache (when local node is NOT configured), but only if it
         # still matches a current synced replica's size/checksum metadata.
         cache_path = os.path.join(self._app.config['UPLOAD_FOLDER'], f'.cache_{filename}')
-        if self._cache_payload_valid(cache_path, expected_cache_size, expected_cache_checksum, f'files/{filename}'):
+        if self._cache_payload_valid(cache_path, expected_cache_size, expected_cache_checksum, f'files/{filename}',
+                                     remember=True):
             return cache_path
         # AUDIT FIX (unknown must not mean valid): only DISCARD a cached payload
         # we were actually able to prove wrong. When no authoritative size or
@@ -751,7 +796,7 @@ class _StorageManagerReads:
                 continue
         return None
 
-    def _tracked_file_size_bytes(self, file_id, exclude_node_id=None):
+    def _tracked_file_size_bytes(self, file_id, exclude_node_id=None, allow_local=True):
         # AUDIT FIX P0-1: prefer the DB-authoritative disk_size and any verified
         # sibling replica over the raw local on-disk size. A corrupt/truncated
         # local copy must never become the "expected" size used to validate
@@ -773,6 +818,10 @@ class _StorageManagerReads:
                 return int(sibling.size_bytes)
         except Exception:
             pass
+        # AUDIT FIX (S1): callers judging a replica pass allow_local=False so the
+        # local bytes (possibly the corrupt copy) never define the expected value.
+        if not allow_local:
+            return None
         filename = f'{file_id}.enc'
         try:
             if self._local_backend and self._local_backend.exists('files', filename):
@@ -783,7 +832,7 @@ class _StorageManagerReads:
             pass
         return None
 
-    def _tracked_file_checksum_hex(self, file_id, exclude_node_id=None):
+    def _tracked_file_checksum_hex(self, file_id, exclude_node_id=None, allow_local=True):
         # AUDIT FIX P0-1: prefer the DB-authoritative payload_checksum and any
         # verified sibling replica checksum over re-hashing the local copy. With
         # the previous local-first ordering, the integrity scrub's local-file
@@ -813,6 +862,8 @@ class _StorageManagerReads:
                 return sibling.checksum
         except Exception:
             pass
+        if not allow_local:
+            return None
         filename = f'{file_id}.enc'
         try:
             if self._local_backend and self._local_backend.exists('files', filename):
@@ -823,7 +874,7 @@ class _StorageManagerReads:
             pass
         return None
 
-    def _tracked_note_checksum_hex(self, note_id, exclude_node_id=None):
+    def _tracked_note_checksum_hex(self, note_id, exclude_node_id=None, allow_local=True):
         # AUDIT FIX P0-1: DB content_checksum is authoritative; a verified
         # sibling replica is the next-best source. The local on-disk note is the
         # last resort so a corrupt local copy cannot define the expected value.
@@ -845,6 +896,8 @@ class _StorageManagerReads:
                 return sibling.checksum
         except Exception:
             pass
+        if not allow_local:
+            return None
         try:
             if self._local_backend and self._local_backend.exists('notes', note_id):
                 local_path = self._local_backend.get_path('notes', note_id)

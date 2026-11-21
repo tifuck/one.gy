@@ -672,6 +672,12 @@ def create_folder():
     if token_error:
         return jsonify({'error': token_error}), 400
 
+    if not has_encrypted_name:
+        # AUDIT FIX (N1): same name rules as uploads and the API.
+        folder_name = sanitize_plaintext_name(folder_name)
+        if not folder_name:
+            return jsonify({'error': 'Invalid folder name'}), 400
+
     encrypted_fields = None
     if has_encrypted_name:
         encrypted_fields = {
@@ -1029,6 +1035,11 @@ def _parse_folder_rename(folder, fields):
         if not valid:
             print(f'[FOLDER] Rejected rename with invalid encrypted name for folder {folder.id}: {err_msg}')
             return None, err_msg
+    else:
+        # AUDIT FIX (N1): same name rules as uploads and the API.
+        new_name = sanitize_plaintext_name(new_name)
+        if not new_name:
+            return None, 'Invalid folder name'
     return {
         'name': new_name,
         'encrypted_name': enc_folder_name,
@@ -1212,6 +1223,7 @@ def delete_all_files():
         for file in user_files:
             paths_to_delete.extend(_file_payload_delete_keys(file))
             db.session.delete(file)
+        paths_to_delete.extend(_delete_file_versions_of([file.id for file in user_files]))
 
         # Delete all user's folders
         user_folders = Folder.query.filter_by(user_id=user.id).all()
