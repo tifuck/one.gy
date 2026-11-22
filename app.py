@@ -61,6 +61,7 @@ def _load_parts():
         '330_cleanup_jobs.py',
         '340_cli_commands.py',
         '350_scheduler.py',
+        '355_monitoring.py',
         '360_notes.py',
         '370_apiv1.py',
         '375_apiv1_sync.py',

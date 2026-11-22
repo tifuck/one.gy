@@ -494,6 +494,10 @@ def capture_system_metrics_snapshot(force=False):
         pending_remote_deletes=repl['pending_remote_deletes'],
         )
         db.session.add(snapshot)
+        try:
+            _add_monitor_snapshot_rows(snapshot, now)
+        except Exception as e:
+            print(f'[ADMIN] Monitoring snapshot fields failed: {e}')
 
         cutoff = now - timedelta(days=45)
         SystemMetricSnapshot.query.filter(SystemMetricSnapshot.captured_at < cutoff).delete(synchronize_session=False)

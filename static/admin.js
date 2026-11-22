@@ -20,7 +20,7 @@
    ========================================================================== */
 (function () {
   'use strict'
-  var S = { tab: 'overview', renderEpoch: 0, stats: null, usersPage: 1, usersQ: '', users: [], selectedUserId: null, drawerEnter: false, focusUser: null, restoreUserSearch: false, settingsDirty: false, tempPage: 1, fbPage: 1, fbQ: '', purgeTimer: null }
+  var S = { tab: 'overview', renderEpoch: 0, stats: null, usersPage: 1, usersQ: '', users: [], selectedUserId: null, drawerEnter: false, focusUser: null, restoreUserSearch: false, settingsDirty: false, tempPage: 1, fbPage: 1, fbQ: '', purgeTimer: null, monTimer: null, monRange: '24h' }
   var $ = function (id) { return document.getElementById(id) }
   var panel
 
@@ -927,7 +927,36 @@
     } catch (e) { if (isCurrentRender('statistics', epoch)) paint(errState('Could not load statistics')) }
   }
 
-  var TABS = { overview: tabOverview, users: tabUsers, 'temp-files': tabTemp, notifications: tabNotifs, feedback: tabFeedback, statistics: tabStats, storage: tabStorage, settings: tabSettings }
+  // ---- Monitoring (rendering lives in admin-monitor.js) ----------------------
+  var MON_HELPERS = { esc: esc, num: num, fmtBytes: fmtBytes, pill: pill, head: head, card: card, kvs: kvs }
+  function clearMonitor () {
+    clearTimeout(S.monTimer); S.monTimer = null
+    if (window.AdmMonitor) window.AdmMonitor.unmount()
+  }
+  async function tabMonitor (epoch, silent) {
+    epoch = startRender('monitoring', epoch); if (epoch == null) return
+    clearTimeout(S.monTimer)
+    if (!silent) loading()
+    try {
+      var d = await jget('/admin/api/monitoring?range=' + encodeURIComponent(S.monRange))
+      if (!isCurrentRender('monitoring', epoch)) return
+      var y = window.scrollY, main = document.querySelector('.adm-main'), my = main ? main.scrollTop : 0
+      paint(window.AdmMonitor.render(d, S.monRange, MON_HELPERS))
+      window.AdmMonitor.mount(panel)
+      if (silent) { window.scrollTo(0, y); if (main) main.scrollTop = my }
+    } catch (e) {
+      if (!isCurrentRender('monitoring', epoch)) return
+      if (!silent) paint(errState('Could not load monitoring data'))
+    }
+    // Silent refresh every minute while the tab is open and visible.
+    S.monTimer = setTimeout(function tick () {
+      if (S.tab !== 'monitoring' || S.renderEpoch !== epoch) return
+      if (document.hidden) { S.monTimer = setTimeout(tick, 15000); return }
+      tabMonitor(++S.renderEpoch, true)
+    }, 60000)
+  }
+
+  var TABS = { overview: tabOverview, users: tabUsers, 'temp-files': tabTemp, notifications: tabNotifs, feedback: tabFeedback, statistics: tabStats, storage: tabStorage, monitoring: tabMonitor, settings: tabSettings }
   function go (t) {
     if (!Object.prototype.hasOwnProperty.call(TABS, t)) t = 'overview'
     if (S.tab === 'settings' && S.settingsDirty) {
@@ -936,6 +965,7 @@
     }
     clearPurgeTimer()
     clearSearchTimers()
+    clearMonitor()
     S.tab = t
     S.selectedUserId = null
     var epoch = ++S.renderEpoch
@@ -993,6 +1023,7 @@
       var pg = t.closest('[data-page]'); if (pg) { var parts = pg.getAttribute('data-page').split(':'); if (parts[0] === 'users') { S.usersPage = +parts[1]; refreshTab('users', epoch) } else if (parts[0] === 'feedback') { S.fbPage = +parts[1]; refreshTab('feedback', epoch) } else { S.tempPage = +parts[1]; refreshTab('temp-files', epoch) } return }
       if (t.closest('[data-retry]')) { refreshTab(S.tab, epoch); return }
       var gt = t.closest('[data-goto]'); if (gt) { go(gt.getAttribute('data-goto')); return }
+      var mr = t.closest('[data-mon-range]'); if (mr) { S.monRange = mr.getAttribute('data-mon-range'); refreshTab('monitoring', epoch); return }
 
       // --- Users ---
       var manage = t.closest('[data-user-manage]')

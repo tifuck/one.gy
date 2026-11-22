@@ -1328,5 +1328,44 @@ class SystemMetricSnapshot(db.Model):
     replication_error_notes = db.Column(db.Integer, default=0)
     replication_error_thumbnails = db.Column(db.Integer, default=0)
     pending_remote_deletes = db.Column(db.Integer, default=0)
+    # Monitoring tab (355_monitoring.py): durability and queue health over time.
+    single_copy_files = db.Column(db.Integer, default=0)
+    single_copy_notes = db.Column(db.Integer, default=0)
+    single_copy_thumbnails = db.Column(db.Integer, default=0)
+    aged_single_copy_payloads = db.Column(db.Integer, default=0)
+    zero_copy_files = db.Column(db.Integer, default=0)
+    zero_copy_notes = db.Column(db.Integer, default=0)
+    unverified_replicas = db.Column(db.Integer, default=0)
+    parked_replicas = db.Column(db.Integer, default=0)
+    stalled_remote_deletes = db.Column(db.Integer, default=0)
+
+
+class StorageNodeMetricSnapshot(db.Model):
+    """Per-node replication state, captured with each SystemMetricSnapshot.
+    Throughput is derived from synced_bytes deltas between captures."""
+    id = db.Column(db.Integer, primary_key=True)
+    captured_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    node_id = db.Column(db.Integer, nullable=False, index=True)
+    node_name = db.Column(db.String(100), nullable=True)
+    node_type = db.Column(db.String(20), nullable=True)
+    is_up = db.Column(db.Boolean, default=False)
+    synced_replicas = db.Column(db.Integer, default=0)
+    synced_bytes = db.Column(db.BigInteger, default=0)
+    pending_replicas = db.Column(db.Integer, default=0)
+    error_replicas = db.Column(db.Integer, default=0)
+    unverified_replicas = db.Column(db.Integer, default=0)
+
+
+class BackupRun(db.Model):
+    """One backup_prod.py run (written by the backup tool over pymysql, read
+    by the admin Monitoring tab and /metrics). Skipped runs are not recorded."""
+    id = db.Column(db.Integer, primary_key=True)
+    kind = db.Column(db.String(10), nullable=False, index=True)          # 'db' or 'full'
+    started_at = db.Column(db.DateTime, nullable=False, index=True)
+    finished_at = db.Column(db.DateTime, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default='ok')      # 'ok' or 'failed'
+    archive_bytes = db.Column(db.BigInteger, nullable=True)
+    offsite_ok = db.Column(db.Boolean, nullable=True)                    # None = local-only or no remote nodes
+    error = db.Column(db.String(500), nullable=True)
 
 
