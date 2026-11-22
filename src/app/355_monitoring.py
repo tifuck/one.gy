@@ -15,6 +15,7 @@ MONITOR_RANGES = {'24h': timedelta(hours=24), '7d': timedelta(days=7), '30d': ti
 MONITOR_BACKUP_WINDOW = timedelta(days=30)
 MONITOR_NODE_SNAPSHOT_RETENTION = timedelta(days=45)
 MONITOR_BACKUP_RUN_RETENTION = timedelta(days=400)
+MONITOR_EVENT_LIMIT = 30   # resolved issues listed per history request
 # Issue thresholds. Backups run every 6h (db) and daily (full) from cron.
 MONITOR_HEARTBEAT_STALE_SECONDS = 120
 MONITOR_DB_BACKUP_MAX_AGE = 13 * 3600
@@ -178,6 +179,10 @@ def _build_monitor_state():
     except OSError:
         state['disk'] = None
     state['issues'] = _monitor_issues(state)
+    opened = {(e.code, e.subject): _epoch(e.opened_at)
+              for e in MonitorIssueEvent.query.filter(MonitorIssueEvent.resolved_at.is_(None)).all()}
+    for issue in state['issues']:
+        issue['since'] = opened.get((issue['code'], issue['subject']), 0)
     return state
 
 
@@ -426,15 +431,37 @@ def _add_monitor_snapshot_rows(snapshot, now):
             synced_replicas=n['synced'], synced_bytes=n['synced_bytes'], pending_replicas=n['pending'],
             error_replicas=n['errors'], unverified_replicas=sum(n['unverified'].values()),
         ))
+    _record_issue_events(state['issues'], now)
     StorageNodeMetricSnapshot.query.filter(
         StorageNodeMetricSnapshot.captured_at < now - MONITOR_NODE_SNAPSHOT_RETENTION).delete(synchronize_session=False)
+    MonitorIssueEvent.query.filter(
+        MonitorIssueEvent.resolved_at < now - MONITOR_NODE_SNAPSHOT_RETENTION).delete(synchronize_session=False)
     BackupRun.query.filter(BackupRun.started_at < now - MONITOR_BACKUP_RUN_RETENTION).delete(synchronize_session=False)
 
 
-def _downsample(rows, start, end, ts_index=0, peak=False):
-    """One row per MONITOR_HISTORY_POINTS equal buckets: the bucket's last row,
-    or with peak=True its last timestamp with each column's maximum so a short
-    spike still shows in the 7- and 30-day views."""
+def _record_issue_events(issues, now):
+    """Open a MonitorIssueEvent for each new critical/warning issue and close
+    the ones that are gone (same transaction as the snapshot being captured)."""
+    still_open = {(e.code, e.subject): e
+                  for e in MonitorIssueEvent.query.filter(MonitorIssueEvent.resolved_at.is_(None)).all()}
+    for issue in issues:
+        if issue['severity'] == 'info':
+            continue
+        event = still_open.pop((issue['code'], issue['subject'][:120]), None)
+        if event is None:
+            event = MonitorIssueEvent(code=issue['code'], subject=issue['subject'][:120], opened_at=now)
+            db.session.add(event)
+        event.severity = issue['severity']
+        event.summary = issue['summary'][:500]
+    for event in still_open.values():
+        event.resolved_at = now
+
+
+def _downsample(rows, start, end, ts_index=0, peak=False, low=()):
+    """One row per MONITOR_HISTORY_POINTS equal buckets: the bucket's last row.
+    peak=True keeps each column's maximum instead and `low` lists columns that
+    keep their minimum, so a short spike or outage still shows in the 7- and
+    30-day views."""
     if not rows:
         return []
     width = max(1.0, (end - start) / MONITOR_HISTORY_POINTS)
@@ -442,8 +469,9 @@ def _downsample(rows, start, end, ts_index=0, peak=False):
     for row in rows:
         k = int((_epoch(row[ts_index]) - start) // width)
         prev = kept.get(k)
-        if peak and prev is not None:
-            row = tuple(v if i == ts_index else max(v or 0, p or 0) for i, (v, p) in enumerate(zip(row, prev)))
+        if prev is not None and (peak or low):
+            row = tuple(min(v or 0, p or 0) if i in low else max(v or 0, p or 0) if peak and i != ts_index else v
+                        for i, (v, p) in enumerate(zip(row, prev)))
         kept[k] = row
     return [kept[k] for k in sorted(kept)]
 
@@ -479,7 +507,7 @@ def _monitor_history(range_key):
         by_node.setdefault(row[0], []).append(row)
     nodes = []
     for nid, items in by_node.items():
-        items = _downsample(items, start, end, ts_index=1)
+        items = _downsample(items, start, end, ts_index=1, low=(4,))
         nodes.append({
             'id': nid, 'name': items[-1][2], 'type': items[-1][3],
             't': [_epoch(r[1]) for r in items], 'up': [1 if r[4] else 0 for r in items],
@@ -489,7 +517,11 @@ def _monitor_history(range_key):
         })
 
     runs = BackupRun.query.filter(BackupRun.started_at >= now - MONITOR_BACKUP_WINDOW).order_by(BackupRun.started_at).all()
+    E = MonitorIssueEvent
+    events = E.query.filter(E.resolved_at >= since).order_by(E.resolved_at.desc()).limit(MONITOR_EVENT_LIMIT).all()
     return {'range': range_key, 'start': start, 'end': end, 'system': system, 'nodes': nodes,
+            'events': [{'code': e.code, 'subject': e.subject, 'severity': e.severity, 'summary': e.summary,
+                        'opened': _epoch(e.opened_at), 'resolved': _epoch(e.resolved_at)} for e in events],
             'backups': {'start': int((now - MONITOR_BACKUP_WINDOW).timestamp()),
                         'runs': [_backup_run_dict(r) for r in runs]}}
 

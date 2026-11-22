@@ -1369,3 +1369,16 @@ class BackupRun(db.Model):
     error = db.Column(db.String(500), nullable=True)
 
 
+class MonitorIssueEvent(db.Model):
+    """One open-to-resolved span of a critical/warning monitoring issue
+    (355_monitoring.py), kept up to date with each 5-minute snapshot.
+    resolved_at NULL = still open."""
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(40), nullable=False)
+    subject = db.Column(db.String(120), nullable=False, default='')
+    severity = db.Column(db.String(10), nullable=False, default='warning')
+    summary = db.Column(db.String(500), nullable=True)
+    opened_at = db.Column(db.DateTime, nullable=False)
+    resolved_at = db.Column(db.DateTime, nullable=True, index=True)
+
+

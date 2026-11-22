@@ -1,30 +1,36 @@
 /* ============================================================================
    admin-monitor.js — Monitoring tab of the admin console (admin.js).
-   Renders /admin/api/monitoring: one status board (every check, with its open
-   issues listed under it), storage nodes, durability, jobs, trends and backups.
-   Issue rules live on the server (_monitor_issues); this file only maps each
-   issue code to the check it belongs to and never invents its own alerts.
-   Charts are plain SVG drawn at the container's real width (no library);
-   admin.js owns fetching and the live refresh timer, this file owns the
-   once-a-second "x s ago" ticker.
+   A four-view dashboard (Overview, Storage, Trends, Backups) built from
+   /admin/api/monitoring. Each view fits one screen; the toolbar's time range
+   applies to every sparkline, timeline and chart.
+   Issue rules live on the server (_monitor_issues): this file maps each issue
+   code to a check and takes every colour from those issues, never from
+   thresholds of its own.
+   Charts are plain SVG drawn at the container's real width (no library).
+   admin.js owns fetching and the live refresh timer; this file owns the
+   once-a-second "x s ago" ticker and the view tabs.
    ========================================================================== */
 (function () {
   'use strict'
-  var H = null // markup helpers handed over by admin.js (esc, num, fmtBytes, pill, head, card, kvs)
+  var H = null // markup helpers handed over by admin.js (esc, num, fmtBytes, pill)
   var CHARTS = {}
   var observer = null
   var ticker = null
+  var root = null // the admin panel while mounted
+  var keep = { focus: '', scroll: 0 } // carried across a live repaint
   var skew = 0 // server clock minus browser clock, seconds
   var PALETTE = ['var(--accent)', 'var(--kind-media)', 'var(--kind-code)', 'var(--kind-image)', 'var(--kind-doc)']
   var TONE = { good: 'var(--good)', warn: 'var(--warn)', bad: 'var(--bad)', muted: 'var(--line-strong)' }
   var RANGES = [['24h', '24 h'], ['7d', '7 d'], ['30d', '30 d']]
+  var VIEWS = [['overview', 'Overview'], ['storage', 'Storage'], ['trends', 'Trends'], ['backups', 'Backups']]
+  var view = (function () { try { return sessionStorage.getItem('adm-mon-view') || 'overview' } catch (e) { return 'overview' } })()
   // Overview checks: [id, label, view holding the details, issue codes from _monitor_issues]
   var CHECKS = [
     ['durability', 'Durability', 'storage', ['zero_copy', 'aged_single_copy']],
     ['replication', 'Replication', 'storage', ['parked_replicas', 'remote_delete_stalled']],
     ['nodes', 'Storage nodes', 'storage', ['node_down', 'missing_replicas', 'size_only_node']],
     ['verification', 'Verification', 'storage', ['scrub_behind']],
-    ['jobs', 'Background jobs', 'storage', ['scheduler_stalled', 'job_overdue']],
+    ['jobs', 'Jobs', 'storage', ['scheduler_stalled', 'job_overdue']],
     ['backups', 'Backups', 'backups', ['backup_failed', 'backup_offsite_failed', 'backup_stale', 'backup_unrecorded']],
     ['disk', 'Local disk', 'storage', ['disk_full']]
   ]
@@ -89,37 +95,59 @@
   // threshold, other jobs past 3 intervals + 2 min.
   function jobLimit (job, j, thresholds) { return job === 'scheduler' ? thresholds.heartbeat : 3 * j.interval + 120 }
 
-  // ---- Small inline graphics -----------------------------------------------------
+  // ---- Building blocks ------------------------------------------------------------
+  // Compact dashboard panel. o: { note (after the title), meta (html, right), tip (hover text), cls, flush }
+  function panel (title, body, o) {
+    o = o || {}
+    return '<section class="rd-panel mon-p' + (o.cls ? ' ' + o.cls : '') + '">' +
+      '<header class="mon-p-head"' + (o.tip ? ' title="' + H.esc(o.tip) + '"' : '') + '><h3>' + H.esc(title) + (o.note ? ' <small>' + H.esc(o.note) + '</small>' : '') + '</h3>' +
+      (o.meta ? '<span class="mon-p-meta">' + o.meta + '</span>' : '') + '</header>' +
+      '<div class="mon-p-body' + (o.flush ? ' is-flush' : '') + '">' + body + '</div></section>'
+  }
   function meter (fraction, tone) {
     var w = Math.max(0, Math.min(1, fraction || 0)) * 100
     return '<div class="adm-meter"><div class="adm-meter-fill' + (tone && tone !== 'good' ? ' is-' + tone : '') + '" style="width:' + w.toFixed(1) + '%"></div></div>'
   }
+  // Zero-based area sparkline on the dashboard's time axis.
+  function spark (t, values, start, end, color) {
+    var pts = []
+    ;(t || []).forEach(function (ts, i) { if (values[i] != null) pts.push([ts, values[i]]) })
+    if (pts.length < 2) return '<span class="mon-spark is-empty"></span>'
+    var max = Math.max.apply(null, pts.map(function (q) { return q[1] })) || 1
+    var w = Math.max(1, end - start)
+    var xy = pts.map(function (q) { return [((q[0] - start) / w * 100).toFixed(2), (27 - q[1] / max * 24).toFixed(2)] })
+    var line = xy.map(function (q) { return q.join(',') }).join(' ')
+    return '<svg class="mon-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">' +
+      '<polygon points="' + xy[0][0] + ',28 ' + line + ' ' + xy[xy.length - 1][0] + ',28" style="fill:' + color + ';opacity:.13"/>' +
+      '<polyline points="' + line + '" style="fill:none;stroke:' + color + '" vector-effect="non-scaling-stroke"/></svg>'
+  }
   // segments: [{label, value, color}] — one horizontal stacked bar + legend
-  function stackBar (segments, total) {
-    total = total || sum(segments.map(function (s) { return s.value }))
-    var bar = segments.map(function (s) {
-      if (!s.value || !total) return ''
-      return '<span style="flex-grow:' + s.value + ';background:' + s.color + '" title="' + H.esc(s.label + ': ' + H.num(s.value)) + '"></span>'
+  function stackBar (segments, total, hideZero) {
+    total = total || sum(segments.map(function (x) { return x.value }))
+    var bar = segments.map(function (x) {
+      if (!x.value || !total) return ''
+      return '<span style="flex-grow:' + x.value + ';background:' + x.color + '" title="' + H.esc(x.label + ': ' + H.num(x.value)) + '"></span>'
     }).join('')
-    var legend = segments.map(function (s) {
-      return '<span class="mon-legend-item' + (s.value ? '' : ' is-zero') + '"><i style="background:' + s.color + '"></i>' + H.esc(s.label) + ' <b>' + H.num(s.value) + '</b></span>'
+    var legend = segments.map(function (x) {
+      if (hideZero && !x.value) return ''
+      return '<span class="mon-legend-item' + (x.value ? '' : ' is-zero') + '"><i style="background:' + x.color + '"></i>' + H.esc(x.label) + ' <b>' + H.num(x.value) + '</b></span>'
     }).join('')
-    return '<div class="mon-stack" role="img" aria-label="' + H.esc(segments.map(function (s) { return s.label + ' ' + s.value }).join(', ')) + '">' +
+    return '<div class="mon-stack" role="img" aria-label="' + H.esc(segments.map(function (x) { return x.label + ' ' + x.value }).join(', ')) + '">' +
       (bar || '<span style="flex-grow:1;background:var(--press)"></span>') + '</div><div class="mon-legend">' + legend + '</div>'
   }
 
   // ---- Chart registry (drawn after paint, at real width) ----------------------------
-  function chart (key, spec, title, sub) {
+  function chart (key, spec, title, tip) {
     CHARTS[key] = spec
-    var legend = spec.series && spec.series.length > 1 ? '<div class="mon-legend">' + spec.series.map(function (s) {
-      return '<span class="mon-legend-item"><i style="background:' + s.color + '"></i>' + H.esc(s.name) + '</span>'
+    function last (x) { for (var i = x.values.length - 1; i >= 0; i--) if (x.values[i] != null) return x.values[i]; return null }
+    var series = spec.series || [], multi = series.length > 1
+    var legend = multi ? '<div class="mon-legend">' + series.map(function (x) {
+      return '<span class="mon-legend-item"><i style="background:' + x.color + '"></i>' + H.esc(x.name) + ' <b>' + H.esc(fmt(spec.unit, last(x))) + '</b></span>'
     }).join('') + '</div>' : ''
     var empty = !spec.t || spec.t.length < 2
-    return '<section class="rd-panel mon-chart-card"><header class="mon-chart-head"><h3>' + H.esc(title) + '</h3>' +
-      (sub ? '<p>' + H.esc(sub) + '</p>' : '') + '</header>' +
-      (empty ? '<div class="mon-chart-empty">Collecting data. Charts fill in as 5-minute snapshots arrive.</div>'
-        : '<div class="mon-chart" data-chart="' + key + '" style="height:' + (spec.height || 120) + 'px" role="img" aria-label="' + H.esc(title) + '"></div>' + legend) +
-      '</section>'
+    return panel(title, empty ? '<div class="mon-chart-empty">Collecting data. Charts fill in as 5-minute snapshots arrive.</div>'
+      : '<div class="mon-chart" data-chart="' + key + '" style="height:' + (spec.height || 150) + 'px" role="img" aria-label="' + H.esc(title + (tip ? ': ' + tip : '')) + '"></div>' + legend,
+    { tip: tip, cls: 'mon-chart-card', meta: !multi && series.length && !empty ? H.esc(fmt(spec.unit, last(series[0]))) : '' })
   }
 
   function drawLine (el, spec) {
@@ -243,6 +271,13 @@
       for (var j = 0; j < t.length; j++) { var dd = Math.abs(geo.x(t[j]) - mx); if (dd < bestD) { bestD = dd; i = j } }
       px = geo.x(t[i])
       if (guide) { guide.setAttribute('x1', px); guide.setAttribute('x2', px); guide.style.display = '' }
+      // Shared crosshair: mark the same moment on the other charts of this view.
+      el.closest('.mon-view').querySelectorAll('.mon-chart').forEach(function (other) {
+        var g = other !== el && other._geo && other.querySelector('.mon-guide'), ox = g ? other._geo.x(t[i]) : 0
+        if (!g) return
+        g.setAttribute('x1', ox); g.setAttribute('x2', ox)
+        g.style.display = ox >= other._geo.padL && ox <= other._geo.W ? '' : 'none'
+      })
       html = '<b>' + H.esc(fullTime(t[i])) + '</b>' + spec.series.map(function (s) {
         return '<div><i style="background:' + s.color + '"></i>' + H.esc(s.name) + '<span>' + H.esc(fmt(spec.unit, s.values[i])) + '</span></div>'
       }).join('')
@@ -255,9 +290,9 @@
   function onLeave (e) {
     var el = e.target.closest && e.target.closest('.mon-chart')
     if (!el) return
-    var tip = el.querySelector('.mon-tip'), guide = el.querySelector('.mon-guide')
+    var tip = el.querySelector('.mon-tip')
     if (tip) tip.hidden = true
-    if (guide) guide.style.display = 'none'
+    el.closest('.mon-view').querySelectorAll('.mon-guide').forEach(function (g) { g.style.display = 'none' })
   }
 
   // ---- Derived series ----------------------------------------------------------
@@ -299,22 +334,22 @@
     return out
   }
 
-  // ---- Status board --------------------------------------------------------------
-  // Each returns { value (html), detail (html), tone? } where tone is only 'idle' for
-  // "no data / not applicable"; problems come from the server's issues.
+  // ---- Checks --------------------------------------------------------------------
+  // Each returns { value (html), detail (html), tone? }; tone is only 'idle' for
+  // "no data / not applicable". Problems come from the server's issues.
   var SUMMARY = {
     durability: function (st) {
       if (!st.multi_node) return { value: 'One node', detail: 'Only one storage node is enabled, so every payload has one copy', tone: 'idle' }
       var zero = st.zero_copy.file + st.zero_copy.note, one = st.single_copy.file + st.single_copy.note
       return {
-        value: zero ? H.num(zero) + ' with no copy' : one ? H.num(one) + ' with one copy' : 'All on 2+ nodes',
-        detail: plural(st.payloads.file, 'file') + ', ' + plural(st.payloads.note, 'note') + (one && !zero ? ', still replicating' : '')
+        value: zero || one ? H.num(zero + one) + ' at risk' : 'All replicated',
+        detail: plural(st.payloads.file, 'file') + ' and ' + plural(st.payloads.note, 'note') + ' on 2+ nodes' + (zero || one ? ', except ' + H.num(zero + one) : '')
       }
     },
     replication: function (st) {
       var backlog = st.backlog.file + st.backlog.note + st.backlog.thumbnail, rd = st.remote_deletes
       return {
-        value: backlog ? plural(backlog, 'copy', 'copies') + ' queued' : 'In sync',
+        value: backlog ? H.num(backlog) + ' queued' : 'In sync',
         detail: (st.errors ? plural(st.errors, 'error') + (st.parked ? ' (' + H.num(st.parked) + ' parked)' : '') : 'No errors') + ', ' +
           (rd.queued ? plural(rd.queued, 'remote delete') + ' queued' : 'no deletes queued')
       }
@@ -329,14 +364,7 @@
     },
     verification: function (st) {
       var synced = sum(enabledNodes(st).map(function (n) { return n.synced })), unv = st.unverified
-      var noHash = st.unverified_no_hash || 0, queued = unv - noHash
-      var parts = []
-      if (queued) parts.push(H.num(queued) + ' waiting for the scrub')
-      if (noHash) parts.push(H.num(noHash) + ' size-checked only')
-      return {
-        value: pct(synced - unv, synced) + ' confirmed',
-        detail: parts.length ? 'By SHA-256; ' + parts.join(', ') : 'Every copy matches its SHA-256'
-      }
+      return { value: pct(synced - unv, synced) + ' verified', detail: unv ? unverifiedText(st) : 'Every copy matches its SHA-256' }
     },
     jobs: function (st, now, thresholds) {
       var j = st.jobs
@@ -345,17 +373,17 @@
       })
       return {
         value: late.length ? plural(late.length, 'job') + ' late' : 'On schedule',
-        detail: 'Heartbeat ' + liveAgo(j.scheduler.last, now) + ', scrub ' + liveAgo(j.integrity_scrub.last, now)
+        detail: 'Heartbeat ' + ago(j.scheduler.last, now) + ', scrub ' + ago(j.integrity_scrub.last, now)
       }
     },
     backups: function (st, now) {
-      var b = st.backups
-      if (!b.db.last && !b.full.last) return { value: 'No runs yet', detail: 'Runs appear after the next backup_prod.py run', tone: 'idle' }
-      function part (k, label) { return b[k].last_ok ? label + ' ' + liveAgo(b[k].last_ok.finished, now) : label + ' never' }
-      var last = [b.db.last, b.full.last].filter(Boolean)
+      var bk = st.backups
+      if (!bk.db.last && !bk.full.last) return { value: 'No runs yet', detail: 'Runs appear after the next backup_prod.py run', tone: 'idle' }
+      function part (k, label) { return bk[k].last_ok ? label + ' ' + ago(bk[k].last_ok.finished, now) : label + ' never' }
+      var last = [bk.db.last, bk.full.last].filter(Boolean)
       var offsite = last.every(function (r) { return r.offsite_ok === true }) ? 'offsite copies verified'
         : last.some(function (r) { return r.offsite_ok === false }) ? 'offsite copy incomplete' : 'local only'
-      var newest = Math.max(b.db.last_ok ? b.db.last_ok.finished : 0, b.full.last_ok ? b.full.last_ok.finished : 0)
+      var newest = Math.max(bk.db.last_ok ? bk.db.last_ok.finished : 0, bk.full.last_ok ? bk.full.last_ok.finished : 0)
       return { value: newest ? liveAgo(newest, now) : 'Never succeeded', detail: part('db', 'DB') + ', ' + part('full', 'full') + ', ' + offsite }
     },
     disk: function (st) {
@@ -364,14 +392,20 @@
       return { value: Math.round((d.total - d.free) / d.total * 100) + '% used', detail: H.fmtBytes(d.free) + ' free of ' + H.fmtBytes(d.total) }
     }
   }
+  function unverifiedText (st) {
+    var noHash = st.unverified_no_hash || 0, queued = st.unverified - noHash, parts = []
+    if (queued) parts.push(H.num(queued) + ' awaiting scrub')
+    if (noHash) parts.push(H.num(noHash) + ' size-only')
+    return parts.join(', ') || 'All hash-verified'
+  }
 
   function evaluate (st, now, thresholds) {
     var byCode = {}, mapped = {}
     st.issues.forEach(function (i) { (byCode[i.code] = byCode[i.code] || []).push(i) })
     var rows = CHECKS.map(function (c) {
       c[3].forEach(function (code) { mapped[code] = true })
-      var s = SUMMARY[c[0]](st, now, thresholds)
-      return { id: c[0], label: c[1], view: c[2], value: s.value, detail: s.detail, tone: s.tone,
+      var x = SUMMARY[c[0]](st, now, thresholds)
+      return { id: c[0], label: c[1], view: c[2], value: x.value, detail: x.detail, tone: x.tone,
         issues: [].concat.apply([], c[3].map(function (code) { return byCode[code] || [] })) }
     })
     var other = st.issues.filter(function (i) { return !mapped[i.code] })
@@ -382,46 +416,153 @@
     })
     return rows
   }
-
-  function overview (rows, st, now) {
-    var crit = 0, warn = 0, list = []
-    rows.forEach(function (r) {
-      r.issues.forEach(function (i) {
-        if (i.severity === 'critical') crit++; else if (i.severity === 'warning') warn++
-        list.push({ i: i, r: r })
-      })
+  // Colour for a metric: the worst open issue among the given codes.
+  function toneFor (st, codes) {
+    var tone = 'neutral'
+    st.issues.forEach(function (i) {
+      if (codes.indexOf(i.code) < 0) return
+      if (i.severity === 'critical') tone = 'bad'
+      else if (i.severity === 'warning' && tone !== 'bad') tone = 'warn'
     })
-    var order = { critical: 0, warning: 1, info: 2 }
-    list.sort(function (x, y) { return order[x.i.severity] - order[y.i.severity] })
+    return tone
+  }
+  // History, live values and node series shared by the views.
+  function derive (st, hist) {
+    var primary = null
+    st.nodes.forEach(function (n) { if (n.primary && n.enabled) primary = n })
+    var nodeHist = hist.nodes.filter(function (n) { return st.nodes.some(function (x) { return x.id === n.id && x.enabled }) })
+    return {
+      hs: withLive(hist.system, st), primary: primary, nodeHist: nodeHist,
+      primaryHist: primary ? nodeHist.filter(function (n) { return n.id === primary.id })[0] : null,
+      remotes: nodeHist.filter(function (n) { return n.type !== 'local' && (!primary || n.id !== primary.id) })
+    }
+  }
+
+  // ---- Overview ------------------------------------------------------------------
+  function statusStrip (rows) {
+    var crit = 0, warn = 0
+    rows.forEach(function (r) { r.issues.forEach(function (i) { if (i.severity === 'critical') crit++; else if (i.severity === 'warning') warn++ }) })
     var tone = crit ? 'bad' : warn ? 'warn' : 'good'
     var headline = crit ? plural(crit, 'critical issue') + (warn ? ' and ' + plural(warn, 'warning') : '')
       : warn ? plural(warn, 'warning') : 'All systems healthy'
     var passing = rows.filter(function (r) { return r.tone === 'good' }).length
-    var banner = '<div class="mon-banner is-' + tone + '"><span class="mon-banner-mark" aria-hidden="true"></span>' +
-      '<h2>' + H.esc(headline) + '</h2><span class="mon-banner-sub">' + passing + ' of ' + rows.length + ' checks passing</span></div>'
-    var tiles = rows.map(function (r) {
-      return '<button type="button" class="mon-tile is-' + r.tone + '" data-mon-view="' + r.view + '">' +
-        '<span class="mon-tile-label"><span class="mon-dot" aria-hidden="true"></span>' + H.esc(r.label) + '</span>' +
-        '<span class="mon-tile-val">' + r.value + '</span>' +
-        '<span class="mon-tile-detail">' + r.detail + '</span></button>'
+    var cells = rows.map(function (r) {
+      return '<button type="button" class="mon-check is-' + r.tone + '" id="mon-check-' + r.id + '" data-mon-view="' + r.view + '" title="' + r.detail.replace(/<[^>]+>/g, '') + '">' +
+        '<span class="mon-check-label"><span class="mon-dot" aria-hidden="true"></span>' + H.esc(r.label) + '</span>' +
+        '<span class="mon-check-val">' + r.value + '</span></button>'
     }).join('')
-    var issues = list.length ? list.map(function (x) {
-      var t = x.i.severity === 'critical' ? 'bad' : x.i.severity === 'warning' ? 'warn' : 'info'
-      return '<li class="is-' + t + '"><span class="mon-dot" aria-hidden="true"></span><span class="mon-issue-text">' + H.esc(x.i.summary) + '</span>' +
-        '<button type="button" class="mon-issue-link" data-mon-view="' + x.r.view + '">' + H.esc(x.r.label) + '</button></li>'
-    }).join('') : '<li class="is-none">No open issues.</li>'
-    return banner + '<div class="mon-tiles">' + tiles + '</div>' +
-      '<section class="rd-panel mon-issues"><header class="mon-issues-head"><h3>Open issues</h3><span>' + H.num(list.length) + '</span></header><ul>' + issues + '</ul></section>'
+    return '<section class="rd-panel mon-status is-' + tone + '" aria-label="System status">' +
+      '<div class="mon-status-head"><span class="mon-status-mark" aria-hidden="true"></span><h2>' + H.esc(headline) + '</h2>' +
+      '<span class="mon-p-meta">' + passing + ' of ' + rows.length + ' checks passing</span></div>' +
+      '<div class="mon-checks">' + cells + '</div></section>'
   }
 
-  // ---- Sections ------------------------------------------------------------------
-  function nodesCard (st, now) {
+  // o: { t, values, start, end, tone, range, noDelta }; sub is html
+  function stat (id, label, value, sub, o) {
+    var delta = ''
+    var v = (o.values || []).filter(function (x) { return x != null })
+    var d = !o.noDelta && v.length > 1 ? v[v.length - 1] - v[0] : 0
+    if (d) delta = '<span class="mon-stat-delta" title="Change over the last ' + o.range + '">' + (d > 0 ? '+' : '\u2212') + H.num(Math.abs(d)) + '</span>'
+    return '<button type="button" class="mon-stat is-' + o.tone + '" id="mon-stat-' + id + '" data-mon-view="trends">' +
+      '<span class="mon-stat-label">' + H.esc(label) + '</span>' +
+      '<span class="mon-stat-top"><span class="mon-stat-val">' + H.esc(value) + '</span>' + delta + '</span><span class="mon-stat-sub">' + sub + '</span>' +
+      spark(o.t, o.values || [], o.start, o.end, o.tone === 'bad' ? TONE.bad : o.tone === 'warn' ? TONE.warn : 'var(--accent)') + '</button>'
+  }
+
+  function statPanels (st, dv, span, rangeText, now) {
+    var hs = dv.hs, rd = st.remote_deletes
+    function o (values, codes, extra) {
+      var x = { t: hs.t, values: values, start: span.start, end: span.end, range: rangeText, tone: toneFor(st, codes) }
+      Object.keys(extra || {}).forEach(function (k) { x[k] = extra[k] })
+      return x
+    }
+    var zero = st.zero_copy.file + st.zero_copy.note, one = st.single_copy.file + st.single_copy.note
+    var tp = dv.remotes.map(throughput), axis = dv.remotes.length ? dv.remotes[0].t : []
+    var tpSum = axis.map(function (_, i) { var any = false, total = 0; tp.forEach(function (x) { if (x[i] != null) { any = true; total += x[i] } }); return any ? total : null })
+    var gained = sum(dv.remotes.map(function (n) { return Math.max(0, n.bytes[n.bytes.length - 1] - n.bytes[0]) }))
+    var lastRate = null
+    tpSum.forEach(function (x) { if (x != null) lastRate = x })
+    return '<div class="mon-stats">' +
+      stat('queue', 'Replication queue', H.num(st.backlog.file + st.backlog.note + st.backlog.thumbnail),
+        H.num(st.backlog.file) + ' files, ' + H.num(st.backlog.note) + ' notes, ' + H.num(st.backlog.thumbnail) + ' thumbnails',
+        o(addArrays(hs.backlog_file, hs.backlog_note, hs.backlog_thumbnail), [])) +
+      stat('throughput', 'Throughput', dv.remotes.length ? rate(lastRate) : 'n/a',
+        dv.remotes.length ? '+' + H.fmtBytes(gained) + ' in ' + rangeText : 'No remote node',
+        o(tpSum, [], { t: axis, noDelta: true })) +
+      stat('risk', 'Payloads at risk', H.num(zero + one), H.num(zero) + ' with no copy, ' + H.num(one) + ' with one',
+        o(addArrays(hs.single_copy_file, hs.single_copy_note, hs.zero_copy_file, hs.zero_copy_note), ['zero_copy', 'aged_single_copy'])) +
+      stat('errors', 'Replica errors', H.num(st.errors), H.num(st.parked) + ' parked (no more retries)',
+        o(addArrays(hs.errors_file, hs.errors_note, hs.errors_thumbnail), ['parked_replicas'])) +
+      stat('unverified', 'Unverified copies', H.num(st.unverified), unverifiedText(st), o(hs.unverified, ['scrub_behind'])) +
+      stat('deletes', 'Remote deletes', H.num(rd.queued),
+        (rd.oldest ? 'Oldest ' + ago(rd.oldest, now).replace(' ago', '') : 'Queue empty') + (rd.stalled ? ', ' + H.num(rd.stalled) + ' stalled' : ''),
+        o(hs.remote_deletes, ['remote_delete_stalled'])) +
+      '</div>'
+  }
+
+  function issueLog (rows, hist, now, rangeText) {
+    var order = { critical: 0, warning: 1, info: 2 }, area = {}, open = []
+    rows.forEach(function (r) { r.issues.forEach(function (i) { area[i.code] = r; open.push(i) }) })
+    CHECKS.forEach(function (c) { c[3].forEach(function (code) { area[code] = area[code] || { label: c[1], view: c[2] } }) })
+    open.sort(function (x, y) { return order[x.severity] - order[y.severity] })
+    function chip (code) {
+      var r = area[code]
+      return r ? '<button type="button" class="mon-chip" data-mon-view="' + r.view + '">' + H.esc(r.label) + '</button>' : '<span></span>'
+    }
+    var items = open.map(function (i) {
+      var tone = i.severity === 'critical' ? 'bad' : i.severity === 'warning' ? 'warn' : 'info'
+      return '<li class="is-' + tone + '"><span class="mon-dot" aria-hidden="true"></span><span class="mon-log-text">' + H.esc(i.summary) + '</span>' + chip(i.code) +
+        '<span class="mon-log-age">' + (tone === 'info' ? 'Note' : i.since ? 'Opened ' + liveAgo(i.since, now) : 'New') + '</span></li>'
+    })
+    var resolved = hist.events || []
+    resolved.forEach(function (e) {
+      items.push('<li class="is-done"><span class="mon-dot" aria-hidden="true"></span><span class="mon-log-text">' + H.esc(e.summary || e.code) + '</span>' + chip(e.code) +
+        '<span class="mon-log-age">Resolved ' + liveAgo(e.resolved, now) + ', lasted ' + dur(e.resolved - e.opened) + '</span></li>')
+    })
+    var active = open.filter(function (i) { return i.severity !== 'info' }).length
+    return panel('Issues', '<ul class="mon-log">' + (items.join('') || '<li class="is-none">No open issues, and none resolved in the last ' + rangeText + '.</li>') + '</ul>',
+      { flush: true, cls: 'mon-log-panel', meta: active + ' open, ' + resolved.length + ' resolved in ' + rangeText,
+        tip: 'Open issues first, then the ones resolved in the selected range. Opened and resolved times come from the 5-minute snapshots.' })
+  }
+
+  // State timeline: one strip per enabled node from the 5-minute snapshots.
+  function availability (st, dv, span, rangeText) {
+    var width = Math.max(1, span.end - span.start)
+    var maxGap = Math.max(900, width / 240 * 2.5) // longer than this without a snapshot = no data
+    var rows = dv.nodeHist.map(function (n) {
+      var segs = [], up = 0, total = 0
+      n.t.forEach(function (t, i) {
+        var from = Math.max(t, span.start), to = Math.min(i < n.t.length - 1 ? n.t[i + 1] : span.end, t + maxGap, span.end)
+        if (to <= from) return
+        var last = segs[segs.length - 1]
+        if (last && last.up === n.up[i] && from - last.to < 2) last.to = to
+        else segs.push({ from: from, to: to, up: n.up[i] })
+        total += to - from
+        if (n.up[i]) up += to - from
+      })
+      var cur = st.nodes.filter(function (x) { return x.id === n.id })[0]
+      var label = total ? pct(up, total) + ' up' : 'No data'
+      return '<div class="mon-av"><div class="mon-row"><span>' + H.esc(n.name) + '</span>' +
+        '<b class="' + (cur && !cur.up ? 'is-bad' : '') + '">' + (cur && !cur.up ? 'Down now, ' : '') + label + '</b></div>' +
+        '<div class="mon-strip" role="img" aria-label="' + H.esc(n.name + ': ' + label + ' over the last ' + rangeText) + '">' + segs.map(function (x) {
+          return '<i class="' + (x.up ? 'is-up' : 'is-down') + '" style="left:' + ((x.from - span.start) / width * 100).toFixed(2) + '%;width:' + ((x.to - x.from) / width * 100).toFixed(2) +
+            '%" title="' + H.esc((x.up ? 'Online' : 'Down') + ', ' + fullTime(x.from) + ' to ' + fullTime(x.to)) + '"></i>'
+        }).join('') + '</div></div>'
+    }).join('')
+    var axis = '<div class="mon-strip-axis">' + [0, 0.5, 1].map(function (f) { return '<span>' + H.esc(clockLabel(span.start + width * f, width)) + '</span>' }).join('') + '</div>'
+    var legend = '<div class="mon-legend"><span class="mon-legend-item"><i style="background:var(--good)"></i>Online</span>' +
+      '<span class="mon-legend-item"><i style="background:var(--bad)"></i>Down</span><span class="mon-legend-item"><i class="is-gap"></i>No data</span></div>'
+    return panel('Node availability', rows ? rows + axis + legend : '<p class="mon-sub">Collecting data. The timeline fills in as 5-minute snapshots arrive.</p>',
+      { meta: 'Last ' + rangeText, tip: 'Health-probe result at each 5-minute snapshot. Gaps mean no snapshot was taken, for example while the app was restarting.' })
+  }
+
+  // ---- Storage -------------------------------------------------------------------
+  function nodesTable (st, now) {
     var en = enabledNodes(st), disabled = st.nodes.length - en.length
     var noHash = 0
     var rows = en.map(function (n) {
       var unv = sum(Object.values(n.unverified)), nh = sum(Object.values(n.no_hash || {}))
       noHash += nh
-      var va = n.verify_age || {}, recent = (va.d1 || 0) + (va.d7 || 0)
       var check = n.checksum === true ? 'SHA-256' : n.checksum === false ? 'size only' : 'unprobed'
       function cnt (v, tone, label) { return '<td class="is-num' + (v ? ' is-' + tone : ' is-zero') + '" data-label="' + label + '">' + H.num(v) + '</td>' }
       return '<tr>' +
@@ -430,75 +571,85 @@
         '<td data-label="Status">' + H.pill(n.up ? 'Online' : n.status.charAt(0).toUpperCase() + n.status.slice(1), n.up ? 'good' : 'bad', true) + '</td>' +
         '<td class="is-num" data-label="Stored">' + H.fmtBytes(n.synced_bytes) + '</td>' +
         '<td class="is-num" data-label="Copies">' + H.num(n.synced) + '</td>' +
-        cnt(n.pending, 'warn', 'Queued') + cnt(n.errors + n.missing, 'bad', 'Errors') +
-        '<td data-label="Hash-confirmed"><span class="mon-pct"><b>' + pct(n.synced - unv, n.synced) + '</b>' + meter(n.synced ? (n.synced - unv) / n.synced : 1) + '</span></td>' +
-        '<td data-label="Checked in 7 d"><span class="mon-pct"><b class="' + (va.older ? 'is-warn' : '') + '">' + pct(recent, n.synced) + '</b>' + meter(n.synced ? recent / n.synced : 1, va.older ? 'warn' : '') + '</span></td>' +
+        cnt(n.pending, 'warn', 'Queued') + cnt(n.errors, 'bad', 'Errors') + cnt(n.missing, 'bad', 'Missing') +
+        '<td data-label="Hash-verified"><span class="mon-pct"><b>' + pct(n.synced - unv, n.synced) + '</b>' + meter(n.synced ? (n.synced - unv) / n.synced : 1) + '</span></td>' +
         '<td class="is-num" data-label="Last probe">' + liveAgo(n.last_seen, now) + (n.failures ? '<span class="mon-sub is-bad">' + plural(n.failures, 'failed probe') + '</span>' : '') + '</td>' +
         '</tr>'
     }).join('')
-    var notes = []
-    if (noHash) notes.push(plural(noHash, 'copy', 'copies') + ' never got a hash from their node (for example S3 objects stored without a SHA-256). The scrub checks their size; only a deep verify can confirm their contents.')
-    if (disabled) notes.push(plural(disabled, 'disabled node') + ' not shown.')
+    var note = noHash ? '<p class="mon-sub mon-foot">' + H.esc(plural(noHash, 'copy', 'copies') + ' never got a hash from their node (for example S3 objects stored without a SHA-256). ' +
+      'The scrub checks their size; only a deep verify can confirm their contents.') + '</p>' : ''
     var body = rows
       ? '<div class="rd-table-wrap"><table class="rd-table is-stack mon-table"><thead><tr><th>Node</th><th>Status</th><th class="is-num">Stored</th><th class="is-num">Copies</th>' +
-        '<th class="is-num">Queued</th><th class="is-num">Errors</th><th>Hash-confirmed</th><th>Checked in 7 d</th><th class="is-num">Last probe</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-        (notes.length ? '<p class="adm-note mon-foot">' + H.esc(notes.join(' ')) + '</p>' : '')
-      : '<p class="adm-note mon-foot">No enabled storage nodes.</p>'
-    return H.card('Storage nodes', body, { flush: true, sub: 'Live replica state per enabled node' })
+        '<th class="is-num">Queued</th><th class="is-num">Errors</th><th class="is-num">Missing</th><th>Hash-verified</th><th class="is-num">Last probe</th></tr></thead><tbody>' + rows + '</tbody></table></div>' + note
+      : '<p class="mon-sub mon-foot">No enabled storage nodes.</p>'
+    return panel('Storage nodes', body, { flush: true, meta: en.length + ' enabled' + (disabled ? ', ' + disabled + ' disabled' : ''),
+      tip: 'Live replica state per enabled node. Hash-verified = synced copies whose SHA-256 was confirmed on the node.' })
   }
 
   function durabilityCard (st) {
     function row (label, total, single, zero) {
       var multi = Math.max(0, total - single - zero)
-      return '<div class="mon-dur"><div class="mon-row"><span>' + H.esc(label) + '</span><b>' + H.num(total) + '</b></div>' +
+      return '<div class="mon-block"><div class="mon-row"><span>' + H.esc(label) + '</span><b>' + H.num(total) + '</b></div>' +
         stackBar([{ label: '2+ copies', value: multi, color: TONE.good }, { label: '1 copy', value: single, color: TONE.warn }, { label: 'No copy', value: zero, color: TONE.bad }], total) + '</div>'
     }
     var body = st.multi_node
       ? row('Files', st.payloads.file, st.single_copy.file, st.zero_copy.file) + row('Notes', st.payloads.note, st.single_copy.note, st.zero_copy.note) +
-        '<p class="adm-note">Backups do not include payloads, so replicas are their only copies. ' +
-        (st.single_copy.thumbnail ? plural(st.single_copy.thumbnail, 'thumbnail') + ' also have a single copy.' : 'Every thumbnail has 2+ copies.') + '</p>'
-      : '<p class="adm-note">Only one storage node is enabled, so every payload has exactly one copy.</p>'
-    return H.card('Durability', body, { sub: 'Synced copies per payload across enabled nodes' })
+        '<p class="mon-sub">' + (st.single_copy.thumbnail ? plural(st.single_copy.thumbnail, 'thumbnail') + ' also have a single copy.' : 'Every thumbnail has 2+ copies.') +
+        ' Backups do not include payloads.</p>'
+      : '<p class="mon-sub">Only one storage node is enabled, so every payload has exactly one copy.</p>'
+    return panel('Durability', body, { tip: 'Synced copies per payload across enabled nodes. Replicas are the only copies of payloads.' })
+  }
+
+  function verifyAgeCard (st, now) {
+    var body = enabledNodes(st).map(function (n) {
+      var va = n.verify_age || {}
+      return '<div class="mon-block"><div class="mon-row"><span>' + H.esc(n.name) + '</span><b class="mon-quiet">' +
+        (n.oldest_verified ? 'oldest ' + liveAgo(n.oldest_verified, now) : 'never checked') + '</b></div>' +
+        stackBar([
+          { label: 'Under 1 d', value: va.d1 || 0, color: TONE.good },
+          { label: '1 to 7 d', value: va.d7 || 0, color: 'color-mix(in srgb,var(--good) 50%,var(--press))' },
+          { label: '7 to 30 d', value: va.d30 || 0, color: TONE.warn },
+          { label: 'Over 30 d', value: va.older || 0, color: TONE.bad },
+          { label: 'Never', value: va.never || 0, color: TONE.muted }
+        ], 0, true) + '</div>'
+    }).join('')
+    return panel('Last integrity check', body || '<p class="mon-sub">No enabled storage nodes.</p>',
+      { tip: 'How long ago the scrub last checked each synced copy. The scrub re-checks every copy inside its re-verify window.' })
   }
 
   function jobsCard (st, now, thresholds) {
     var j = st.jobs
-    function job (key, label, detail) {
+    function job (key, label, what) {
       var x = j[key], limit = jobLimit(key, x, thresholds), age = x.last ? now - x.last : null
       var tone = age == null || age > limit ? (key === 'scheduler' ? 'bad' : 'warn') : 'good'
-      return '<div class="mon-fresh"><div class="mon-row"><span>' + H.esc(label) + '</span><b class="is-' + tone + '">' + liveAgo(x.last, now) + '</b></div>' +
-        meter(age == null ? 1 : age / limit, tone) + '<p class="mon-sub">' + H.esc(detail + ' Late after ' + dur(limit) + '.') + '</p></div>'
+      return '<div class="mon-block" title="' + H.esc(what + ' Counts as late after ' + dur(limit) + '.') + '"><div class="mon-row"><span>' + H.esc(label) +
+        ' <small>every ' + dur(x.interval) + '</small></span><b class="is-' + tone + '">' + liveAgo(x.last, now) + '</b></div>' + meter(age == null ? 1 : age / limit, tone) + '</div>'
     }
     var disk = st.disk, diskRow = ''
     if (disk && disk.total) {
       var used = (disk.total - disk.free) / disk.total
       var tone = used * 100 >= thresholds.disk ? 'warn' : 'good'
-      diskRow = '<div class="mon-fresh"><div class="mon-row"><span>Local disk</span><b class="is-' + tone + '">' + Math.round(used * 100) + '% used</b></div>' +
-        meter(used, tone) + '<p class="mon-sub">' + H.fmtBytes(disk.free) + ' free of ' + H.fmtBytes(disk.total) + '. Warns at ' + thresholds.disk + '%.</p></div>'
+      diskRow = '<div class="mon-block" title="Warns at ' + thresholds.disk + '% used."><div class="mon-row"><span>Local disk <small>' + H.fmtBytes(disk.free) + ' free of ' + H.fmtBytes(disk.total) +
+        '</small></span><b class="is-' + tone + '">' + Math.round(used * 100) + '% used</b></div>' + meter(used, tone) + '</div>'
     }
-    return H.card('Jobs and disk',
-      job('scheduler', 'Scheduler heartbeat', 'Every ' + dur(j.scheduler.interval) + ', drives replication, scrub and deletes.') +
-      job('health_check', 'Health check', 'Every ' + dur(j.health_check.interval) + ', probes each storage node.') +
-      job('integrity_scrub', 'Integrity scrub', 'Every ' + dur(j.integrity_scrub.interval) + ', re-checks stored copies.') +
-      diskRow,
-    { sub: 'Bars fill toward the point where a job counts as late' })
+    return panel('Jobs and disk',
+      job('scheduler', 'Scheduler heartbeat', 'Drives replication, scrub and deletes.') +
+      job('health_check', 'Health check', 'Probes each storage node.') +
+      job('integrity_scrub', 'Integrity scrub', 'Re-checks stored copies.') + diskRow,
+      { tip: 'Time since each job last ran. A bar fills toward the point where the job counts as late.' })
   }
 
-  function trends (st, hist, span) {
-    var hs = withLive(hist.system, st)
-    var primary = null
-    st.nodes.forEach(function (n) { if (n.primary && n.enabled) primary = n })
-    var nodeHist = hist.nodes.filter(function (n) { return st.nodes.some(function (s) { return s.id === n.id && s.enabled }) })
-    var primaryHist = primary ? nodeHist.filter(function (n) { return n.id === primary.id })[0] : null
-    var remotes = nodeHist.filter(function (n) { return n.type !== 'local' && (!primary || n.id !== primary.id) })
+  // ---- Trends --------------------------------------------------------------------
+  function trends (dv, span) {
+    var hs = dv.hs, remotes = dv.remotes
     var axis = remotes.length ? remotes[0].t : []
     return '<div class="mon-charts">' +
       chart('tp', { t: axis, start: span.start, end: span.end, unit: 'Bps', area: true, series: remotes.map(function (n, i) {
         return { name: n.name, color: PALETTE[i % PALETTE.length], values: onAxis(axis, n, throughput(n)) }
       }) }, 'Replication throughput', 'Net bytes per second landing on remote nodes') +
-      (primaryHist ? chart('lag', { t: axis, start: span.start, end: span.end, unit: 'bytes', area: true, series: remotes.map(function (n, i) {
-        return { name: n.name, color: PALETTE[i % PALETTE.length], values: onAxis(axis, n, lagSeries(n, primaryHist)) }
-      }) }, 'Behind the primary', 'Bytes on ' + primary.name + ' not yet on remote nodes') : '') +
+      (dv.primaryHist ? chart('lag', { t: axis, start: span.start, end: span.end, unit: 'bytes', area: true, series: remotes.map(function (n, i) {
+        return { name: n.name, color: PALETTE[i % PALETTE.length], values: onAxis(axis, n, lagSeries(n, dv.primaryHist)) }
+      }) }, 'Behind the primary', 'Bytes on ' + dv.primary.name + ' not yet on remote nodes') : '') +
       chart('backlog', { t: hs.t, start: span.start, end: span.end, unit: 'count', stacked: true, series: [
         { name: 'Files', color: PALETTE[0], values: hs.backlog_file },
         { name: 'Notes', color: PALETTE[1], values: hs.backlog_note },
@@ -514,28 +665,28 @@
         { name: 'Stalled deletes', color: PALETTE[2], values: hs.remote_deletes_stalled }
       ] }, 'Problems', 'Replica errors, parked replicas and failing deletes') +
       chart('unverified', { t: hs.t, start: span.start, end: span.end, unit: 'count', area: true, series: [
-        { name: 'Unconfirmed', color: PALETTE[0], values: hs.unverified }
-      ] }, 'Unconfirmed copies', 'Synced copies not yet hash-confirmed') +
-      '</div>'
+        { name: 'Unverified', color: PALETTE[0], values: hs.unverified }
+      ] }, 'Unverified copies', 'Synced copies whose SHA-256 has not been confirmed on the node') +
+      '</div><p class="mon-sub">One point per 5-minute snapshot, the last one live. In the 7 d and 30 d views each point is the peak of its time slot. Hover a chart to mark the same moment on all of them.</p>'
   }
 
-  function backupsSection (st, hb, thresholds, now) {
+  // ---- Backups -------------------------------------------------------------------
+  function backupsView (st, hb, thresholds, now) {
     function summary (kind, label, limit, schedule) {
-      var b = st.backups[kind], ok = b.last_ok, last = b.last
+      var bk = st.backups[kind], ok = bk.last_ok, last = bk.last
       if (!last) {
-        return '<div class="mon-bk"><div class="mon-row"><span>' + label + '</span>' + H.pill('No runs yet', '') + '</div>' +
-          '<p class="mon-sub">Runs appear after the next ' + H.esc(schedule) + ' backup_prod.py run.</p></div>'
+        return panel(label, '<p class="mon-sub">No runs recorded yet. They appear after the next backup_prod.py run.</p>', { note: schedule, meta: H.pill('No runs yet', '') })
       }
       var age = ok ? now - ok.finished : null
       var tone = age == null || age > limit ? 'bad' : 'good'
       var lastTone = last.status !== 'ok' ? 'bad' : last.offsite_ok === false ? 'warn' : 'good'
       var lastLabel = last.status !== 'ok' ? 'Last run failed' : last.offsite_ok === false ? 'Offsite incomplete' : last.offsite_ok ? 'Verified offsite' : 'Local only'
-      return '<div class="mon-bk"><div class="mon-row"><span>' + label + '</span>' + H.pill(lastLabel, lastTone, true) + '</div>' +
-        '<div class="mon-bk-age is-' + tone + '">' + (ok ? liveAgo(ok.finished, now) : 'Never succeeded') + '</div>' +
-        meter(age == null ? 1 : age / limit, tone) +
-        '<p class="mon-sub">Runs ' + H.esc(schedule) + ', alerts after ' + dur(limit) + '</p>' +
-        H.kvs([['Archive', ok ? H.fmtBytes(ok.bytes) : 'n/a'], ['Duration', dur(last.duration)], ['Last run', fullTime(last.started)]]) +
-        (last.status !== 'ok' && last.error ? '<p class="mon-err">' + H.esc(last.error) + '</p>' : '') + '</div>'
+      return panel(label,
+        '<div class="mon-bk-age is-' + tone + '">' + (ok ? liveAgo(ok.finished, now) : 'Never succeeded') + '</div>' + meter(age == null ? 1 : age / limit, tone) +
+        '<dl class="mon-facts"><div><dt>Archive</dt><dd>' + (ok ? H.fmtBytes(ok.bytes) : 'n/a') + '</dd></div><div><dt>Duration</dt><dd>' + dur(last.duration) + '</dd></div>' +
+        '<div><dt>Last run</dt><dd>' + H.esc(fullTime(last.started)) + '</dd></div></dl>' +
+        (last.status !== 'ok' && last.error ? '<p class="mon-err">' + H.esc(last.error) + '</p>' : ''),
+        { note: schedule, meta: H.pill(lastLabel, lastTone, true), tip: 'Time since the last successful run. The bar fills toward the alert limit of ' + dur(limit) + '.' })
     }
     var runs = hb.runs
     function runTone (r) { return r.status !== 'ok' ? 'bad' : r.offsite_ok === false ? 'warn' : 'good' }
@@ -544,22 +695,22 @@
         r.status === 'ok' ? 'Archive ' + H.fmtBytes(r.bytes) : '',
         r.offsite_ok === true ? 'Offsite copy verified' : r.offsite_ok === false ? 'Offsite copy incomplete' : 'No offsite push'].filter(Boolean)
     }
-    var lanes = [['db', 'DB'], ['full', 'Full']].map(function (k) {
-      return { name: k[1], runs: runs.filter(function (r) { return r.kind === k[0] }).map(function (r) { return { t: r.started, tone: runTone(r), lines: runLines(r) } }) }
-    })
-    var body = '<div class="mon-bk-grid">' + summary('db', 'Database', thresholds.db_backup, 'every 6 h') + summary('full', 'Full', thresholds.full_backup, 'daily at 03:30 UTC') + '</div>'
+    var out = '<div class="mon-cols is-2">' + summary('db', 'Database backup', thresholds.db_backup, 'every 6 h') + summary('full', 'Full backup', thresholds.full_backup, 'daily at 03:30 UTC') + '</div>'
     if (runs.length) {
-      CHARTS.bkRuns = { timeline: true, lanes: lanes, start: hb.start, end: now, t: [hb.start, now] }
-      body += '<div><div class="mon-sub-head">Runs in the last 30 days</div><div class="mon-chart" data-chart="bkRuns" style="height:72px" role="img" aria-label="Backup runs over the last 30 days"></div>' +
-        '<div class="mon-legend"><span class="mon-legend-item"><i style="background:var(--good)"></i>Succeeded</span><span class="mon-legend-item"><i style="background:var(--warn)"></i>Offsite incomplete</span><span class="mon-legend-item"><i style="background:var(--bad)"></i>Failed</span></div></div>'
+      var failed = runs.filter(function (r) { return r.status !== 'ok' }).length
+      CHARTS.bkRuns = { timeline: true, start: hb.start, end: now, t: [hb.start, now], lanes: [['db', 'DB'], ['full', 'Full']].map(function (k) {
+        return { name: k[1], runs: runs.filter(function (r) { return r.kind === k[0] }).map(function (r) { return { t: r.started, tone: runTone(r), lines: runLines(r) } }) }
+      }) }
+      out += panel('Runs', '<div class="mon-chart" data-chart="bkRuns" style="height:72px" role="img" aria-label="Backup runs over the last 30 days"></div>' +
+        '<div class="mon-legend"><span class="mon-legend-item"><i style="background:var(--good)"></i>Succeeded</span><span class="mon-legend-item"><i style="background:var(--warn)"></i>Offsite incomplete</span>' +
+        '<span class="mon-legend-item"><i style="background:var(--bad)"></i>Failed</span></div>',
+      { meta: plural(runs.length, 'run') + ' in 30 d, ' + failed + ' failed', tip: 'Every backup_prod.py run in the last 30 days. Hover a dot for details.' })
     }
-    var out = H.card('Backups', body, { sub: 'Code, config and database archives from backup_prod.py' })
     var ok = runs.filter(function (r) { return r.status === 'ok' })
     if (ok.length > 1) {
-      var t = ok.map(function (r) { return r.started })
-      out += '<div class="mon-charts is-2">' +
-        chart('bkSize', { t: t, start: hb.start, end: now, unit: 'bytes', connect: true, series: [['DB', 'db'], ['Full', 'full']].map(function (s, i) {
-          return { name: s[0], color: PALETTE[i], values: ok.map(function (r) { return r.kind === s[1] ? r.bytes : null }) }
+      out += '<div class="mon-cols is-2">' +
+        chart('bkSize', { t: ok.map(function (r) { return r.started }), start: hb.start, end: now, unit: 'bytes', connect: true, series: [['DB', 'db'], ['Full', 'full']].map(function (x, i) {
+          return { name: x[0], color: PALETTE[i], values: ok.map(function (r) { return r.kind === x[1] ? r.bytes : null }) }
         }) }, 'Archive size', 'A sudden drop usually means data missing from the dump') +
         chart('bkDur', { t: runs.map(function (r) { return r.started }), start: hb.start, end: now, unit: 's', bars: true, series: [{
           name: 'Duration', color: 'var(--accent)', values: runs.map(function (r) { return r.duration }),
@@ -567,47 +718,47 @@
         }] }, 'Run duration', 'Bar colour shows the run result') +
         '</div>'
     }
-    return '<div class="mon-group">' + out + '</div>'
+    return out
   }
 
   // ---- Public API ------------------------------------------------------------------
-  var VIEWS = [['overview', 'Overview'], ['storage', 'Storage'], ['trends', 'Trends'], ['backups', 'Backups']]
-  var view = (function () { try { return sessionStorage.getItem('adm-mon-view') || 'overview' } catch (e) { return 'overview' } })()
   function render (d, range, helpers) {
     H = helpers
     CHARTS = {}
     skew = d.now - Date.now() / 1000
-    var st = d.state, hist = d.history, now = d.now
-    var th = d.thresholds
+    if (root) {
+      var act = document.activeElement, log = root.querySelector('.mon-log')
+      keep = { focus: act && act.id && root.contains(act) ? act.id : '', scroll: log ? log.scrollTop : 0 }
+    }
+    var st = d.state, hist = d.history, now = d.now, th = d.thresholds
     var width = hist.end - hist.start
     var span = { end: Math.max(hist.end, st.at) }
     span.start = span.end - width
-    var rows = evaluate(st, now, th)
-    var worst = {}
-    rows.forEach(function (r) {
-      var rank = { bad: 3, warn: 2, idle: 1, good: 0 }
-      if (!worst[r.view] || rank[r.tone] > rank[worst[r.view]]) worst[r.view] = r.tone
-    })
+    var rangeText = (RANGES.filter(function (r) { return r[0] === range })[0] || RANGES[0])[1]
+    var rows = evaluate(st, now, th), dv = derive(st, hist)
+    var rank = { bad: 3, warn: 2, idle: 1, good: 0 }, worst = {}
+    rows.forEach(function (r) { if (!worst[r.view] || rank[r.tone] > rank[worst[r.view]]) worst[r.view] = r.tone })
     if (!VIEWS.some(function (v) { return v[0] === view })) view = 'overview'
 
     var tabs = '<div class="rd-tabs mon-tabs" role="tablist" aria-label="Monitoring views">' + VIEWS.map(function (v) {
-      var on = v[0] === view, t = v[0] === 'overview' ? '' : worst[v[0]]
+      var on = v[0] === view, tone = v[0] === 'overview' ? '' : worst[v[0]]
       return '<button type="button" class="rd-tab' + (on ? ' is-active' : '') + '" role="tab" id="mon-tab-' + v[0] + '" aria-controls="mon-view-' + v[0] + '" aria-selected="' + on + '" data-mon-view="' + v[0] + '">' +
-        H.esc(v[1]) + (t === 'bad' || t === 'warn' ? '<span class="mon-tab-dot is-' + t + '" aria-label="needs attention"></span>' : '') + '</button>'
+        H.esc(v[1]) + (tone === 'bad' || tone === 'warn' ? '<span class="mon-tab-dot is-' + tone + '" aria-label="needs attention"></span>' : '') + '</button>'
     }).join('') + '</div>'
     var live = '<span class="mon-live" data-mon-live role="status"><i aria-hidden="true"></i><span class="mon-live-text">Live, updated ' + liveAgo(st.at, now) + '</span></span>'
-    var rangeBar = '<div class="mon-view-bar"><span>Snapshots every 5 minutes; the last point is live.</span><div class="rd-tabs mon-range" role="group" aria-label="Chart range">' + RANGES.map(function (r) {
-      return '<button type="button" class="rd-tab' + (r[0] === range ? ' is-active' : '') + '" data-mon-range="' + r[0] + '" aria-pressed="' + (r[0] === range) + '">' + r[1] + '</button>'
-    }).join('') + '</div></div>'
+    var ranges = '<div class="rd-tabs mon-range" role="group" aria-label="Time range">' + RANGES.map(function (r) {
+      return '<button type="button" class="rd-tab' + (r[0] === range ? ' is-active' : '') + '" id="mon-range-' + r[0] + '" data-mon-range="' + r[0] + '" aria-pressed="' + (r[0] === range) + '">' + r[1] + '</button>'
+    }).join('') + '</div>'
     function pane (id, html) {
       return '<div class="mon-view" role="tabpanel" id="mon-view-' + id + '" aria-labelledby="mon-tab-' + id + '"' + (id === view ? '' : ' hidden') + '>' + html + '</div>'
     }
     return '<div class="mon">' +
-      '<header class="mon-head"><h1 class="rd-page-title">Monitoring</h1>' + live + '</header>' + tabs +
-      pane('overview', overview(rows, st, now)) +
-      pane('storage', nodesCard(st, now) + '<div class="mon-pair">' + durabilityCard(st) + jobsCard(st, now, th) + '</div>') +
-      pane('trends', rangeBar + trends(st, hist, span)) +
-      pane('backups', backupsSection(st, hist.backups, th, now)) +
+      '<header class="mon-bar"><h1 class="rd-page-title">Monitoring</h1>' + tabs + '<span class="mon-bar-end">' + live + ranges + '</span></header>' +
+      pane('overview', statusStrip(rows) + statPanels(st, dv, span, rangeText, now) +
+        '<div class="mon-cols is-split">' + issueLog(rows, hist, now, rangeText) + availability(st, dv, span, rangeText) + '</div>') +
+      pane('storage', nodesTable(st, now) + '<div class="mon-cols is-3">' + durabilityCard(st) + verifyAgeCard(st, now) + jobsCard(st, now, th) + '</div>') +
+      pane('trends', trends(dv, span)) +
+      pane('backups', backupsView(st, hist.backups, th, now)) +
       '</div>'
   }
 
@@ -618,7 +769,7 @@
       var on = b.getAttribute('data-mon-view') === v
       b.classList.toggle('is-active', on); b.setAttribute('aria-selected', String(on))
     })
-    panel.querySelectorAll('.mon-view').forEach(function (p) { p.hidden = p.id !== 'mon-view-' + v })
+    panel.querySelectorAll('.mon-view').forEach(function (x) { x.hidden = x.id !== 'mon-view-' + v })
     drawAll(panel)
   }
 
@@ -639,7 +790,12 @@
   }
 
   function mount (panel) {
+    root = panel
     drawAll(panel)
+    var log = panel.querySelector('.mon-log'), focus = keep.focus && document.getElementById(keep.focus)
+    if (log) log.scrollTop = keep.scroll
+    if (focus && panel.contains(focus)) focus.focus({ preventScroll: true })
+    keep = { focus: '', scroll: 0 }
     if (!panel._monWired) {
       panel._monWired = true
       panel.addEventListener('mousemove', onHover)
@@ -663,6 +819,7 @@
     if (observer) { observer.disconnect(); observer = null }
     clearInterval(ticker); ticker = null
     CHARTS = {}
+    root = null
   }
   // A chart tooltip is open: a repaint now would yank it from under the pointer.
   function busy (panel) { return !!panel.querySelector('.mon-tip:not([hidden])') }
