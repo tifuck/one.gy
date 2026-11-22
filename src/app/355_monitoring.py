@@ -9,7 +9,7 @@
 # admin banner, /metrics (onegy_issue) and monitor_check.py alert on the same rules.
 
 METRICS_TOKEN = (os.environ.get('METRICS_TOKEN', '') or '').strip()
-MONITOR_STATE_TTL_SECONDS = 30
+MONITOR_STATE_TTL_SECONDS = 15
 MONITOR_HISTORY_POINTS = 240
 MONITOR_RANGES = {'24h': timedelta(hours=24), '7d': timedelta(days=7), '30d': timedelta(days=30)}
 MONITOR_BACKUP_WINDOW = timedelta(days=30)
@@ -54,11 +54,17 @@ def _collect_node_replica_stats(nodes, enabled_ids, now):
             n['replicas'][kind][state] = n['replicas'][kind].get(state, 0) + int(row[2])
             if has_size and state == 'synced':
                 n['synced_bytes'] += int(row[3] or 0)
-        for nid, count in db.session.query(model.node_id, db.func.count()).filter(
+        # Unconfirmed copies split by whether the node ever reported a hash:
+        # without one (e.g. an S3 object stored without ChecksumSHA256) only a
+        # deep verify can confirm it; with one the scrub confirms it in its window.
+        no_hash = model.checksum.is_(None)
+        for nid, hashless, count in db.session.query(model.node_id, no_hash, db.func.count()).filter(
             on_enabled, model.status == 'synced',
-            db.or_(model.checksum.is_(None), model.checksum_verified.isnot(True)),
-        ).group_by(model.node_id).all():
-            nodes[nid]['unverified'][kind] = int(count)
+            db.or_(no_hash, model.checksum_verified.isnot(True)),
+        ).group_by(model.node_id, no_hash).all():
+            nodes[nid]['unverified'][kind] += int(count)
+            if hashless:
+                nodes[nid]['no_hash'][kind] += int(count)
         for nid, count in db.session.query(model.node_id, db.func.count()).filter(
             on_enabled, model.status == 'error', model.error_count >= retries,
         ).group_by(model.node_id).all():
@@ -112,7 +118,8 @@ def _build_monitor_state():
             'checksum': None if n.checksum_capable is None else bool(n.checksum_capable),
             'failures': int(n.consecutive_failures or 0), 'last_seen': _epoch(n.last_seen_at),
             'replicas': {k: {} for k in _MONITOR_KINDS}, 'synced_bytes': 0,
-            'unverified': {k: 0 for k in _MONITOR_KINDS}, 'parked': {k: 0 for k in _MONITOR_KINDS},
+            'unverified': {k: 0 for k in _MONITOR_KINDS}, 'no_hash': {k: 0 for k in _MONITOR_KINDS},
+            'parked': {k: 0 for k in _MONITOR_KINDS},
             'verify_age': {}, 'oldest_verified': 0,
         }
     _collect_node_replica_stats(nodes, enabled_ids, now)
@@ -122,7 +129,7 @@ def _build_monitor_state():
         n['pending'] = sum(r.get('pending', 0) + r.get('syncing', 0) for r in reps.values())
         n['errors'] = sum(r.get('error', 0) for r in reps.values())
         n['missing'] = sum(r.get('missing', 0) for r in reps.values())
-        replicable = n['synced'] + n['pending'] + n['errors']
+        replicable = n['synced'] + n['pending'] + n['errors'] + n['missing']
         n['coverage'] = round(100.0 * n['synced'] / replicable, 2) if replicable else 100.0
     state['nodes'] = list(nodes.values())
 
@@ -131,9 +138,13 @@ def _build_monitor_state():
                         for k in _MONITOR_KINDS}
     state['parked'] = sum(sum(n['parked'].values()) for n in enabled)
     state['unverified'] = sum(sum(n['unverified'].values()) for n in enabled)
+    state['unverified_no_hash'] = sum(sum(n['no_hash'].values()) for n in enabled)
+    state['missing'] = sum(n['missing'] for n in enabled)
     state['errors'] = sum(n['errors'] for n in enabled)
 
-    snap = storage._single_copy_snapshot()
+    # Fresh, not the storage manager's 5-minute cache: this state is itself
+    # cached for MONITOR_STATE_TTL_SECONDS and the admin page polls it live.
+    snap = storage._single_copy_snapshot(force=True)
     state['multi_node'] = bool(snap.get('multi_node'))
     state['payloads'] = {'file': File.query.count(), 'note': Note.query.count()}
     state['single_copy'] = {k: int(snap.get(f'single_copy_{k}s', 0) or 0) for k in _MONITOR_KINDS}
@@ -182,8 +193,8 @@ def _monitor_state(max_age=MONITOR_STATE_TTL_SECONDS):
         return state
 
 
-def _plural(n, word):
-    return f'{n:,} {word}{"" if n == 1 else "s"}'
+def _plural(n, word, many=None):
+    return f'{n:,} {word if n == 1 else many or word + "s"}'
 
 
 def _monitor_issues(state):
@@ -220,6 +231,11 @@ def _monitor_issues(state):
             add('critical', 'backup_stale', f'No successful {label} backup for {(now - b["last_ok"]["finished"]) // 3600} h', kind)
         elif not b['last']:
             add('info', 'backup_unrecorded', f'No {label} backup run recorded yet', kind)
+    for n in state['nodes']:
+        if n['enabled'] and n.get('missing'):
+            add('warning', 'missing_replicas', f'{n["name"]} is missing {_plural(n["missing"], "copy", "copies")} and has no source to re-copy from', n['name'])
+        if n['enabled'] and n.get('verify_age', {}).get('older'):
+            add('warning', 'scrub_behind', f'{_plural(n["verify_age"]["older"], "copy", "copies")} on {n["name"]} not checked for over 30 days', n['name'])
     if state['parked']:
         add('warning', 'parked_replicas', f'{_plural(state["parked"], "replica")} stopped retrying and need an admin retry')
     if state['remote_deletes']['stalled']:
@@ -251,6 +267,7 @@ _METRIC_HELP = {
     'onegy_replicas': 'Replica rows on enabled nodes by kind and state',
     'onegy_replica_bytes': 'Bytes of synced file and thumbnail replicas',
     'onegy_replicas_unverified': 'Synced replicas not hash-confirmed on the node',
+    'onegy_replicas_no_hash': 'Unverified synced replicas whose node never reported a hash',
     'onegy_replicas_exhausted_errors': 'Errored replicas past the retry limit (parked)',
     'onegy_replica_oldest_verified_timestamp_seconds': 'Oldest verified_at among synced replicas',
     'onegy_payloads': 'Payload objects in the DB by kind',
@@ -303,6 +320,7 @@ def build_metrics_text(state):
             for st, count in n['replicas'][kind].items():
                 add('onegy_replicas', count, dict(kl, state=st))
             add('onegy_replicas_unverified', n['unverified'][kind], kl)
+            add('onegy_replicas_no_hash', n['no_hash'][kind], kl)
             add('onegy_replicas_exhausted_errors', n['parked'][kind], kl)
         add('onegy_replica_bytes', n['synced_bytes'], labels)
         if n['oldest_verified']:
@@ -413,14 +431,20 @@ def _add_monitor_snapshot_rows(snapshot, now):
     BackupRun.query.filter(BackupRun.started_at < now - MONITOR_BACKUP_RUN_RETENTION).delete(synchronize_session=False)
 
 
-def _downsample(rows, start, end, ts_index=0):
-    """Keep the last row of each of MONITOR_HISTORY_POINTS equal buckets."""
+def _downsample(rows, start, end, ts_index=0, peak=False):
+    """One row per MONITOR_HISTORY_POINTS equal buckets: the bucket's last row,
+    or with peak=True its last timestamp with each column's maximum so a short
+    spike still shows in the 7- and 30-day views."""
     if not rows:
         return []
     width = max(1.0, (end - start) / MONITOR_HISTORY_POINTS)
     kept = {}
     for row in rows:
-        kept[int((_epoch(row[ts_index]) - start) // width)] = row
+        k = int((_epoch(row[ts_index]) - start) // width)
+        prev = kept.get(k)
+        if peak and prev is not None:
+            row = tuple(v if i == ts_index else max(v or 0, p or 0) for i, (v, p) in enumerate(zip(row, prev)))
+        kept[k] = row
     return [kept[k] for k in sorted(kept)]
 
 
@@ -435,7 +459,7 @@ def _monitor_history(range_key):
         S.pending_remote_deletes, S.stalled_remote_deletes, S.single_copy_files, S.single_copy_notes,
         S.single_copy_thumbnails, S.zero_copy_files, S.zero_copy_notes, S.parked_replicas, S.unverified_replicas,
     ).filter(S.captured_at >= since).order_by(S.captured_at).all()
-    rows = _downsample(rows, start, end)
+    rows = _downsample(rows, start, end, peak=True)
     cols = ['t', 'backlog_file', 'backlog_note', 'backlog_thumbnail', 'errors_file', 'errors_note',
             'errors_thumbnail', 'remote_deletes', 'remote_deletes_stalled', 'single_copy_file', 'single_copy_note',
             'single_copy_thumbnail', 'zero_copy_file', 'zero_copy_note', 'parked', 'unverified']
@@ -477,13 +501,14 @@ def admin_api_monitoring():
     range_key = request.args.get('range', '24h', type=str)
     if range_key not in MONITOR_RANGES:
         range_key = '24h'
+    live = request.args.get('live') == '1'
     try:
         state = _monitor_state()
-        history = _monitor_history(range_key)
+        history = None if live else _monitor_history(range_key)
     except Exception as e:
         db.session.rollback()
         print(f'[ADMIN] Monitoring data failed: {e}')
         return jsonify({'error': 'MONITORING DATA UNAVAILABLE'}), 500
-    return jsonify(state=state, history=history, now=int(time.time()),
+    return jsonify(state=state, history=history, now=int(time.time()), state_ttl=MONITOR_STATE_TTL_SECONDS,
                    thresholds={'heartbeat': MONITOR_HEARTBEAT_STALE_SECONDS, 'db_backup': MONITOR_DB_BACKUP_MAX_AGE,
-                               'full_backup': MONITOR_FULL_BACKUP_MAX_AGE})
+                               'full_backup': MONITOR_FULL_BACKUP_MAX_AGE, 'disk': MONITOR_DISK_WARN_PERCENT})

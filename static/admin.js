@@ -933,28 +933,40 @@
     clearTimeout(S.monTimer); S.monTimer = null
     if (window.AdmMonitor) window.AdmMonitor.unmount()
   }
+  // Live state is polled every MON_POLL_MS (the server caches it for 15 s);
+  // the 5-minute snapshot history only every MON_HISTORY_MS or on range change.
+  var MON_POLL_MS = 10000, MON_HISTORY_MS = 300000
   async function tabMonitor (epoch, silent) {
     epoch = startRender('monitoring', epoch); if (epoch == null) return
     clearTimeout(S.monTimer)
+    var full = !silent || !S.monData || Date.now() - S.monHistAt > MON_HISTORY_MS
     if (!silent) loading()
     try {
-      var d = await jget('/admin/api/monitoring?range=' + encodeURIComponent(S.monRange))
+      var d = await jget('/admin/api/monitoring?range=' + encodeURIComponent(S.monRange) + (full ? '' : '&live=1'))
       if (!isCurrentRender('monitoring', epoch)) return
-      var y = window.scrollY, main = document.querySelector('.adm-main'), my = main ? main.scrollTop : 0
-      paint(window.AdmMonitor.render(d, S.monRange, MON_HELPERS))
-      window.AdmMonitor.mount(panel)
-      if (silent) { window.scrollTo(0, y); if (main) main.scrollTop = my }
+      if (full) S.monHistAt = Date.now(); else d.history = S.monData.history
+      S.monData = d
+      if (!silent || !window.AdmMonitor.busy(panel)) {
+        var y = window.scrollY, main = document.querySelector('.adm-main'), my = main ? main.scrollTop : 0
+        paint(window.AdmMonitor.render(d, S.monRange, MON_HELPERS))
+        window.AdmMonitor.mount(panel)
+        if (silent) { window.scrollTo(0, y); if (main) main.scrollTop = my }
+      }
+      window.AdmMonitor.setLive(panel, true)
     } catch (e) {
       if (!isCurrentRender('monitoring', epoch)) return
       if (!silent) paint(errState('Could not load monitoring data'))
+      else window.AdmMonitor.setLive(panel, false)
     }
-    // Silent refresh every minute while the tab is open and visible.
     S.monTimer = setTimeout(function tick () {
       if (S.tab !== 'monitoring' || S.renderEpoch !== epoch) return
-      if (document.hidden) { S.monTimer = setTimeout(tick, 15000); return }
+      if (document.hidden) { S.monTimer = setTimeout(tick, 5000); return }
       tabMonitor(++S.renderEpoch, true)
-    }, 60000)
+    }, MON_POLL_MS)
   }
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && S.tab === 'monitoring' && S.monData) tabMonitor(++S.renderEpoch, true)
+  })
 
   var TABS = { overview: tabOverview, users: tabUsers, 'temp-files': tabTemp, notifications: tabNotifs, feedback: tabFeedback, statistics: tabStats, storage: tabStorage, monitoring: tabMonitor, settings: tabSettings }
   function go (t) {

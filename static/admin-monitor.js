@@ -1,20 +1,36 @@
 /* ============================================================================
    admin-monitor.js — Monitoring tab of the admin console (admin.js).
-   Renders /admin/api/monitoring: open issues, KPIs with sparklines, payload
-   durability, node health, background jobs, history charts and backup runs.
+   Renders /admin/api/monitoring: one status board (every check, with its open
+   issues listed under it), storage nodes, durability, jobs, trends and backups.
+   Issue rules live on the server (_monitor_issues); this file only maps each
+   issue code to the check it belongs to and never invents its own alerts.
    Charts are plain SVG drawn at the container's real width (no library);
-   admin.js owns fetching, the refresh timer and tab lifecycle.
+   admin.js owns fetching and the live refresh timer, this file owns the
+   once-a-second "x s ago" ticker.
    ========================================================================== */
 (function () {
   'use strict'
   var H = null // markup helpers handed over by admin.js (esc, num, fmtBytes, pill, head, card, kvs)
   var CHARTS = {}
   var observer = null
+  var ticker = null
+  var skew = 0 // server clock minus browser clock, seconds
   var PALETTE = ['var(--accent)', 'var(--kind-media)', 'var(--kind-code)', 'var(--kind-image)', 'var(--kind-doc)']
   var TONE = { good: 'var(--good)', warn: 'var(--warn)', bad: 'var(--bad)', muted: 'var(--line-strong)' }
-  var RANGES = [['24h', '24 hours'], ['7d', '7 days'], ['30d', '30 days']]
+  var RANGES = [['24h', '24 h'], ['7d', '7 d'], ['30d', '30 d']]
+  // Overview checks: [id, label, view holding the details, issue codes from _monitor_issues]
+  var CHECKS = [
+    ['durability', 'Durability', 'storage', ['zero_copy', 'aged_single_copy']],
+    ['replication', 'Replication', 'storage', ['parked_replicas', 'remote_delete_stalled']],
+    ['nodes', 'Storage nodes', 'storage', ['node_down', 'missing_replicas', 'size_only_node']],
+    ['verification', 'Verification', 'storage', ['scrub_behind']],
+    ['jobs', 'Background jobs', 'storage', ['scheduler_stalled', 'job_overdue']],
+    ['backups', 'Backups', 'backups', ['backup_failed', 'backup_offsite_failed', 'backup_stale', 'backup_unrecorded']],
+    ['disk', 'Local disk', 'storage', ['disk_full']]
+  ]
 
   // ---- Formatting ------------------------------------------------------------
+  function serverNow () { return Math.floor(Date.now() / 1000 + skew) }
   function ago (ts, now) {
     if (!ts) return 'never'
     var s = Math.max(0, now - ts)
@@ -23,6 +39,8 @@
     if (s < 172800) return Math.floor(s / 3600) + ' h ago'
     return Math.floor(s / 86400) + ' d ago'
   }
+  // Text that keeps counting between refreshes (see tick()).
+  function liveAgo (ts, now) { return '<span data-ago="' + (ts || 0) + '">' + H.esc(ago(ts, now)) + '</span>' }
   function dur (s) {
     if (s == null) return 'n/a'
     if (s < 90) return Math.round(s) + ' s'
@@ -38,6 +56,13 @@
     if (unit === 's') return dur(v)
     return H.num(Math.round(v))
   }
+  // Never rounds a shortfall up to 100%.
+  function pct (part, whole) {
+    if (!whole) return '100%'
+    var v = part / whole * 100
+    return (v >= 100 ? '100' : v >= 99.95 ? '99.9' : v.toFixed(1)) + '%'
+  }
+  function plural (n, word, many) { return H.num(n) + ' ' + (n === 1 ? word : many || word + 's') }
   function sum (arr) { return arr.reduce(function (a, b) { return a + (b || 0) }, 0) }
   function addArrays () {
     var arrs = Array.prototype.slice.call(arguments)
@@ -59,23 +84,15 @@
     var n = m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10
     return n * p * base
   }
+  function enabledNodes (st) { return st.nodes.filter(function (n) { return n.enabled }) }
+  // Same lateness rules as _monitor_issues: scheduler past the heartbeat
+  // threshold, other jobs past 3 intervals + 2 min.
+  function jobLimit (job, j, thresholds) { return job === 'scheduler' ? thresholds.heartbeat : 3 * j.interval + 120 }
 
   // ---- Small inline graphics -----------------------------------------------------
-  function sparkline (values, color) {
-    var v = (values || []).filter(function (x) { return x != null })
-    if (v.length < 2) return '<div class="mon-spark is-empty"></div>'
-    var max = Math.max.apply(null, v), min = Math.min.apply(null, v), span = max - min || 1
-    var pts = v.map(function (x, i) { return (i / (v.length - 1) * 100).toFixed(2) + ',' + (26 - (x - min) / span * 24).toFixed(2) }).join(' ')
-    return '<svg class="mon-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">' +
-      '<polyline points="' + pts + '" style="fill:none;stroke:' + (color || 'var(--text-dim)') + '" vector-effect="non-scaling-stroke"/></svg>'
-  }
-  function donut (pct, tone) {
-    var r = 15.915, c = Math.max(0, Math.min(100, pct))
-    return '<svg class="mon-donut" viewBox="0 0 36 36" role="img" aria-label="' + c.toFixed(1) + '% synced">' +
-      '<circle cx="18" cy="18" r="' + r + '" style="fill:none;stroke:var(--press);stroke-width:3.2"/>' +
-      '<circle cx="18" cy="18" r="' + r + '" transform="rotate(-90 18 18)" style="fill:none;stroke:' + TONE[tone] +
-      ';stroke-width:3.2;stroke-linecap:round" stroke-dasharray="' + c.toFixed(2) + ' 100"/>' +
-      '<text x="18" y="20.4" text-anchor="middle">' + (c >= 99.95 ? '100' : c.toFixed(1)) + '%</text></svg>'
+  function meter (fraction, tone) {
+    var w = Math.max(0, Math.min(1, fraction || 0)) * 100
+    return '<div class="adm-meter"><div class="adm-meter-fill' + (tone && tone !== 'good' ? ' is-' + tone : '') + '" style="width:' + w.toFixed(1) + '%"></div></div>'
   }
   // segments: [{label, value, color}] — one horizontal stacked bar + legend
   function stackBar (segments, total) {
@@ -85,19 +102,10 @@
       return '<span style="flex-grow:' + s.value + ';background:' + s.color + '" title="' + H.esc(s.label + ': ' + H.num(s.value)) + '"></span>'
     }).join('')
     var legend = segments.map(function (s) {
-      return '<span class="mon-legend-item"><i style="background:' + s.color + '"></i>' + H.esc(s.label) + ' <b>' + H.num(s.value) + '</b></span>'
+      return '<span class="mon-legend-item' + (s.value ? '' : ' is-zero') + '"><i style="background:' + s.color + '"></i>' + H.esc(s.label) + ' <b>' + H.num(s.value) + '</b></span>'
     }).join('')
     return '<div class="mon-stack" role="img" aria-label="' + H.esc(segments.map(function (s) { return s.label + ' ' + s.value }).join(', ')) + '">' +
       (bar || '<span style="flex-grow:1;background:var(--press)"></span>') + '</div><div class="mon-legend">' + legend + '</div>'
-  }
-  function freshness (label, last, interval, now, detail) {
-    var age = last ? now - last : null
-    var limit = Math.max(interval, 1) * 3
-    var tone = age == null ? 'bad' : age <= interval * 1.5 + 30 ? 'good' : age <= limit + 120 ? 'warn' : 'bad'
-    var w = age == null ? 100 : Math.min(100, Math.max(3, age / limit * 100))
-    return '<div class="mon-fresh"><div class="mon-fresh-row"><span>' + H.esc(label) + '</span><b class="is-' + tone + '">' + H.esc(ago(last, now)) + '</b></div>' +
-      '<div class="adm-meter"><div class="adm-meter-fill' + (tone === 'good' ? '' : ' is-' + tone) + '" style="width:' + w.toFixed(1) + '%"></div></div>' +
-      '<p class="mon-fresh-sub">' + H.esc(detail) + '</p></div>'
   }
 
   // ---- Chart registry (drawn after paint, at real width) ----------------------------
@@ -110,15 +118,14 @@
     return '<section class="rd-panel mon-chart-card"><header class="mon-chart-head"><h3>' + H.esc(title) + '</h3>' +
       (sub ? '<p>' + H.esc(sub) + '</p>' : '') + '</header>' +
       (empty ? '<div class="mon-chart-empty">Collecting data. Charts fill in as 5-minute snapshots arrive.</div>'
-        : '<div class="mon-chart" data-chart="' + key + '" style="height:' + (spec.height || 168) + 'px" role="img" aria-label="' + H.esc(title) + '"></div>' + legend) +
+        : '<div class="mon-chart" data-chart="' + key + '" style="height:' + (spec.height || 120) + 'px" role="img" aria-label="' + H.esc(title) + '"></div>' + legend) +
       '</section>'
   }
 
   function drawLine (el, spec) {
     var W = el.clientWidth, Hh = el.clientHeight
     if (!W) return
-    var padL = 56, padR = 8, padT = 8, padB = 22
-    var iw = W - padL - padR, ih = Hh - padT - padB
+    var padR = 6, padT = 6, padB = 20
     var t = spec.t, n = t.length, t0 = spec.start || t[0], t1 = spec.end || t[n - 1]
     var series = spec.series
     var stacked = spec.stacked ? series.map(function () { return [] }) : null
@@ -132,6 +139,10 @@
     series.forEach(function (s, k) { (stacked ? stacked[k] : s.values).forEach(function (v) { if (v != null && v > max) max = v }) })
     max = niceMax(max, spec.unit)
     if (spec.unit === 'count' && max < 2) max = 2
+    if ((spec.unit === 'bytes' || spec.unit === 'Bps') && max < 1024) max = 1024
+    // Room for the widest y label (10px tabular figures are about 6 px each).
+    var padL = 12 + Math.max.apply(null, [0, 1, 2].map(function (g) { return fmt(spec.unit, max * g / 2).length })) * 6
+    var iw = W - padL - padR, ih = Hh - padT - padB
     function x (ts) { return padL + (t1 > t0 ? (ts - t0) / (t1 - t0) : 0) * iw }
     function y (v) { return padT + ih - v / max * ih }
     var out = ''
@@ -140,10 +151,10 @@
       out += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + gy + '" y2="' + gy + '" class="mon-grid"/>' +
         '<text x="' + (padL - 8) + '" y="' + (+gy + 4) + '" text-anchor="end" class="mon-axis">' + H.esc(fmt(spec.unit, gv)) + '</text>'
     }
-    var ticks = Math.max(2, Math.min(6, Math.floor(iw / 110)))
+    var ticks = Math.max(2, Math.min(5, Math.floor(iw / 90)))
     for (var k = 0; k <= ticks; k++) {
       var ts = t0 + (t1 - t0) * k / ticks
-      out += '<text x="' + x(ts).toFixed(1) + '" y="' + (Hh - 5) + '" text-anchor="' + (k === 0 ? 'start' : k === ticks ? 'end' : 'middle') + '" class="mon-axis">' + H.esc(clockLabel(ts, t1 - t0)) + '</text>'
+      out += '<text x="' + x(ts).toFixed(1) + '" y="' + (Hh - 4) + '" text-anchor="' + (k === 0 ? 'start' : k === ticks ? 'end' : 'middle') + '" class="mon-axis">' + H.esc(clockLabel(ts, t1 - t0)) + '</text>'
     }
     if (spec.bars) {
       var bw = Math.max(2, Math.min(6, iw / Math.max(n, 1) * 0.6))
@@ -168,9 +179,9 @@
           if (spec.area || stacked) {
             var lower = stacked && k > 0 ? seg.slice().reverse().map(function (p) { return 'L' + p[0].toFixed(1) + ' ' + y(stacked[k - 1][p[2]] || 0).toFixed(1) }).join('')
               : 'L' + seg[seg.length - 1][0].toFixed(1) + ' ' + y(0).toFixed(1) + 'L' + seg[0][0].toFixed(1) + ' ' + y(0).toFixed(1)
-            out += '<path d="' + d + lower + 'Z" style="fill:' + s.color + ';opacity:.16"/>'
+            out += '<path d="' + d + lower + 'Z" style="fill:' + s.color + ';opacity:.14"/>'
           }
-          out += '<path d="' + d + '" style="fill:none;stroke:' + s.color + ';stroke-width:1.6;stroke-linejoin:round"/>'
+          out += '<path d="' + d + '" style="fill:none;stroke:' + s.color + ';stroke-width:1.5;stroke-linejoin:round"/>'
         })
       })
     }
@@ -182,7 +193,7 @@
   function drawTimeline (el, spec) {
     var W = el.clientWidth, Hh = el.clientHeight
     if (!W) return
-    var padL = 56, padR = 10, laneH = 26, top = 6
+    var padL = 48, padR = 8, laneH = 24, top = 4
     var iw = W - padL - padR, t0 = spec.start, t1 = spec.end
     function x (ts) { return padL + (ts - t0) / (t1 - t0) * iw }
     var out = ''
@@ -191,13 +202,13 @@
       out += '<text x="' + (padL - 10) + '" y="' + (cy + 4) + '" text-anchor="end" class="mon-axis">' + H.esc(lane.name) + '</text>' +
         '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + cy + '" y2="' + cy + '" class="mon-grid"/>'
       lane.runs.forEach(function (r) {
-        out += '<circle cx="' + x(r.t).toFixed(1) + '" cy="' + cy + '" r="4.5" style="fill:' + TONE[r.tone] + '"/>'
+        out += '<circle cx="' + x(r.t).toFixed(1) + '" cy="' + cy + '" r="4" style="fill:' + TONE[r.tone] + '"/>'
       })
     })
     var ticks = Math.max(2, Math.min(6, Math.floor(iw / 110)))
     for (var k = 0; k <= ticks; k++) {
       var ts = t0 + (t1 - t0) * k / ticks
-      out += '<text x="' + x(ts).toFixed(1) + '" y="' + (Hh - 5) + '" text-anchor="' + (k === 0 ? 'start' : k === ticks ? 'end' : 'middle') + '" class="mon-axis">' + H.esc(clockLabel(ts, t1 - t0)) + '</text>'
+      out += '<text x="' + x(ts).toFixed(1) + '" y="' + (Hh - 4) + '" text-anchor="' + (k === 0 ? 'start' : k === ticks ? 'end' : 'middle') + '" class="mon-axis">' + H.esc(clockLabel(ts, t1 - t0)) + '</text>'
     }
     el.innerHTML = '<svg width="' + W + '" height="' + Hh + '" viewBox="0 0 ' + W + ' ' + Hh + '">' + out + '</svg><div class="mon-tip" hidden></div>'
     el._geo = { x: x, padL: padL, iw: iw, W: W, laneH: laneH, top: top }
@@ -215,6 +226,7 @@
     var el = e.target.closest && e.target.closest('.mon-chart')
     if (!el || !el._geo) return
     var spec = CHARTS[el.getAttribute('data-chart')], geo = el._geo
+    if (!spec) return
     var box = el.getBoundingClientRect(), mx = e.clientX - box.left, my = e.clientY - box.top
     var tip = el.querySelector('.mon-tip'), guide = el.querySelector('.mon-guide')
     var html = ''
@@ -225,7 +237,7 @@
       if (lane) lane.runs.forEach(function (r) { var d = Math.abs(geo.x(r.t) - mx); if (d < 12 && (!best || d < best.d)) best = { d: d, r: r } })
       if (!best) { tip.hidden = true; return }
       px = geo.x(best.r.t)
-      html = '<b>' + H.esc(lane.name + ' · ' + fullTime(best.r.t)) + '</b>' + best.r.lines.map(function (l) { return '<div>' + H.esc(l) + '</div>' }).join('')
+      html = '<b>' + H.esc(lane.name + ', ' + fullTime(best.r.t)) + '</b>' + best.r.lines.map(function (l) { return '<div>' + H.esc(l) + '</div>' }).join('')
     } else {
       var t = spec.t, i = 0, bestD = Infinity
       for (var j = 0; j < t.length; j++) { var dd = Math.abs(geo.x(t[j]) - mx); if (dd < bestD) { bestD = dd; i = j } }
@@ -268,135 +280,260 @@
     node.t.forEach(function (ts, i) { byT[ts] = values[i] })
     return axis.map(function (ts) { return byT[ts] == null ? null : byT[ts] })
   }
+  // History is a 5-minute snapshot series; end it with the live state so the
+  // right edge of every system chart matches the numbers above it.
+  function withLive (hs, st) {
+    var n = hs.t.length
+    if (n && st.at - hs.t[n - 1] < 60) return hs
+    var en = enabledNodes(st)
+    function errs (k) { return sum(en.map(function (x) { return x.replicas[k].error || 0 })) }
+    var now = {
+      t: st.at, backlog_file: st.backlog.file, backlog_note: st.backlog.note, backlog_thumbnail: st.backlog.thumbnail,
+      errors_file: errs('file'), errors_note: errs('note'), errors_thumbnail: errs('thumbnail'),
+      remote_deletes: st.remote_deletes.queued, remote_deletes_stalled: st.remote_deletes.stalled,
+      single_copy_file: st.single_copy.file, single_copy_note: st.single_copy.note, single_copy_thumbnail: st.single_copy.thumbnail,
+      zero_copy_file: st.zero_copy.file, zero_copy_note: st.zero_copy.note, parked: st.parked, unverified: st.unverified
+    }
+    var out = {}
+    Object.keys(hs).forEach(function (k) { out[k] = hs[k].concat([k in now ? now[k] : null]) })
+    return out
+  }
+
+  // ---- Status board --------------------------------------------------------------
+  // Each returns { value (html), detail (html), tone? } where tone is only 'idle' for
+  // "no data / not applicable"; problems come from the server's issues.
+  var SUMMARY = {
+    durability: function (st) {
+      if (!st.multi_node) return { value: 'One node', detail: 'Only one storage node is enabled, so every payload has one copy', tone: 'idle' }
+      var zero = st.zero_copy.file + st.zero_copy.note, one = st.single_copy.file + st.single_copy.note
+      return {
+        value: zero ? H.num(zero) + ' with no copy' : one ? H.num(one) + ' with one copy' : 'All on 2+ nodes',
+        detail: plural(st.payloads.file, 'file') + ', ' + plural(st.payloads.note, 'note') + (one && !zero ? ', still replicating' : '')
+      }
+    },
+    replication: function (st) {
+      var backlog = st.backlog.file + st.backlog.note + st.backlog.thumbnail, rd = st.remote_deletes
+      return {
+        value: backlog ? plural(backlog, 'copy', 'copies') + ' queued' : 'In sync',
+        detail: (st.errors ? plural(st.errors, 'error') + (st.parked ? ' (' + H.num(st.parked) + ' parked)' : '') : 'No errors') + ', ' +
+          (rd.queued ? plural(rd.queued, 'remote delete') + ' queued' : 'no deletes queued')
+      }
+    },
+    nodes: function (st) {
+      var en = enabledNodes(st), up = en.filter(function (n) { return n.up }).length, off = st.nodes.length - en.length
+      if (!en.length) return { value: 'None enabled', detail: 'Add a storage node in Storage', tone: 'idle' }
+      return {
+        value: up + ' of ' + en.length + ' online',
+        detail: H.esc(en.map(function (n) { return n.name }).join(', ')) + (off ? ', ' + off + ' disabled' : '')
+      }
+    },
+    verification: function (st) {
+      var synced = sum(enabledNodes(st).map(function (n) { return n.synced })), unv = st.unverified
+      var noHash = st.unverified_no_hash || 0, queued = unv - noHash
+      var parts = []
+      if (queued) parts.push(H.num(queued) + ' waiting for the scrub')
+      if (noHash) parts.push(H.num(noHash) + ' size-checked only')
+      return {
+        value: pct(synced - unv, synced) + ' confirmed',
+        detail: parts.length ? 'By SHA-256; ' + parts.join(', ') : 'Every copy matches its SHA-256'
+      }
+    },
+    jobs: function (st, now, thresholds) {
+      var j = st.jobs
+      var late = ['scheduler', 'health_check', 'integrity_scrub'].filter(function (k) {
+        return (k === 'scheduler' || j[k].interval > 0) && (!j[k].last || now - j[k].last > jobLimit(k, j[k], thresholds))
+      })
+      return {
+        value: late.length ? plural(late.length, 'job') + ' late' : 'On schedule',
+        detail: 'Heartbeat ' + liveAgo(j.scheduler.last, now) + ', scrub ' + liveAgo(j.integrity_scrub.last, now)
+      }
+    },
+    backups: function (st, now) {
+      var b = st.backups
+      if (!b.db.last && !b.full.last) return { value: 'No runs yet', detail: 'Runs appear after the next backup_prod.py run', tone: 'idle' }
+      function part (k, label) { return b[k].last_ok ? label + ' ' + liveAgo(b[k].last_ok.finished, now) : label + ' never' }
+      var last = [b.db.last, b.full.last].filter(Boolean)
+      var offsite = last.every(function (r) { return r.offsite_ok === true }) ? 'offsite copies verified'
+        : last.some(function (r) { return r.offsite_ok === false }) ? 'offsite copy incomplete' : 'local only'
+      var newest = Math.max(b.db.last_ok ? b.db.last_ok.finished : 0, b.full.last_ok ? b.full.last_ok.finished : 0)
+      return { value: newest ? liveAgo(newest, now) : 'Never succeeded', detail: part('db', 'DB') + ', ' + part('full', 'full') + ', ' + offsite }
+    },
+    disk: function (st) {
+      var d = st.disk
+      if (!d || !d.total) return { value: 'Unknown', detail: 'Disk usage could not be read', tone: 'idle' }
+      return { value: Math.round((d.total - d.free) / d.total * 100) + '% used', detail: H.fmtBytes(d.free) + ' free of ' + H.fmtBytes(d.total) }
+    }
+  }
+
+  function evaluate (st, now, thresholds) {
+    var byCode = {}, mapped = {}
+    st.issues.forEach(function (i) { (byCode[i.code] = byCode[i.code] || []).push(i) })
+    var rows = CHECKS.map(function (c) {
+      c[3].forEach(function (code) { mapped[code] = true })
+      var s = SUMMARY[c[0]](st, now, thresholds)
+      return { id: c[0], label: c[1], view: c[2], value: s.value, detail: s.detail, tone: s.tone,
+        issues: [].concat.apply([], c[3].map(function (code) { return byCode[code] || [] })) }
+    })
+    var other = st.issues.filter(function (i) { return !mapped[i.code] })
+    if (other.length) rows.push({ id: 'other', label: 'Other', view: 'overview', value: H.num(other.length), detail: 'Issues without a dedicated check', issues: other })
+    rows.forEach(function (r) {
+      var sev = r.issues.map(function (i) { return i.severity })
+      r.tone = sev.indexOf('critical') >= 0 ? 'bad' : sev.indexOf('warning') >= 0 ? 'warn' : r.tone || 'good'
+    })
+    return rows
+  }
+
+  function overview (rows, st, now) {
+    var crit = 0, warn = 0, list = []
+    rows.forEach(function (r) {
+      r.issues.forEach(function (i) {
+        if (i.severity === 'critical') crit++; else if (i.severity === 'warning') warn++
+        list.push({ i: i, r: r })
+      })
+    })
+    var order = { critical: 0, warning: 1, info: 2 }
+    list.sort(function (x, y) { return order[x.i.severity] - order[y.i.severity] })
+    var tone = crit ? 'bad' : warn ? 'warn' : 'good'
+    var headline = crit ? plural(crit, 'critical issue') + (warn ? ' and ' + plural(warn, 'warning') : '')
+      : warn ? plural(warn, 'warning') : 'All systems healthy'
+    var passing = rows.filter(function (r) { return r.tone === 'good' }).length
+    var banner = '<div class="mon-banner is-' + tone + '"><span class="mon-banner-mark" aria-hidden="true"></span>' +
+      '<h2>' + H.esc(headline) + '</h2><span class="mon-banner-sub">' + passing + ' of ' + rows.length + ' checks passing</span></div>'
+    var tiles = rows.map(function (r) {
+      return '<button type="button" class="mon-tile is-' + r.tone + '" data-mon-view="' + r.view + '">' +
+        '<span class="mon-tile-label"><span class="mon-dot" aria-hidden="true"></span>' + H.esc(r.label) + '</span>' +
+        '<span class="mon-tile-val">' + r.value + '</span>' +
+        '<span class="mon-tile-detail">' + r.detail + '</span></button>'
+    }).join('')
+    var issues = list.length ? list.map(function (x) {
+      var t = x.i.severity === 'critical' ? 'bad' : x.i.severity === 'warning' ? 'warn' : 'info'
+      return '<li class="is-' + t + '"><span class="mon-dot" aria-hidden="true"></span><span class="mon-issue-text">' + H.esc(x.i.summary) + '</span>' +
+        '<button type="button" class="mon-issue-link" data-mon-view="' + x.r.view + '">' + H.esc(x.r.label) + '</button></li>'
+    }).join('') : '<li class="is-none">No open issues.</li>'
+    return banner + '<div class="mon-tiles">' + tiles + '</div>' +
+      '<section class="rd-panel mon-issues"><header class="mon-issues-head"><h3>Open issues</h3><span>' + H.num(list.length) + '</span></header><ul>' + issues + '</ul></section>'
+  }
 
   // ---- Sections ------------------------------------------------------------------
-  function statusBlock (issues) {
-    var crit = issues.filter(function (i) { return i.severity === 'critical' })
-    var warn = issues.filter(function (i) { return i.severity === 'warning' })
-    var info = issues.filter(function (i) { return i.severity === 'info' })
-    var tone = crit.length ? 'bad' : warn.length ? 'warn' : 'good'
-    var headline = crit.length ? H.num(crit.length) + ' critical issue' + (crit.length === 1 ? '' : 's') + (warn.length ? ' and ' + H.num(warn.length) + ' warning' + (warn.length === 1 ? '' : 's') : '')
-      : warn.length ? H.num(warn.length) + ' warning' + (warn.length === 1 ? '' : 's') : 'All systems healthy'
-    var sub = crit.length ? 'Data durability or availability needs attention now.' : warn.length ? 'Nothing is at risk yet, but something is degrading.' : 'Replication, background jobs and backups are within their limits.'
-    var rows = crit.concat(warn).map(function (i) {
-      return '<li class="mon-issue is-' + (i.severity === 'critical' ? 'bad' : 'warn') + '"><span class="mon-issue-dot"></span><span>' + H.esc(i.summary) + '</span>' +
-        '<span class="mon-issue-sev">' + (i.severity === 'critical' ? 'Critical' : 'Warning') + '</span></li>'
+  function nodesCard (st, now) {
+    var en = enabledNodes(st), disabled = st.nodes.length - en.length
+    var noHash = 0
+    var rows = en.map(function (n) {
+      var unv = sum(Object.values(n.unverified)), nh = sum(Object.values(n.no_hash || {}))
+      noHash += nh
+      var va = n.verify_age || {}, recent = (va.d1 || 0) + (va.d7 || 0)
+      var check = n.checksum === true ? 'SHA-256' : n.checksum === false ? 'size only' : 'unprobed'
+      function cnt (v, tone, label) { return '<td class="is-num' + (v ? ' is-' + tone : ' is-zero') + '" data-label="' + label + '">' + H.num(v) + '</td>' }
+      return '<tr>' +
+        '<td data-label="Node"><span class="mon-node"><b>' + H.esc(n.name) + '</b><span>' + H.esc(n.type === 's3' ? 'S3' : n.type === 'ssh' ? 'SSH' : 'Local') +
+          (n.primary ? ', primary' : '') + ', ' + check + '</span></span></td>' +
+        '<td data-label="Status">' + H.pill(n.up ? 'Online' : n.status.charAt(0).toUpperCase() + n.status.slice(1), n.up ? 'good' : 'bad', true) + '</td>' +
+        '<td class="is-num" data-label="Stored">' + H.fmtBytes(n.synced_bytes) + '</td>' +
+        '<td class="is-num" data-label="Copies">' + H.num(n.synced) + '</td>' +
+        cnt(n.pending, 'warn', 'Queued') + cnt(n.errors + n.missing, 'bad', 'Errors') +
+        '<td data-label="Hash-confirmed"><span class="mon-pct"><b>' + pct(n.synced - unv, n.synced) + '</b>' + meter(n.synced ? (n.synced - unv) / n.synced : 1) + '</span></td>' +
+        '<td data-label="Checked in 7 d"><span class="mon-pct"><b class="' + (va.older ? 'is-warn' : '') + '">' + pct(recent, n.synced) + '</b>' + meter(n.synced ? recent / n.synced : 1, va.older ? 'warn' : '') + '</span></td>' +
+        '<td class="is-num" data-label="Last probe">' + liveAgo(n.last_seen, now) + (n.failures ? '<span class="mon-sub is-bad">' + plural(n.failures, 'failed probe') + '</span>' : '') + '</td>' +
+        '</tr>'
     }).join('')
-    var notes = info.length ? '<p class="mon-notes">' + info.map(function (i) { return H.esc(i.summary) }).join(' · ') + '</p>' : ''
-    return '<section class="rd-panel mon-status is-' + tone + '"><div class="mon-status-head"><span class="mon-status-mark"></span><div>' +
-      '<h2>' + H.esc(headline) + '</h2><p>' + H.esc(sub) + '</p></div></div>' +
-      (rows ? '<ul class="mon-issues">' + rows + '</ul>' : '') + notes + '</section>'
-  }
-
-  function kpi (label, value, foot, tone, spark, sparkColor) {
-    return '<div class="mon-kpi is-' + (tone || 'neutral') + '"><div class="mon-kpi-label">' + H.esc(label) + '</div>' +
-      '<div class="mon-kpi-val">' + H.esc(value) + '</div>' + sparkline(spark, sparkColor) +
-      '<div class="mon-kpi-foot">' + H.esc(foot) + '</div></div>'
-  }
-
-  function kpis (st, hs, remotes, now) {
-    var backlog = st.backlog.file + st.backlog.note + st.backlog.thumbnail
-    var risk = st.single_copy.file + st.single_copy.note + st.zero_copy.file + st.zero_copy.note
-    var rd = st.remote_deletes
-    var tp = remotes.map(throughput)
-    var tpSum = tp.length ? tp[0].map(function (_, i) { return sum(tp.map(function (a) { return a[i] })) }) : []
-    var gained = sum(remotes.map(function (n) { return Math.max(0, n.bytes[n.bytes.length - 1] - n.bytes[0]) }))
-    var lastRate = tpSum.length ? tpSum[tpSum.length - 1] : null
-    return '<div class="mon-kpis">' +
-      kpi('Replication backlog', H.num(backlog), H.num(st.backlog.file) + ' files · ' + H.num(st.backlog.note) + ' notes · ' + H.num(st.backlog.thumbnail) + ' thumbs',
-        backlog ? 'warn' : 'good', addArrays(hs.backlog_file, hs.backlog_note, hs.backlog_thumbnail)) +
-      kpi('Copied to remote', '+' + H.fmtBytes(gained), lastRate != null ? 'Now ' + rate(lastRate) + ' (net, ' + remotes.length + ' remote)' : 'Net growth in range',
-        'neutral', tpSum, 'var(--accent)') +
-      kpi('Payloads at risk', H.num(risk), H.num(st.zero_copy.file + st.zero_copy.note) + ' with no copy · ' + H.num(st.single_copy.file + st.single_copy.note) + ' with one',
-        (st.zero_copy.file + st.zero_copy.note) ? 'bad' : risk ? 'warn' : 'good', addArrays(hs.single_copy_file, hs.single_copy_note, hs.zero_copy_file, hs.zero_copy_note)) +
-      kpi('Replica errors', H.num(st.errors), H.num(st.parked) + ' parked (no more retries)',
-        st.parked ? 'bad' : st.errors ? 'warn' : 'good', addArrays(hs.errors_file, hs.errors_note, hs.errors_thumbnail)) +
-      kpi('Remote deletes queued', H.num(rd.queued), (rd.oldest ? 'Oldest ' + ago(rd.oldest, now).replace(' ago', '') : 'Queue empty') + (rd.stalled ? ' · ' + H.num(rd.stalled) + ' stalled' : ''),
-        rd.stalled ? 'warn' : 'neutral', hs.remote_deletes) +
-      kpi('Unconfirmed copies', H.num(st.unverified), 'Synced but not hash-checked on the node', 'neutral', hs.unverified) +
-      '</div>'
+    var notes = []
+    if (noHash) notes.push(plural(noHash, 'copy', 'copies') + ' never got a hash from their node (for example S3 objects stored without a SHA-256). The scrub checks their size; only a deep verify can confirm their contents.')
+    if (disabled) notes.push(plural(disabled, 'disabled node') + ' not shown.')
+    var body = rows
+      ? '<div class="rd-table-wrap"><table class="rd-table is-stack mon-table"><thead><tr><th>Node</th><th>Status</th><th class="is-num">Stored</th><th class="is-num">Copies</th>' +
+        '<th class="is-num">Queued</th><th class="is-num">Errors</th><th>Hash-confirmed</th><th>Checked in 7 d</th><th class="is-num">Last probe</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        (notes.length ? '<p class="adm-note mon-foot">' + H.esc(notes.join(' ')) + '</p>' : '')
+      : '<p class="adm-note mon-foot">No enabled storage nodes.</p>'
+    return H.card('Storage nodes', body, { flush: true, sub: 'Live replica state per enabled node' })
   }
 
   function durabilityCard (st) {
     function row (label, total, single, zero) {
       var multi = Math.max(0, total - single - zero)
-      return '<div class="mon-dur"><div class="mon-dur-head"><span>' + H.esc(label) + '</span><b>' + H.num(total) + '</b></div>' +
+      return '<div class="mon-dur"><div class="mon-row"><span>' + H.esc(label) + '</span><b>' + H.num(total) + '</b></div>' +
         stackBar([{ label: '2+ copies', value: multi, color: TONE.good }, { label: '1 copy', value: single, color: TONE.warn }, { label: 'No copy', value: zero, color: TONE.bad }], total) + '</div>'
     }
     var body = st.multi_node
       ? row('Files', st.payloads.file, st.single_copy.file, st.zero_copy.file) + row('Notes', st.payloads.note, st.single_copy.note, st.zero_copy.note) +
-        '<p class="adm-note">Payloads are not in backup archives: replicas are their only copies. ' +
-        (st.single_copy.thumbnail ? H.num(st.single_copy.thumbnail) + ' thumbnails also have a single copy.' : 'Every thumbnail has 2+ copies.') + '</p>'
+        '<p class="adm-note">Backups do not include payloads, so replicas are their only copies. ' +
+        (st.single_copy.thumbnail ? plural(st.single_copy.thumbnail, 'thumbnail') + ' also have a single copy.' : 'Every thumbnail has 2+ copies.') + '</p>'
       : '<p class="adm-note">Only one storage node is enabled, so every payload has exactly one copy.</p>'
-    return H.card('Payload durability', body, { sub: 'Synced copies per payload across enabled nodes' })
+    return H.card('Durability', body, { sub: 'Synced copies per payload across enabled nodes' })
   }
 
-  function jobsCard (st, now) {
+  function jobsCard (st, now, thresholds) {
     var j = st.jobs
-    var disk = st.disk
-    var diskRow = ''
-    if (disk && disk.total) {
-      var used = (disk.total - disk.free) / disk.total * 100
-      var tone = used >= 90 ? 'bad' : used >= 80 ? 'warn' : ''
-      diskRow = '<div class="mon-fresh"><div class="mon-fresh-row"><span>Local disk</span><b class="is-' + (tone || 'good') + '">' + used.toFixed(0) + '% used</b></div>' +
-        '<div class="adm-meter"><div class="adm-meter-fill' + (tone ? ' is-' + tone : '') + '" style="width:' + used.toFixed(1) + '%"></div></div>' +
-        '<p class="mon-fresh-sub">' + H.fmtBytes(disk.free) + ' free of ' + H.fmtBytes(disk.total) + '</p></div>'
+    function job (key, label, detail) {
+      var x = j[key], limit = jobLimit(key, x, thresholds), age = x.last ? now - x.last : null
+      var tone = age == null || age > limit ? (key === 'scheduler' ? 'bad' : 'warn') : 'good'
+      return '<div class="mon-fresh"><div class="mon-row"><span>' + H.esc(label) + '</span><b class="is-' + tone + '">' + liveAgo(x.last, now) + '</b></div>' +
+        meter(age == null ? 1 : age / limit, tone) + '<p class="mon-sub">' + H.esc(detail + ' Late after ' + dur(limit) + '.') + '</p></div>'
     }
-    return H.card('Background jobs',
-      freshness('Scheduler heartbeat', j.scheduler.last, j.scheduler.interval, now, 'Every ' + dur(j.scheduler.interval) + '. Drives replication, scrub and deletes.') +
-      freshness('Health check', j.health_check.last, j.health_check.interval, now, 'Every ' + dur(j.health_check.interval) + '. Probes each storage node.') +
-      freshness('Integrity scrub', j.integrity_scrub.last, j.integrity_scrub.interval, now, 'Every ' + dur(j.integrity_scrub.interval) + '. Re-checks stored copies.') +
+    var disk = st.disk, diskRow = ''
+    if (disk && disk.total) {
+      var used = (disk.total - disk.free) / disk.total
+      var tone = used * 100 >= thresholds.disk ? 'warn' : 'good'
+      diskRow = '<div class="mon-fresh"><div class="mon-row"><span>Local disk</span><b class="is-' + tone + '">' + Math.round(used * 100) + '% used</b></div>' +
+        meter(used, tone) + '<p class="mon-sub">' + H.fmtBytes(disk.free) + ' free of ' + H.fmtBytes(disk.total) + '. Warns at ' + thresholds.disk + '%.</p></div>'
+    }
+    return H.card('Jobs and disk',
+      job('scheduler', 'Scheduler heartbeat', 'Every ' + dur(j.scheduler.interval) + ', drives replication, scrub and deletes.') +
+      job('health_check', 'Health check', 'Every ' + dur(j.health_check.interval) + ', probes each storage node.') +
+      job('integrity_scrub', 'Integrity scrub', 'Every ' + dur(j.integrity_scrub.interval) + ', re-checks stored copies.') +
       diskRow,
-      { sub: 'Bars fill as a job gets late; red past 3 intervals' })
+    { sub: 'Bars fill toward the point where a job counts as late' })
   }
 
-  function nodesCard (st, now) {
-    var enabled = st.nodes.filter(function (n) { return n.enabled })
-    var disabled = st.nodes.length - enabled.length
-    var rows = enabled.map(function (n) {
-      var tone = !n.up ? 'bad' : n.coverage < 99.9 ? 'warn' : 'good'
-      var va = n.verify_age || {}
-      var check = n.checksum === true ? 'SHA-256' : n.checksum === false ? 'Size only' : 'Unprobed'
-      return '<div class="mon-node">' + donut(n.coverage, tone) +
-        '<div class="mon-node-main"><div class="mon-node-title"><b>' + H.esc(n.name) + '</b>' +
-        H.pill(n.up ? 'Online' : n.status.charAt(0).toUpperCase() + n.status.slice(1), n.up ? 'good' : 'bad', true) +
-        (n.primary ? H.pill('Primary', '') : '') + '<span class="mon-node-type">' + H.esc(n.type === 's3' ? 'S3' : n.type === 'ssh' ? 'SSH' : 'Local') + '</span></div>' +
-        '<div class="mon-node-facts">' +
-        '<span><b>' + H.fmtBytes(n.synced_bytes) + '</b> stored</span>' +
-        '<span><b>' + H.num(n.synced) + '</b> copies</span>' +
-        '<span class="' + (n.pending ? 'is-warn' : '') + '"><b>' + H.num(n.pending) + '</b> pending</span>' +
-        '<span class="' + (n.errors ? 'is-bad' : '') + '"><b>' + H.num(n.errors) + '</b> errors</span>' +
-        (n.missing ? '<span class="is-bad"><b>' + H.num(n.missing) + '</b> missing</span>' : '') +
-        '<span>Seen ' + H.esc(ago(n.last_seen, now)) + (n.failures ? ' · ' + H.num(n.failures) + ' failed probes' : '') + '</span>' +
-        '<span>' + H.esc(check) + ' · ' + H.num(sum(Object.values(n.unverified))) + ' unconfirmed</span></div>' +
-        '<div class="mon-node-verify"><span class="mon-node-verify-label">Last verified</span>' +
-        stackBar([
-          { label: '< 1 day', value: va.d1 || 0, color: TONE.good },
-          { label: '1-7 days', value: va.d7 || 0, color: 'color-mix(in srgb,var(--good) 55%,var(--press))' },
-          { label: '7-30 days', value: va.d30 || 0, color: TONE.warn },
-          { label: 'Older', value: va.older || 0, color: TONE.bad },
-          { label: 'Never', value: va.never || 0, color: TONE.muted }
-        ]) + '</div></div></div>'
-    }).join('')
-    return H.card('Storage nodes', rows || '<p class="adm-note">No enabled storage nodes.</p>',
-      { sub: 'Ring: share of copies synced on the node' + (disabled ? ' · ' + disabled + ' disabled node' + (disabled === 1 ? '' : 's') + ' hidden' : '') })
+  function trends (st, hist, span) {
+    var hs = withLive(hist.system, st)
+    var primary = null
+    st.nodes.forEach(function (n) { if (n.primary && n.enabled) primary = n })
+    var nodeHist = hist.nodes.filter(function (n) { return st.nodes.some(function (s) { return s.id === n.id && s.enabled }) })
+    var primaryHist = primary ? nodeHist.filter(function (n) { return n.id === primary.id })[0] : null
+    var remotes = nodeHist.filter(function (n) { return n.type !== 'local' && (!primary || n.id !== primary.id) })
+    var axis = remotes.length ? remotes[0].t : []
+    return '<div class="mon-charts">' +
+      chart('tp', { t: axis, start: span.start, end: span.end, unit: 'Bps', area: true, series: remotes.map(function (n, i) {
+        return { name: n.name, color: PALETTE[i % PALETTE.length], values: onAxis(axis, n, throughput(n)) }
+      }) }, 'Replication throughput', 'Net bytes per second landing on remote nodes') +
+      (primaryHist ? chart('lag', { t: axis, start: span.start, end: span.end, unit: 'bytes', area: true, series: remotes.map(function (n, i) {
+        return { name: n.name, color: PALETTE[i % PALETTE.length], values: onAxis(axis, n, lagSeries(n, primaryHist)) }
+      }) }, 'Behind the primary', 'Bytes on ' + primary.name + ' not yet on remote nodes') : '') +
+      chart('backlog', { t: hs.t, start: span.start, end: span.end, unit: 'count', stacked: true, series: [
+        { name: 'Files', color: PALETTE[0], values: hs.backlog_file },
+        { name: 'Notes', color: PALETTE[1], values: hs.backlog_note },
+        { name: 'Thumbnails', color: PALETTE[2], values: hs.backlog_thumbnail }
+      ] }, 'Replication queue', 'Copies waiting to be written') +
+      chart('risk', { t: hs.t, start: span.start, end: span.end, unit: 'count', series: [
+        { name: 'One copy', color: TONE.warn, values: addArrays(hs.single_copy_file, hs.single_copy_note) },
+        { name: 'No copy', color: TONE.bad, values: addArrays(hs.zero_copy_file, hs.zero_copy_note) }
+      ] }, 'Payloads at risk', 'Files and notes below two synced copies') +
+      chart('errors', { t: hs.t, start: span.start, end: span.end, unit: 'count', series: [
+        { name: 'Errors', color: TONE.warn, values: addArrays(hs.errors_file, hs.errors_note, hs.errors_thumbnail) },
+        { name: 'Parked', color: TONE.bad, values: hs.parked },
+        { name: 'Stalled deletes', color: PALETTE[2], values: hs.remote_deletes_stalled }
+      ] }, 'Problems', 'Replica errors, parked replicas and failing deletes') +
+      chart('unverified', { t: hs.t, start: span.start, end: span.end, unit: 'count', area: true, series: [
+        { name: 'Unconfirmed', color: PALETTE[0], values: hs.unverified }
+      ] }, 'Unconfirmed copies', 'Synced copies not yet hash-confirmed') +
+      '</div>'
   }
 
   function backupsSection (st, hb, thresholds, now) {
     function summary (kind, label, limit, schedule) {
       var b = st.backups[kind], ok = b.last_ok, last = b.last
       if (!last) {
-        return '<div class="mon-bk"><div class="mon-bk-head"><span>' + label + '</span>' + H.pill('No runs yet', '') + '</div>' +
-          '<p class="adm-note">Runs appear after the next ' + H.esc(schedule) + ' backup_prod.py run.</p></div>'
+        return '<div class="mon-bk"><div class="mon-row"><span>' + label + '</span>' + H.pill('No runs yet', '') + '</div>' +
+          '<p class="mon-sub">Runs appear after the next ' + H.esc(schedule) + ' backup_prod.py run.</p></div>'
       }
       var age = ok ? now - ok.finished : null
-      var tone = age == null ? 'bad' : age <= limit / 2 ? 'good' : age <= limit ? 'warn' : 'bad'
+      var tone = age == null || age > limit ? 'bad' : 'good'
       var lastTone = last.status !== 'ok' ? 'bad' : last.offsite_ok === false ? 'warn' : 'good'
       var lastLabel = last.status !== 'ok' ? 'Last run failed' : last.offsite_ok === false ? 'Offsite incomplete' : last.offsite_ok ? 'Verified offsite' : 'Local only'
-      return '<div class="mon-bk"><div class="mon-bk-head"><span>' + label + '</span>' + H.pill(lastLabel, lastTone, true) + '</div>' +
-        '<div class="mon-bk-age is-' + tone + '">' + (ok ? H.esc(ago(ok.finished, now)) : 'Never succeeded') + '</div>' +
-        '<div class="adm-meter"><div class="adm-meter-fill' + (tone === 'good' ? '' : ' is-' + tone) + '" style="width:' + (age == null ? 100 : Math.min(100, age / limit * 100)).toFixed(1) + '%"></div></div>' +
-        '<p class="mon-fresh-sub">Alert after ' + dur(limit) + ' · ' + H.esc(schedule) + '</p>' +
+      return '<div class="mon-bk"><div class="mon-row"><span>' + label + '</span>' + H.pill(lastLabel, lastTone, true) + '</div>' +
+        '<div class="mon-bk-age is-' + tone + '">' + (ok ? liveAgo(ok.finished, now) : 'Never succeeded') + '</div>' +
+        meter(age == null ? 1 : age / limit, tone) +
+        '<p class="mon-sub">Runs ' + H.esc(schedule) + ', alerts after ' + dur(limit) + '</p>' +
         H.kvs([['Archive', ok ? H.fmtBytes(ok.bytes) : 'n/a'], ['Duration', dur(last.duration)], ['Last run', fullTime(last.started)]]) +
         (last.status !== 'ok' && last.error ? '<p class="mon-err">' + H.esc(last.error) + '</p>' : '') + '</div>'
     }
@@ -410,23 +547,19 @@
     var lanes = [['db', 'DB'], ['full', 'Full']].map(function (k) {
       return { name: k[1], runs: runs.filter(function (r) { return r.kind === k[0] }).map(function (r) { return { t: r.started, tone: runTone(r), lines: runLines(r) } }) }
     })
-    var html = '<div class="mon-bk-grid">' + summary('db', 'Database backup', thresholds.db_backup, 'every 6 h') + summary('full', 'Full backup', thresholds.full_backup, 'daily 03:30 UTC') + '</div>'
-    var body = html
+    var body = '<div class="mon-bk-grid">' + summary('db', 'Database', thresholds.db_backup, 'every 6 h') + summary('full', 'Full', thresholds.full_backup, 'daily at 03:30 UTC') + '</div>'
     if (runs.length) {
       CHARTS.bkRuns = { timeline: true, lanes: lanes, start: hb.start, end: now, t: [hb.start, now] }
-      body += '<div class="mon-sub-head">Runs, last 30 days</div><div class="mon-chart" data-chart="bkRuns" style="height:80px" role="img" aria-label="Backup runs over the last 30 days"></div>' +
-        '<div class="mon-legend"><span class="mon-legend-item"><i style="background:var(--good)"></i>Succeeded</span><span class="mon-legend-item"><i style="background:var(--warn)"></i>Offsite incomplete</span><span class="mon-legend-item"><i style="background:var(--bad)"></i>Failed</span></div>'
+      body += '<div><div class="mon-sub-head">Runs in the last 30 days</div><div class="mon-chart" data-chart="bkRuns" style="height:72px" role="img" aria-label="Backup runs over the last 30 days"></div>' +
+        '<div class="mon-legend"><span class="mon-legend-item"><i style="background:var(--good)"></i>Succeeded</span><span class="mon-legend-item"><i style="background:var(--warn)"></i>Offsite incomplete</span><span class="mon-legend-item"><i style="background:var(--bad)"></i>Failed</span></div></div>'
     }
-    var out = H.card('Backups', body, { sub: 'backup_prod.py runs: code, config and database (payloads rely on replicas)' })
+    var out = H.card('Backups', body, { sub: 'Code, config and database archives from backup_prod.py' })
     var ok = runs.filter(function (r) { return r.status === 'ok' })
     if (ok.length > 1) {
-      var sizeSeries = lanes.map(function (l, i) {
-        return { name: l.name, color: PALETTE[i], kind: ['db', 'full'][i] }
-      })
       var t = ok.map(function (r) { return r.started })
-      out += '<div class="adm-grid2">' +
-        chart('bkSize', { t: t, start: hb.start, end: now, unit: 'bytes', connect: true, series: sizeSeries.map(function (s) {
-          return { name: s.name, color: s.color, values: ok.map(function (r) { return r.kind === s.kind ? r.bytes : null }) }
+      out += '<div class="mon-charts is-2">' +
+        chart('bkSize', { t: t, start: hb.start, end: now, unit: 'bytes', connect: true, series: [['DB', 'db'], ['Full', 'full']].map(function (s, i) {
+          return { name: s[0], color: PALETTE[i], values: ok.map(function (r) { return r.kind === s[1] ? r.bytes : null }) }
         }) }, 'Archive size', 'A sudden drop usually means data missing from the dump') +
         chart('bkDur', { t: runs.map(function (r) { return r.started }), start: hb.start, end: now, unit: 's', bars: true, series: [{
           name: 'Duration', color: 'var(--accent)', values: runs.map(function (r) { return r.duration }),
@@ -434,70 +567,87 @@
         }] }, 'Run duration', 'Bar colour shows the run result') +
         '</div>'
     }
-    return out
+    return '<div class="mon-group">' + out + '</div>'
   }
 
   // ---- Public API ------------------------------------------------------------------
+  var VIEWS = [['overview', 'Overview'], ['storage', 'Storage'], ['trends', 'Trends'], ['backups', 'Backups']]
+  var view = (function () { try { return sessionStorage.getItem('adm-mon-view') || 'overview' } catch (e) { return 'overview' } })()
   function render (d, range, helpers) {
     H = helpers
     CHARTS = {}
-    var st = d.state, hist = d.history, hs = hist.system, now = d.now
-    var primary = null
-    st.nodes.forEach(function (n) { if (n.primary && n.enabled) primary = n })
-    var nodeHist = hist.nodes.filter(function (n) { return st.nodes.some(function (s) { return s.id === n.id && s.enabled }) })
-    var primaryHist = primary ? nodeHist.filter(function (n) { return n.id === primary.id })[0] : null
-    var remotes = nodeHist.filter(function (n) { return n.type !== 'local' && (!primary || n.id !== primary.id) })
-    var span = { start: hist.start, end: hist.end }
+    skew = d.now - Date.now() / 1000
+    var st = d.state, hist = d.history, now = d.now
+    var th = d.thresholds
+    var width = hist.end - hist.start
+    var span = { end: Math.max(hist.end, st.at) }
+    span.start = span.end - width
+    var rows = evaluate(st, now, th)
+    var worst = {}
+    rows.forEach(function (r) {
+      var rank = { bad: 3, warn: 2, idle: 1, good: 0 }
+      if (!worst[r.view] || rank[r.tone] > rank[worst[r.view]]) worst[r.view] = r.tone
+    })
+    if (!VIEWS.some(function (v) { return v[0] === view })) view = 'overview'
 
-    var axis = remotes.length ? remotes[0].t : []
-    var charts = '<div class="adm-grid2">' +
-      chart('tp', { t: axis, start: span.start, end: span.end, unit: 'Bps', series: remotes.map(function (n, i) {
-        return { name: n.name, color: PALETTE[i % PALETTE.length], values: onAxis(axis, n, throughput(n)) }
-      }), area: true }, 'Replication throughput', 'Net bytes per second landing on each remote node') +
-      (primaryHist ? chart('lag', { t: axis, start: span.start, end: span.end, unit: 'bytes', area: true, series: remotes.map(function (n, i) {
-        return { name: n.name, color: PALETTE[i % PALETTE.length], values: onAxis(axis, n, lagSeries(n, primaryHist)) }
-      }) }, 'Behind the primary', 'Bytes on ' + primary.name + ' not yet on each remote node') : '') +
-      chart('backlog', { t: hs.t, start: span.start, end: span.end, unit: 'count', stacked: true, series: [
-        { name: 'Files', color: PALETTE[0], values: hs.backlog_file },
-        { name: 'Notes', color: PALETTE[1], values: hs.backlog_note },
-        { name: 'Thumbnails', color: PALETTE[2], values: hs.backlog_thumbnail }
-      ] }, 'Replication backlog', 'Copies waiting to be written, by kind') +
-      chart('risk', { t: hs.t, start: span.start, end: span.end, unit: 'count', series: [
-        { name: 'One copy', color: TONE.warn, values: addArrays(hs.single_copy_file, hs.single_copy_note) },
-        { name: 'No copy', color: TONE.bad, values: addArrays(hs.zero_copy_file, hs.zero_copy_note) }
-      ] }, 'Payloads at risk', 'Files and notes below two synced copies') +
-      chart('errors', { t: hs.t, start: span.start, end: span.end, unit: 'count', series: [
-        { name: 'Errors', color: TONE.warn, values: addArrays(hs.errors_file, hs.errors_note, hs.errors_thumbnail) },
-        { name: 'Parked', color: TONE.bad, values: hs.parked }
-      ] }, 'Replica errors', 'Parked replicas stopped retrying and need an admin') +
-      chart('deletes', { t: hs.t, start: span.start, end: span.end, unit: 'count', area: true, series: [
-        { name: 'Queued', color: PALETTE[0], values: hs.remote_deletes },
-        { name: 'Stalled', color: TONE.bad, values: hs.remote_deletes_stalled }
-      ] }, 'Remote delete queue', 'Objects waiting to be removed from remote nodes') +
-      '</div>'
-
-    var rangeBtns = '<div class="mon-range" role="group" aria-label="Time range">' + RANGES.map(function (r) {
-      return '<button class="rd-btn rd-btn-sm' + (r[0] === range ? ' is-on' : ' rd-btn-ghost') + '" data-mon-range="' + r[0] + '" aria-pressed="' + (r[0] === range) + '">' + r[1] + '</button>'
+    var tabs = '<div class="rd-tabs mon-tabs" role="tablist" aria-label="Monitoring views">' + VIEWS.map(function (v) {
+      var on = v[0] === view, t = v[0] === 'overview' ? '' : worst[v[0]]
+      return '<button type="button" class="rd-tab' + (on ? ' is-active' : '') + '" role="tab" id="mon-tab-' + v[0] + '" aria-controls="mon-view-' + v[0] + '" aria-selected="' + on + '" data-mon-view="' + v[0] + '">' +
+        H.esc(v[1]) + (t === 'bad' || t === 'warn' ? '<span class="mon-tab-dot is-' + t + '" aria-label="needs attention"></span>' : '') + '</button>'
     }).join('') + '</div>'
-
-    return H.head('Monitoring', 'Storage replication, durability and backups · updated ' + new Date(now * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ', refreshes every minute', rangeBtns) +
-      '<div class="adm-stack mon">' +
-      statusBlock(st.issues) +
-      kpis(st, hs, remotes, now) +
-      '<div class="adm-grid2">' + durabilityCard(st) + jobsCard(st, now) + '</div>' +
-      nodesCard(st, now) +
-      '<h2 class="mon-section">Trends</h2>' + charts +
-      backupsSection(st, hist.backups, d.thresholds, now) +
+    var live = '<span class="mon-live" data-mon-live role="status"><i aria-hidden="true"></i><span class="mon-live-text">Live, updated ' + liveAgo(st.at, now) + '</span></span>'
+    var rangeBar = '<div class="mon-view-bar"><span>Snapshots every 5 minutes; the last point is live.</span><div class="rd-tabs mon-range" role="group" aria-label="Chart range">' + RANGES.map(function (r) {
+      return '<button type="button" class="rd-tab' + (r[0] === range ? ' is-active' : '') + '" data-mon-range="' + r[0] + '" aria-pressed="' + (r[0] === range) + '">' + r[1] + '</button>'
+    }).join('') + '</div></div>'
+    function pane (id, html) {
+      return '<div class="mon-view" role="tabpanel" id="mon-view-' + id + '" aria-labelledby="mon-tab-' + id + '"' + (id === view ? '' : ' hidden') + '>' + html + '</div>'
+    }
+    return '<div class="mon">' +
+      '<header class="mon-head"><h1 class="rd-page-title">Monitoring</h1>' + live + '</header>' + tabs +
+      pane('overview', overview(rows, st, now)) +
+      pane('storage', nodesCard(st, now) + '<div class="mon-pair">' + durabilityCard(st) + jobsCard(st, now, th) + '</div>') +
+      pane('trends', rangeBar + trends(st, hist, span)) +
+      pane('backups', backupsSection(st, hist.backups, th, now)) +
       '</div>'
+  }
+
+  function setView (panel, v) {
+    view = v
+    try { sessionStorage.setItem('adm-mon-view', v) } catch (e) {}
+    panel.querySelectorAll('.mon-tabs [data-mon-view]').forEach(function (b) {
+      var on = b.getAttribute('data-mon-view') === v
+      b.classList.toggle('is-active', on); b.setAttribute('aria-selected', String(on))
+    })
+    panel.querySelectorAll('.mon-view').forEach(function (p) { p.hidden = p.id !== 'mon-view-' + v })
+    drawAll(panel)
+  }
+
+  function tick (panel) {
+    var now = serverNow()
+    panel.querySelectorAll('[data-ago]').forEach(function (el) {
+      var txt = ago(+el.getAttribute('data-ago'), now)
+      if (el.textContent !== txt) el.textContent = txt
+    })
+  }
+
+  function onClick (e) {
+    var b = e.target.closest && e.target.closest('[data-mon-view]')
+    if (!b) return
+    var panel = b.closest('.mon').parentNode
+    setView(panel, b.getAttribute('data-mon-view'))
+    if (!b.closest('.mon-tabs')) { var tab = panel.querySelector('#mon-tab-' + view); if (tab) tab.focus() }
   }
 
   function mount (panel) {
     drawAll(panel)
-    if (!panel._monHover) {
-      panel._monHover = true
+    if (!panel._monWired) {
+      panel._monWired = true
       panel.addEventListener('mousemove', onHover)
       panel.addEventListener('mouseout', function (e) { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('.mon-chart')) onLeave(e) })
+      panel.addEventListener('click', onClick)
     }
+    clearInterval(ticker)
+    ticker = setInterval(function () { tick(panel) }, 1000)
     if (observer) observer.disconnect()
     if (window.ResizeObserver) {
       var lastW = panel.clientWidth, pending = false
@@ -509,7 +659,25 @@
       observer.observe(panel)
     }
   }
-  function unmount () { if (observer) { observer.disconnect(); observer = null } CHARTS = {} }
+  function unmount () {
+    if (observer) { observer.disconnect(); observer = null }
+    clearInterval(ticker); ticker = null
+    CHARTS = {}
+  }
+  // A chart tooltip is open: a repaint now would yank it from under the pointer.
+  function busy (panel) { return !!panel.querySelector('.mon-tip:not([hidden])') }
+  // ok=true: fresh data just painted; ok=false: the last refresh failed.
+  function setLive (panel, ok) {
+    var el = panel.querySelector('[data-mon-live]')
+    if (!el) return
+    el.classList.toggle('is-stale', !ok)
+    var txt = el.querySelector('.mon-live-text')
+    if (txt && !ok) {
+      var ts = el.querySelector('[data-ago]')
+      txt.innerHTML = 'Not updating, last data ' + (ts ? ts.outerHTML : '')
+    }
+    if (ok) { el.classList.remove('is-pulse'); void el.offsetWidth; el.classList.add('is-pulse') }
+  }
 
-  window.AdmMonitor = { render: render, mount: mount, unmount: unmount }
+  window.AdmMonitor = { render: render, mount: mount, unmount: unmount, busy: busy, setLive: setLive }
 })()
