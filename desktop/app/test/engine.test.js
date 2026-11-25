@@ -1,7 +1,7 @@
 'use strict';
 
 // JSON-RPC client and engine supervisor against dev/mock-engine.js, which
-// speaks the same socket protocol as the real engine (engine-ipc.md).
+// speaks the engine's protocol on its stdin and stdout (engine-ipc.md).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -19,14 +19,6 @@ function socketPath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'onegy-ipc-')), 'engine.sock');
 }
 
-async function startMock(sock) {
-  const child = spawn(process.execPath, [MOCK, '--socket', sock], { stdio: ['ignore', 'pipe', 'inherit'] });
-  await new Promise((resolve, reject) => {
-    child.stdout.on('data', (d) => { if (String(d).includes('listening')) resolve(); });
-    child.on('exit', (code) => reject(new Error(`mock exited ${code}`)));
-  });
-  return child;
-}
 
 const waitFor = (emitter, event, pred = () => true, ms = 10000) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`timed out waiting for ${event}`)), ms);
@@ -53,10 +45,9 @@ test('line decoder handles split and joined frames', () => {
 });
 
 test('rpc client: results, typed errors, events, close', async () => {
-  const sock = socketPath();
-  const child = await startMock(sock);
+  const child = spawn(process.execPath, [MOCK], { stdio: ['pipe', 'pipe', 'inherit'] });
   try {
-    const client = await RpcClient.connect(sock);
+    const client = new RpcClient(child.stdout, { output: child.stdin });
     const status = await client.call('account.status');
     assert.equal(status.signed_in, true);
 
@@ -104,41 +95,47 @@ test('supervisor spawns the engine, restarts it after a crash, stops it cleanly'
   await assert.rejects(sup.call('account.status'), { code: 'engine_unavailable' });
 });
 
-// An engine that accepts the connection, then fails ipc.hello: by closing
-// ('close') or with an error other than forbidden ('error').
-function failingEngine(sock, mode) {
-  let connections = 0;
-  const srv = net.createServer((c) => {
-    connections += 1;
+// An engine of its own on the socket (left by a crashed app, any version):
+// ours cannot start beside it, so the supervisor asks it to stop and never
+// talks to it otherwise.
+test('supervisor asks an engine that is already running to stop', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
+  const sock = socketPath();
+  const asked = [];
+  const other = net.createServer((c) => {
     c.setEncoding('utf8');
     c.on('data', (d) => {
       for (const line of d.split('\n').filter(Boolean)) {
         const m = JSON.parse(line);
-        if (mode === 'close') c.destroy();
-        else c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: 'boom' } })}\n`);
+        asked.push(m.method);
+        c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: {} })}\n`);
       }
     });
   });
-  return new Promise((resolve) => srv.listen(sock, () => resolve({ srv, connections: () => connections })));
-}
+  await new Promise((r) => other.listen(sock, r));
+  // Stands in for an engine that finds the state dir taken: it exits at once.
+  const sup = new EngineSupervisor({ command: process.execPath, args: ['-e', 'process.exit(1)', '--'], socketPath: sock });
+  const states = [];
+  sup.on('state', (s) => states.push(s));
+  sup.start();
+  await waitFor(sup, 'state', (s) => s === 'disconnected');
+  sup.stopping = true;
+  other.close();
+  assert.deepEqual(asked, ['engine.shutdown']);
+  assert.ok(!states.includes('connected'), states.join(','));
+  assert.equal(sup.client, null);
+});
 
-for (const mode of ['close', 'error']) {
-  test(`supervisor does not connect when ipc.hello fails (${mode})`, { skip: process.platform === 'win32', timeout: 15000 }, async () => {
-    const sock = socketPath();
-    const engine = await failingEngine(sock, mode);
-    const sup = new EngineSupervisor({ command: path.join(os.tmpdir(), 'no-such-engine'), socketPath: sock });
-    const states = [];
-    sup.on('state', (s) => states.push(s));
-    sup.start();
-    await waitFor(sup, 'state', (s) => s === 'missing');
-    await new Promise((r) => setTimeout(r, 1500)); // the 1 s backoff: it tries again
-    sup.stopping = true;
-    engine.srv.close();
-    assert.ok(!states.includes('connected'), states.join(','));
-    assert.equal(sup.client, null);
-    assert.ok(engine.connections() >= 2);
-  });
-}
+test('supervisor stops an engine that is still starting', { timeout: 15000 }, async () => {
+  // Never answers, like an engine that waits for the key store; it leaves when its stdin ends.
+  const sup = new EngineSupervisor({ command: process.execPath, args: ['-e', 'process.stdin.resume().on("end", () => process.exit(0))', '--'], socketPath: socketPath() });
+  sup.start();
+  while (!sup.child) await new Promise((r) => setTimeout(r, 10));
+  const child = sup.child;
+  const began = Date.now();
+  await sup.stop();
+  assert.equal(child.exitCode, 0);
+  assert.ok(Date.now() - began < 5000);
+});
 
 test('supervisor reports an engine binary that cannot run as missing', { skip: process.platform === 'win32', timeout: 30000 }, async () => {
   const bin = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'onegy-bin-')), 'onegy');

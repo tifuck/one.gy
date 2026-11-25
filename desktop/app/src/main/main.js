@@ -21,6 +21,7 @@ const { startUpdater } = require('./updater');
 const { watchEnvironment } = require('./environment');
 const { SyncStatus, appLocked, throttle } = require('./sync-status');
 const { isSitePath } = require('./site-nav');
+const { applyShellIntegration } = require('./shell-integration');
 
 const SITE_STATUS_EVERY_MS = 500; // site-bridge.md: at most 2 updates per second
 const IDLE_CHECK_MS = 30 * 1000;
@@ -39,8 +40,8 @@ const DEV = !app.isPackaged;
 const parseUrl = (u) => {
   try { return new URL(u); } catch { return null; }
 };
-const argValue = (name) => {
-  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+const argValue = (name, argv = process.argv) => {
+  const hit = argv.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.slice(name.length + 3) : null;
 };
 // Window bounds from relaunch-state.json, or null.
@@ -128,11 +129,12 @@ function start() {
   fs.rmSync(resumeFile, { force: true });
   fs.rmSync(hiddenMarker, { force: true });
   let resumePanel = RESUME_PANELS.has(resume.panel) ? resume.panel : null;
+  let pendingItem = argValue('open-item'); // the file manager's "Open on one.gy" started the app
   const devServer = DEV ? argValue('server') : null;
   if (devServer) settings.set({ server_url: devServer });
 
   const engine = new EngineSupervisor(engineCommand());
-  const sync = new SyncStatus(engine);
+  const sync = new SyncStatus(engine, () => settings.get().server_url);
   const state = {
     quitting: false,
     engineStopped: false,
@@ -198,6 +200,7 @@ function start() {
   // plain: not signed in (or no engine): the app's sign-in screen over the
   // site's own sign-in page, which only shows if there is no engine to sign in with.
   let siteMode = null;
+  let blindPlain = false; // plain before the engine said anything about the account (slow start, no engine)
   let signingOut = false;
   let lastResign = 0;
   const siteModeFor = () => {
@@ -208,17 +211,31 @@ function start() {
   };
   const applySiteMode = async (force) => {
     const want = force || siteModeFor();
-    if (!want || want === siteMode) return;
+    if (!want) return;
+    const signedOut = Boolean(sync.account && !sync.account.signed_in);
+    if (want === siteMode) {
+      // Plain since before the engine answered, and now it says signed out:
+      // the app's sign-in opens as it would have at the start.
+      if (blindPlain && sync.account) {
+        blindPlain = false;
+        if (signedOut) window.openPanel({ username: null, screen: 'signin' });
+      }
+      return;
+    }
     // Signing in, the engine reports the app locked until its first unlock
     // grant arrives (account.Status: no grant yet): part of the sign-in, not a
     // lock. A lock that stays shows in the panel; the site has no session yet.
-    if (want === 'locked' && siteMode === 'plain') return;
+    // Not when plain only stood in for an engine that had not answered: a
+    // computer that then turns out locked gets the lock screen.
+    if (want === 'locked' && siteMode === 'plain' && !blindPlain) return;
     const wasLocked = siteMode === 'locked';
     console.log(`[APP] site mode ${siteMode} -> ${want}`);
     siteMode = want;
+    blindPlain = want === 'plain' && !sync.account;
     if (want === 'locked') {
       await window.lockSite();
-      window.openPanel({ username: sync.account.username, screen: 'lock' });
+      // In place: a lock never brings a hidden window up or takes the focus.
+      window.openPanel({ username: sync.account.username, screen: 'lock', show: false });
       return;
     }
     if (want === 'device') {
@@ -227,6 +244,8 @@ function start() {
         if (wasLocked) window.closePanel(); // else the setup wizard goes on
         if (resumePanel) openPanel(resumePanel);
         resumePanel = null;
+        if (pendingItem) openItem(pendingItem);
+        pendingItem = null;
         return;
       } catch (err) {
         console.error(`[APP] website sign-in with the device failed: ${err.message}`);
@@ -236,7 +255,7 @@ function start() {
     window.recreateSite(true);
     if (wasLocked) window.closePanel();
     // Signed out: sign in once here; the site then follows (device mode).
-    if (sync.account && !sync.account.signed_in) window.openPanel({ username: null, screen: 'signin' });
+    if (signedOut) window.openPanel({ username: null, screen: 'signin' });
   };
   // Device mode and the site lands on its sign-in page (session expired or
   // ended elsewhere): sign it in again with a fresh device ticket and go on
@@ -274,8 +293,27 @@ function start() {
       });
       if (response !== 1) return 'cancelled';
       await window.clearSiteSession();
-      await engine.call('account.signOut', { revoke: true });
+      let notRemoved = null;
+      try {
+        await engine.call('account.signOut', { revoke: true });
+      } catch (err) {
+        notRemoved = err;
+      }
       await sync.loadAccount();
+      if (notRemoved) {
+        // The engine signs out here even when one.gy could not be told to
+        // remove the device (offline): that is not a failed sign-out.
+        if (!sync.account || sync.account.signed_in) throw notRemoved;
+        console.error(`[APP] signed out, but the device was not removed: ${notRemoved.message}`);
+        dialog.showMessageBox(window.win, {
+          type: 'warning',
+          buttons: ['OK'],
+          noLink: true,
+          title: 'Sign out',
+          message: 'Signed out on this computer',
+          detail: `one.gy could not be told to remove this computer from ${a.username}'s devices (${notRemoved.message}). Remove it under Devices on the website.`,
+        });
+      }
       return 'done';
     } catch (err) {
       console.error(`[APP] sign out failed: ${err.message}`);
@@ -298,6 +336,10 @@ function start() {
     });
     // Locked or signed out: the popover's names and numbers wait for the unlock.
     if (!sync.authorized() || appLocked(sync.account)) popover.hide();
+    const lockOn = Boolean(sync.authorized() && sync.account.lock_enabled);
+    if (sync.account && settings.get().app_lock_seen !== lockOn) {
+      try { settings.set({ app_lock_seen: lockOn }); } catch (err) { console.error(`[SETTINGS] saving the lock state failed: ${err.message}`); }
+    }
     updatePowerSave();
     pushSiteStatus();
     applySiteMode().catch((err) => console.error(`[APP] site mode: ${err.message}`));
@@ -372,10 +414,31 @@ function start() {
     }
   };
 
+  // The file manager's "Open on one.gy" (--open-item=<path>): the item's
+  // one.gy folder in the site view.
+  const openItem = async (item) => {
+    if (typeof item !== 'string' || !path.isAbsolute(item)) return;
+    window.show();
+    if (siteMode !== 'device') return;
+    try {
+      const { path: sitePath } = await engine.call('files.webPath', { path: item });
+      if (!isSitePath(sitePath)) return;
+      window.closePanel();
+      await window.openSitePath(sitePath);
+    } catch (err) {
+      console.error(`[APP] opening an item on one.gy failed: ${err.message}`);
+      dialog.showMessageBox(window.win, {
+        type: 'info', buttons: ['OK'], noLink: true, title: 'Open on one.gy', message: 'Can’t open this on one.gy', detail: err.message,
+      });
+    }
+  };
+
   const quit = () => app.quit();
 
-  app.on('second-instance', () => {
-    if (window) window.show();
+  app.on('second-instance', (_e, argv) => {
+    const item = argValue('open-item', argv);
+    if (item) openItem(item);
+    else if (window) window.show();
     if (updater) updater.autoCheck();
   });
   app.on('window-all-closed', () => { /* tray keeps the app alive */ });
@@ -407,7 +470,13 @@ function start() {
     const win = window.create({
       show: !startHidden, loadSite: false, bounds: cleanBounds(resume.bounds), maximized: resume.maximized === true,
     });
-    setTimeout(() => { if (siteMode === null) applySiteMode('plain'); }, SITE_DECIDE_MAX_MS);
+    setTimeout(async () => {
+      if (siteMode !== null) return;
+      // Last seen with the app lock on: the website session of the run before
+      // is not for whoever opens the app while the engine cannot say more.
+      if (settings.get().app_lock_seen) await window.clearSiteSession();
+      if (siteMode === null) applySiteMode('plain').catch((err) => console.error(`[APP] site mode: ${err.message}`));
+    }, SITE_DECIDE_MAX_MS);
     powerMonitor.on('lock-screen', lockNow);
     powerMonitor.on('suspend', lockNow);
     const lockOnHide = () => { if (settings.get().lock_on_hide) lockNow(); };
@@ -504,10 +573,12 @@ function start() {
       if (next.theme !== before.theme) window.setTheme();
       if (next.launch_at_login !== before.launch_at_login) applyAutostart(next.launch_at_login);
       if (next.prevent_sleep !== before.prevent_sleep) updatePowerSave();
+      if (next.file_manager_integration !== before.file_manager_integration) applyShellIntegration(next.file_manager_integration);
       window.send({ type: 'app:settings', data: next });
       popover.send({ type: 'app:settings', data: next });
     });
     applyAutostart(settings.get().launch_at_login);
+    applyShellIntegration(settings.get().file_manager_integration);
 
     engine.start();
   });

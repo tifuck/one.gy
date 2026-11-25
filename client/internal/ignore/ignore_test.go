@@ -169,3 +169,15 @@ func TestEngineDirCase(t *testing.T) {
 		t.Fatal("case-sensitive: only .onegy is the engine folder")
 	}
 }
+
+func TestBOMAndUnicodeForms(t *testing.T) {
+	s := set(t, map[string]string{"": "\ufeff-:*.tmp\n-:caf\u00e9\n-p:r\u00e9sum\u00e9/*.doc\n", "e\u0301t\u00e9": "-:x\u0301*\n"})
+	check(t, s, []want{
+		{"a.tmp", F, 1, Excluded}, // the BOM is not part of the first rule
+		{"cafe\u0301", F, 1, Excluded},
+		{"caf\u00e9", F, 1, Excluded},
+		{"re\u0301sume\u0301/a.doc", F, 1, Excluded},
+		{"e\u0301t\u00e9/x\u0301y", F, 1, Excluded},
+		{"e\u0301t\u00e9/xy", F, 1, Included},
+	})
+}

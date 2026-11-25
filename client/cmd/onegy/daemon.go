@@ -3,10 +3,10 @@
 package main
 
 // `onegy daemon` is the sync engine: one per OS user, serving JSON-RPC on a
-// private socket/pipe (desktop/docs/engine-ipc.md). ONE.GY Desktop spawns it.
+// private socket/pipe (desktop/docs/engine-ipc.md). ONE.GY Desktop spawns it
+// and talks to it on its stdin and stdout (--ipc-stdio).
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/tifuck/one.gy/client/internal/api"
@@ -40,22 +39,13 @@ func daemon(args []string) error {
 	socket := fs.String("socket", "", "IPC socket or pipe path (default: per-OS location)")
 	logLevel := fs.String("log-level", "", "debug|info|warn|error (default: the log_level setting)")
 	insecure := fs.Bool("insecure-tls", false, "skip TLS certificate checks (devtls builds only)")
-	secretStdin := fs.Bool("ipc-secret-stdin", false, "read the IPC secret (first line of stdin); clients must present it with ipc.hello")
+	appStdio := fs.Bool("ipc-stdio", false, "serve the program that started the engine on stdin and stdout and stop when it is gone (ONE.GY Desktop); the socket then only answers ipc.hello, engine.info and engine.shutdown")
 	secretsFile := fs.Bool("secrets-file", false, "keep the device secrets in <state dir>/secrets.json (0600) instead of the OS key store, for servers without one")
 	version := fs.Bool("version", false, "print the version and exit")
 	fs.Parse(args)
 	if *version {
 		fmt.Println(config.Version)
 		return nil
-	}
-
-	var secret string
-	if *secretStdin {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		secret = strings.TrimSpace(line)
-		if len(secret) < 32 {
-			return fmt.Errorf("--ipc-secret-stdin: no secret on stdin (%v)", err)
-		}
 	}
 
 	if *stateDir == "" {
@@ -108,10 +98,18 @@ func daemon(args []string) error {
 	if err != nil {
 		return err
 	}
-	svc.SetIPCSecret(secret)
-	kb := make([]byte, 32)
-	rand.Read(kb)
-	helloKey := hex.EncodeToString(kb)
+	randomKey := func() string {
+		kb := make([]byte, 32)
+		rand.Read(kb)
+		return hex.EncodeToString(kb)
+	}
+	if *appStdio {
+		// The app can go away at any time: a write to it must fail, not end the engine.
+		signal.Ignore(syscall.SIGPIPE)
+		svc.SetAppConn(ipc.Stdio(os.Stdin, os.Stdout))
+		svc.SetIPCSecret(randomKey()) // told to no one: the socket stays untrusted
+	}
+	helloKey := randomKey()
 	svc.SetIPCHelloKey(helloKey)
 	ln, err := ipc.Listen(*socket)
 	if err != nil {

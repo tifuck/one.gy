@@ -148,6 +148,7 @@ def _device_check_system_proof(device, user, proof, ts):
         return _sync_error(409, 'pin_expired', 'Enter your password once to keep using quick unlock')
     if device.system_unlock_kind == 'hello':
         ok = (isinstance(ts, int) and not isinstance(ts, bool)
+              and abs(ts) < 2 ** 53
               and abs(time.time() - ts) <= DEVICE_SYSTEM_UNLOCK_SKEW_SECONDS
               and ts > int(device.system_unlock_ts or 0)
               and _device_hello_signature_ok(device, proof, ts))

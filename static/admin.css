@@ -552,3 +552,53 @@
   .mon-pct b{ min-width:0; }
   .mon-pct .adm-meter{ display:none; }
 }
+
+/* Music tab (admin-music.js) */
+.mu-adm{ --mon-gap:16px; }
+.mu-adm .mon-cols{ align-items:start; }
+.mu-adm-faint{ font-size:.76rem; color:var(--text-faint); font-variant-numeric:tabular-nums; }
+.mu-adm-controls{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:1px; background:var(--line); border-top:1px solid var(--line); }
+.mu-adm-control{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:16px; background:var(--panel); cursor:pointer; }
+.mu-adm-control-text{ display:flex; flex-direction:column; gap:3px; min-width:0; }
+.mu-adm-control-title{ font-size:1rem; font-weight:600; letter-spacing:-.01em; color:var(--text); }
+.mu-adm-control-sub{ font-size:.8rem; line-height:1.45; color:var(--text-dim); }
+.mu-adm-control-line{ margin-top:8px; font-size:.86rem; line-height:1.4; color:var(--text); overflow-wrap:anywhere; }
+.mu-adm-control-line + .mu-adm-control-line{ margin-top:0; }
+.mu-adm-control .rd-switch{ margin-top:2px; }
+.mu-adm-stats{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--mon-gap); }
+.mu-adm-stat{ cursor:default; padding-bottom:12px; }
+.mu-adm-stat .mon-stat-sub{ min-height:0; }
+.mu-adm-worker{ padding:14px 16px; }
+.mu-adm-worker + .mu-adm-worker{ border-top:1px solid var(--line); }
+.mu-adm-worker-head{ display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; min-height:32px; }
+.mu-adm-worker-name{ font-size:.92rem; font-weight:600; color:var(--text); overflow-wrap:anywhere; }
+.mu-adm-worker.is-offline .mu-adm-worker-name{ color:var(--text-dim); }
+.mu-adm-remove{ margin-left:auto; }
+.mon-dot.is-off{ background:transparent; box-shadow:inset 0 0 0 1.5px var(--text-faint); }
+.mu-adm-worker-jobs{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:10px; margin-top:10px; }
+.mu-adm-job{ display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:44px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; cursor:pointer; }
+.mu-adm-job:hover{ border-color:var(--line-strong); }
+.mu-adm-job > span{ display:flex; flex-direction:column; gap:2px; min-width:0; }
+.mu-adm-job-title{ font-size:.84rem; font-weight:600; color:var(--text); }
+.mu-adm-job-state{ font-size:.78rem; line-height:1.4; color:var(--text-dim); overflow-wrap:anywhere; }
+.mu-adm-songs{ list-style:none; margin:0; padding:0; }
+.mu-adm-song{ display:flex; align-items:center; gap:12px; padding:9px 16px; }
+.mu-adm-song + .mu-adm-song{ border-top:1px solid var(--line); }
+.mu-adm-cover{ flex:none; width:36px; height:36px; border-radius:6px; background:var(--press); object-fit:cover; }
+.mu-adm-song-text{ display:flex; flex-direction:column; flex:1 1 auto; min-width:0; }
+.mu-adm-song-text b, .mu-adm-song-text span{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-adm-song-text b{ font-size:.86rem; font-weight:600; color:var(--text); }
+.mu-adm-song-text span{ font-size:.78rem; color:var(--text-dim); }
+.mu-adm-proxies{ display:flex; flex-direction:column; border:1px solid var(--line); border-radius:10px; }
+.mu-adm-proxy{ display:flex; align-items:center; gap:12px; min-height:52px; padding:8px 8px 8px 12px; }
+.mu-adm-proxy + .mu-adm-proxy{ border-top:1px solid var(--line); }
+.mu-adm-proxy.is-bad .mon-dot{ background:var(--bad); }
+.mu-adm-proxy.is-idle .mon-dot{ background:transparent; box-shadow:inset 0 0 0 1.5px var(--text-faint); }
+.mu-adm-proxy-text{ display:flex; flex-direction:column; gap:2px; flex:1 1 auto; min-width:0; }
+.mu-adm-proxy-label{ font-family:var(--font-mono); font-size:.82rem; color:var(--text); overflow-wrap:anywhere; }
+.mu-adm-proxy.is-bad .mu-adm-job-state{ color:var(--bad); }
+.mu-adm-proxy-add{ display:flex; flex-direction:column; gap:6px; }
+.mu-adm-proxy-input{ width:100%; min-height:76px; resize:vertical; font-family:var(--font-mono); font-size:.82rem; }
+.mu-adm-proxy-foot{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.mu-adm-proxy-foot .rd-field-hint{ flex:1 1 16rem; }
+@media (max-width:900px){ .mu-adm-stats{ grid-template-columns:repeat(2,minmax(0,1fr)); } }

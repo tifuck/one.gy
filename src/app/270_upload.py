@@ -458,6 +458,9 @@ def upload():
             db.session.rollback()
         except Exception:
             pass
+        _global_cap = app.config.get('MAX_CONTENT_LENGTH')
+        if _global_cap and (request.content_length or 0) > int(_global_cap):
+            return jsonify({'error': f'File too large. Maximum upload size is {max_gb}GB.'}), 413
         if registered_user:
             return jsonify({
                 'error': f'Storage limit exceeded. You have {registered_user.get_storage_remaining_gb():.2f}GB remaining.'
@@ -530,7 +533,7 @@ def upload():
 
 def _upload_admit_before_body():
     """Checks that run before the multipart body is parsed: origin, login/temp policy,
-    idempotent replay by header key, early size rejects and the guest in-flight reservation.
+    quota room for a retry by header key, early size rejects and the guest in-flight reservation.
     Returns (error_response, registered_user, guest_temp_reserved, upload_cap_bytes)."""
     registered_user = None
     guest_temp_reserved = None
@@ -559,15 +562,16 @@ def _upload_admit_before_body():
         # the short finalize window further down.
         # A retry of an upload that already committed must get that upload
         # back even when the commit used up the remaining quota. Only a
-        # header key can be resolved before the body is parsed against it.
-        _header_upload_id = (request.headers.get('X-Upload-Id') or '').strip()
-        if _header_upload_id:
-            _existing_upload = _find_existing_upload_by_key(
-                _header_upload_id, registered_user_id=registered_user.id)
-            if _existing_upload:
-                print(f'[UPLOAD] Reused existing upload for idempotency key before body parse: {_header_upload_id}')
-                return (_upload_idempotent_reuse_response(_existing_upload)), registered_user, guest_temp_reserved, None
+        # header key can be resolved before the body is parsed against it:
+        # it admits the body with room for the committed payload, and the
+        # body path returns that upload (409 when folder/temp/E2EE differ).
+        _header_upload_id = _bounded_upload_key((request.headers.get('X-Upload-Id') or '').strip() or None)
+        _existing_upload = _find_existing_upload_by_key(
+            _header_upload_id, registered_user_id=registered_user.id)
         remaining_bytes = max(int(registered_user.storage_limit_gb * 1024 * 1024 * 1024) - registered_user.get_storage_used(), 0)
+        if _existing_upload:
+            print(f'[UPLOAD] Admitting retry of committed upload for idempotency key: {_header_upload_id}')
+            remaining_bytes += max(_existing_upload.size or 0, _existing_upload.disk_size or 0)
         if _multipart_body_exceeds(remaining_bytes):
             return (jsonify({'error': f'Storage limit exceeded. You have {registered_user.get_storage_remaining_gb():.2f}GB remaining.'}), 413), registered_user, guest_temp_reserved, None
         upload_cap_bytes = remaining_bytes
@@ -780,11 +784,12 @@ def _upload_zip_and_encrypt(saved_file_paths, total_files, temp_dir, temp_encryp
                     base_arcname = safe_zip_entry_name(sanitize_plaintext_name(orig_filename) or safe_name)
                     arcname = base_arcname
                     if arcname in used_arcnames:
-                        stem, dot, ext = base_arcname.rpartition('.')
+                        head, slash, basename = base_arcname.rpartition('/')
+                        stem, dot, ext = basename.rpartition('.')
                         suffix = 1
                         while arcname in used_arcnames:
                             if dot:
-                                arcname = f'{stem}_{suffix}.{ext}'
+                                arcname = f'{head}{slash}{stem}_{suffix}.{ext}'
                             else:
                                 arcname = f'{base_arcname}_{suffix}'
                             suffix += 1

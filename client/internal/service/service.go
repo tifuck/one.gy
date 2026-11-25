@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/tifuck/one.gy/client/internal/account"
 	"github.com/tifuck/one.gy/client/internal/api"
+	"github.com/tifuck/one.gy/client/internal/cloudfiles"
 	"github.com/tifuck/one.gy/client/internal/config"
 	"github.com/tifuck/one.gy/client/internal/exec"
 	"github.com/tifuck/one.gy/client/internal/ipc"
@@ -43,6 +45,7 @@ type Service struct {
 	tree   *remote.Tree
 	poller *remote.Poller
 	rpc    *ipc.Server
+	app    io.ReadWriteCloser // the app that started the engine (SetAppConn), or nil
 	pool   *exec.Pool
 	xenv   *exec.Env
 	senv   *syncer.Env
@@ -57,6 +60,8 @@ type Service struct {
 	stop       context.CancelFunc
 	ctx        context.Context
 	caps       *api.Capabilities
+	files      filesThrottle
+	explorer   *cloudfiles.Manager
 }
 
 // New opens the state DB and restores the account.
@@ -91,16 +96,22 @@ func New(ctx context.Context, opts Options) (*Service, error) {
 			s.mgr.Wake("")
 		}
 	}
+	s.explorer = cloudfiles.New(db)
 	s.pool.Notify = func(v exec.TransferView) { s.rpc.Broadcast("transfer", v) }
 	s.pool.Finished = s.recordTransfer
 	s.xenv = &exec.Env{DB: db, Tree: s.tree, Acct: s.acct, Pool: s.pool, Caps: s.capabilities, FreeSpace: freeSpace}
 	s.senv = &syncer.Env{Exec: s.xenv, Settings: s.syncSettings, Device: s.device, Events: syncer.Events{
-		Sync:     s.syncChanged,
-		Issue:    func(v syncer.IssueView) { s.rpc.Broadcast("issue", v) },
+		Sync: s.syncChanged,
+		Issue: func(v syncer.IssueView) {
+			s.rpc.Broadcast("issue", v)
+			s.filesChanged(v.SyncID)
+		},
 		Activity: func(a syncer.Activity) { s.rpc.Broadcast("activity", a) },
 		Notify: func(title, body, kind string) {
 			s.rpc.Broadcast("notify", map[string]string{"title": title, "body": body, "kind": kind})
 		},
+		Files: s.filesChanged,
+		Item:  s.explorer.Done,
 	}}
 	s.mgr = syncer.NewManager(s.senv)
 	s.poller.OnApplied = func() {
@@ -129,16 +140,34 @@ func (s *Service) Serve(ctx context.Context, ln net.Listener) error {
 	go s.statusLoop(ctx)
 	go s.grantLoop(ctx)
 	go s.maintainKeys(ctx)
+	if s.app != nil {
+		gone := s.rpc.ServeTrusted(ctx, s.app)
+		go func() {
+			<-gone
+			slog.Info("the app that started the engine is gone")
+			cancel()
+		}()
+	}
 	err := s.rpc.Serve(ctx, ln)
 	cancel()
+	// The grant keeps this device's website session alive on the server: it
+	// ends with the engine instead of when it expires.
+	dropCtx, dropped := context.WithTimeout(context.Background(), 5*time.Second)
+	s.acct.DropGrant(dropCtx)
+	dropped()
 	s.mgr.Wait()
+	s.explorer.Close()
 	s.rpc.Close()
 	s.db.Close()
 	return err
 }
 
-// SetIPCSecret requires ipc.hello with secret on every connection ("" = off).
+// SetIPCSecret requires ipc.hello with secret on every socket connection ("" = off).
 func (s *Service) SetIPCSecret(secret string) { s.rpc.Secret = secret }
+
+// SetAppConn (before Serve) gives the app that started the engine its own
+// trusted connection (--ipc-stdio); the engine stops when it ends.
+func (s *Service) SetAppConn(conn io.ReadWriteCloser) { s.app = conn }
 
 // SetIPCHelloKey sets the key ipc.hello {nonce} proves for CLI clients.
 func (s *Service) SetIPCHelloKey(key string) { s.rpc.HelloKey = key }
@@ -319,6 +348,7 @@ func (s *Service) device() (string, string) {
 func (s *Service) syncChanged(id string) {
 	if r, err := s.db.GetSync(context.Background(), id); err == nil && r != nil {
 		s.rpc.Broadcast("sync", s.toSync(context.Background(), r))
+		s.filesChanged(id)
 	}
 }
 

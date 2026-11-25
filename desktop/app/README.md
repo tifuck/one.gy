@@ -5,8 +5,8 @@ forward / reload, title, native window controls), its own sign-in and lock
 screens, and below that the website in its desktop shell (a vertical rail
 instead of the website nav, no public pages), whose "Sync" entry opens the
 native sync panel next to the rail. Contract: `../docs/site-bridge.md`. Syncing itself happens in the Go engine
-(`../engine`); the app talks to it over the socket/pipe described in
-`../docs/engine-ipc.md`. No native Node modules.
+(`onegy daemon`, `../../client`); the app starts it and talks to it on its
+stdin and stdout as described in `../docs/engine-ipc.md`. No native Node modules.
 
 ## Run
 
@@ -84,13 +84,18 @@ src/main/       main process
   sync-status.js  account + engine status + issues -> tray and onStatus states
   protocol.js     app:// scheme serving src/ui with a strict CSP
   security.js     web preferences, navigation locks, permissions, TLS, downloads
-  engine.js       engine supervisor (connect, spawn, restart with backoff)
-  rpc.js          JSON-RPC 2.0 client, newline framing
+  engine.js       engine supervisor (spawn, restart with backoff, make another engine give way)
+  rpc.js          JSON-RPC 2.0 client, newline framing, over the engine's stdin/stdout or a socket
   ipc.js          ipcMain handlers: engine method whitelist + app actions + site bridge
   ui-methods.js   the engine methods the native panel may call
   site-nav.js     validates site paths and the rail width the site preload reports
   environment.js  battery (powerMonitor) and metered network -> engine.environment
   remove-sync.js  remove a sync; optionally move its folder to the system trash
+  shell-integration.js  file manager integration (setting file_manager_integration): status
+                  icons and "Open on one.gy" (--open-item); shell-linux.js (emblems, then
+                  shell-gtk.js: Nautilus/Nemo/Caja extension src/shell/onegy_fm.py, and
+                  shell-kde.js: Dolphin service menu; the overlay plugin is
+                  ../shell/dolphin, installed by the deb/rpm), shell-win.js (Explorer verbs)
   tray.js         tray icon and menu; left click opens the tray popover
   tray-popover.js the popover window by the tray icon (placement, hide on blur, actions)
   notify.js, updater.js, settings-store.js

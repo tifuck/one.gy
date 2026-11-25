@@ -156,6 +156,12 @@ class _StorageManagerReplicationCycle:
 
     _REPLICA_MODELS = {'files': FileReplica, 'notes': NoteReplica, 'thumbnails': ThumbnailReplica}
 
+    # (category, replica_id) of transfers that outlived their cycle's wait
+    # budget. Their rows stay 'syncing' (the interrupted-syncing reset skips
+    # them) until _apply_late_replication_result has applied the result.
+    _late_replication_lock = threading.Lock()
+    _late_replication_rows = set()
+
     def _run_replication_cycle_locked(self):
         """Run one replication cycle — copy pending files/notes/thumbnails.
         Uses a thread pool for parallel replication to multiple nodes simultaneously.
@@ -321,14 +327,19 @@ class _StorageManagerReplicationCycle:
         return enabled_nodes, cycle_backends, cycle_local_backend
 
     def _reset_interrupted_syncing_replicas(self):
-        # Reset interrupted 'syncing' replicas back to 'pending' (e.g. after a restart)
-        _stale_syncing = FileReplica.query.filter_by(status='syncing').count()
-        _stale_syncing += NoteReplica.query.filter_by(status='syncing').count()
-        _stale_syncing += ThumbnailReplica.query.filter_by(status='syncing').count()
+        # Reset interrupted 'syncing' replicas back to 'pending' (e.g. after a restart),
+        # except rows whose late transfer result is still awaited.
+        with self._late_replication_lock:
+            _late_rows = set(self._late_replication_rows)
+        _stale_syncing = 0
+        for category, model in self._REPLICA_MODELS.items():
+            query = model.query.filter(model.status == 'syncing')
+            _late_ids = [rid for cat, rid in _late_rows if cat == category]
+            if _late_ids:
+                query = query.filter(model.id.notin_(_late_ids))
+            if query.count():
+                _stale_syncing += query.update({'status': 'pending'}) or 0
         if _stale_syncing > 0:
-            FileReplica.query.filter_by(status='syncing').update({'status': 'pending'})
-            NoteReplica.query.filter_by(status='syncing').update({'status': 'pending'})
-            ThumbnailReplica.query.filter_by(status='syncing').update({'status': 'pending'})
             db.session.commit()
             print(f'[REPLICATION] Reset {_stale_syncing} interrupted syncing replica(s) to pending')
 
@@ -962,7 +973,10 @@ class _StorageManagerReplicationCycle:
             replica.target_version = note_version
             replica.error_count = 0
             replica.last_error = None
-            replica.verified_at = datetime.now(timezone.utc)
+            # Only a write the target confirmed counts as verified: a size-only
+            # write keeps verified_at NULL so the integrity scrub, which always
+            # takes never-verified rows, audits it on its next pass.
+            replica.verified_at = datetime.now(timezone.utc) if res.get('checksum_verified') else None
             # AUDIT FIX (size-only replicas excluded from failover):
             # persist the checksum of the bytes we wrote AND, in a
             # dedicated column, whether the target actually confirmed
@@ -1062,7 +1076,9 @@ class _StorageManagerReplicationCycle:
             model.status: 'synced',
             model.error_count: 0,
             model.last_error: None,
-            model.verified_at: now_ts,
+            # Size-only writes stay never-verified (NULL) so the scrub audits
+            # them promptly instead of waiting out its re-verify interval.
+            model.verified_at: now_ts if res.get('checksum_verified') else None,
             # AUDIT FIX (5th audit, backend honesty persisted): record the
             # checksum of the payload written by THIS transfer, replacing
             # any prior (now stale) value.
@@ -1145,6 +1161,7 @@ class _StorageManagerReplicationCycle:
         # cycle deadline.
         pool = ThreadPoolExecutor(max_workers=_num_workers)
         future_map = {}
+        _handled = set()
         reset_to_pending = []
         _timed_out_during_wait = False
         try:
@@ -1172,6 +1189,7 @@ class _StorageManagerReplicationCycle:
                         _timed_out = True
                         _timed_out_during_wait = True
                         break
+                    _handled.add(future)
                     try:
                         replica_id, category, res = future.result(timeout=max(1, _remaining_budget))
                         try:
@@ -1252,18 +1270,30 @@ class _StorageManagerReplicationCycle:
                         replica.status = 'pending'
                 db.session.commit()
             if _timed_out_during_wait:
-                # Requeue any futures that never completed back to pending
+                # Requeue futures that never started back to pending. A transfer
+                # still running (or finished but not yet read) keeps its
+                # 'syncing' row and gets its result applied when it lands, so a
+                # completed upload is not thrown away and sent again next cycle.
+                _late = []
                 for f, targ in future_map.items():
-                    if not f.done():
-                        f.cancel()
-                        try:
-                            model = _replica_models[targ[1]]
-                            replica = db.session.get(model, targ[0])
-                            if replica and replica.status == 'syncing':
-                                replica.status = 'pending'
-                        except Exception:
-                            pass
+                    if f in _handled:
+                        continue
+                    if not f.cancel():
+                        _late.append((f, targ))
+                        continue
+                    try:
+                        model = _replica_models[targ[1]]
+                        replica = db.session.get(model, targ[0])
+                        if replica and replica.status == 'syncing':
+                            replica.status = 'pending'
+                    except Exception:
+                        pass
                 db.session.commit()
+                for f, targ in _late:
+                    with self._late_replication_lock:
+                        self._late_replication_rows.add((targ[1], targ[0]))
+                    f.add_done_callback(
+                        lambda fut, cat=targ[1], rid=targ[0]: self._apply_late_replication_result(fut, cat, rid))
                 print(f'[REPLICATION] Cycle timed out ({self._CYCLE_TIMEOUT}s) with in-flight workers requeued')
         finally:
             # AUDIT FIX P0-3: never wait on stuck transfers. Cancel queued
@@ -1271,6 +1301,32 @@ class _StorageManagerReplicationCycle:
             # background instead of blocking the scheduler.
             pool.shutdown(wait=False, cancel_futures=True)
         return replicated, errors, _timed_out
+
+    def _apply_late_replication_result(self, future, category, replica_id):
+        """Done-callback for a transfer that outlived its cycle's wait budget
+        (runs in the worker thread, or at once if it had already finished).
+        Its row was left 'syncing', so the usual status guards still drop the
+        result when a concurrent rewrite reset the row in the meantime."""
+        try:
+            if future.cancelled() or future.exception() is not None:
+                return
+            _rid, _cat, res = future.result()
+            with self._app.app_context():
+                try:
+                    replica = db.session.get(self._REPLICA_MODELS[category], replica_id)
+                    if replica is not None and replica.status == 'syncing':
+                        cycle_local_backend = self._backend_state_snapshot()[1]
+                        if self._apply_replication_result(replica_id, category, res, cycle_local_backend, set()):
+                            print(f'[REPLICATION] Applied late result for {category}/{replica_id} after the cycle timed out')
+                except Exception as e:
+                    print(f'[REPLICATION] Could not apply late result for {category}/{replica_id}: {e}')
+                    try:
+                        db.session.rollback()
+                    except Exception:
+                        pass
+        finally:
+            with self._late_replication_lock:
+                self._late_replication_rows.discard((category, replica_id))
 
     def _replicate_sequentially(self, _thread_args, _do_replicate, _update_replica_status, _cycle_start, _item_delay):
         """Phase B in this thread (single worker or single item). Returns (replicated, errors, timed_out)."""

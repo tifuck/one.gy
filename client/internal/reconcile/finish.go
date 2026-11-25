@@ -224,9 +224,9 @@ func (r *run) massDelete() {
 		if total == 0 {
 			total = len(side.paths)
 		}
-		if side.ans == "restore" { // keep what no base row covers; base items were restored by decide
+		if side.ans == "restore" { // decide restored what it could; nothing counted is deleted (a mirror cannot write to one.gy)
 			for i := range r.ops {
-				if o := &r.ops[i]; o.Kind == side.kind && r.newDeletes[i] {
+				if o := &r.ops[i]; counted(o, i, side.kind) {
 					o.Kind = ""
 				}
 			}

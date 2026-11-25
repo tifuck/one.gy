@@ -86,7 +86,8 @@ def create_welcome_folder(user):
                 try:
                     with os.fdopen(tmp_fd, 'wb') as tmp_f:
                         tmp_f.write(file_bytes)
-                    encrypt_file_chunked(tmp_path, tmp_enc_path)
+                    content_hash, payload_checksum = encrypt_file_chunked(tmp_path, tmp_enc_path)
+                    disk_size = os.path.getsize(tmp_enc_path)
                     storage.store_file(encrypted_filename, tmp_enc_path)
                 finally:
                     for _p in (tmp_path, tmp_enc_path):
@@ -109,6 +110,9 @@ def create_welcome_folder(user):
                     is_e2e_encrypted=False,
                     is_legacy_encrypted=False,
                     is_temp_upload=False,
+                    content_hash=content_hash,
+                    payload_checksum=payload_checksum,
+                    disk_size=disk_size,
                 )
                 db.session.add(file_record)
                 # AUDIT FIX H4: drop any stale tombstone for this key before the
@@ -758,6 +762,7 @@ def _login_lockout_status(normalized_username):
         return False, 0
     if _login_bypass_active():
         return False, 0
+    import math
     scoped_key, global_key = _login_failure_keys(normalized_username)
     now = time.time()
     remaining = 0
@@ -771,7 +776,7 @@ def _login_lockout_status(normalized_username):
                 continue
             lock_until = entry.get('lock_until', 0)
             if lock_until > now:
-                remaining = max(remaining, int(lock_until - now))
+                remaining = max(remaining, math.ceil(lock_until - now))
     finally:
         _release_security_state_locks(locks)
     if remaining > 0:

@@ -1,5 +1,6 @@
 // Package ipc is the engine's JSON-RPC 2.0 server (desktop/docs/engine-ipc.md):
-// newline-delimited frames over a private Unix socket or named pipe, a method
+// newline-delimited frames over a private Unix socket or named pipe, and over
+// the engine's stdin and stdout for the app that started it, a method
 // registry, and event broadcast to subscribed connections.
 package ipc
 
@@ -13,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -61,16 +63,20 @@ type Server struct {
 	// after its engine.subscribe reply (engine-ipc.md: one status event).
 	OnSubscribe func() (typ string, data any)
 
-	// Secret, when set (--ipc-secret-stdin), must be presented with ipc.hello
-	// before a connection may call anything but ipc.hello, engine.info and
-	// engine.shutdown: only the app that spawned the engine knows it, so other
-	// programs of the same user cannot ask for keys or website tickets.
+	// Secret, when set, must be presented with ipc.hello before a connection
+	// on the socket may call anything but ipc.hello, engine.info,
+	// engine.shutdown, files.subscribe and the HandlePublic methods. With
+	// --ipc-stdio it is random and told to no one: the app that started the
+	// engine has its own connection (ServeTrusted), so other programs of the
+	// same user cannot ask for keys or website tickets.
 	Secret string
 
 	// HelloKey, when set, proves the engine to CLI clients: they read it from
 	// the user's private engine.json and check ipc.hello {nonce}'s key_proof
 	// before sending a password (DialEngine).
 	HelloKey string
+
+	public map[string]bool // methods any same-user connection may call (file manager extensions)
 
 	mu    sync.Mutex
 	conns map[*conn]bool
@@ -79,7 +85,7 @@ type Server struct {
 }
 
 func NewServer() *Server {
-	return &Server{methods: map[string]Handler{}, conns: map[*conn]bool{}}
+	return &Server{methods: map[string]Handler{}, public: map[string]bool{}, conns: map[*conn]bool{}}
 }
 
 // HelloProof is the engine's answer to ipc.hello {nonce}: hex
@@ -93,11 +99,18 @@ func HelloProof(secret, nonce string) string {
 // Handle registers a method (before Serve).
 func (s *Server) Handle(method string, h Handler) { s.methods[method] = h }
 
+// HandlePublic registers a read-only method that needs no ipc.hello.
+func (s *Server) HandlePublic(method string, h Handler) {
+	s.methods[method] = h
+	s.public[method] = true
+}
+
 type conn struct {
-	nc         net.Conn
+	nc         io.ReadWriteCloser
 	out        chan []byte
 	subscribed bool // guarded by Server.mu
-	trusted    bool // guarded by Server.mu: presented Secret
+	filesOnly  bool // guarded by Server.mu: files.subscribe, "files" events only
+	trusted    bool // guarded by Server.mu: presented Secret, or ServeTrusted
 	done       chan struct{}
 }
 
@@ -141,6 +154,36 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		s.wg.Add(1)
 		go s.serveConn(ctx, c)
 	}
+}
+
+// ServeTrusted serves rwc as a connection that needs no ipc.hello: the app
+// that started the engine, on the engine's stdin and stdout. It returns at
+// once; the channel closes when that connection has ended.
+func (s *Server) ServeTrusted(ctx context.Context, rwc io.ReadWriteCloser) <-chan struct{} {
+	c := &conn{nc: rwc, out: make(chan []byte, eventQueue), done: make(chan struct{}), trusted: true}
+	s.mu.Lock()
+	s.conns[c] = true
+	s.mu.Unlock()
+	s.wg.Add(1)
+	go s.serveConn(ctx, c)
+	return c.done
+}
+
+// Stdio joins a reader and a writer (the engine's stdin and stdout) into one
+// connection. Its Close ends a waiting Read at once, which closing a pipe
+// does not do on every OS.
+func Stdio(in io.Reader, out io.Writer) io.ReadWriteCloser {
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := io.Copy(pw, in)
+		pw.CloseWithError(err)
+	}()
+	return stdio{pr, out}
+}
+
+type stdio struct {
+	*io.PipeReader
+	io.Writer
 }
 
 // Close closes the listener and every connection, then waits for them.
@@ -243,8 +286,13 @@ func (s *Server) dispatch(ctx context.Context, c *conn, line []byte) (resp, afte
 				err = Errorf("forbidden", "wrong IPC secret")
 			}
 		}
-	} else if !trusted && req.Method != "engine.info" && req.Method != "engine.shutdown" {
+	} else if !trusted && req.Method != "engine.info" && req.Method != "engine.shutdown" && req.Method != "files.subscribe" && !s.public[req.Method] {
 		err = Errorf("forbidden", "call ipc.hello first")
+	} else if req.Method == "files.subscribe" {
+		s.mu.Lock()
+		c.filesOnly = true
+		s.mu.Unlock()
+		result = struct{}{}
 	} else if req.Method == "engine.subscribe" {
 		s.mu.Lock()
 		c.subscribed = true
@@ -308,7 +356,7 @@ func (s *Server) Broadcast(typ string, data any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for c := range s.conns {
-		if !c.subscribed {
+		if !c.subscribed && !(c.filesOnly && typ == "files") {
 			continue
 		}
 		select {

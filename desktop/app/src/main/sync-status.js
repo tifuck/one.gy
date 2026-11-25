@@ -11,14 +11,22 @@ const PASS_THROUGH = new Set(['up_to_date', 'syncing', 'paused', 'offline', 'iss
 // Usernames are unique regardless of case on the server.
 const sameUser = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 
-// { state, pending, issues } for a website page signed in as `username`
-// (null: page unknown, e.g. the tray).
-function bridgeStatus({ engineState, account, status, issueCount }, username) {
+// Whether the website the app shows (`origin`, its server setting) is the
+// server this computer's account lives on. The same username on another
+// server is another account. No origin given: not a website asking.
+function sameServer(account, origin) {
+  if (origin === undefined) return true;
+  try { return new URL(account.server).origin === origin; } catch { return false; }
+}
+
+// { state, pending, issues } for a website page on `origin` signed in as
+// `username` (null: page unknown, e.g. the tray).
+function bridgeStatus({ engineState, account, status, issueCount }, username, origin) {
   const pending = (status && status.pending) || 0;
   const out = (state) => ({ state, pending, issues: issueCount });
   if (engineState !== 'connected' || !account) return out('offline');
   if (!account.signed_in) return out('not_set_up');
-  if (username && !sameUser(account.username, username)) return { state: 'other_account', pending: 0, issues: 0 };
+  if ((username && !sameUser(account.username, username)) || !sameServer(account, origin)) return { state: 'other_account', pending: 0, issues: 0 };
   if (account.locked) return out('locked');
   const s = status && status.state;
   if (s === 'signed_out') return out('not_set_up');
@@ -35,10 +43,11 @@ function syncState(s, account) {
   return 'error';
 }
 
-// This computer's syncs for a website page signed in as `username`: only the
-// one.gy side (no local paths or names), and none for another account.
-function bridgeSyncs({ engineState, account, syncs }, username) {
-  if (engineState !== 'connected' || !account || !account.signed_in || !sameUser(account.username, username)) return [];
+// This computer's syncs for a website page on `origin` signed in as
+// `username`: only the one.gy side (no local paths or names), and none for
+// another account.
+function bridgeSyncs({ engineState, account, syncs }, username, origin) {
+  if (engineState !== 'connected' || !account || !account.signed_in || !sameUser(account.username, username) || !sameServer(account, origin)) return [];
   return [...syncs.values()].map((s) => {
     const st = s.stats || {};
     return {
@@ -52,10 +61,12 @@ function bridgeSyncs({ engineState, account, syncs }, username) {
   });
 }
 
-// Whether a website page signed in as `username` may get this computer's
-// master key: only a page of the account this computer is authorized for, so
-// another account's page never stores (and encrypts with) the wrong key.
-const mayUnlock = (account, username) => Boolean(account && account.signed_in && sameUser(account.username, username));
+// Whether a website page on `origin` signed in as `username` may get this
+// computer's master key: only a page of the account this computer is
+// authorized for, on that account's server, so no other server gets the key
+// and another account's page never stores (and encrypts with) the wrong one.
+const mayUnlock = (account, username, origin) => Boolean(account && account.signed_in && sameUser(account.username, username)
+  && typeof origin === 'string' && sameServer(account, origin));
 
 // The app lock (engine-ipc.md account.status): the site view stays closed and
 // the lock screen shows until the PIN or password unlocks the app.
@@ -78,9 +89,12 @@ function throttle(fn, ms) {
 // Emits 'change' whenever anything bridgeStatus() reads may have changed.
 class SyncStatus extends EventEmitter {
   // engine: EngineSupervisor (or anything with .state, .call() and 'state'/'event').
-  constructor(engine) {
+  // siteOrigin(): the origin of the website the app shows; without it forUser
+  // and syncsForUser do not look at the server.
+  constructor(engine, siteOrigin = () => undefined) {
     super();
     this.engine = engine;
+    this.siteOrigin = siteOrigin;
     this.engineState = engine.state;
     this.account = null;
     this.status = null;
@@ -103,11 +117,11 @@ class SyncStatus extends EventEmitter {
   }
 
   forUser(username) {
-    return bridgeStatus(this, username);
+    return bridgeStatus(this, username, this.siteOrigin());
   }
 
   syncsForUser(username) {
-    return bridgeSyncs(this, username);
+    return bridgeSyncs(this, username, this.siteOrigin());
   }
 
   async refresh() {

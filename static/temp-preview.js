@@ -1032,7 +1032,7 @@
     const u8 = new Uint8Array(bytes)
     if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xFE) return { text: new TextDecoder('utf-16le').decode(u8.subarray(2)), enc: 'utf-16le', bom: true }
     if (u8.length >= 2 && u8[0] === 0xFE && u8[1] === 0xFF) return { text: new TextDecoder('utf-16be').decode(u8.subarray(2)), enc: 'utf-16be', bom: true }
-    if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) return { text: new TextDecoder('utf-8').decode(u8), enc: 'utf-8', bom: true }
+    if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) return decodeUtf8(u8, true)
     if (u8.length >= 4) {
       const n = Math.min(u8.length - (u8.length % 2), 1024)
       let even = 0, odd = 0
@@ -1041,11 +1041,21 @@
       if (pairs > 0 && odd / pairs > 0.7 && even / pairs < 0.1) return { text: new TextDecoder('utf-16le').decode(u8), enc: 'utf-16le', bom: false }
       if (pairs > 0 && even / pairs > 0.7 && odd / pairs < 0.1) return { text: new TextDecoder('utf-16be').decode(u8), enc: 'utf-16be', bom: false }
     }
-    return { text: new TextDecoder('utf-8').decode(u8), enc: 'utf-8', bom: false }
+    return decodeUtf8(u8, false)
   }
+  // Invalid UTF-8 still displays, but `lossy` keeps it out of the editor: a
+  // save would write U+FFFD over the original bytes.
+  function decodeUtf8(u8, bom) {
+    try { return { text: new TextDecoder('utf-8', { fatal: true }).decode(u8), enc: 'utf-8', bom } } catch (e) {}
+    return { text: new TextDecoder('utf-8').decode(u8), enc: 'utf-8', bom, lossy: true }
+  }
+  // Save writes one EOL style, so pick the majority (ties -> LF).
   function detectEol(text) {
-    if (text.indexOf('\r\n') >= 0) return '\r\n'
-    if (text.indexOf('\r') >= 0) return '\r'
+    const crlf = (text.match(/\r\n/g) || []).length
+    const lf = (text.match(/\n/g) || []).length - crlf
+    const cr = (text.match(/\r/g) || []).length - crlf
+    if (crlf > lf && crlf > cr) return '\r\n'
+    if (cr > lf && cr > crlf) return '\r'
     return '\n'
   }
   function encodeTextBytes(str, encInfo) {
@@ -1701,15 +1711,16 @@
         downloadBtn.download = fileName
 
         const byteSize = decrypted.byteLength || new TextEncoder().encode(text).byteLength
+        const tooBig = byteSize > EDITOR_MAX_SIZE
         previewBody.innerHTML = ''
-        if (byteSize > EDITOR_MAX_SIZE) {
+        if (tooBig || decodedText.lossy) {
           const notice = document.createElement('div')
           notice.className = 'preview-editor-readonly-notice'
-          notice.textContent = 'FILE TOO LARGE TO EDIT (READ-ONLY PREVIEW)'
+          notice.textContent = tooBig ? 'FILE TOO LARGE TO EDIT (READ-ONLY PREVIEW)' : 'NOT VALID UTF-8 TEXT (READ-ONLY PREVIEW)'
           previewBody.appendChild(notice)
           const pre = document.createElement('pre')
           pre.className = 'preview-text'
-          pre.textContent = text.substring(0, 50000)
+          pre.textContent = tooBig ? text.substring(0, 50000) : text
           previewBody.appendChild(pre)
         } else {
           const editor = buildTextEditor(text, extension, fileId, true, fileName, decodedText, generation)
@@ -1886,15 +1897,16 @@
           decodedText.eol = detectEol(decodedText.text)
           const text = decodedText.text
           const byteSize = contentLength || buf.byteLength
+          const tooBig = byteSize > EDITOR_MAX_SIZE
           previewBody.innerHTML = ''
-          if (byteSize > EDITOR_MAX_SIZE) {
+          if (tooBig || decodedText.lossy) {
             const notice = document.createElement('div')
             notice.className = 'preview-editor-readonly-notice'
-            notice.textContent = 'FILE TOO LARGE TO EDIT (READ-ONLY PREVIEW)'
+            notice.textContent = tooBig ? 'FILE TOO LARGE TO EDIT (READ-ONLY PREVIEW)' : 'NOT VALID UTF-8 TEXT (READ-ONLY PREVIEW)'
             previewBody.appendChild(notice)
             const pre = document.createElement('pre')
             pre.className = 'preview-text'
-            pre.textContent = text.substring(0, 50000)
+            pre.textContent = tooBig ? text.substring(0, 50000) : text
             previewBody.appendChild(pre)
           } else {
             const editor = buildTextEditor(text, extension, fileId, false, fileName, decodedText, generation)

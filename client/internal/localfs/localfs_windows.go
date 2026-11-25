@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -30,10 +31,12 @@ func winPath(p string) (*uint16, error) { return windows.UTF16PtrFromString(long
 
 func infoOf(p string, fi fs.FileInfo) (Info, error) {
 	in := Info{Kind: kindOf(fi.Mode()), Size: fi.Size(), MtimeNs: fi.ModTime().UnixNano()}
+	var attrs uint32
 	if d, ok := fi.Sys().(*syscall.Win32FileAttributeData); ok {
 		in.MtimeNs = d.LastWriteTime.Nanoseconds()
+		attrs = d.FileAttributes
 	}
-	if in.Kind != KindFile && in.Kind != KindDir {
+	if in.Kind == KindSymlink || in.Kind == KindSpecial && attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
 		return in, nil
 	}
 	name, err := winPath(p)
@@ -44,10 +47,28 @@ func infoOf(p string, fi fs.FileInfo) (Info, error) {
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING,
 		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
+		if in.Kind == KindSpecial {
+			return in, nil
+		}
 		return in, &fs.PathError{Op: "open", Path: p, Err: err}
 	}
 	defer windows.CloseHandle(h)
+	if in.Kind == KindSpecial && !cloudFile(&in, h) {
+		return in, nil
+	}
 	return in, fillHandle(&in, h)
+}
+
+// cloudFile classifies a Special entry that is a Cloud Files placeholder
+// (Go reports those as irregular) by what it holds, and reports whether it
+// became a file or folder.
+func cloudFile(in *Info, h windows.Handle) bool {
+	attrs, tag, err := reparseTag(h)
+	if err != nil || !IsCloudTag(tag) {
+		return false
+	}
+	in.Kind = cloudKind(attrs)
+	return in.Kind != KindSpecial
 }
 
 func fillHandle(in *Info, h windows.Handle) error {
@@ -70,6 +91,9 @@ func Fstat(f *os.File) (Info, error) {
 		return Info{}, err
 	}
 	in := Info{Kind: kindOf(fi.Mode()), Size: fi.Size(), MtimeNs: fi.ModTime().UnixNano()}
+	if in.Kind == KindSpecial {
+		cloudFile(&in, windows.Handle(f.Fd()))
+	}
 	return in, fillHandle(&in, windows.Handle(f.Fd()))
 }
 
@@ -90,6 +114,36 @@ func openShared(p string, share uint32) (*os.File, error) {
 // processes may keep reading, writing and deleting.
 func Open(p string) (*os.File, error) {
 	return openShared(p, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE)
+}
+
+// OpenAttributes opens a file or folder for its attributes only, without
+// following a reparse point. It never conflicts with other processes' share
+// modes (Cloud Files placeholder calls need no more).
+func OpenAttributes(p string) (*os.File, error) {
+	name, err := winPath(p)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(name, windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(h), p), nil
+}
+
+// ReparseTag returns the attributes of an open file and its reparse tag (0
+// when it is no reparse point).
+func ReparseTag(f *os.File) (attrs, tag uint32, err error) { return reparseTag(windows.Handle(f.Fd())) }
+
+func reparseTag(h windows.Handle) (attrs, tag uint32, err error) {
+	var ti struct{ FileAttributes, ReparseTag uint32 } // FILE_ATTRIBUTE_TAG_INFO
+	err = windows.GetFileInformationByHandleEx(h, windows.FileAttributeTagInfo, (*byte)(unsafe.Pointer(&ti)), uint32(unsafe.Sizeof(ti)))
+	if ti.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+		ti.ReparseTag = 0
+	}
+	return ti.FileAttributes, ti.ReparseTag, err
 }
 
 // OpenForSnapshot opens with share-read only, so writers are blocked while

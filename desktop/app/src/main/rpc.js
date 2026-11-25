@@ -1,5 +1,6 @@
-// JSON-RPC 2.0 client over one stream socket, newline-delimited JSON framing
-// (desktop/docs/engine-ipc.md). Pure Node: no Electron imports.
+// JSON-RPC 2.0 client over one stream socket, or over an engine's stdout and
+// stdin, newline-delimited JSON framing (desktop/docs/engine-ipc.md). Pure
+// Node: no Electron imports.
 'use strict';
 
 const net = require('net');
@@ -38,9 +39,11 @@ class LineDecoder {
 
 // Emits: 'event' ({type, data}), 'close' (Error|null).
 class RpcClient extends EventEmitter {
-  constructor(socket, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  // output: where requests go when socket only reads (a child's stdout and stdin).
+  constructor(socket, { timeoutMs = DEFAULT_TIMEOUT_MS, output = socket } = {}) {
     super();
     this.socket = socket;
+    this.output = output;
     this.timeoutMs = timeoutMs;
     this.nextId = 1;
     this.pending = new Map();
@@ -52,6 +55,7 @@ class RpcClient extends EventEmitter {
     });
     socket.on('error', (err) => this.shutdown(err));
     socket.on('close', () => this.shutdown(null));
+    if (output !== socket) output.on('error', (err) => this.shutdown(err));
   }
 
   static connect(socketPath, opts) {
@@ -77,7 +81,7 @@ class RpcClient extends EventEmitter {
         reject(new RpcError(`Engine did not answer ${method}`, 'timeout'));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.socket.write(JSON.stringify(msg) + '\n');
+      this.output.write(JSON.stringify(msg) + '\n');
     });
   }
 
@@ -118,8 +122,10 @@ class RpcClient extends EventEmitter {
   }
 
   close() {
-    this.socket.end();
-    this.socket.destroy();
+    this.shutdown(null);
+    this.output.end();
+    // A child's stdout stays open until it exits: its last writes must not fail.
+    if (this.output === this.socket) this.socket.destroy();
   }
 }
 

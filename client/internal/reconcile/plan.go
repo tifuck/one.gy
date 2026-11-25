@@ -262,6 +262,7 @@ func (r *run) baseItems() []*item {
 		r.hashMoves(items, free)
 	}
 	// A new remote node where a base item lost its own: replaced on one.gy.
+	// An item moved here is not paired with a new node at its new path.
 	r.newAt = map[string]*rnode{}
 	for id, rn := range r.remote {
 		if !r.claimedRemote[id] {
@@ -269,7 +270,7 @@ func (r *run) baseItems() []*item {
 		}
 	}
 	for _, it := range items {
-		if it.rn == nil && it.l != nil {
+		if it.rn == nil && it.l != nil && r.key(it.lpath) == r.key(it.b.RelPath) {
 			if rn := r.newAt[r.key(it.lpath)]; rn != nil && !r.claimedRemote[rn.ID] {
 				it.rn, it.replaced = rn, true
 				r.claimedRemote[rn.ID] = true

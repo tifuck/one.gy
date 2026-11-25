@@ -96,6 +96,9 @@ export function mount(container, params = {}) {
     onclick: () => navigate(signedIn() && !params.onboarding ? 'syncs' : 'close'),
   }, 'Cancel');
   let onNext = async () => true;
+  // Bumped by every step change: what a step started (a check, a preview)
+  // must not touch the shared buttons of the step that followed it.
+  let stepSeq = 0;
 
   append(container, h('div', { class: 'adm-narrow' },
     fromSyncScreen
@@ -116,6 +119,7 @@ export function mount(container, params = {}) {
   function go(i) {
     const steps = visible();
     index = Math.max(0, Math.min(steps.length - 1, i));
+    stepSeq += 1;
     const step = steps[index];
     clear(content);
     error.textContent = '';
@@ -130,10 +134,14 @@ export function mount(container, params = {}) {
   async function next() {
     error.textContent = '';
     setReady(false);
+    const here = stepSeq;
     try {
-      if (await onNext()) go(index + 1);
+      const ok = await onNext();
+      if (here !== stepSeq) return; // Back was used meanwhile
+      if (ok) go(index + 1);
       else setReady(true);
     } catch (err) {
+      if (here !== stepSeq) return;
       error.textContent = err.message;
       setReady(true);
     }
@@ -302,6 +310,7 @@ export function mount(container, params = {}) {
     const pathBox = h('div', { class: 'dk-path-box' });
     const result = h('div', { 'aria-live': 'polite' });
     const full = w.cfg.type === 'full';
+    const here = stepSeq;
     if (full) {
       w.cfg.remote_folder_id = null;
       w.cfg.remote_path = '/';
@@ -313,7 +322,7 @@ export function mount(container, params = {}) {
       append(result, h('p', { class: 'rd-field-hint' }, 'Checking the folder…'));
       try {
         const v = await validate(full);
-        if (!v) return;
+        if (!v || here !== stepSeq) return;
         fill(result, validationView(v, full));
         setReady(Boolean(v.ok));
       } catch (err) {
@@ -327,7 +336,7 @@ export function mount(container, params = {}) {
           type: 'button', class: 'rd-btn rd-btn-ghost',
           onclick: async () => {
             const p = await bridge('pickFolder', { title: 'Choose a folder to sync', defaultPath: w.cfg.local_path || undefined });
-            if (!p) return;
+            if (!p || here !== stepSeq) return;
             w.cfg.local_path = p;
             if (!w.nameTouched) w.cfg.name = basename(p);
             renderPath();
@@ -347,15 +356,18 @@ export function mount(container, params = {}) {
   function stepRemote() {
     title.textContent = 'Choose a folder on one.gy';
     const result = h('div', { 'aria-live': 'polite' });
+    const here = stepSeq;
     let timer = null;
     const check = () => {
       clearTimeout(timer);
+      if (here !== stepSeq) return;
       setReady(false);
       timer = setTimeout(async () => {
+        if (here !== stepSeq) return;
         fill(result, h('p', { class: 'rd-field-hint' }, 'Checking…'));
         try {
           const v = await validate(true);
-          if (!v) return;
+          if (!v || here !== stepSeq) return;
           fill(result, validationView(v, true));
           setReady(Boolean(v.ok));
         } catch (err) {
@@ -440,17 +452,20 @@ export function mount(container, params = {}) {
     const v = w.validation || {};
     const bothHaveFiles = (v.local && v.local.files > 0) && (v.remote && v.remote.files > 0) && ['two_way', 'full'].includes(cfg.type);
     const summary = h('div', { 'aria-live': 'polite' });
+    const here = stepSeq;
     let timer = null;
     let ticket = 0;
     const load = (delay = 400) => {
       clearTimeout(timer);
+      if (here !== stepSeq) return;
       setReady(false, 'Start sync');
       timer = setTimeout(async () => {
+        if (here !== stepSeq) return;
         const mine = ++ticket;
         fill(summary, h('p', { class: 'rd-field-hint' }, 'Working out what will change…'));
         try {
           const p = await rpc('syncs.preview', { config: engineConfig(), initial: w.initial });
-          if (mine !== ticket) return;
+          if (mine !== ticket || here !== stepSeq) return;
           w.preview = p;
           fill(summary, previewView(p));
           setReady(true, 'Start sync');

@@ -275,7 +275,7 @@
     var u8 = new Uint8Array(bytes)
     if (u8.length >= 2 && u8[0] === 0xFF && u8[1] === 0xFE) return { text: new TextDecoder('utf-16le').decode(u8.subarray(2)), enc: 'utf-16le', bom: true }
     if (u8.length >= 2 && u8[0] === 0xFE && u8[1] === 0xFF) return { text: new TextDecoder('utf-16be').decode(u8.subarray(2)), enc: 'utf-16be', bom: true }
-    if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) return { text: new TextDecoder('utf-8').decode(u8), enc: 'utf-8', bom: true }
+    if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) return decodeUtf8(u8, true)
     // BOM-less UTF-16 heuristic: real text never contains NUL bytes, so a high
     // share of NULs on one side of every byte pair means UTF-16.
     if (u8.length >= 4) {
@@ -285,7 +285,13 @@
       if (pairs > 0 && odd / pairs > 0.7 && even / pairs < 0.1) return { text: new TextDecoder('utf-16le').decode(u8), enc: 'utf-16le', bom: false }
       if (pairs > 0 && even / pairs > 0.7 && odd / pairs < 0.1) return { text: new TextDecoder('utf-16be').decode(u8), enc: 'utf-16be', bom: false }
     }
-    return { text: new TextDecoder('utf-8').decode(u8), enc: 'utf-8', bom: false }
+    return decodeUtf8(u8, false)
+  }
+  // Invalid UTF-8 still displays, but `lossy` keeps it out of the editor: a
+  // save would write U+FFFD over the original bytes.
+  function decodeUtf8 (u8, bom) {
+    try { return { text: new TextDecoder('utf-8', { fatal: true }).decode(u8), enc: 'utf-8', bom: bom } } catch (e) {}
+    return { text: new TextDecoder('utf-8').decode(u8), enc: 'utf-8', bom: bom, lossy: true }
   }
   // Unlisted or extension-less files (Makefile, README, .gitignore, ...) still
   // open in the editor when their bytes are text: UTF-16 with a BOM, or
@@ -312,9 +318,13 @@
     })
   }
 
+  // Save writes one EOL style, so pick the majority (ties -> LF).
   function detectEol (text) {
-    if (text.indexOf('\r\n') >= 0) return '\r\n'
-    if (text.indexOf('\r') >= 0) return '\r'
+    var crlf = (text.match(/\r\n/g) || []).length
+    var lf = (text.match(/\n/g) || []).length - crlf
+    var cr = (text.match(/\r/g) || []).length - crlf
+    if (crlf > lf && crlf > cr) return '\r\n'
+    if (cr > lf && cr > crlf) return '\r'
     return '\n'
   }
   function encodeTextBytes (str, encInfo) {
@@ -405,11 +415,12 @@
         var text = decoded.text
         body.innerHTML = ''
         setTextMode($('previewModal'))
-        if ((bytes.byteLength || 0) > EDITOR_MAX) {
+        var tooBig = (bytes.byteLength || 0) > EDITOR_MAX
+        if (tooBig || decoded.lossy) {
           var ro = document.createElement('div'); ro.className = 'preview-ro'
-          var pre = document.createElement('pre'); pre.className = 'preview-text'; pre.textContent = text.slice(0, 50000)
+          var pre = document.createElement('pre'); pre.className = 'preview-text'; pre.textContent = tooBig ? text.slice(0, 50000) : text
           var foot = document.createElement('div'); foot.className = 'preview-ed-foot'
-          foot.innerHTML = '<span class="preview-ed-status preview-ro-note">Too large to edit. Showing the first 50,000 characters, read-only.</span>'
+          foot.innerHTML = '<span class="preview-ed-status preview-ro-note">' + (tooBig ? 'Too large to edit. Showing the first 50,000 characters, read-only.' : 'Not valid UTF-8 text. Shown read-only, as saving would corrupt it.') + '</span>'
           ro.appendChild(pre); ro.appendChild(foot); body.appendChild(ro)
           highlightInto(pre, pre.textContent, ext, generation)
         } else {
@@ -546,7 +557,7 @@
 
     ta.value = text
     ta.setSelectionRange(0, 0)
-    var clean = text  // what the server holds; dirty = the textarea differs
+    var clean = ta.value  // what the server holds (LF-normalised like ta.value); dirty = the textarea differs
     var savedOnce = false
     var dirty = false
     var editRevision = 0

@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Description": "ONE.GY sync status overlays",
+        "Id": "onegy-overlay",
+        "Name": "ONE.GY",
+        "ServiceTypes": [
+            "KOverlayIconPlugin"
+        ]
+    }
+}

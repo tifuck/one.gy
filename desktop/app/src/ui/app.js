@@ -15,10 +15,10 @@
 import { h, icon, svg, clear, field } from './components/dom.js';
 import { ICONS } from './components/icons.js';
 import { openDialog, confirmDialog } from './components/dialog.js';
-import { toast, toastError } from './components/toast.js';
+import { toastError } from './components/toast.js';
 import { manualUpload } from './components/manual.js';
 import {
-  api, rpc, bridge, appSettings, store, on, handleEvent, refreshAll, loadAccount, issueCount, activeTransferCount, sameUser,
+  api, rpc, bridge, appSettings, store, on, handleEvent, refreshAll, issueCount, activeTransferCount, sameUser,
 } from './store.js';
 import * as syncsScreen from './screens/syncs.js';
 import * as transfersScreen from './screens/transfers.js';
@@ -191,14 +191,7 @@ const MESSAGES = {
             message: `All syncs stop, this computer is removed from ${mine}'s devices and its keys are deleted. Local files are kept.`,
             confirmLabel: 'Sign out of sync', danger: true,
           });
-          if (!ok) return;
-          try {
-            await rpc('account.signOut', { revoke: true });
-            await loadAccount();
-            toast('Signed out of sync on this computer', 'success');
-          } catch (err) {
-            toastError(err);
-          }
+          if (ok) await settingsScreen.signOutOfSync();
         },
       }, 'Sign out of sync on this computer')));
   },

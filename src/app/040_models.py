@@ -782,6 +782,120 @@ class MusicSyncCommand(db.Model):
         db.Index('ix_music_command_requester_result', 'user_id', 'requester_device_id', 'status', 'id'),
     )
 
+# ─── Music pipeline (music_worker.py) ───────────────────────────────────────
+# The worker owns library.db (what the site plays); these tables hold its queue,
+# roster and controls so the app, the coordinator and workers can share them.
+
+class MusicJob(db.Model):
+    """One wanted song. dedupe_key ('dz:<deezer track id>') is unique for the
+    job's whole life, so a song that was handled is never queued again."""
+    id = db.Column(db.Integer, primary_key=True)
+    kind = db.Column(db.String(20), nullable=False, default='acquire')
+    dedupe_key = db.Column(db.String(191), nullable=False, unique=True)
+    norm_key = db.Column(db.String(191), nullable=True, index=True)
+    artist_dz = db.Column(db.BigInteger, nullable=True, index=True)
+    payload = db.Column(db.Text, nullable=False)
+    bucket = db.Column(db.SmallInteger, nullable=False, default=5)
+    priority = db.Column(db.Float, nullable=False, default=0.0)
+    # ready | leased | done | duplicate | skipped
+    state = db.Column(db.String(12), nullable=False, default='ready')
+    attempts = db.Column(db.Integer, nullable=False, default=0)
+    run_after = db.Column(db.DateTime, nullable=True)
+    lease_owner = db.Column(db.String(100), nullable=True)
+    lease_expires = db.Column(db.DateTime, nullable=True)
+    error_code = db.Column(db.String(32), nullable=True, index=True)
+    error_detail = db.Column(db.String(500), nullable=True)
+    song_id = db.Column(db.String(36), nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    __table_args__ = (
+        db.Index('ix_music_job_queue', 'state', 'kind', 'bucket', 'priority'),
+    )
+
+class MusicArtist(db.Model):
+    """Roster: every artist the pipeline knows. Effective monitor mode is
+    rule_mode (admin) when set, else auto_mode (discovery)."""
+    id = db.Column(db.Integer, primary_key=True)
+    deezer_id = db.Column(db.BigInteger, nullable=False, unique=True)
+    mbid = db.Column(db.String(36), nullable=True, index=True)
+    name = db.Column(db.String(300), nullable=False)
+    nb_fan = db.Column(db.Integer, nullable=False, default=0)
+    lb_listens = db.Column(db.BigInteger, nullable=False, default=0)
+    score = db.Column(db.Float, nullable=False, default=0.0)
+    # everything | discography | essentials | top_tracks | new_only | off | blocked
+    auto_mode = db.Column(db.String(16), nullable=False, default='off')
+    rule_mode = db.Column(db.String(16), nullable=True)
+    rule_weight = db.Column(db.Float, nullable=False, default=1.0)
+    floor_mode = db.Column(db.String(16), nullable=True)
+    seeds = db.Column(db.String(200), nullable=True)
+    genres = db.Column(db.String(300), nullable=True)
+    albums_seen = db.Column(db.Text, nullable=True)
+    mode_synced = db.Column(db.String(16), nullable=True)
+    monitored_since = db.Column(db.DateTime, nullable=True)
+    last_release = db.Column(db.String(10), nullable=True)
+    next_scan_at = db.Column(db.DateTime, nullable=True, index=True)
+    scanned_at = db.Column(db.DateTime, nullable=True)
+    have = db.Column(db.Integer, nullable=False, default=0)
+    wanted = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+class MusicGenreRule(db.Model):
+    """Admin genre weight (Deezer genre name). weight 0 blocks the genre."""
+    id = db.Column(db.Integer, primary_key=True)
+    genre = db.Column(db.String(64), nullable=False, unique=True)
+    weight = db.Column(db.Float, nullable=False, default=1.0)
+
+class MusicSourceBudget(db.Model):
+    """Per-source daily usage and back-off state, written by the worker."""
+    id = db.Column(db.Integer, primary_key=True)
+    source = db.Column(db.String(24), nullable=False)
+    day = db.Column(db.Date, nullable=False)
+    used = db.Column(db.Integer, nullable=False, default=0)
+    errors = db.Column(db.Integer, nullable=False, default=0)
+    slow = db.Column(db.Float, nullable=False, default=1.0)
+    paused_until = db.Column(db.DateTime, nullable=True)
+    last_error = db.Column(db.String(300), nullable=True)
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    __table_args__ = (db.UniqueConstraint('source', 'day', name='uq_music_source_day'),)
+
+class MusicWorker(db.Model):
+    """A running music worker (heartbeat every ~10 s). The admin turns discovery
+    and downloads on or off per worker; the global switches still apply."""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    version = db.Column(db.String(20), nullable=True)
+    discover_enabled = db.Column(db.Boolean, nullable=False, default=True)
+    download_enabled = db.Column(db.Boolean, nullable=False, default=True)
+    discover_status = db.Column(db.String(300), nullable=True)
+    download_status = db.Column(db.String(300), nullable=True)
+    started_at = db.Column(db.DateTime, nullable=True)
+    last_seen = db.Column(db.DateTime, nullable=True)
+
+class MusicProxy(db.Model):
+    """A proxy the music worker sends downloads and lookups through. The full URL
+    (credentials included) is Fernet-encrypted; `label` never holds a password."""
+    id = db.Column(db.Integer, primary_key=True)
+    url_enc = db.Column(db.Text, nullable=False)
+    label = db.Column(db.String(300), nullable=False, unique=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=True)
+    # new (not used yet) | ok | failing (paused after connection errors)
+    status = db.Column(db.String(20), nullable=False, default='new')
+    last_error = db.Column(db.String(300), nullable=True)
+    last_ok = db.Column(db.DateTime, nullable=True)
+    paused_until = db.Column(db.DateTime, nullable=True)
+    day = db.Column(db.Date, nullable=True)
+    requests_today = db.Column(db.Integer, nullable=False, default=0)
+    downloads_today = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+class MusicAlbumMatch(db.Model):
+    """Cached YouTube Music alignment of one Deezer album."""
+    deezer_album_id = db.Column(db.BigInteger, primary_key=True, autoincrement=False)
+    ytm_browse_id = db.Column(db.String(64), nullable=True)
+    score = db.Column(db.Float, nullable=False, default=0.0)
+    tracks_json = db.Column(db.Text().with_variant(LONGTEXT(), 'mysql', 'mariadb'), nullable=True)
+    matched_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
 # Default values for all toggleable settings (used when no DB override exists)
 _SETTING_DEFAULTS = {
     'allow_registration': allow_registration,
@@ -828,6 +942,13 @@ _SETTING_DEFAULTS = {
     'temp_max_gb': '1.0',
     'temp_total_max_gb': '0',
     'music_rescan_interval_seconds': '300',
+    # Music pipeline (music_worker.py): both off until an admin turns them on.
+    'music_discovery_enabled': False,
+    'music_downloads_enabled': False,
+    'music_dl_daily_cap': '3000',
+    'music_library_cap_gb': '1000',
+    # Use this server's own connection alongside the admin's proxies.
+    'music_proxy_direct': True,
     # Desktop sync (375_apiv1_sync.py / 376_apiv1_sync_uploads.py).
     'allow_desktop_sync': True,
     'max_devices_per_user': '20',

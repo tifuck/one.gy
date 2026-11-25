@@ -1,29 +1,17 @@
-// Dev-only stand-in for the sync engine (`onegy daemon`): serves dev/mock-core.js over the same
-// socket/pipe and JSON-RPC framing as the real engine (engine-ipc.md).
-//   node dev/mock-engine.js [--socket <path>] [--signed-out]
+// Dev-only stand-in for the sync engine (`onegy daemon --ipc-stdio`): serves
+// dev/mock-core.js to the program that started it, requests on stdin, answers
+// and events on stdout, with the engine's JSON-RPC framing (engine-ipc.md).
+// It exits when its stdin ends, like the engine.
+//   node dev/mock-engine.js [--signed-out]
 // `npm run dev:mock` makes the app spawn this instead of the real engine.
 'use strict';
 
-const fs = require('fs');
-const net = require('net');
 const os = require('os');
 const path = require('path');
 const { createMockEngine } = require('./mock-core');
-const { defaultSocketPath, helloProof } = require('../src/main/engine');
 const { LineDecoder } = require('../src/main/rpc');
 
 const argv = process.argv.slice(2);
-const flag = (name) => {
-  const i = argv.indexOf(`--${name}`);
-  return i >= 0 ? argv[i + 1] : null;
-};
-const socketPath = flag('socket') || defaultSocketPath();
-// Like the engine: with --ipc-secret-stdin, ipc.hello {nonce} proves the secret.
-let secret = '';
-if (argv.includes('--ipc-secret-stdin')) {
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (d) => { secret += d; });
-}
 const engine = createMockEngine({
   home: os.homedir(),
   sep: path.sep,
@@ -31,52 +19,31 @@ const engine = createMockEngine({
   signedIn: !argv.includes('--signed-out'),
 });
 
-const clients = new Set();
+const send = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
+let subscribed = false;
 engine.onEvent((ev) => {
-  const line = `${JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })}\n`;
-  for (const c of clients) if (c.subscribed) c.socket.write(line);
+  if (subscribed) send({ jsonrpc: '2.0', method: 'event', params: ev });
 });
 
-const server = net.createServer((socket) => {
-  const client = { socket, subscribed: false };
-  clients.add(client);
-  socket.setEncoding('utf8');
-  const decoder = new LineDecoder((line) => {
-    let msg;
-    try { msg = JSON.parse(line); } catch { return; }
-    if (!msg || typeof msg.method !== 'string' || msg.id === undefined) return;
-    let reply;
-    try {
-      if (msg.method === 'engine.subscribe') client.subscribed = true;
-      const p = msg.params || {};
-      const result = msg.method === 'ipc.hello' && p.nonce && !p.secret
-        ? { proof: helloProof(secret.trim(), p.nonce) }
-        : engine.call(msg.method, msg.params);
-      reply = { jsonrpc: '2.0', id: msg.id, result };
-    } catch (err) {
-      reply = { jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: err.message, data: err.data || { code: 'internal' } } };
-    }
-    socket.write(`${JSON.stringify(reply)}\n`);
-    if (msg.method === 'engine.subscribe') {
-      socket.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'status', data: engine.overall() } })}\n`);
-    }
-    if (msg.method === 'engine.shutdown') setTimeout(() => process.exit(0), 50);
-  });
-  socket.on('data', (chunk) => decoder.push(chunk));
-  socket.on('close', () => clients.delete(client));
-  socket.on('error', () => clients.delete(client));
+const decoder = new LineDecoder((line) => {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (!msg || typeof msg.method !== 'string' || msg.id === undefined) return;
+  let reply;
+  try {
+    if (msg.method === 'engine.subscribe') subscribed = true;
+    reply = { jsonrpc: '2.0', id: msg.id, result: engine.call(msg.method, msg.params) };
+  } catch (err) {
+    reply = { jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: err.message, data: err.data || { code: 'internal' } } };
+  }
+  send(reply);
+  if (msg.method === 'engine.subscribe') send({ jsonrpc: '2.0', method: 'event', params: { type: 'status', data: engine.overall() } });
+  if (msg.method === 'engine.shutdown') setTimeout(() => process.exit(0), 50);
 });
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => decoder.push(chunk));
+process.stdin.on('end', () => process.exit(0));
+process.stdout.on('error', () => process.exit(0));
 
-if (process.platform !== 'win32') {
-  fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-  fs.rmSync(socketPath, { force: true });
-}
-const listen = () => server.listen(socketPath, () => {
-  if (process.platform !== 'win32') fs.chmodSync(socketPath, 0o600);
-  console.log(`[MOCK] listening on ${socketPath}`);
-});
-// Like the engine: the secret is read before the first connection is served.
-if (argv.includes('--ipc-secret-stdin')) process.stdin.on('end', listen);
-else listen();
 setInterval(() => engine.tick(), 1000).unref();
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(); process.exit(0); });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));

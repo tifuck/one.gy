@@ -40,5 +40,24 @@ case "$1" in
     if [ -d /run/systemd/system ]; then
       systemctl daemon-reload || true
     fi
+    # The Dolphin overlay plugin from after-install.sh, wherever it went.
+    {
+      for tool in qtpaths qtpaths6 qtpaths-qt5 qtpaths-qt6 qmake qmake6 qmake-qt5 qmake-qt6; do
+        command -v "$tool" > /dev/null 2>&1 || continue
+        case "$tool" in
+          qtpaths*) "$tool" --query QT_INSTALL_PLUGINS 2>/dev/null ;;
+          *) "$tool" -query QT_INSTALL_PLUGINS 2>/dev/null ;;
+        esac
+      done
+      printf '%s\n' /usr/lib/x86_64-linux-gnu/qt5/plugins /usr/lib64/qt5/plugins /usr/lib/qt5/plugins /usr/lib/qt/plugins \
+        /usr/lib/x86_64-linux-gnu/qt6/plugins /usr/lib64/qt6/plugins /usr/lib/qt6/plugins
+    } | while read -r dir; do
+      for kf in kf5 kf6; do
+        if [ -n "$dir" ] && [ -f "$dir/$kf/overlayicon/onegy-overlay.so" ]; then
+          rm -f "$dir/$kf/overlayicon/onegy-overlay.so"
+          rmdir "$dir/$kf/overlayicon" 2>/dev/null || true
+        fi
+      done
+    done
     ;;
 esac

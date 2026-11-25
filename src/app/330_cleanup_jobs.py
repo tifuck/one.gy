@@ -108,6 +108,10 @@ def cleanup_expired_files():
             db.session.delete(file)
             db.session.commit()
             count += 1
+        except Exception as e:
+            db.session.rollback()
+            print(f'[CLEANUP] Failed to delete expired file {candidate_id}; skipping it this pass: {e}')
+            continue
         finally:
             _release_lifecycle_lock(lifecycle_lock)
         storage.purge_staged_locals(item_targets)
@@ -125,7 +129,9 @@ def cleanup_expired_files():
     burned = _take_capped_batch(
         db.session.query(File.id, File.registered_user_id).filter(
             File.pending_delete_at.isnot(None),
-            File.pending_delete_at < now - DOWNLOAD_LIMIT_DELETE_GRACE
+            File.pending_delete_at < now - DOWNLOAD_LIMIT_DELETE_GRACE,
+            File.max_downloads.isnot(None),
+            db.func.coalesce(File.download_count, 0) >= File.max_downloads,
         ).order_by(File.pending_delete_at.asc()).limit(CLEANUP_DELETE_BATCH_SIZE + 1).all(),
         'download-limit burned files'
     )
@@ -141,6 +147,8 @@ def cleanup_expired_files():
                 File.id == candidate_id,
                 File.pending_delete_at.isnot(None),
                 File.pending_delete_at < now - DOWNLOAD_LIMIT_DELETE_GRACE,
+                File.max_downloads.isnot(None),
+                db.func.coalesce(File.download_count, 0) >= File.max_downloads,
             ).first()
             if not file:
                 continue
@@ -152,6 +160,10 @@ def cleanup_expired_files():
             db.session.delete(file)
             db.session.commit()
             burned_count += 1
+        except Exception as e:
+            db.session.rollback()
+            print(f'[CLEANUP] Failed to delete download-limit burned file {candidate_id}; skipping it this pass: {e}')
+            continue
         finally:
             _release_lifecycle_lock(lifecycle_lock)
         storage.purge_staged_locals(item_targets)
@@ -191,6 +203,10 @@ def cleanup_expired_files():
             print(f'[CLEANUP] Trashed expired folder: {_log_safe(folder.name)} (ID: {folder.id})')
             db.session.commit()
             folder_count += 1
+        except Exception as e:
+            db.session.rollback()
+            print(f'[CLEANUP] Failed to trash expired folder {candidate.id}; skipping it this pass: {e}')
+            continue
         finally:
             _release_lifecycle_lock(lifecycle_lock)
 
@@ -238,6 +254,10 @@ def cleanup_expired_files():
             folder_local_targets = storage.stage_payload_deletes(folder_paths_to_delete)
             db.session.commit()
             trash_folder_count += 1
+        except Exception as e:
+            db.session.rollback()
+            print(f'[CLEANUP] Failed to purge trashed folder {candidate.id}; skipping it this pass: {e}')
+            continue
         finally:
             _release_lifecycle_lock(lifecycle_lock)
         storage.purge_staged_locals(folder_local_targets)
@@ -274,6 +294,10 @@ def cleanup_expired_files():
             db.session.delete(file)
             db.session.commit()
             trash_count += 1
+        except Exception as e:
+            db.session.rollback()
+            print(f'[CLEANUP] Failed to purge trashed file {candidate.id}; skipping it this pass: {e}')
+            continue
         finally:
             _release_lifecycle_lock(lifecycle_lock)
         storage.purge_staged_locals(trash_local_targets)
@@ -308,6 +332,10 @@ def cleanup_expired_files():
             note_local_targets = _notes_stage_permanent_delete(note)
             db.session.commit()
             note_trash_count += 1
+        except Exception as e:
+            db.session.rollback()
+            print(f'[CLEANUP] Failed to purge trashed note {candidate.id}; skipping it this pass: {e}')
+            continue
         finally:
             _release_lifecycle_lock(lifecycle_lock)
         _purge_staged_locals_with_note_locks(note_local_targets)

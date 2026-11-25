@@ -9,7 +9,7 @@ import {
   bytes, dateTime, shortHash, basename, ISSUE_KINDS, ISSUE_ACTIONS,
 } from '../components/format.js';
 import {
-  rpc, bridge, store, on, navigate, loadIssues,
+  rpc, bridge, store, on, navigate, loadIssues, loadSyncs, loadTransfers,
 } from '../store.js';
 
 const PRIMARY = new Set(['keep_both', 'retry', 'restore_remote_root']);
@@ -47,7 +47,9 @@ async function resolve(issue, action) {
     }
     await rpc('issues.resolve', params);
     store.issues.delete(issue.id);
-    toast('Issue resolved', 'success');
+    // The engine sends no event for a removed sync: read the lists again.
+    if (action === 'remove_sync') await Promise.allSettled([loadSyncs(), loadIssues(), loadTransfers()]);
+    toast(action === 'remove_sync' ? 'Sync removed' : 'Issue resolved', 'success');
   } catch (err) {
     toastError(err);
   }

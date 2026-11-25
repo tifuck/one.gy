@@ -54,8 +54,10 @@ window.onegyDesktop = {
 Version 3 adds `openSettings` and `onSyncs`; feature-test them
 (`typeof app.onSyncs === 'function'`), a v2 app has neither.
 
-- `unlock()`: resolves to the master key only on a page signed in as the
-  account this computer is authorized for (the page's `data-username`, see
+- `unlock()`: resolves to the master key only on a page of the server this
+  computer's account lives on (the app's Server setting must be the origin of
+  `account.status` `server`; a user id or username of any other server proves
+  nothing), signed in as that account (the page's `data-username`, see
   below, compared case-insensitively, and the server's `GET /desktop/whoami`
   `user_id`, fetched by the main process with the site's session), while the
   app is unlocked (app lock, engine-ipc.md) and the app's *Unlock the website*
@@ -84,7 +86,9 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
   - `state`: `'not_set_up'` (no device authorized) | `'up_to_date'` | `'syncing'`
     | `'paused'` | `'issues'` | `'offline'` (also: the sync engine is not
     running) | `'locked'` (key needs the password)
-    | `'other_account'` (authorized for a different user than the page's).
+    | `'other_account'` (authorized for a different user than the page's, or
+    for an account on another server than the one the app shows; `onSyncs`
+    is then empty).
   - `pending`: number of queued transfers; `issues`: number of open issues
     (both 0 for `other_account`).
   - The page's user for `other_account` is the `data-username` of the first
@@ -180,7 +184,12 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
   cleared); the panel shows the lock screen. On unlock the app signs the view
   in with a ticket, so a set-up computer never shows the website's login.
   Right after sign-in the engine reports the app locked until its first
-  unlock grant arrives; that is not treated as a lock.
+  unlock grant arrives; that is not treated as a lock. A lock never brings a
+  window up that is hidden in the tray or minimized: the lock screen waits
+  there. When the engine has not answered 8 s after the start the site loads
+  anyway, without the website session of the run before if this computer was
+  last seen with the app lock on, and the lock screen follows as soon as the
+  engine reports the lock.
 - `openSync` opens the native panel over the content area (right of the
   rail, below the title bar). It verifies the sender frame's origin in the
   main process before acting. The panel uses the admin console layout

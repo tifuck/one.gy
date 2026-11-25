@@ -1,6 +1,6 @@
 // In-memory fake of the sync engine, `onegy daemon` (desktop/docs/engine-ipc.md), with seed data
 // and live-looking events. No Node or DOM APIs, so it runs both behind the
-// socket in dev/mock-engine.js and in a plain browser via dev/ui-stub.js.
+// stdin and stdout of dev/mock-engine.js and in a plain browser via dev/ui-stub.js.
 (function (root) {
   'use strict';
 
@@ -28,7 +28,7 @@
       upload_kbps: 0, download_kbps: 0, parallel_up: 2, parallel_down: 2,
       proxy: { mode: 'system', url: '' }, metered: 'pause', battery: 'continue',
       poll_floor_seconds: 5, rescan_minutes: 60, log_level: 'info',
-      require_password_on_start: false, web_unlock: true,
+      require_password_on_start: false, web_unlock: true, windows_explorer_status: false,
       mass_delete_count: 50, mass_delete_percent: 20,
       defaults: { type: 'two_way', conflict_policy: 'keep_both', issue_mode: 'smart', debris_days: 30, thumbnails: true },
     };
@@ -154,7 +154,6 @@
 
     const methods = {
       'engine.info': () => ({ version: '0.1.0-mock', protocol: 1, state_dir: local('.local', 'share', 'onegy'), platform: o.platform }),
-      'ipc.hello': () => ({}), // like the engine without --ipc-secret-stdin
       'engine.subscribe': () => ({}),
       'engine.shutdown': () => ({}),
       'engine.nudge': () => ({}),

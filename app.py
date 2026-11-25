@@ -71,6 +71,7 @@ def _load_parts():
         '380_cli_crypt_routes.py',
         '390_music_library_helpers.py',
         '400_music_browse_routes.py',
+        '405_music_admin.py',
         '410_music_api_sync.py',
         '420_main.py',
     ):

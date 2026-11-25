@@ -109,3 +109,41 @@ polkit.addRule(function (action, subject) {
 EOF
   chmod 644 /etc/polkit-1/rules.d/49-onegy-desktop-update.rules
 fi
+
+# ONE.GY: Dolphin's sync status overlays (desktop/shell/dolphin): the KF5 and
+# KF6 builds into <Qt plugin dir>/kf5|kf6/overlayicon of each Qt 5 / Qt 6
+# found here (removed again by after-remove.sh). Without Qt's own tools (no
+# dev packages), the first usual dir that has KDE plugins (kf5/, kf6/). Renamed
+# into place: a running Dolphin keeps the old file mapped. Never fails the
+# install.
+onegy_qt_plugin_dirs() {
+  found=
+  for tool in qtpaths qtpaths6 qtpaths-qt5 qtpaths-qt6 qmake qmake6 qmake-qt5 qmake-qt6; do
+    command -v "$tool" > /dev/null 2>&1 || continue
+    case "$tool" in
+      qtpaths*) q=--query ;;
+      *) q=-query ;;
+    esac
+    major="$("$tool" $q QT_VERSION 2>/dev/null | cut -d. -f1)"
+    case "$major" in
+      5|6) echo "$major $("$tool" $q QT_INSTALL_PLUGINS 2>/dev/null)"; found="$found $major" ;;
+    esac
+  done
+  for fallback in "5 /usr/lib/x86_64-linux-gnu/qt5/plugins" "5 /usr/lib64/qt5/plugins" "5 /usr/lib/qt5/plugins" \
+    "5 /usr/lib/qt/plugins" "6 /usr/lib/x86_64-linux-gnu/qt6/plugins" "6 /usr/lib64/qt6/plugins" "6 /usr/lib/qt6/plugins"; do
+    read -r major dir <<< "$fallback"
+    case "$found" in *"$major"*) continue ;; esac
+    if [ -d "$dir/kf$major" ]; then
+      echo "$fallback"
+      found="$found $major"
+    fi
+  done
+}
+ONEGY_DOLPHIN='/opt/${sanitizedProductName}/resources/dolphin'
+onegy_qt_plugin_dirs | sort -u | while read -r major dir; do
+  case "$major" in 5|6) ;; *) continue ;; esac
+  so="$ONEGY_DOLPHIN/kf$major/onegy-overlay.so"
+  [ -n "$dir" ] && [ -d "$dir" ] && [ -f "$so" ] || continue
+  to="$dir/kf$major/overlayicon"
+  { install -D -m 644 "$so" "$to/.onegy-overlay.so.new" && mv -f "$to/.onegy-overlay.so.new" "$to/onegy-overlay.so"; } || true
+done

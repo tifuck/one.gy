@@ -300,6 +300,7 @@ func (s *Service) syncsCreate(ctx context.Context, params json.RawMessage) (any,
 		return nil, err
 	}
 	s.mgr.Add(row.ID)
+	s.explorer.Start(row)
 	slog.Info("sync created", "sync_id", row.ID, "type", row.Type, "local", logx.Name(row.LocalRoot))
 	out := s.toSync(ctx, row)
 	s.rpc.Broadcast("sync", out)
@@ -442,6 +443,7 @@ func (s *Service) syncsRemove(ctx context.Context, params json.RawMessage) (any,
 	}
 	owned := syncer.MarkerMatches(row.LocalRoot, row.ID)
 	s.mgr.Remove(row.ID)
+	s.explorer.Remove(row) // Explorer placeholders back to normal items first
 	s.pool.Forget(row.ID)
 	if err := s.db.DeleteSync(ctx, row.ID); err != nil {
 		return nil, err
@@ -455,6 +457,7 @@ func (s *Service) syncsRemove(ctx context.Context, params json.RawMessage) (any,
 	}
 	slog.Info("sync removed", "sync_id", row.ID, "release_backup", in.ReleaseBackup)
 	s.publishStatus()
+	s.rpc.Broadcast("files", map[string]string{"sync_id": row.ID, "root": row.LocalRoot})
 	return struct{}{}, nil
 }
 

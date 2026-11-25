@@ -91,6 +91,8 @@ def _mark_file_for_download_limit_delete(file):
         marked = db.session.query(File).filter(
             File.id == file_id,
             File.pending_delete_at.is_(None),
+            File.max_downloads.isnot(None),
+            db.func.coalesce(File.download_count, 0) >= File.max_downloads,
         ).update(
             {'pending_delete_at': datetime.now(timezone.utc)},
             synchronize_session=False
@@ -257,8 +259,10 @@ def rollback_reserved_download(file_id, reservation=None):
               f'(count={reservation.get("count")!r}); refusing to release a slot this request cannot prove it owns')
         return
     try:
+        # A burned row keeps its count at the cap so cleanup still deletes it.
         query = db.session.query(File).filter(
             File.id == file_id,
+            File.pending_delete_at.is_(None),
             db.func.coalesce(File.download_count, 0) > 0,
             db.func.coalesce(File.download_count, 0) >= reserved_count,
         )

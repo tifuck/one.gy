@@ -37,8 +37,8 @@ def admin_api_storage_nodes():
             'is_primary': node.is_primary,
             'is_enabled': node.is_enabled,
             'status': node.status,
-            'created_at': node.created_at.isoformat() if node.created_at else None,
-            'last_seen_at': node.last_seen_at.isoformat() if node.last_seen_at else None,
+            'created_at': _utc_aware(node.created_at).isoformat() if node.created_at else None,
+            'last_seen_at': _utc_aware(node.last_seen_at).isoformat() if node.last_seen_at else None,
             # F7: 'full' SHA-256, 'size-only', or 'unknown' (not yet probed)
             'integrity': ('full' if node.checksum_capable is True
                           else 'size-only' if node.checksum_capable is False

@@ -1,9 +1,10 @@
-// Engine supervisor: connects to the sync engine (`onegy daemon`) over the socket/pipe from
-// desktop/docs/engine-ipc.md, spawns it when nothing is listening, restarts it
-// with backoff after a crash, and re-emits engine events. Pure Node.
+// Engine supervisor: spawns the sync engine (`onegy daemon --ipc-stdio`) and
+// talks to it on its stdin and stdout (desktop/docs/engine-ipc.md), a channel
+// no other program can take the place of. Restarts it with backoff after a
+// crash, asks an engine that is already running (left by a crashed app, or
+// started by hand) to make way, and re-emits engine events. Pure Node.
 'use strict';
 
-const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -11,18 +12,19 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const { RpcClient, RpcError } = require('./rpc');
 
-const CONNECT_POLL_MS = 250;
 const STARTUP_TIMEOUT_MS = 20000;
 const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 30000;
 const STABLE_AFTER_MS = 60000;
 const SHUTDOWN_TIMEOUT_MS = 15000;
+const OTHER_ENGINE_TIMEOUT_MS = 5000;
 
 function stateDir(platform = process.platform, env = process.env, home = os.homedir()) {
   if (platform === 'win32') return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'ONE.GY');
   return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'onegy');
 }
 
+// Where the engine listens for the onegy CLI, and where another engine would be.
 function defaultSocketPath(platform = process.platform, env = process.env, home = os.homedir()) {
   if (platform === 'win32') return `\\\\.\\pipe\\onegy-engine-${env.USERNAME || os.userInfo().username}`;
   if (env.XDG_RUNTIME_DIR) return path.join(env.XDG_RUNTIME_DIR, 'onegy', 'engine.sock');
@@ -31,15 +33,20 @@ function defaultSocketPath(platform = process.platform, env = process.env, home 
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// The engine's answer to ipc.hello {nonce} (engine-ipc.md): it holds our secret.
-function helloProof(secret, nonce) {
-  return crypto.createHmac('sha256', secret).update(`onegy-engine-hello:${nonce}`).digest('hex');
-}
-
-function proofMatches(secret, nonce, proof) {
-  const want = Buffer.from(helloProof(secret, nonce));
-  const got = Buffer.from(typeof proof === 'string' ? proof : '');
-  return got.length === want.length && crypto.timingSafeEqual(got, want);
+// Whether child has exited, waiting up to ms for it.
+function exited(child, ms) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off('exit', done);
+      resolve(false);
+    }, ms);
+    child.once('exit', done);
+  });
 }
 
 // Emits: 'state' ('connecting'|'connected'|'disconnected'|'missing'), 'event' ({type, data}).
@@ -58,10 +65,6 @@ class EngineSupervisor extends EventEmitter {
     this.backoff = BACKOFF_MIN_MS;
     this.connectedAt = 0;
     this.loop = null;
-    this.spawnFailed = false;
-    // Handed to the engine we spawn on stdin (--ipc-secret-stdin) and presented
-    // with ipc.hello: other programs of this user cannot drive the engine.
-    this.secret = crypto.randomBytes(32).toString('hex');
   }
 
   setState(state) {
@@ -78,23 +81,22 @@ class EngineSupervisor extends EventEmitter {
   async run() {
     while (!this.stopping && !this.client) {
       this.setState('connecting');
-      if (await this.tryConnect()) return;
-      if (this.stopping) return;
-      if (!this.child) {
-        if (!this.spawnEngine()) {
-          this.setState('missing');
-          await sleep(this.nextBackoff());
-          continue;
-        }
+      // The engine of the round before, when its connection ended before it did.
+      if (this.child) {
+        this.child.stdin.end();
+        if (!(await exited(this.child, SHUTDOWN_TIMEOUT_MS))) this.child.kill();
       }
-      const deadline = Date.now() + STARTUP_TIMEOUT_MS;
-      while (!this.stopping && this.child && Date.now() < deadline) {
-        if (await this.tryConnect()) return;
-        await sleep(CONNECT_POLL_MS);
+      const child = await this.spawnEngine();
+      if (!child) {
+        this.setState('missing');
+        await sleep(this.nextBackoff());
+        continue;
       }
+      if (await this.attach(child)) return;
       if (this.stopping) return;
-      this.setState(this.spawnFailed ? 'missing' : 'disconnected');
-      this.spawnFailed = false;
+      // It left before it answered: most often another engine holds the state dir.
+      await this.stopOtherEngine();
+      this.setState('disconnected');
       await sleep(this.nextBackoff());
     }
   }
@@ -105,46 +107,45 @@ class EngineSupervisor extends EventEmitter {
     return ms;
   }
 
-  async tryConnect() {
-    let client;
-    try {
-      client = await RpcClient.connect(this.socketPath);
-    } catch {
-      return false;
-    }
+  // The engine answers on its stdout once it serves; until then it is starting.
+  async attach(child) {
+    const client = new RpcClient(child.stdout, { output: child.stdin });
     // Before subscribing: the first events can arrive with its reply.
     client.on('event', (ev) => this.emit('event', ev));
-    try {
-      // The engine proves it holds our secret before we send it (or a
-      // password): a program squatting the socket/pipe name cannot.
-      const nonce = crypto.randomBytes(32).toString('hex');
-      const hello = await client.call('ipc.hello', { nonce });
-      if (!proofMatches(this.secret, nonce, hello && hello.proof)) {
-        throw new RpcError('the engine did not prove it holds our IPC secret', 'forbidden');
+    for (;;) {
+      try {
+        await client.call('engine.subscribe', undefined, { timeoutMs: STARTUP_TIMEOUT_MS });
+        break;
+      } catch (err) {
+        if (client.closed || this.stopping) return false;
+        if (err.code !== 'timeout') {
+          console.error(`[ENGINE] did not start (${err.code}): ${err.message}`);
+          child.kill();
+          return false;
+        }
+        console.error('[ENGINE] still starting');
       }
-      await client.call('ipc.hello', { secret: this.secret });
-      await client.call('engine.subscribe');
-    } catch (err) {
-      if (err.code === 'forbidden') {
-        // An engine started by an earlier run of the app (it crashed): its
-        // secret is gone. Ask it to exit; run() then starts ours.
-        console.error('[ENGINE] running engine has another IPC secret; restarting it');
-        await client.call('engine.shutdown').catch(() => {});
-      } else {
-        console.error(`[ENGINE] handshake failed (${err.code}): ${err.message}`);
-      }
-      client.close();
-      return false;
     }
-    if (client.closed || this.stopping) {
-      client.close();
-      return false;
-    }
+    if (client.closed || this.stopping) return false;
     this.client = client;
     this.connectedAt = Date.now();
     client.on('close', (err) => this.onClientClose(client, err));
     this.setState('connected');
     return true;
+  }
+
+  // Asks an engine that listens on the socket to exit (engine.shutdown needs
+  // no trust): ours can only start once the state dir is free.
+  async stopOtherEngine() {
+    let other;
+    try {
+      other = await RpcClient.connect(this.socketPath);
+    } catch {
+      return;
+    }
+    console.error('[ENGINE] another engine is running; asking it to stop');
+    await other.call('engine.shutdown', undefined, { timeoutMs: OTHER_ENGINE_TIMEOUT_MS }).catch(() => {});
+    other.close();
   }
 
   onClientClose(client, err) {
@@ -156,41 +157,38 @@ class EngineSupervisor extends EventEmitter {
     if (!this.stopping) setTimeout(() => this.start(), this.nextBackoff());
   }
 
+  // Resolves the started child, or null when the binary is missing or cannot run.
   spawnEngine() {
     if (!this.command || !fs.existsSync(this.command)) {
       console.error(`[ENGINE] binary not found: ${this.command}`);
-      return false;
+      return Promise.resolve(null);
     }
-    const child = spawn(this.command, [...this.args, '--socket', this.socketPath, '--ipc-secret-stdin'], {
+    const child = spawn(this.command, [...this.args, '--socket', this.socketPath, '--ipc-stdio'], {
       env: { ...process.env, ...this.env },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
-    this.child = child;
     child.stdin.on('error', () => {});
-    child.stdin.end(`${this.secret}\n`);
-    console.log(`[ENGINE] started pid ${child.pid}`);
-    const forward = (stream) => {
-      stream.setEncoding('utf8');
-      stream.on('data', (chunk) => {
-        for (const line of chunk.split('\n')) if (line.trim()) console.log(`[ENGINE] ${line}`);
-      });
-    };
-    forward(child.stdout);
-    forward(child.stderr);
-    // A failed spawn (EACCES, ENOENT) emits 'error' and never 'exit'.
-    child.on('error', (err) => {
-      console.error(`[ENGINE] spawn failed: ${err.message}`);
-      if (child.pid === undefined && this.child === child) {
-        this.child = null;
-        this.spawnFailed = true;
-      }
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      for (const line of chunk.split('\n')) if (line.trim()) console.log(`[ENGINE] ${line}`);
     });
     child.on('exit', (code, signal) => {
       if (this.child === child) this.child = null;
       console.log(`[ENGINE] exited code=${code} signal=${signal}`);
     });
-    return true;
+    return new Promise((resolve) => {
+      // A failed spawn (EACCES, ENOENT) emits 'error' and never 'spawn' or 'exit'.
+      child.on('error', (err) => {
+        console.error(`[ENGINE] ${child.pid === undefined ? 'spawn failed' : 'error'}: ${err.message}`);
+        resolve(null);
+      });
+      child.once('spawn', () => {
+        this.child = child;
+        console.log(`[ENGINE] started pid ${child.pid}`);
+        resolve(child);
+      });
+    });
   }
 
   call(method, params, opts) {
@@ -201,21 +199,18 @@ class EngineSupervisor extends EventEmitter {
   // Asks the engine to reach a safe point and exit; kills it only if it hangs.
   async stop() {
     this.stopping = true;
-    const child = this.child;
-    if (this.client) {
-      try { await this.client.call('engine.shutdown', undefined, { timeoutMs: SHUTDOWN_TIMEOUT_MS }); } catch { /* exits anyway */ }
-      this.client.close();
+    const { client, child } = this;
+    if (client) {
+      try { await client.call('engine.shutdown', undefined, { timeoutMs: SHUTDOWN_TIMEOUT_MS }); } catch { /* exits anyway */ }
       this.client = null;
+      client.close();
+    } else if (child) {
+      // Still starting: the end of its stdin stops it as soon as it serves.
+      child.stdin.end();
     }
-    if (child && child.exitCode === null) {
-      const exited = await Promise.race([
-        new Promise((r) => child.once('exit', () => r(true))),
-        sleep(SHUTDOWN_TIMEOUT_MS).then(() => false),
-      ]);
-      if (!exited) child.kill();
-    }
+    if (child && !(await exited(child, SHUTDOWN_TIMEOUT_MS))) child.kill();
     this.setState('disconnected');
   }
 }
 
-module.exports = { EngineSupervisor, defaultSocketPath, stateDir, helloProof };
+module.exports = { EngineSupervisor, defaultSocketPath, stateDir };

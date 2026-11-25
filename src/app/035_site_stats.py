@@ -525,7 +525,10 @@ def build_admin_stats_history(window_key):
         prev_point = snapshots[snap_idx]
         current = prev_point
         snap_idx += 1
-    while point_time <= now + timedelta(seconds=1):
+    # The last bucket is still in progress: plot it at `now` with the latest
+    # snapshot so the newest point does not lag by up to one bucket.
+    while point_time - cfg['bucket'] < now:
+        point_ts = min(point_time, now)
         while snap_idx < len(snapshots) and _utc_aware(snapshots[snap_idx].captured_at) <= point_time:
             current = snapshots[snap_idx]
             snap_idx += 1
@@ -548,7 +551,7 @@ def build_admin_stats_history(window_key):
                 online_node_percent = round(max(0, min(100, ((int(current.replication_online_nodes or 0) / max(1, int(current.replication_nodes or 0))) * 100))), 1)
 
         series.append({
-            'ts': point_time.isoformat(),
+            'ts': point_ts.isoformat(),
             'label': _format_admin_bucket_label(point_time, window_key),
             'files': files_value,
             'bytes': bytes_value,

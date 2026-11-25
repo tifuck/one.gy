@@ -54,9 +54,9 @@ def manage_folder(folder_id):
         File.is_temp_upload == False,
         File.is_trashed == False
     ).one()
-    file_count = _file_stats[0]
-    folder_size = _file_stats[1]
-    e2e_count = _file_stats[2] or 0
+    file_count = int(_file_stats[0] or 0)
+    folder_size = int(_file_stats[1] or 0)
+    e2e_count = int(_file_stats[2] or 0)
     
     if request.method == 'POST':
         lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
@@ -399,8 +399,8 @@ def _clear_moved_folder_name_link_keys(old_share_tokens):
 
 
 def _move_folder_to_parent(folder, target_folder_id, user_id):
-    """Re-parent a live folder. Caller holds the lifecycle + folder tree locks
-    and commits. Returns (error_message, http_status, moved_e2e_ids,
+    """Re-parent a live folder. Caller holds the folder creation lock for
+    target_folder_id, then the lifecycle + folder tree locks, and commits. Returns (error_message, http_status, moved_e2e_ids,
     rewrap_folders); the error is None on success."""
     folder_id = folder.id
     # Cannot move a folder into itself
@@ -421,6 +421,12 @@ def _move_folder_to_parent(folder, target_folder_id, user_id):
             return 'Target folder not found', 404, [], []
     if _backup_move_would_nest(folder, target_folder_id):
         return 'Backups cannot be nested inside other backups', 409, [], []
+    # Same sibling-name rule as create/rename; encrypted names are the client's job.
+    if folder.encrypted_name is None and target_folder_id != folder.parent_id:
+        from types import SimpleNamespace
+        placed = SimpleNamespace(id=folder.id, user_id=folder.user_id, parent_id=target_folder_id)
+        if _plaintext_folder_name_taken(placed, folder.name):
+            return 'Folder with this name already exists', 409, [], []
 
     tree_ids = _collect_descendant_folder_ids([folder.id], include_roots=True)
     tree_files = File.query.filter(
@@ -519,9 +525,11 @@ def move_folder(folder_id):
     # each see a legal tree and together commit a parent cycle -- which then hangs
     # every recursive folder walk, including the cleanup scheduler. Serialize all
     # of this user's re-parenting under one lock.
+    name_lock = _acquire_folder_creation_lock(user.id, target_folder_id)
     lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
     tree_lock = _acquire_user_folder_tree_lock(user.id)
     try:
+        db.session.rollback()  # fresh snapshot: see siblings committed while waiting
         folder = Folder.query.filter_by(id=folder_id, user_id=user.id, is_trashed=False).first()
         if not folder:
             return jsonify({'error': 'Folder not found'}), 404
@@ -538,6 +546,7 @@ def move_folder(folder_id):
     finally:
         _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
+        _release_folder_creation_lock(name_lock)
 
     print(f'[FOLDER] Moved folder {_log_safe(folder.name)} to parent {target_folder_id}')
     
@@ -631,7 +640,7 @@ def file_manage_data(file_id):
         'size_formatted': format_bytes_for_filesize(file.size),
         'uploaded': file.get_upload_time_aware().strftime('%b %d, %Y %H:%M'),
         'expires': file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') if file.expires_at else 'Never',
-        'expires_at': file.expires_at.isoformat() if file.expires_at else None,
+        'expires_at': file.get_expires_at_aware().isoformat() if file.expires_at else None,
         'selected_expire': selected_expire,
         'is_e2e': file.is_e2e_encrypted,
         'is_public': file.is_public,
@@ -718,7 +727,7 @@ def file_manage_data_by_token(token):
         'size_formatted': format_bytes_for_filesize(file.size),
         'uploaded': file.get_upload_time_aware().strftime('%b %d, %Y %H:%M'),
         'expires': file.get_expires_at_aware().strftime('%b %d, %Y %H:%M') if file.expires_at else 'Never',
-        'expires_at': file.expires_at.isoformat() if file.expires_at else None,
+        'expires_at': file.get_expires_at_aware().isoformat() if file.expires_at else None,
         'selected_expire': selected_expire,
         'is_e2e': file.is_e2e_encrypted,
         'is_public': file.is_public,
@@ -791,9 +800,9 @@ def folder_manage_data(folder_id):
         File.is_temp_upload == False,
         File.is_trashed == False
     ).one()
-    file_count = _file_stats[0]
-    folder_size = _file_stats[1]
-    e2e_count = _file_stats[2] or 0
+    file_count = int(_file_stats[0] or 0)
+    folder_size = int(_file_stats[1] or 0)
+    e2e_count = int(_file_stats[2] or 0)
 
     # Check mixed E2E: any descendant subfolder with different is_e2e setting
     _parent_e2e = folder.is_e2e is True
@@ -851,7 +860,7 @@ def folder_manage_data(folder_id):
         'is_public': folder.is_public,
         'is_e2e': folder.is_e2e is True,
         'created_at': folder.created_at.strftime('%b %d, %Y %H:%M'),
-        'expires_at': folder.expires_at.isoformat() if folder.expires_at else None,
+        'expires_at': folder.get_expires_at_aware().isoformat() if folder.expires_at else None,
         'expires_display': folder.expires_at.strftime('%b %d, %Y %H:%M') if folder.expires_at else 'Never',
         'selected_expire': selected_expire,
         'file_count': file_count,

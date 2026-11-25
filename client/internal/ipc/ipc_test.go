@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,6 +119,7 @@ func TestSecretGate(t *testing.T) {
 	s.Secret = strings.Repeat("s", 64)
 	s.Handle("account.webUnlockKey", func(context.Context, json.RawMessage) (any, error) { return "key", nil })
 	s.Handle("engine.info", func(context.Context, json.RawMessage) (any, error) { return "info", nil })
+	s.HandlePublic("files.status", func(context.Context, json.RawMessage) (any, error) { return "states", nil })
 	ln, err := Listen(sock)
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +150,20 @@ func TestSecretGate(t *testing.T) {
 	if got := call(`{"jsonrpc":"2.0","id":2,"method":"engine.info"}`); !strings.Contains(got, `"info"`) {
 		t.Fatalf("engine.info: %s", got)
 	}
+	// File manager extensions: public methods and "files" events only.
+	if got := call(`{"jsonrpc":"2.0","id":8,"method":"files.status"}`); !strings.Contains(got, `"states"`) {
+		t.Fatalf("public method: %s", got)
+	}
+	if got := call(`{"jsonrpc":"2.0","id":9,"method":"engine.subscribe"}`); !strings.Contains(got, `"forbidden"`) {
+		t.Fatalf("engine.subscribe before hello: %s", got)
+	}
+	call(`{"jsonrpc":"2.0","id":10,"method":"files.subscribe"}`)
+	s.Broadcast("account", "secret stuff")
+	s.Broadcast("files", "changed")
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if ev, err := r.ReadBytes('\n'); err != nil || !strings.Contains(string(ev), `"files"`) {
+		t.Fatalf("files event: %s %v", ev, err)
+	}
 	if got := call(`{"jsonrpc":"2.0","id":3,"method":"ipc.hello","params":{"secret":"wrong"}}`); !strings.Contains(got, `"forbidden"`) {
 		t.Fatalf("wrong secret: %s", got)
 	}
@@ -163,5 +179,42 @@ func TestSecretGate(t *testing.T) {
 	call(`{"jsonrpc":"2.0","id":4,"method":"ipc.hello","params":{"secret":"` + s.Secret + `"}}`)
 	if got := call(`{"jsonrpc":"2.0","id":5,"method":"account.webUnlockKey"}`); !strings.Contains(got, `"key"`) {
 		t.Fatalf("after hello: %s", got)
+	}
+}
+
+// The app that started the engine (--ipc-stdio) is trusted without ipc.hello,
+// the end of its input ends the connection, and Close ends a waiting read.
+func TestServeTrusted(t *testing.T) {
+	s := NewServer()
+	s.Secret = strings.Repeat("s", 64)
+	s.Handle("account.webUnlockKey", func(context.Context, json.RawMessage) (any, error) { return "key", nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	gone := s.ServeTrusted(ctx, Stdio(inR, outW))
+	go inW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"account.webUnlockKey"}` + "\n"))
+	if got, err := bufio.NewReader(outR).ReadString('\n'); err != nil || !strings.Contains(got, `"result":"key"`) {
+		t.Fatalf("trusted call: %q %v", got, err)
+	}
+	inW.Close()
+	select {
+	case <-gone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection outlived its input")
+	}
+
+	// An app that neither writes nor leaves must not hold up the engine's stop.
+	idleR, idleW := io.Pipe()
+	defer idleW.Close()
+	idle := s.ServeTrusted(ctx, Stdio(idleR, io.Discard))
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+		<-idle
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waits for a read that never ends")
 	}
 }

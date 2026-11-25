@@ -45,6 +45,10 @@ type Events struct {
 	Issue    func(v IssueView)
 	Activity func(a Activity)
 	Notify   func(title, body, kind string)
+	// Files: the sync state of items may have changed (file manager icons).
+	Files func(syncID string)
+	// Item: an op on rel finished and its synced row is committed.
+	Item func(syncID, rel string)
 }
 
 // Env is shared by all runners.
@@ -149,6 +153,8 @@ type Runner struct {
 	dirty      bool      // something changed since the last pass
 	lastNotify time.Time
 	cancelPass context.CancelFunc
+	future     map[string]time.Time // uploads whose mtime is in the future: when that version was first seen
+	pending    map[string]bool      // paths the current plan touches, and their parent folders ("" = the root)
 }
 
 type environment struct{ battery, metered bool }
@@ -378,7 +384,7 @@ func (r *Runner) rounds(ctx context.Context, row *state.SyncRow, cfg Config, x *
 		r.mu.Unlock()
 		if len(run) == 0 {
 			if len(plan.Ops) == 0 {
-				r.clearMassDecisions()
+				r.clearMassDecisions(in.Config)
 				r.mu.Lock()
 				delete(r.sticky, "sync_error|") // nothing left that could be stuck
 				r.mu.Unlock()
@@ -403,7 +409,7 @@ func (r *Runner) rounds(ctx context.Context, row *state.SyncRow, cfg Config, x *
 		if err := r.execute(ctx, x, run, row.LocalRoot, row.CaseSensitive); err != nil {
 			return err
 		}
-		r.clearMassDecisions()
+		r.clearMassDecisions(in.Config)
 		if _, err := r.env.Exec.Tree.Sync(ctx); err != nil {
 			return err
 		}
@@ -451,7 +457,14 @@ func signature(ops []reconcile.Op) string {
 
 func (r *Runner) setStats(ops []reconcile.Op) {
 	var st Stats
+	pending := map[string]bool{}
 	for _, o := range ops {
+		for _, p := range []string{o.Path, o.From} {
+			for p != "" && !pending[p] {
+				pending[p] = true
+				p = parentPath(p)
+			}
+		}
 		switch o.Kind {
 		case reconcile.Upload:
 			st.PendingUp++
@@ -461,6 +474,9 @@ func (r *Runner) setStats(ops []reconcile.Op) {
 			st.BytesLeft += o.Size
 		}
 	}
+	if len(ops) > 0 {
+		pending[""] = true
+	}
 	r.mu.Lock()
 	if st.PendingUp+st.PendingDown == 0 {
 		r.doneItems, r.doneBytes, r.lastFail = 0, 0, ""
@@ -468,11 +484,24 @@ func (r *Runner) setStats(ops []reconcile.Op) {
 	st.TotalItems, st.TotalBytes = r.doneItems+st.PendingUp+st.PendingDown, r.doneBytes+st.BytesLeft
 	changed := st != r.stats
 	r.stats = st
+	filesChanged := len(pending) > 0 || len(r.pending) > 0
+	r.pending = pending
 	r.env.Exec.Pool.Settle(r.ID, -1)
 	r.mu.Unlock()
 	if changed && r.env.Events.Sync != nil {
 		r.env.Events.Sync(r.ID)
 	}
+	if filesChanged && r.env.Events.Files != nil {
+		r.env.Events.Files(r.ID)
+	}
+}
+
+// Pending reports whether the current plan touches rel or, for a folder,
+// anything below it ("" = the root).
+func (r *Runner) Pending(rel string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pending[rel]
 }
 
 // transferred counts a finished transfer off what is left (the service
@@ -510,6 +539,7 @@ func (r *Runner) runnable(ops []reconcile.Op) (run []reconcile.Op, waiting strin
 	}
 	var out []reconcile.Op
 	var retrying, full, noSpace, changing int
+	future := map[string]time.Time{}
 	for _, o := range ops {
 		if rt := r.retries[retryKey(o)]; rt != nil && now.Before(rt.until) {
 			later(rt.until)
@@ -531,7 +561,17 @@ func (r *Runner) runnable(ops []reconcile.Op) (run []reconcile.Op, waiting strin
 			}
 		}
 		if o.Kind == reconcile.Upload && o.Local != nil {
-			if ready := time.Unix(0, o.Local.MtimeNs).Add(r.QuietPeriod(o.Size)); now.Before(ready) {
+			changed := time.Unix(0, o.Local.MtimeNs)
+			if changed.After(now) { // clock skew or a wrong time zone: rest from when this version was first seen
+				k := fmt.Sprintf("%s|%d|%d", o.Path, o.Local.MtimeNs, o.Size)
+				if t, ok := r.future[k]; ok {
+					changed = t
+				} else {
+					changed = now
+				}
+				future[k] = changed
+			}
+			if ready := changed.Add(r.QuietPeriod(o.Size)); now.Before(ready) {
 				later(ready)
 				changing++
 				continue
@@ -539,7 +579,7 @@ func (r *Runner) runnable(ops []reconcile.Op) (run []reconcile.Op, waiting strin
 		}
 		out = append(out, o)
 	}
-	r.nextRun = next
+	r.nextRun, r.future = next, future
 	switch {
 	case full > 0:
 		waiting = "Your one.gy storage is full; uploads wait"
@@ -803,6 +843,8 @@ func (r *Runner) backoff(o reconcile.Op, count bool) bool {
 func (r *Runner) done(o reconcile.Op) {
 	r.mu.Lock()
 	delete(r.retries, retryKey(o))
+	delete(r.pending, o.Path) // its folders stay pending until the next plan
+	delete(r.pending, o.From)
 	for k, is := range r.sticky {
 		if is.Path == o.Path && !(is.Kind == "integrity" && len(is.Actions) > 0 && is.Actions[0] == "keep_remote") { // Verify findings wait for the user
 			delete(r.sticky, k)
@@ -826,6 +868,16 @@ func (r *Runner) done(o reconcile.Op) {
 	if notify && r.env.Events.Notify != nil {
 		r.env.Events.Notify("Conflict", "Both versions of "+filepath.Base(o.From)+" were kept.", "conflict")
 	}
+	if r.env.Events.Files != nil {
+		r.env.Events.Files(r.ID)
+	}
+	if r.env.Events.Item != nil {
+		for _, p := range []string{o.Path, o.From} {
+			if p != "" {
+				r.env.Events.Item(r.ID, p)
+			}
+		}
+	}
 }
 
 // activityName maps op kinds to activity actions (internal ops are omitted).
@@ -841,9 +893,16 @@ func ActivityName(kind string) (string, bool) {
 	return a, ok
 }
 
-func (r *Runner) clearMassDecisions() {
+// clearMassDecisions drops the mass-delete answers the plan of cfg used; an
+// answer given meanwhile waits for the next plan.
+func (r *Runner) clearMassDecisions(cfg reconcile.Config) {
 	r.mu.Lock()
-	r.massLocal, r.massRemote = "", ""
+	if r.massLocal == cfg.MassDeleteLocal {
+		r.massLocal = ""
+	}
+	if r.massRemote == cfg.MassDeleteRemote {
+		r.massRemote = ""
+	}
 	r.mu.Unlock()
 }
 

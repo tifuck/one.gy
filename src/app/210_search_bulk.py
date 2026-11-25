@@ -17,6 +17,8 @@ def search_files():
         File.registered_user_id == user.id,
         File.is_temp_upload == False,
         File.is_trashed == False,
+        # E2EE rows hold a placeholder name; /search/index matches them client-side.
+        File.encrypted_name.is_(None),
         File.orig_name.ilike(f'%{escape_like_pattern(query[:128])}%', escape='\\'),
         db.or_(File.expires_at == None, File.expires_at >= now_utc)
     ).order_by(File.upload_time.desc()).limit(50).all()
@@ -25,6 +27,7 @@ def search_files():
     folders = Folder.query.filter(
         Folder.user_id == user.id,
         Folder.is_trashed == False,
+        Folder.encrypted_name.is_(None),
         Folder.name.ilike(f'%{escape_like_pattern(query[:128])}%', escape='\\')
     ).order_by(Folder.name).limit(50).all()
 
@@ -321,10 +324,13 @@ def bulk_move():
 
     # AUDIT FIX D3 (cycle TOCTOU): serialize this user's folder re-parenting so a
     # concurrent move cannot slip between the ancestor check and the assignment
-    # and leave a parent cycle behind.
+    # and leave a parent cycle behind. Moved folder names are checked against the
+    # target's siblings under the folder creation lock, as create/rename do.
+    name_lock = _acquire_folder_creation_lock(user.id, target_folder_id)
     lifecycle_lock = _acquire_user_lifecycle_lock(user.id)
     tree_lock = _acquire_user_folder_tree_lock(user.id)
     try:
+        db.session.rollback()  # fresh snapshot: see siblings committed while waiting
         # Verify target folder (must not be trashed)
         if target_folder_id:
             target_folder = Folder.query.filter_by(id=target_folder_id, user_id=user.id, is_trashed=False).first()
@@ -344,6 +350,7 @@ def bulk_move():
             target_ancestry_complete = _folder_ancestry_complete(_target_chain)
 
         # Move folders
+        from types import SimpleNamespace
         for fid in folder_ids:
             try:
                 fid = int(fid)
@@ -357,6 +364,11 @@ def bulk_move():
                 continue
             if target_folder_id is not None and (fid in target_ancestor_ids or not target_ancestry_complete):
                 continue
+            if folder.encrypted_name is None and folder.parent_id != target_folder_id:
+                placed = SimpleNamespace(id=folder.id, user_id=folder.user_id, parent_id=target_folder_id)
+                if _plaintext_folder_name_taken(placed, folder.name):
+                    db.session.rollback()
+                    return jsonify({'error': 'Folder with this name already exists'}), 409
             if folder.parent_id:
                 affected_folder_ids.add(folder.parent_id)
             tree_ids = _collect_descendant_folder_ids([fid], include_roots=True)
@@ -418,6 +430,7 @@ def bulk_move():
     finally:
         _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
+        _release_folder_creation_lock(name_lock)
     
     total_moved = moved_files + moved_folders
     print(f'[BULK] Moved {moved_files} file(s) and {moved_folders} folder(s) to folder {target_folder_id} by user: {user.username}')

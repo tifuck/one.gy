@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -145,8 +146,12 @@ func TestEngineFlow(t *testing.T) {
 	}
 
 	// Settings persist and validate.
-	set := rc.ok("settings.set", map[string]any{"patch": map[string]any{"parallel_up": 3, "defaults": map[string]any{"debris_days": 7}}})
-	if set["parallel_up"] != 3.0 || set["defaults"].(map[string]any)["debris_days"] != 7.0 || set["defaults"].(map[string]any)["type"] != "two_way" {
+	if got := rc.ok("settings.get", nil); got["windows_explorer_status"] != false {
+		t.Fatalf("windows_explorer_status must default to off: %v", got["windows_explorer_status"])
+	}
+	set := rc.ok("settings.set", map[string]any{"patch": map[string]any{"parallel_up": 3, "defaults": map[string]any{"debris_days": 7}, "windows_explorer_status": true}})
+	if set["parallel_up"] != 3.0 || set["defaults"].(map[string]any)["debris_days"] != 7.0 || set["defaults"].(map[string]any)["type"] != "two_way" ||
+		set["windows_explorer_status"] != true {
 		t.Fatalf("settings %v", set)
 	}
 	if _, e := rc.call("settings.set", map[string]any{"patch": map[string]any{"log_level": "loud"}}); errCode(e) != "validation_failed" {
@@ -289,4 +294,81 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// The app that started the engine (--ipc-stdio) has its own trusted
+// connection while the socket admits nobody, and the engine stops and drops
+// its grant when that connection ends.
+func TestAppConn(t *testing.T) {
+	keyring.MockInit()
+	srv := fakeserver.New(t, "carol", "pw")
+	svc, err := New(context.Background(), Options{StateDir: t.TempDir(), API: api.Options{Version: "0.1.0", Transport: srv.Client().Transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetIPCSecret(strings.Repeat("s", 64))
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	svc.SetAppConn(ipc.Stdio(inR, outW))
+	sock := filepath.Join(t.TempDir(), "engine.sock")
+	ln, err := ipc.Listen(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { svc.Serve(context.Background(), ln); close(done) }()
+
+	answers := make(chan map[string]any, 100)
+	go func() {
+		r := bufio.NewReader(outR)
+		for {
+			line, err := r.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			var m map[string]any
+			json.Unmarshal(line, &m)
+			if m["method"] != "event" {
+				answers <- m
+			}
+		}
+	}()
+	app := func(method string, params any) map[string]any {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+		inW.Write(append(b, '\n'))
+		select {
+		case m := <-answers:
+			if m["error"] != nil {
+				t.Fatalf("%s: %v", method, m["error"])
+			}
+			res, _ := m["result"].(map[string]any)
+			return res
+		case <-time.After(20 * time.Second):
+			t.Fatalf("%s: no answer", method)
+		}
+		return nil
+	}
+	if st := app("account.authorize", map[string]any{"server": srv.URL, "username": "carol", "password": "pw", "device_name": "PC"}); st["signed_in"] != true {
+		t.Fatalf("authorize over the app connection: %v", st)
+	}
+	if k := app("account.webUnlockKey", nil); k["master_key_b64"] == "" {
+		t.Fatal("web unlock key over the app connection")
+	}
+	if _, e := dial(t, sock).call("account.webUnlockKey", nil); errCode(e) != "forbidden" {
+		t.Fatalf("the socket must stay untrusted: %v", e)
+	}
+	if srv.Grants() != 1 {
+		t.Fatal("no grant after authorize")
+	}
+
+	inW.Close()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the engine outlived the app")
+	}
+	if srv.Grants() != 0 {
+		t.Fatal("the grant outlived the engine")
+	}
 }

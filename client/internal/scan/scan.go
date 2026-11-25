@@ -265,7 +265,7 @@ func (s *scanner) hash(rel string, e *Entry, in localfs.Info) error {
 	s.files++
 	s.progress()
 	same := func(c *state.LocalCacheRow) bool {
-		return c != nil && c.Size == e.Size && c.MtimeNs == e.MtimeNs && c.LocalFID == string(e.ID) && c.PlainSHA256 != ""
+		return c != nil && c.Size == e.Size && c.MtimeNs == e.MtimeNs && c.LocalFID == string(e.ID) && c.PlainSHA256 != "" && !racy(c)
 	}
 	if c := s.cache[rel]; same(c) {
 		e.SHA256 = c.PlainSHA256
@@ -300,6 +300,17 @@ func (s *scanner) hash(rel string, e *Entry, in localfs.Info) error {
 }
 
 var errChanged = errors.New("file changed while being read")
+
+// racyWindow covers the mtime granularity (FAT: 2 s) and HashedAt's whole seconds.
+const racyWindow = 2 * time.Second
+
+// racy: the file was hashed so soon after its mtime that a same-size rewrite
+// could keep that mtime, so the cache cannot vouch for it (git's "racy
+// clean" rule). Hashing it again records a later HashedAt.
+func racy(c *state.LocalCacheRow) bool {
+	at, err := time.Parse(time.RFC3339, c.HashedAt)
+	return err != nil || c.MtimeNs >= at.Add(-racyWindow).UnixNano()
+}
 
 var openFile = localfs.Open // replaced in tests
 

@@ -22,7 +22,7 @@ def music_page():
 @limiter.limit(music_stream_rate_limit)
 @_music_required
 def music_stream(song_id):
-    """Stream audio.opus for a song with Range request support."""
+    """Stream a song's audio (audio.opus, else audio.m4a) with Range request support."""
     from flask import Response
     from werkzeug.utils import secure_filename as _sf_music
     # Sanitize song_id to prevent path traversal, then verify it exists in the
@@ -31,7 +31,11 @@ def music_stream(song_id):
     if not safe_song_id or safe_song_id not in _AVAILABLE_SONG_IDS:
         return jsonify({'error': 'SONG NOT FOUND'}), 404
     song_id = safe_song_id
+    audio_mimetype = 'audio/ogg'
     audio_path = os.path.join(MUSIC_LIBRARY_PATH, 'songs', song_id, 'audio.opus')
+    if not os.path.isfile(audio_path):
+        audio_mimetype = 'audio/mp4'
+        audio_path = os.path.join(MUSIC_LIBRARY_PATH, 'songs', song_id, 'audio.m4a')
     if not os.path.isfile(audio_path):
         return jsonify({'error': 'AUDIO FILE NOT FOUND'}), 404
     file_size = os.path.getsize(audio_path)
@@ -43,7 +47,7 @@ def music_stream(song_id):
         # AUDIT FIX L9: per RFC 9110, an unsatisfiable range must return
         # 416 with a Content-Range header indicating the resource size.
         if byte_range == 'unsatisfiable':
-            resp = Response(status=416, mimetype='audio/ogg')
+            resp = Response(status=416, mimetype=audio_mimetype)
             resp.headers['Content-Range'] = f'bytes */{file_size}'
             return resp
         if byte_range:
@@ -60,8 +64,8 @@ def music_stream(song_id):
                             break
                         remaining -= len(data)
                         yield data
-            resp = Response(generate(), status=206, mimetype='audio/ogg',
-                            content_type='audio/ogg')
+            resp = Response(generate(), status=206, mimetype=audio_mimetype,
+                            content_type=audio_mimetype)
             resp.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
             resp.headers['Content-Length'] = str(length)
             resp.headers['Accept-Ranges'] = 'bytes'
@@ -75,7 +79,7 @@ def music_stream(song_id):
                 if not data:
                     break
                 yield data
-    resp = Response(generate_full(), mimetype='audio/ogg', content_type='audio/ogg')
+    resp = Response(generate_full(), mimetype=audio_mimetype, content_type=audio_mimetype)
     resp.headers['Content-Length'] = str(file_size)
     resp.headers['Accept-Ranges'] = 'bytes'
     resp.headers['Cache-Control'] = 'private, max-age=86400'

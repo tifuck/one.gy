@@ -317,6 +317,8 @@ def restore_folder_recursive(folder_id):
     # has actually re-parented it, otherwise a failed/late re-parent loses the
     # only record of where the subtree belonged. Descendants keep their live
     # parent_id, so clearing theirs is safe.
+    # A past expiry is dropped, or cleanup would trash the folder again.
+    now = datetime.now(timezone.utc)
     for fid in all_folder_ids:
         fld = folder_map.get(fid)
         if fld:
@@ -324,6 +326,8 @@ def restore_folder_recursive(folder_id):
             fld.trashed_at = None
             if fid != folder_id:
                 fld.original_parent_id = None
+            if fld.expires_at is not None and _utc_aware(fld.expires_at) <= now:
+                fld.expires_at = None
 
     # AUDIT FIX (finding 8): detach foreign-owner rows from the restored tree
     # (they stay in whatever trash state they were in; only the dangling

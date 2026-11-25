@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,32 @@ func TestSyncMethods(t *testing.T) {
 		b, _ := os.ReadFile(filepath.Join(local, "b.txt"))
 		return string(b) == "from the web"
 	})
+
+	// File manager integration: item states and the site path of the folder.
+	a := filepath.Join(local, "a.txt")
+	states := func(paths ...string) string {
+		res := rc.ok("files.status", map[string]any{"paths": paths})
+		var out []string
+		for _, it := range res["items"].([]any) {
+			out = append(out, it.(map[string]any)["state"].(string))
+		}
+		return strings.Join(out, ",")
+	}
+	waitFor(t, "synced states", func() bool {
+		return states(local, a, filepath.Join(local, "b.txt"), filepath.Join(local, ".onegy"), t.TempDir(), "relative") == "synced,synced,synced,none,none,none"
+	})
+	if p := rc.ok("files.webPath", map[string]any{"path": a}); p["path"] != "/files/folder/"+strconv.FormatInt(work, 10) {
+		t.Fatalf("webPath %v", p)
+	}
+	rc.ok("syncs.pause", map[string]any{"id": id})
+	os.WriteFile(a, []byte("changed"), 0o644)
+	if got := states(local, a); got != "paused,paused" {
+		t.Fatalf("paused, changed: %s", got)
+	}
+	os.WriteFile(a, []byte("hello"), 0o644)
+	os.Chtimes(a, old, old)
+	rc.ok("syncs.resume", map[string]any{"id": id})
+	waitFor(t, "synced again", func() bool { return states(local, a) == "synced,synced" })
 
 	if bad := rc.ok("syncs.setIgnoreRules", map[string]any{"id": id, "text": "-r:(\n"}); bad["ok"] != false {
 		t.Fatalf("bad rules accepted: %v", bad)

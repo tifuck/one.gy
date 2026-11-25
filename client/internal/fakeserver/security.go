@@ -71,6 +71,19 @@ func (s *Server) ExpirePasswordWindow() {
 	}
 }
 
+// Grants counts devices whose app is unlocked (a live grant).
+func (s *Server) Grants() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, d := range s.sec {
+		if d.grant != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // SignedDevices counts devices that enrolled a signing key.
 func (s *Server) SignedDevices() int {
 	s.mu.Lock()

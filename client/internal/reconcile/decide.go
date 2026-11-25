@@ -62,6 +62,8 @@ func (r *run) localGone(it *item, remoteChanged bool) {
 	case !r.k.down:
 		if remoteChanged {
 			r.add(Op{Kind: Forget, Path: it.b.RelPath, EntryKind: it.kind, Base: it.b, Reason: "deleted here, changed on one.gy: kept there"})
+		} else if r.k.delRemote && r.cfg.MassDeleteLocal == "restore" { // mass-delete answer restore_local
+			r.restoreLocal(it)
 		} else if r.k.delRemote {
 			r.trashRemote(it)
 		}

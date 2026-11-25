@@ -284,8 +284,8 @@ def notes_list_notebooks():
             'system_key': nb.system_key,
             'position': nb.position,
             'note_count': note_count,
-            'created_at': nb.created_at.isoformat() if nb.created_at else None,
-            'updated_at': nb.updated_at.isoformat() if nb.updated_at else None,
+            'created_at': _utc_aware(nb.created_at).isoformat() if nb.created_at else None,
+            'updated_at': _utc_aware(nb.updated_at).isoformat() if nb.updated_at else None,
         })
     # Include aggregate counts for sidebar
     total_notes = Note.query.filter_by(user_id=user_id, is_trashed=False).count()
@@ -532,8 +532,8 @@ def notes_list_notes():
             'received_from': n.received_from,
             'is_read': n.is_read if n.is_read is not None else True,
             'is_trashed': n.is_trashed,
-            'created_at': n.created_at.isoformat() if n.created_at else None,
-            'updated_at': n.updated_at.isoformat() if n.updated_at else None,
+            'created_at': _utc_aware(n.created_at).isoformat() if n.created_at else None,
+            'updated_at': _utc_aware(n.updated_at).isoformat() if n.updated_at else None,
         })
     return jsonify({'notes': result})
 
@@ -592,8 +592,8 @@ def _notes_get_note_locked(note_id, user_id):
         'received_from': n.received_from,
         'is_read': n.is_read if n.is_read is not None else True,
         'is_trashed': n.is_trashed,
-        'created_at': n.created_at.isoformat() if n.created_at else None,
-        'updated_at': n.updated_at.isoformat() if n.updated_at else None,
+        'created_at': _utc_aware(n.created_at).isoformat() if n.created_at else None,
+        'updated_at': _utc_aware(n.updated_at).isoformat() if n.updated_at else None,
     })
 
 @app.route('/notes/api/notes', methods=['POST'])
@@ -695,7 +695,7 @@ def notes_create_note():
             created_id = None
             raise
         print(f'[NOTES] User {user_id} created note {n.id} (type={note_type}, size={content_size})')
-        return jsonify({'id': n.id, 'note_type': note_type, 'created_at': n.created_at.isoformat(), 'updated_at': n.updated_at.isoformat(), 'size': n.size or 0, 'content_version': int(n.content_version or 1)}), 201
+        return jsonify({'id': n.id, 'note_type': note_type, 'created_at': _utc_aware(n.created_at).isoformat(), 'updated_at': _utc_aware(n.updated_at).isoformat(), 'size': n.size or 0, 'content_version': int(n.content_version or 1)}), 201
     except Exception:
         if created_id and not committed:
             try:
@@ -1183,8 +1183,8 @@ def notes_list_trash():
         'size': n.size or 0,
         'content_version': int(n.content_version or 1),
         'position': n.position or 0,
-        'trashed_at': n.trashed_at.isoformat() if n.trashed_at else None,
-        'created_at': n.created_at.isoformat() if n.created_at else None,
+        'trashed_at': _utc_aware(n.trashed_at).isoformat() if n.trashed_at else None,
+        'created_at': _utc_aware(n.created_at).isoformat() if n.created_at else None,
     } for n in trashed_notes]
     notebooks_result = [{
         'id': nb.id,
@@ -1195,7 +1195,7 @@ def notes_list_trash():
         'name_key_nonce': nb.name_key_nonce,
         'color': nb.color,
         'system_key': nb.system_key,
-        'trashed_at': nb.trashed_at.isoformat() if nb.trashed_at else None,
+        'trashed_at': _utc_aware(nb.trashed_at).isoformat() if nb.trashed_at else None,
     } for nb in trashed_notebooks]
     return jsonify({'items': notes_result + notebooks_result})
 
@@ -1334,7 +1334,7 @@ def notes_list_pending():
         'color': p.color,
         'is_pinned': p.is_pinned,
         'content_size': p.content_size or 0,
-        'created_at': p.created_at.isoformat() if p.created_at else None,
+        'created_at': _utc_aware(p.created_at).isoformat() if p.created_at else None,
     } for p in pending]
     return jsonify({'pending': result})
 

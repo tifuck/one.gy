@@ -7,16 +7,30 @@ const {
   SyncStatus, bridgeStatus, bridgeSyncs, sameUser, mayUnlock, throttle,
 } = require('../src/main/sync-status');
 
-const alice = { signed_in: true, locked: false, username: 'alice' };
+const HOME = 'https://one.gy';
+const alice = { signed_in: true, locked: false, username: 'alice', server: HOME };
 const base = { engineState: 'connected', account: alice, status: { state: 'up_to_date', pending: 0 }, issueCount: 0 };
 
 test('only a page of this computer\'s account gets the key', () => {
-  assert.equal(mayUnlock(alice, 'alice'), true);
-  assert.equal(mayUnlock(alice, 'ALICE'), true);
-  assert.equal(mayUnlock(alice, 'bob'), false);
-  assert.equal(mayUnlock(alice, null), false); // anonymous page
-  assert.equal(mayUnlock({ signed_in: false, username: 'alice' }, 'alice'), false);
-  assert.equal(mayUnlock(null, 'alice'), false);
+  assert.equal(mayUnlock(alice, 'alice', HOME), true);
+  assert.equal(mayUnlock(alice, 'ALICE', HOME), true);
+  assert.equal(mayUnlock(alice, 'bob', HOME), false);
+  assert.equal(mayUnlock(alice, null, HOME), false); // anonymous page
+  assert.equal(mayUnlock({ signed_in: false, username: 'alice', server: HOME }, 'alice', HOME), false);
+  assert.equal(mayUnlock(null, 'alice', HOME), false);
+});
+
+test('a page on another server than the account\'s gets no key, status or syncs', () => {
+  const other = 'https://evil.example';
+  assert.equal(mayUnlock(alice, 'alice', other), false);
+  assert.equal(mayUnlock(alice, 'alice', undefined), false);
+  assert.equal(mayUnlock({ ...alice, server: 'not a url' }, 'alice', HOME), false);
+  assert.equal(mayUnlock({ ...alice, server: `${HOME}/` }, 'alice', HOME), true);
+  const state = { ...base, status: { state: 'syncing', pending: 7 }, issueCount: 2, syncs: new Map([['a', { id: 'a', remote_folder_id: 12, type: 'backup' }]]) };
+  assert.deepEqual(bridgeStatus(state, 'alice', other), { state: 'other_account', pending: 0, issues: 0 });
+  assert.deepEqual(bridgeSyncs(state, 'alice', other), []);
+  assert.equal(bridgeStatus(state, 'alice', HOME).state, 'syncing');
+  assert.equal(bridgeSyncs(state, 'alice', HOME).length, 1);
 });
 
 test('bridge states follow the contract', () => {

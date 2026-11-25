@@ -151,6 +151,12 @@ function general() {
       row('Open at login', 'Start ONE.GY in the tray when you sign in to this computer.', switchInput(a.launch_at_login, (v) => saveApp({ launch_at_login: v }))),
       row('Start minimized', 'Open in the tray instead of showing the window.', switchInput(a.start_minimized, (v) => saveApp({ start_minimized: v }))),
       row('Keep running when the window is closed', 'Syncing continues in the tray. Quit from the tray menu.', switchInput(a.close_to_tray, (v) => saveApp({ close_to_tray: v }))),
+      row('File manager integration', 'Shows sync status on the files in your sync folders and adds “Open on one.gy” to their right-click menu. On Linux, open file manager windows pick it up after a restart of the file manager.',
+        switchInput(a.file_manager_integration, (v) => saveApp({ file_manager_integration: v }))),
+      store.version && store.version.platform === 'win32'
+        ? row('Show sync status in File Explorer (experimental)', 'Marks the synced files in your sync folders on NTFS drives as cloud files of ONE.GY, so File Explorer shows their status. Their content is not changed; turning this off makes them normal files again.',
+          switchInput(Boolean(store.settings && store.settings.windows_explorer_status), (v) => saveEngine({ windows_explorer_status: v })))
+        : null,
       store.version && store.version.platform === 'linux'
         ? row('Place the status popover under the tray icon', 'GNOME on Wayland doesn’t let apps place their windows, so ONE.GY runs through XWayland there. Turn this off if text looks blurry with fractional scaling. Takes effect after a restart.',
           switchInput(a.linux_x11, (v) => saveApp({ linux_x11: v })))
@@ -212,6 +218,22 @@ function server() {
   return panel('Server', null, action('Server address', current, toggle), form);
 }
 
+// Signs this computer out of sync. The engine signs out here even when one.gy
+// could not be told to remove the device (offline): that is said as what it
+// is, not as a failed sign-out.
+export async function signOutOfSync() {
+  let notRemoved = null;
+  try {
+    await rpc('account.signOut', { revoke: true });
+  } catch (err) {
+    notRemoved = err;
+  }
+  const a = await loadAccount().catch(() => store.account);
+  if (!notRemoved) toast('Signed out of sync on this computer', 'success');
+  else if (!a || a.signed_in) toastError(notRemoved);
+  else toast(`Signed out on this computer, but one.gy could not be told to remove it from your devices (${notRemoved.message}). Remove it under Devices on the website.`, 'error', 12000);
+}
+
 function signOut() {
   return button('Sign out of sync', async () => {
     const ok = await confirmDialog({
@@ -219,14 +241,7 @@ function signOut() {
       message: 'Syncing stops, this computer is removed from your devices and its keys are deleted. Local files are kept.',
       confirmLabel: 'Sign out', danger: true,
     });
-    if (!ok) return;
-    try {
-      await rpc('account.signOut', { revoke: true });
-      await loadAccount();
-      toast('Signed out of sync on this computer', 'success');
-    } catch (err) {
-      toastError(err);
-    }
+    if (ok) await signOutOfSync();
   }, 'danger');
 }
 
@@ -252,7 +267,7 @@ function account() {
           }, meter) : null)),
       action('Account page', 'Your profile, password and devices on the website.', button('Open', () => navigate('close', { path: '/account' }), 'ghost', 'external'))),
     panel('Sign out', null,
-      action('Sign out of sync on this computer', 'Syncing stops and this computer’s keys are deleted. Your files stay where they are, and the website stays signed in.', signOut())),
+      action('Sign out of sync on this computer', 'Syncing stops and this computer’s keys are deleted. Your files stay where they are. ONE.GY then asks you to sign in again.', signOut())),
   ];
 }
 
@@ -328,7 +343,7 @@ function network() {
     class: 'form-input', value: proxy.url, placeholder: 'socks5://host:1080 or http://host:8080', spellcheck: 'false',
     onchange: (e) => saveEngine({ proxy: { mode: 'manual', url: e.target.value.trim() } }),
   });
-  const proxyField = field('Proxy address', proxyUrl, 'If the proxy needs a username and password, include them in the address.');
+  const proxyField = field('Proxy address', proxyUrl, 'Used once you enter it. If the proxy needs a username and password, include them in the address.');
   proxyField.hidden = proxy.mode !== 'manual';
   return [
     panel('Bandwidth', 'Set a limit to 0 for no limit.',
@@ -339,7 +354,10 @@ function network() {
     panel('Proxy', null,
       row('Connection', null, select([['none', 'No proxy'], ['system', 'System proxy settings'], ['manual', 'Manual proxy']], proxy.mode, (v) => {
         proxyField.hidden = v !== 'manual';
+        // Manual needs its address: saved with the one in the box, else once it is typed.
         if (v !== 'manual') saveEngine({ proxy: { mode: v, url: '' } });
+        else if (proxyUrl.value.trim()) saveEngine({ proxy: { mode: 'manual', url: proxyUrl.value.trim() } });
+        else proxyUrl.focus();
       })),
       proxyField),
     panel('Power and data', 'Each sync can override the metered network and battery choices in its own settings.',

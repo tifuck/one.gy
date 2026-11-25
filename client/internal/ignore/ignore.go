@@ -79,6 +79,7 @@ type Rules struct {
 func Parse(text string) (*Rules, []ParseError) {
 	r := &Rules{smaller: -1, larger: -1}
 	var errs []ParseError
+	text = localfs.NFC(strings.TrimPrefix(text, "\ufeff")) // names are compared in NFC
 	for i, line := range strings.Split(text, "\n") {
 		line = strings.TrimSuffix(line, "\r")
 		if strings.TrimSpace(line) == "" || line[0] == '#' {
@@ -290,7 +291,7 @@ func (s *Set) Match(rel string, kind localfs.Kind, size int64) Result {
 					subject = rel[len(d)+1:]
 				}
 			}
-			if ru.re.MatchString(subject) {
+			if ru.re.MatchString(localfs.NFC(subject)) {
 				if ru.exclude {
 					return Excluded
 				}

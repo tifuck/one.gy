@@ -117,6 +117,10 @@ class MainWindow {
       titleBarOverlay: this.overlay(),
     });
     this.win.on('resize', () => this.layout());
+    // A panel that opened while the window was away (the lock screen) takes the keys.
+    const focusPanel = () => { if (this.panelOpen) this.panel.webContents.focus(); };
+    this.win.on('show', focusPanel);
+    this.win.on('restore', focusPanel);
     // Mouse back/forward buttons (Windows and Linux).
     this.win.on('app-command', (_e, cmd) => {
       if (cmd === 'browser-backward') this.runShortcut('back');
@@ -452,8 +456,9 @@ class MainWindow {
   // Opens the sync panel over the site. username: the account the panel is
   // for (the site page's, else this computer's); the panel UI does the gating.
   // It becomes visible once it has rendered (showPanel), so it never flashes
-  // a stale screen or theme.
-  openPanel({ username, screen }) {
+  // a stale screen or theme. show false: in place, without bringing the window
+  // up (the lock screen of a window in the tray).
+  openPanel({ username, screen, show = true }) {
     const data = {
       username: username || null,
       screen: screen || 'syncs',
@@ -467,7 +472,7 @@ class MainWindow {
     else this.pendingPanel = data;
     clearTimeout(this.showTimer);
     this.showTimer = setTimeout(() => this.showPanel(), PANEL_SHOW_FALLBACK_MS);
-    this.show();
+    if (show) this.show();
   }
 
   showPanel() {
@@ -477,7 +482,7 @@ class MainWindow {
       this.panel.setVisible(true);
       this.sendPanelState();
     }
-    this.panel.webContents.focus();
+    if (this.win.isVisible() && !this.win.isMinimized()) this.panel.webContents.focus();
   }
 
   // Hides the panel at once; the panel UI calls it when it has faded out.

@@ -159,12 +159,11 @@ def file_preview(file_id):
         # does not support partial-content responses.  We decrypt to a temp file once,
         # serve it, then delete it via call_on_close.
         # A 50 MB size guard prevents unbounded disk use from very large uploads that
-        # happen to have an audio MIME type.
-        audio_mimes = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'audio/aac', 'audio/flac']
-        if mimetype in audio_mimes and request.headers.get('Range'):
-            MAX_AUDIO_PREVIEW_BYTES = 50 * 1024 * 1024  # 50 MB
-            if file.size > MAX_AUDIO_PREVIEW_BYTES:
-                abort(403)
+        # happen to have an audio MIME type; those stream in full without seeking.
+        audio_mimes = ['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/ogg', 'audio/mp4', 'audio/aac', 'audio/flac']
+        MAX_AUDIO_PREVIEW_BYTES = 50 * 1024 * 1024  # 50 MB
+        audio_ranges = mimetype in audio_mimes and (file.size or 0) <= MAX_AUDIO_PREVIEW_BYTES
+        if audio_ranges and request.headers.get('Range'):
             if not _thumbnail_disk_space_ok(_ensure_onegy_temp_root(), file.size or 0):
                 return _audio_preview_busy()
             if not _AUDIO_PREVIEW_SLOTS.acquire(blocking=False):
@@ -229,7 +228,7 @@ def file_preview(file_id):
         response.headers['Content-Disposition'] = safe_content_disposition(_preview_disposition, file.orig_name)
         response.headers['Content-Length'] = file.size
         # Indicate Range support for audio files
-        if mimetype in audio_mimes:
+        if audio_ranges:
             response.headers['Accept-Ranges'] = 'bytes'
         return response
     except Exception as e:
@@ -301,9 +300,7 @@ def file_create_blank():
     if not filename:
         return jsonify({'error': 'FILENAME IS REQUIRED'}), 400
 
-    # Sanitize filename
-    from werkzeug.utils import secure_filename as _secure_filename
-    safe_name = _secure_filename(filename)
+    safe_name = sanitize_plaintext_name(filename)
     if not safe_name:
         return jsonify({'error': 'INVALID FILENAME'}), 400
 

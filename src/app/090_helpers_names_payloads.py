@@ -234,7 +234,10 @@ def sanitize_plaintext_name(name, max_length=255):
     if not name:
         return ''
     name = name.replace('/', '_').replace('\\', '_')
-    name = name.replace('..', '_')
+    # Separators are gone, so '..' inside a name is harmless; only a whole
+    # '.' or '..' still means "this/parent directory" to filesystem consumers.
+    if name in ('.', '..'):
+        name = name.replace('.', '_')
     if len(name) <= max_length:
         return name
     # Cut the stem, not the extension: 'long….docx' must stay a .docx.

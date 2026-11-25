@@ -21,9 +21,11 @@ const DEFAULTS = Object.freeze({
   update_channel: 'stable',
   auto_update: true,
   prevent_sleep: true,
+  file_manager_integration: true, // status icons and "Open on one.gy" in the file manager (shell-integration.js)
   linux_x11: true, // GNOME on Wayland: run through XWayland so the tray popover can sit under the tray icon (main.js)
   lock_after_minutes: 30, // app lock after this much system idle time (0 = only on start, sleep and screen lock)
   lock_on_hide: false, // also lock when the window is minimized or closed to the tray
+  app_lock_seen: false, // this computer was last seen signed in with the app lock on (main.js keeps it, for starts where the engine is slow to answer)
   default_upload_folder: null, // {id, path}: one.gy folder for tray Upload…
   default_download_dir: '', // local folder for manual downloads ('' = ask)
   paused_until: null, // ms timestamp: tray "Pause for 1 hour" resumes then (main.js)
@@ -52,9 +54,11 @@ const VALIDATORS = {
   update_channel: oneOf('stable', 'beta'),
   auto_update: bool,
   prevent_sleep: bool,
+  file_manager_integration: bool,
   linux_x11: bool,
   lock_after_minutes: oneOf(0, 5, 15, 30, 60, 240),
   lock_on_hide: bool,
+  app_lock_seen: bool,
   default_upload_folder: (v) => {
     if (v === null) return null;
     if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;

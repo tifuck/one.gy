@@ -171,7 +171,8 @@ def _totp_lockout_remaining(user_id):
             return 0
         if not entry:
             return 0
-        remaining = int(entry.get('lock_until', 0) - now)
+        import math
+        remaining = math.ceil(float(entry.get('lock_until', 0) or 0) - now)
         return remaining if remaining > 0 else 0
     finally:
         _release_security_state_locks(locks)
@@ -193,7 +194,7 @@ def _record_failed_totp(user_id):
         entry['lockouts'] = lockouts
         entry['fails'] = int(entry.get('fails', 0)) + 1
         entry['last_fail'] = now
-        if entry['fails'] >= _TOTP_FAILURE_THRESHOLD:
+        if entry['fails'] >= _TOTP_FAILURE_THRESHOLD and float(entry.get('lock_until', 0) or 0) <= now:
             entry['lock_until'] = now + min(_TOTP_LOCK_DURATION * 2 ** min(lockouts, 20), _TOTP_LOCK_MAX_DURATION)
             entry['lockouts'] = lockouts + 1
         entry['retain_until'] = max(

@@ -43,6 +43,8 @@ cd client && go test ./... && go build ./cmd/onegy
 # app (needs Node ≥ 20); `npm run build:engine` builds onegy into resources/engine/
 cd desktop/app && npm ci && npm start          # dev run
 cd desktop/app && npm run dist                 # installers into desktop/app/dist
+# Linux packages also ship the Dolphin overlay plugin: build it first (needs docker or podman)
+bash desktop/shell/dolphin/build.sh            # -> desktop/app/resources/dolphin/kf5|kf6/
 ```
 
 End-to-end check of app + engine + a DEV server without a display:

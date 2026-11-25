@@ -75,6 +75,17 @@ func scanIssue(is scan.Issue) reconcile.Issue {
 	return out
 }
 
+// issueKey identifies an open issue: kind and path, plus the side for the
+// two mass-delete questions (both have no path).
+func issueKey(kind, p string, detail map[string]any) string {
+	k := kind + "|" + p
+	if kind == "mass_delete" {
+		side, _ := detail["side"].(string)
+		k += "|" + side
+	}
+	return k
+}
+
 // syncIssues makes the stored open issues of the sync equal to list.
 func (r *Runner) syncIssues(ctx context.Context, list []reconcile.Issue) {
 	db := r.env.Exec.DB
@@ -84,11 +95,11 @@ func (r *Runner) syncIssues(ctx context.Context, list []reconcile.Issue) {
 	}
 	have := map[string]*state.IssueRow{}
 	for _, o := range open {
-		have[o.Kind+"|"+o.RelPath] = o
+		have[issueKey(o.Kind, o.RelPath, View(o).Detail)] = o
 	}
 	seen := map[string]bool{}
 	for _, is := range list {
-		k := is.Kind + "|" + is.Path
+		k := issueKey(is.Kind, is.Path, is.Detail)
 		if seen[k] {
 			continue
 		}

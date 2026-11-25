@@ -272,6 +272,12 @@ func (s *Service) register() {
 	h("manual.upload", unlocked(s.manualUpload))
 	h("manual.download", unlocked(s.manualDownload))
 	h("activity.recent", s.activityRecent)
+	// File manager extensions call files.status without ipc.hello (read-only).
+	s.rpc.HandlePublic("files.status", func(ctx context.Context, p json.RawMessage) (any, error) {
+		res, err := s.filesStatus(ctx, p)
+		return res, rpcError(err)
+	})
+	h("files.webPath", s.filesWebPath)
 	h("diagnostics.export", s.diagnosticsExport)
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -149,5 +150,63 @@ func TestValidPin(t *testing.T) {
 		if ValidPin(pin) == nil {
 			t.Errorf("%q accepted", pin)
 		}
+	}
+}
+
+// stalled answers no request until it is cancelled, like a server that went quiet.
+type stalled struct{ requests int }
+
+func (s *stalled) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.requests++
+	<-r.Context().Done()
+	return nil, r.Context().Err()
+}
+
+// account.status must answer while the server does not: one bounded /me, and
+// none again right after one that got no answer.
+func TestStatusWhileTheServerStalls(t *testing.T) {
+	ctx := context.Background()
+	m, srv, _, _ := setup(t, false)
+	if err := m.Authorize(ctx, AuthorizeParams{Server: srv.URL, Username: "alice", Password: password, DeviceName: "PC"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := m.Status(ctx); st.StorageLimit != 1000 {
+		t.Fatalf("status %+v", st)
+	}
+	quiet := &stalled{}
+	if err := m.SetOptions(api.Options{Version: "0.1.0", Transport: quiet}); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.meAt = time.Time{}
+	m.mu.Unlock()
+
+	short, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if st := m.Status(short); !st.SignedIn || st.StorageLimit != 1000 {
+		t.Fatalf("status without an answer must keep the last numbers: %+v", st)
+	}
+	began := time.Now()
+	if st := m.Status(ctx); !st.SignedIn || quiet.requests != 1 || time.Since(began) > time.Second {
+		t.Fatalf("status right after a /me without an answer asked again: %d requests in %v", quiet.requests, time.Since(began))
+	}
+}
+
+// The engine drops its grant when it stops: the server then refuses what the grant allowed.
+func TestDropGrant(t *testing.T) {
+	ctx := context.Background()
+	m, srv, _, _ := setup(t, false)
+	if err := m.Authorize(ctx, AuthorizeParams{Server: srv.URL, Username: "alice", Password: password, DeviceName: "PC"}); err != nil {
+		t.Fatal(err)
+	}
+	if srv.Grants() != 1 {
+		t.Fatal("authorize leaves the app unlocked")
+	}
+	m.DropGrant(ctx)
+	if srv.Grants() != 0 {
+		t.Fatal("the grant outlived DropGrant")
+	}
+	if _, err := m.WebSession(ctx); !api.IsCode(err, "grant_required") {
+		t.Fatalf("web session after the grant was dropped: %v", err)
 	}
 }

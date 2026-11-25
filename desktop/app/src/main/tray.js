@@ -86,6 +86,7 @@ class AppTray {
     };
     this.tray = new Tray(loadIcon('offline'));
     this.tray.on('click', (_e, bounds) => (this.state.authorized && !this.state.appLocked ? actions.showStatus(bounds) : actions.open()));
+    this.shown = null;
     this.render();
   }
 
@@ -98,10 +99,17 @@ class AppTray {
   render() {
     const { authorized, status, engineState } = this.state;
     const connected = engineState === 'connected';
-    const icon = authorized && connected && status ? ICON_FOR[status.state] : null;
-    this.tray.setImage(loadIcon(icon || 'offline'));
-    this.tray.setToolTip(authorized ? `ONE.GY: ${statusLine(status, engineState)}` : 'ONE.GY');
-    this.tray.setContextMenu(Menu.buildFromTemplate(menuTemplate(this.state, this.actions)));
+    const icon = (authorized && connected && status ? ICON_FOR[status.state] : null) || 'offline';
+    const tip = authorized ? `ONE.GY: ${statusLine(status, engineState)}` : 'ONE.GY';
+    const template = menuTemplate(this.state, this.actions);
+    // Status events arrive every second while syncing: a menu that is open
+    // closes when it is replaced, so only what changed is set again.
+    const shown = JSON.stringify([icon, tip, template]);
+    if (shown === this.shown) return;
+    this.shown = shown;
+    this.tray.setImage(loadIcon(icon));
+    this.tray.setToolTip(tip);
+    this.tray.setContextMenu(Menu.buildFromTemplate(template));
   }
 
   destroy() {

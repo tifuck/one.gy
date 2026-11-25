@@ -10,24 +10,62 @@ _AVAILABLE_SONGS_SCANNED_AT = 0.0
 # temp table instead of inlining every id as a bind parameter keeps every music
 # query independent of library size.
 _MUSIC_AVAILABLE_TABLE = 'available_song_ids'
+# library.db (+ -wal) mtime seen by the last scan; a change means the music
+# worker published or removed songs.
+_AVAILABLE_SONGS_DB_MTIME = None
+
+def _music_library_mtime():
+    db_path = os.path.join(MUSIC_LIBRARY_PATH, 'library.db')
+    stamps = []
+    for path in (db_path, db_path + '-wal'):
+        try:
+            stamps.append(os.stat(path).st_mtime_ns)
+        except OSError:
+            pass
+    return max(stamps) if stamps else None
+
+def _published_song_ids():
+    """Song ids listed in library.db `files` (libraries written by music_worker.py),
+    or None for an older library without that table."""
+    import sqlite3
+    db_path = os.path.join(MUSIC_LIBRARY_PATH, 'library.db')
+    if not os.path.isfile(db_path):
+        return None
+    conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'").fetchone():
+            return None
+        return {row[0] for row in conn.execute('SELECT song_id FROM files')}
+    finally:
+        conn.close()
 
 def _scan_available_songs():
-    """Scan the music library directory for songs with audio files on disk."""
-    global _AVAILABLE_SONG_IDS, _AVAILABLE_SONGS_SCANNED_AT
-    songs_dir = os.path.join(MUSIC_LIBRARY_PATH, 'songs')
-    if not os.path.isdir(songs_dir):
-        print(f'[MUSIC] Songs directory not found: {songs_dir}')
-        return
-    available = set()
+    """Refresh the set of playable songs: the worker's `files` table when present,
+    else songs with audio on disk."""
+    global _AVAILABLE_SONG_IDS, _AVAILABLE_SONGS_SCANNED_AT, _AVAILABLE_SONGS_DB_MTIME
+    # Recorded first so a failing scan is retried on the next change or
+    # interval, not on every request.
+    _AVAILABLE_SONGS_DB_MTIME = _music_library_mtime()
     try:
-        for entry in os.scandir(songs_dir):
-            if entry.is_dir():
-                audio_path = os.path.join(entry.path, 'audio.opus')
-                if os.path.isfile(audio_path):
-                    available.add(entry.name)
+        available = _published_song_ids()
     except Exception as e:
-        print(f'[MUSIC] Error scanning songs directory: {e}')
+        print(f'[MUSIC] Error reading library.db files: {e}')
         return
+    if available is None:
+        songs_dir = os.path.join(MUSIC_LIBRARY_PATH, 'songs')
+        if not os.path.isdir(songs_dir):
+            print(f'[MUSIC] Songs directory not found: {songs_dir}')
+            return
+        available = set()
+        try:
+            for entry in os.scandir(songs_dir):
+                if entry.is_dir():
+                    audio_path = os.path.join(entry.path, 'audio.opus')
+                    if os.path.isfile(audio_path):
+                        available.add(entry.name)
+        except Exception as e:
+            print(f'[MUSIC] Error scanning songs directory: {e}')
+            return
     previous = len(_AVAILABLE_SONG_IDS)
     # Replaced whole (GIL-atomic) so readers never observe a partial set.
     _AVAILABLE_SONG_IDS = available
@@ -63,6 +101,21 @@ def maybe_rescan_available_songs(force=False):
     except Exception as e:
         print(f'[MUSIC] Library re-scan failed: {e}')
         return False
+    finally:
+        _AVAILABLE_SONGS_SCAN_LOCK.release()
+
+def _maybe_rescan_on_library_change():
+    """Re-scan when library.db changed, so songs the worker publishes are
+    playable at once instead of after the next interval scan."""
+    if _music_library_mtime() == _AVAILABLE_SONGS_DB_MTIME:
+        return
+    if not _AVAILABLE_SONGS_SCAN_LOCK.acquire(blocking=False):
+        return
+    try:
+        if _music_library_mtime() != _AVAILABLE_SONGS_DB_MTIME:
+            _scan_available_songs()
+    except Exception as e:
+        print(f'[MUSIC] Library re-scan failed: {e}')
     finally:
         _AVAILABLE_SONGS_SCAN_LOCK.release()
 
@@ -599,6 +652,7 @@ def _music_required(f):
             flash('MUSIC LIBRARY IS CURRENTLY DISABLED', 'error')
             return redirect(url_for('index'))
         session.permanent = True
+        _maybe_rescan_on_library_change()
         return f(*args, **kwargs)
     return decorated_function
 

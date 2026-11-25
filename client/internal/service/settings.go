@@ -29,6 +29,9 @@ type Settings struct {
 	MassDeleteCount        int      `json:"mass_delete_count"`
 	MassDeletePercent      int      `json:"mass_delete_percent"`
 	Defaults               Defaults `json:"defaults"`
+	// WindowsExplorerStatus marks synced items as Cloud Files placeholders
+	// (Windows, NTFS) so File Explorer shows their status (experimental).
+	WindowsExplorerStatus bool `json:"windows_explorer_status"`
 }
 
 type Proxy struct {
@@ -212,6 +215,7 @@ func (s *Service) applySettings(next, prev Settings) {
 			logx.Level.Set(lvl)
 		}
 	}
+	s.explorer.SetEnabled(next.WindowsExplorerStatus)
 	if next.RequirePasswordOnStart != prev.RequirePasswordOnStart {
 		s.ks.SetMemoryOnly(next.RequirePasswordOnStart)
 		if !next.RequirePasswordOnStart {

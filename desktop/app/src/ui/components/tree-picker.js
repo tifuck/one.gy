@@ -8,6 +8,7 @@ import { rpc } from '../store.js';
 export function treePicker({ mode = 'folder', onChange = () => {}, e2ee = true }) {
   let trail = [{ id: null, name: 'one.gy' }];
   let listing = null;
+  let loadSeq = 0;
   let filter = '';
   const ticked = new Map();
 
@@ -36,15 +37,21 @@ export function treePicker({ mode = 'folder', onChange = () => {}, e2ee = true }
   }
 
   async function load(id) {
+    const mine = ++loadSeq;
     status.textContent = 'Loading…';
     clear(list);
+    let next;
+    let failed = '';
     try {
-      listing = await rpc('remote.list', { folder_id: id });
-      status.textContent = '';
+      next = await rpc('remote.list', { folder_id: id });
     } catch (err) {
-      listing = { folders: [], files: [] };
-      status.textContent = err.message;
+      next = { folders: [], files: [] };
+      failed = err.message;
     }
+    // Another folder was opened meanwhile: its listing is the one to show.
+    if (mine !== loadSeq) return;
+    listing = next;
+    status.textContent = failed;
     renderCrumbs();
     renderList();
     onChange(selection());

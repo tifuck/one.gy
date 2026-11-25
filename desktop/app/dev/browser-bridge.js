@@ -7,7 +7,11 @@
 //   node dev/browser-bridge.js --engine ../../client/bin/onegy \
 //     --state-dir /tmp/x/state --socket /tmp/x/engine.sock [--port 0] [--engine-arg=--insecure-tls]
 //
-// HTTP on 127.0.0.1 only:
+// HTTP on 127.0.0.1 only, and only for itself: a request must name this
+// server as its Host, and as its Origin when it sends one, so no web page
+// open in a browser on this computer can drive the engine through it.
+// Programs of this user can: do not leave it running on a shared computer.
+//
 //   GET  /...            files of src/ui (index.html at /)
 //   GET  /bridge.js      dev/bridge-client.js: maps window.onegy onto this server
 //   POST /rpc            {method, params} -> engine (same whitelist as the app)
@@ -138,8 +142,18 @@ function serveFile(res, rel) {
   });
 }
 
+// 127.0.0.1:<port> or localhost:<port> of this server.
+function ownHost(value) {
+  const { port } = server.address();
+  return value === `127.0.0.1:${port}` || value === `localhost:${port}`;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
+  const { origin } = req.headers;
+  if (!ownHost(req.headers.host) || (origin !== undefined && !(origin.startsWith('http://') && ownHost(origin.slice(7))))) {
+    return json(res, 403, { error: 'not this bridge\'s own page' });
+  }
   try {
     if (req.method === 'GET' && url.pathname === '/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });

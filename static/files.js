@@ -1548,7 +1548,7 @@
     if (AUDIO_EXT[extension] && window.MusicPlayer && MusicPlayer.open) {
       MusicPlayer.open(String(item.id), displayName(item, false), extension, item.is_e2e === true, {
         folderId: S.folderId,
-        tracks: S.files.map(function (file) {
+        tracks: sortItems(S.files, false).map(function (file) {
           return {
             id: String(file.id), name: displayName(file, false),
             extension: extOf(file.name, file.extension), isE2E: file.is_e2e === true

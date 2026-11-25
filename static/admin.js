@@ -37,7 +37,8 @@
     hourglass: svg('<path d="M5 22h14M5 2h14M17 22v-4.17a2 2 0 0 0-.59-1.42L12 12l-4.41 4.41A2 2 0 0 0 7 17.83V22M7 2v4.17a2 2 0 0 0 .59 1.42L12 12l4.41-4.41A2 2 0 0 0 17 6.17V2"/>'),
     bell: svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>'),
     msg: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
-    db: svg('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>')
+    db: svg('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/>'),
+    music: svg('<path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>')
   }
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
   var SKELETON = '<div class="adm-loading" role="status" aria-label="Loading"><span class="rd-skel adm-skel-title"></span><span class="rd-skel adm-skel-sub"></span><span class="rd-skel adm-skel-block"></span><span class="rd-skel adm-skel-block is-short"></span></div>'
@@ -968,7 +969,52 @@
     if (!document.hidden && S.tab === 'monitoring' && S.monData) tabMonitor(++S.renderEpoch, true)
   })
 
-  var TABS = { overview: tabOverview, users: tabUsers, 'temp-files': tabTemp, notifications: tabNotifs, feedback: tabFeedback, statistics: tabStats, storage: tabStorage, monitoring: tabMonitor, settings: tabSettings }
+  // ---- Music (rendering lives in admin-music.js) -----------------------------
+  var MUSIC_HELPERS = { esc: esc, num: num, fmtBytes: fmtBytes, head: head, card: card, emptyState: emptyState, icon: I.music, trash: I.trash, refresh: I.refresh }
+  var MUSIC_POLL_MS = 5000
+  async function tabMusic (epoch, silent) {
+    epoch = startRender('music', epoch); if (epoch == null) return
+    clearTimeout(S.muTimer)
+    if (!silent) loading()
+    try {
+      var d = await jget('/admin/api/music')
+      if (!isCurrentRender('music', epoch)) return
+      // A poll never repaints under a control the admin is using.
+      var busy = silent && (panel.querySelector('[data-music-busy]') || (document.activeElement && panel.contains(document.activeElement) && document.activeElement.matches('input[type="number"], textarea')))
+      if (!busy) {
+        MUSIC_HELPERS.proxyDraft = S.muProxyDraft || ''
+        var y = window.scrollY, main = document.querySelector('.adm-main'), my = main ? main.scrollTop : 0
+        var focusKey = document.activeElement && panel.contains(document.activeElement) ? document.activeElement.id : null
+        paint(window.AdmMusic.render(d, MUSIC_HELPERS))
+        if (silent) { window.scrollTo(0, y); if (main) main.scrollTop = my }
+        if (focusKey && $(focusKey)) $(focusKey).focus({ preventScroll: true })
+      }
+    } catch (e) {
+      if (!isCurrentRender('music', epoch)) return
+      if (!silent) paint(errState('Could not load the music pipeline'))
+    }
+    S.muTimer = setTimeout(function tick () {
+      if (S.tab !== 'music' || S.renderEpoch !== epoch) return
+      if (document.hidden) { S.muTimer = setTimeout(tick, 5000); return }
+      tabMusic(++S.renderEpoch, true)
+    }, MUSIC_POLL_MS)
+  }
+  // Applies one Music control at once; the switch is reverted if the server refuses.
+  async function musicSave (input, url, body, ok) {
+    var epoch = S.renderEpoch
+    input.disabled = true; input.setAttribute('data-music-busy', '')
+    try {
+      await jsend('POST', url, body)
+      if (ok) toast(ok, 'success')
+    } catch (err) {
+      if (input.type === 'checkbox') input.checked = !input.checked
+      failToast(err, 'COULD NOT SAVE')
+    }
+    input.disabled = false; input.removeAttribute('data-music-busy')
+    refreshTab('music', epoch)
+  }
+
+  var TABS = { overview: tabOverview, users: tabUsers, 'temp-files': tabTemp, notifications: tabNotifs, feedback: tabFeedback, statistics: tabStats, storage: tabStorage, monitoring: tabMonitor, music: tabMusic, settings: tabSettings }
   function go (t) {
     if (!Object.prototype.hasOwnProperty.call(TABS, t)) t = 'overview'
     if (S.tab === 'settings' && S.settingsDirty) {
@@ -978,6 +1024,7 @@
     clearPurgeTimer()
     clearSearchTimers()
     clearMonitor()
+    clearTimeout(S.muTimer)
     S.tab = t
     S.selectedUserId = null
     var epoch = ++S.renderEpoch
@@ -1034,6 +1081,37 @@
       var epoch = S.renderEpoch
       var pg = t.closest('[data-page]'); if (pg) { var parts = pg.getAttribute('data-page').split(':'); if (parts[0] === 'users') { S.usersPage = +parts[1]; refreshTab('users', epoch) } else if (parts[0] === 'feedback') { S.fbPage = +parts[1]; refreshTab('feedback', epoch) } else { S.tempPage = +parts[1]; refreshTab('temp-files', epoch) } return }
       if (t.closest('[data-retry]')) { refreshTab(S.tab, epoch); return }
+      if (t.closest('[data-music-retry]')) {
+        jsend('POST', '/admin/api/music/retry').then(function (d) { toast(plural(d.count, 'song') + ' will retry now', 'success'); refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'RETRY FAILED') })
+        return
+      }
+      if (t.closest('[data-music-proxy-add]')) {
+        var box = $('muProxyText'), text = box ? box.value : ''
+        if (!text.trim()) { toast('PASTE AT LEAST ONE PROXY', 'error'); return }
+        jsend('POST', '/admin/api/music/proxies', { text: text }).then(function (r) {
+          var parts = [num(r.added) + (r.added === 1 ? ' proxy' : ' proxies') + ' added']
+          if (r.duplicates) parts.push(num(r.duplicates) + ' already listed')
+          if (r.rejected.length) parts.push('line ' + r.rejected.map(function (x) { return x.line + ': ' + x.error.toLowerCase() }).join(', line '))
+          toast(parts.join(' · '), r.rejected.length ? 'error' : 'success')
+          S.muProxyDraft = ''
+          refreshTab('music', epoch)
+        }).catch(function (err) { failToast(err, 'COULD NOT ADD PROXIES') })
+        return
+      }
+      var mpr = t.closest('[data-music-proxy-remove]')
+      if (mpr) {
+        confirmThen('Remove ' + mpr.getAttribute('data-name') + '?', function () {
+          jsend('DELETE', '/admin/api/music/proxies/' + mpr.getAttribute('data-music-proxy-remove')).then(function () { refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'REMOVE FAILED') })
+        }, { title: 'Remove proxy?', ok: 'Remove' })
+        return
+      }
+      var mrm = t.closest('[data-music-remove]')
+      if (mrm) {
+        confirmThen('Remove ' + mrm.getAttribute('data-name') + ' from the list? It comes back if it starts again.', function () {
+          jsend('DELETE', '/admin/api/music/workers/' + mrm.getAttribute('data-music-remove')).then(function () { refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'REMOVE FAILED') })
+        }, { title: 'Remove worker?', ok: 'Remove' })
+        return
+      }
       var gt = t.closest('[data-goto]'); if (gt) { go(gt.getAttribute('data-goto')); return }
       var mr = t.closest('[data-mon-range]'); if (mr) { S.monRange = mr.getAttribute('data-mon-range'); refreshTab('monitoring', epoch); return }
 
@@ -1188,6 +1266,28 @@
     })
 
     panel.addEventListener('change', function (e) {
+      var mt = e.target
+      if (mt.matches('[data-music-switch]')) {
+        var sbody = {}; sbody[mt.getAttribute('data-music-switch')] = mt.checked
+        musicSave(mt, '/admin/api/settings', sbody)
+        return
+      }
+      if (mt.matches('[data-music-worker]')) {
+        var wbody = {}; wbody[mt.getAttribute('data-music-flag')] = mt.checked
+        musicSave(mt, '/admin/api/music/workers/' + mt.getAttribute('data-music-worker'), wbody)
+        return
+      }
+      if (mt.matches('[data-music-proxy]')) {
+        musicSave(mt, '/admin/api/music/proxies/' + mt.getAttribute('data-music-proxy'), { enabled: mt.checked })
+        return
+      }
+      if (mt.matches('[data-music-limit]')) {
+        var v = parseInt(mt.value, 10)
+        if (isNaN(v)) { refreshTab('music', S.renderEpoch); return }
+        var lbody = {}; lbody[mt.getAttribute('data-music-limit')] = v
+        musicSave(mt, '/admin/api/settings', lbody, 'SAVED')
+        return
+      }
       if (e.target.id === 'admNodeType') {
         var box = $('admNodeFields'); if (box) box.innerHTML = nodeFields(e.target.value)
       }
@@ -1199,6 +1299,7 @@
       if (e.target.id === 'admUserSearch') { var usersQ = e.target.value.trim(), usersEpoch = S.renderEpoch; clearTimeout(S._ut); S._ut = setTimeout(function () { S._ut = null; if (!isCurrentRender('users', usersEpoch)) return; S.usersQ = usersQ; S.usersPage = 1; S.selectedUserId = null; S.restoreUserSearch = true; refreshTab('users', usersEpoch) }, 300) }
       if (e.target.id === 'admFbSearch') { var fbQ = e.target.value.trim(), fbEpoch = S.renderEpoch; clearTimeout(S._ft); S._ft = setTimeout(function () { S._ft = null; if (!isCurrentRender('feedback', fbEpoch)) return; S.fbQ = fbQ; S.fbPage = 1; refreshTab('feedback', fbEpoch) }, 300) }
       if (e.target.matches('[data-setting], [data-setting-num]')) markSettingsDirty()
+      if (e.target.id === 'muProxyText') S.muProxyDraft = e.target.value
       if (e.target.id === 'admQuotaAmount') updateQuotaHint()
     })
   }

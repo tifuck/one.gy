@@ -53,6 +53,11 @@ const (
 	pinIterations = 200_000
 	pinMinLength  = 4
 	pinMaxLength  = 16
+
+	// Status refreshes /me inside account.status: one try this long, and after
+	// one without an answer not again for meRetry.
+	meTimeout = 5 * time.Second
+	meRetry   = 15 * time.Second
 )
 
 // secrets is what the key store holds and what is sealed under the password
@@ -114,6 +119,7 @@ type Manager struct {
 	sec         api.Security
 	me          *api.Me
 	meAt        time.Time
+	meFailedAt  time.Time // last /me that got no answer: Status waits meRetry before the next
 	sys         sysauth.Authenticator
 	sysToken    string // fingerprint unlock token (key store)
 	sysAvail    string // cached Kind() when Available
@@ -897,12 +903,23 @@ func (m *Manager) AppLock(ctx context.Context) {
 	if client == nil {
 		return
 	}
-	if client.Grant() != "" {
-		if err := client.DropGrant(ctx); err != nil {
-			slog.Warn("could not drop the grant on the server (it expires on its own)", "err", err)
-		}
-	}
+	m.DropGrant(ctx)
 	m.lockLocal(ctx)
+}
+
+// DropGrant ends the app's grant on the server (best effort; it also expires
+// on its own), and with it this device's website session. AppLock uses it,
+// and the engine when it stops: the keys in memory go with the process.
+func (m *Manager) DropGrant(ctx context.Context) {
+	m.mu.Lock()
+	client := m.client
+	m.mu.Unlock()
+	if client == nil || client.Grant() == "" {
+		return
+	}
+	if err := client.DropGrant(ctx); err != nil {
+		slog.Warn("could not drop the grant on the server (it expires on its own)", "err", err)
+	}
 }
 
 func (m *Manager) lockLocal(ctx context.Context) {
@@ -1168,9 +1185,10 @@ func (m *Manager) changed() {
 
 // Status returns account.status; storage numbers and the lock state are
 // refreshed at most once a minute and kept when the server is unreachable.
+// That refresh is one bounded try: account.status answers while offline too.
 func (m *Manager) Status(ctx context.Context) Status {
 	m.mu.Lock()
-	a, client, open, me, meAt := m.acct, m.client, m.keysOpen, m.me, m.meAt
+	a, client, open, me, meAt, meFailedAt := m.acct, m.client, m.keysOpen, m.me, m.meAt, m.meFailedAt
 	m.mu.Unlock()
 	if a == nil || !a.SignedIn {
 		st := Status{AppLocked: true}
@@ -1179,13 +1197,18 @@ func (m *Manager) Status(ctx context.Context) Status {
 		}
 		return st
 	}
-	if open && time.Since(meAt) > time.Minute {
-		if fresh, err := client.Me(ctx); err == nil {
-			m.mu.Lock()
+	if open && time.Since(meAt) > time.Minute && time.Since(meFailedAt) > meRetry {
+		meCtx, cancel := context.WithTimeout(ctx, meTimeout)
+		fresh, err := client.Me(meCtx)
+		cancel()
+		m.mu.Lock()
+		if err == nil {
 			m.me, m.meAt, me = fresh, time.Now(), fresh
 			m.sec = fresh.Device.Security
-			m.mu.Unlock()
+		} else {
+			m.meFailedAt = time.Now()
 		}
+		m.mu.Unlock()
 	}
 	m.mu.Lock()
 	sec, hardware, full := m.sec, m.popKey != nil && m.popKey.Hardware(), m.masterKey != nil

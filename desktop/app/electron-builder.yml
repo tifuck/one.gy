@@ -75,6 +75,13 @@ linux:
   extraResources:
     - from: build/linux/update-system.sh
       to: update-system.sh
+    # Dolphin overlay plugin, KF5 and KF6 builds (desktop/shell/dolphin/build.sh);
+    # the deb / rpm after-install.sh installs them into the Qt plugin dirs.
+    - from: resources/dolphin
+      to: dolphin
+      filter:
+        - "kf5/onegy-overlay.so"
+        - "kf6/onegy-overlay.so"
 appImage:
   artifactName: ONE.GY-Desktop-x86_64.${ext}
 # deb and rpm install to /opt/ONE.GY Desktop with a desktop entry and icons;
@@ -85,7 +92,9 @@ deb:
   packageName: onegy-desktop
   afterInstall: build/linux/after-install.sh
   afterRemove: build/linux/after-remove.sh
-  fpm: ["--depends", "curl"]
+  # Suggests, not Recommends: apt would pull GTK 4 into KDE installs. The
+  # Python bindings the file manager extensions need (src/shell/onegy_fm.py).
+  fpm: ["--depends", "curl", "--deb-suggests", "python3-nautilus", "--deb-suggests", "nemo-python", "--deb-suggests", "python3-caja"]
 rpm:
   artifactName: onegy-desktop.x86_64.${ext}
   packageName: onegy-desktop

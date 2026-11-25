@@ -608,7 +608,7 @@ def _device_pop_signature_ok(device):
         key = serialization.load_der_public_key(base64.b64decode(device.pop_public_key))
         key.verify(signature, _device_pop_message(), ec.ECDSA(hashes.SHA256()))
         return True
-    except (InvalidSignature, ValueError, TypeError):
+    except (InvalidSignature, ValueError, TypeError, OverflowError):
         return False
 
 

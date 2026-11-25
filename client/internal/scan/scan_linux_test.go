@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/tifuck/one.gy/client/internal/localfs"
 	"github.com/tifuck/one.gy/client/internal/state"
@@ -107,6 +108,9 @@ func TestScanHashCache(t *testing.T) {
 	db.PutSync(ctx, &state.SyncRow{ID: "s", Name: "S", LocalRoot: root, Type: "two_way", Encryption: "e2ee", Config: "{}", State: "scanning", CreatedAt: "t"})
 	write(t, root, "a", "one")
 	write(t, root, "d/b", "two")
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(filepath.Join(root, "a"), old, old)
+	os.Chtimes(filepath.Join(root, "d", "b"), old, old)
 	opened := map[string]int{}
 	openFile = func(p string) (*os.File, error) { opened[filepath.Base(p)]++; return localfs.Open(p) }
 	defer func() { openFile = localfs.Open }()
@@ -134,6 +138,16 @@ func TestScanHashCache(t *testing.T) {
 	c, _ := db.LoadLocalCache(ctx, "s")
 	if c["d/b"] != nil || c["c"] == nil || len(c) != 2 {
 		t.Fatalf("cache rows %v", c)
+	}
+	// Rewritten with the same size and mtime right after it was hashed:
+	// the cache entry is racy and the file is hashed again.
+	write(t, root, "n", "abc")
+	scan()
+	st, _ := os.Stat(filepath.Join(root, "n"))
+	write(t, root, "n", "xyz")
+	os.Chtimes(filepath.Join(root, "n"), st.ModTime(), st.ModTime())
+	if tr := scan(); tr.Entries["n"].SHA256 != sum("xyz") {
+		t.Fatal("same-size rewrite within the mtime granularity not re-hashed")
 	}
 	// Without stable ids (FAT) the id is dropped.
 	tr, _ = Run(ctx, Options{Root: root, FSKind: "vfat"})

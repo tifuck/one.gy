@@ -27,7 +27,7 @@ go build -tags devtls -o bin/onegy ./cmd/onegy  # allows `daemon --insecure-tls`
   share-link download. These self-update from `/cli/version` unless the build is
   `-X main.bundled=1` (the desktop app's copy updates with the app), and only
   to a strictly newer `version` than their own (never a downgrade).
-- `onegy daemon [--state-dir --socket --log-level --ipc-secret-stdin --secrets-file --insecure-tls]`:
+- `onegy daemon [--state-dir --socket --log-level --ipc-stdio --secrets-file --insecure-tls]`:
   the sync engine (flags, single-instance lock, log file, IPC listener). Not on
   macOS yet (`localfs`/`watch` have no darwin port), so macOS builds ship the
   file commands only.
@@ -102,6 +102,7 @@ sudo systemctl enable --now onegy
 - `internal/ignore`: `.onegyignore` parser and matcher.
 - `internal/scan`: full walk of a sync root with the hash cache.
 - `internal/watch`: change hints (inotify / ReadDirectoryChangesW / polling).
+- `internal/cloudfiles`: Windows File Explorer status (Cloud Files sync roots, full placeholders marked in sync; setting `windows_explorer_status`, off by default).
 - `internal/reconcile`: pure three-way reconciler; the op contract is the doc of `reconcile/ops.go`.
 - `internal/exec`: journal (planned → staged → remote_done/local_done → committed), recovery, upload/download pipelines, remote and local mutations, transfer pool, manual transfers.
 - `internal/syncer`: per-sync runner (schedule, passes until the plan is empty, loop protection, issues and decisions, preview, verify) and the manager.

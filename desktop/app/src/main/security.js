@@ -86,8 +86,9 @@ function configureSiteSession(ses, getOrigin) {
   ses.setPermissionRequestHandler((_wc, permission, cb, details) => {
     cb(SITE_PERMISSIONS.has(permission) && originOf(details.requestingUrl) === getOrigin());
   });
+  // requestingOrigin is a URL ("https://one.gy/"), not a bare origin.
   ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) => (
-    SITE_PERMISSIONS.has(permission) && requestingOrigin === getOrigin()
+    SITE_PERMISSIONS.has(permission) && originOf(requestingOrigin) === getOrigin()
   ));
   ses.setDevicePermissionHandler(() => false);
   ses.on('will-download', (_e, item) => {

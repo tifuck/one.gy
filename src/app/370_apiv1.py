@@ -368,7 +368,7 @@ def apiv1_upload():
             with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_STORED) as zipf:
                 for idx, (file_path, safe_name, orig_filename) in enumerate(saved_file_paths):
                     if safe_name:
-                        zipf.write(file_path, _unique_zip_entry_name(safe_name, used_arcnames))
+                        zipf.write(file_path, _unique_zip_entry_name(safe_zip_entry_name(orig_filename), used_arcnames))
 
         total_zip_size = os.path.getsize(temp_zip_path)
         # Hashes computed inside the encrypt pass (was 3 full reads, now 1)
@@ -631,14 +631,14 @@ def apiv1_list_files(folder_id=None):
 
     now_utc = datetime.now(timezone.utc)
 
-    folders_q = Folder.query.filter_by(user_id=user.id, parent_id=folder_id, is_trashed=False).order_by(Folder.name)
+    folders_q = Folder.query.filter_by(user_id=user.id, parent_id=folder_id, is_trashed=False).order_by(Folder.name, Folder.id)
     files_q = File.query.filter(
         File.registered_user_id == user.id,
         File.folder_id == folder_id,
         File.is_temp_upload == False,
         File.is_trashed == False,
         db.or_(File.expires_at == None, File.expires_at >= now_utc)
-    ).order_by(File.upload_time.desc())
+    ).order_by(File.upload_time.desc(), File.id)
 
     total_folders = folders_q.count()
     total_files = files_q.count()
@@ -902,12 +902,15 @@ def apiv1_search():
         File.is_temp_upload == False,
         File.is_trashed == False,
         db.or_(File.expires_at.is_(None), File.expires_at >= now_utc),
+        # E2EE rows hold a placeholder name, never the real one.
+        File.encrypted_name.is_(None),
         File.orig_name.ilike(f'%{escape_like_pattern(query[:128])}%', escape='\\')
     ).order_by(File.upload_time.desc()).limit(50).all()
 
     folders = Folder.query.filter(
         Folder.user_id == user.id,
         Folder.is_trashed == False,
+        Folder.encrypted_name.is_(None),
         Folder.name.ilike(f'%{escape_like_pattern(query[:128])}%', escape='\\')
     ).order_by(Folder.name).limit(50).all()
 

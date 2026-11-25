@@ -280,7 +280,7 @@ current `seq` differs → `412` with `current`.
 |---|---|
 | `POST /apiv1/sync/files/<id>/move` | `{"folder_id": 12 or null, "if_seq": 882}` + optional folder-link wrap (E2EE files; see "Link-shared folders") |
 | `POST /apiv1/sync/files/<id>/rename` | E2EE `{"encrypted_name", "name_nonce", "stored_extension", "if_seq"}`; standard `{"name", "if_seq"}` |
-| `POST /apiv1/sync/folders/<id>/move` | `{"parent_id": 3 or null, "if_seq"}` (no cycles → `400`) |
+| `POST /apiv1/sync/folders/<id>/move` | `{"parent_id": 3 or null, "if_seq"}` (no cycles → `400`; plaintext name already used in the target → `409 conflict`) |
 | `POST /apiv1/sync/folders/<id>/rename` | E2EE `{"encrypted_name", "name_nonce", "if_seq"}` (name key unchanged); standard `{"name", "if_seq"}` |
 | `POST /apiv1/sync/files/<id>/trash` | `{"if_seq"}` → soft delete, `trashed_by_device_id` set |
 | `POST /apiv1/sync/folders/<id>/trash` | `{"if_seq"}` → soft delete of the subtree |

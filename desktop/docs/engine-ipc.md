@@ -21,13 +21,22 @@ The contract between `client/internal/ipc` (server; the engine is the
   pipe server process token).
 - State dir: Windows `%APPDATA%\ONE.GY`, Linux `$XDG_DATA_HOME/onegy`
   (default `~/.local/share/onegy`). Overridable with `--state-dir`.
-- IPC secret: the app starts the engine with `--ipc-secret-stdin` and writes a
-  random secret (≥ 32 chars) plus `\n` to its stdin. Every connection must then
-  call `ipc.hello {"secret"}` first; until it does, only `ipc.hello`,
-  `engine.info` and `engine.shutdown` answer, everything else is `forbidden`.
-  A wrong secret is `forbidden`. An engine left running by a crashed app has
-  another secret: the app asks it to shut down and starts its own. Without the
-  flag (tests, `onegy ipc`, the dev bridge before 0.4) `ipc.hello` always succeeds.
+- The app's own connection: the app starts the engine with `--ipc-stdio` and
+  speaks the same framing on the engine's stdin (requests) and stdout (answers
+  and events); the engine logs to its file and to stderr only. That connection
+  is trusted without `ipc.hello`, and nothing can take its place: no name to
+  squat and no secret to relay. When it ends (the app quit or crashed) the
+  engine stops, so no engine outlives its app. With the flag the socket or pipe
+  stays open for `ipc.hello {"nonce"}`, `engine.info` and `engine.shutdown`
+  only; everything else there is `forbidden` (the `onegy` CLI cannot drive
+  the app's engine). An engine the app did not start (left by an older
+  version, or `onegy daemon` run by hand) holds the state dir: the app's own
+  exits at once, the app asks the other over the socket to shut down and tries
+  again. Without the flag (the headless daemon, tests, `onegy ipc`) every
+  socket connection is trusted.
+- On its way out the engine drops its unlock grant on the server (5 s at
+  most), which ends the website session of this device: the next start asks
+  for the PIN or password again, and the session of the run before is dead.
 
 ## Errors
 
@@ -131,11 +140,14 @@ without progress and the sync is `stalled`).
 {"upload_kbps": 0, "download_kbps": 0, "parallel_up": 2, "parallel_down": 2,
  "proxy": {"mode": "system", "url": ""}, "metered": "pause", "battery": "continue",
  "poll_floor_seconds": 5, "rescan_minutes": 60, "log_level": "info",
- "require_password_on_start": false, "web_unlock": true,
+ "require_password_on_start": false, "web_unlock": true, "windows_explorer_status": false,
  "mass_delete_count": 50, "mass_delete_percent": 20,
  "defaults": {"type": "two_way", "conflict_policy": "keep_both",
               "issue_mode": "smart", "debris_days": 30, "thumbnails": true}}
 ```
+
+`windows_explorer_status` (Windows, experimental, default off): see "File manager
+integration".
 
 `proxy.mode`: `system` | `none` | `manual` (`url` = `http://`, `https://` or
 `socks5://host:port`). `settings.set` takes a JSON merge patch (nested objects
@@ -193,6 +205,8 @@ merge); unknown keys are rejected.
 | `manual.upload` | `{"paths": [...], "remote_folder_id"}` (absolute file paths; new E2EE files) | `{"transfer_ids"}` |
 | `manual.download` | `{"remote_ids": [...], "local_dir"}` (file ids; a taken name gets ` (2)`, nothing is overwritten) | `{"transfer_ids"}` |
 | `activity.recent` | `{"limit": 20}` | `[{"at","sync_id","action","path"}]` |
+| `files.status` | `{"paths": [...]}` (absolute, ≤1000) | `{"items": [{"path", "state"}]}`; see "File manager integration" |
+| `files.webPath` | `{"path"}` (absolute, in a sync folder) | `{"path"}`: the site path of the item's one.gy folder (a file's own folder), `/files/folder/<id>` or `/files`; `not_found` when it is not on one.gy yet |
 | `diagnostics.export` | `{"path"}` (absolute, `.zip`) | `{"path"}`; zip of `logs/engine.log*` and `summary.json` (counts, kinds, states, versions; no names, paths, keys or tokens) |
 
 Notes:
@@ -277,6 +291,7 @@ Notifications from the engine: `{"jsonrpc": "2.0", "method": "event", "params": 
 | `notify` | `{"title","body","kind": "conflict|issue|mass_delete|transfer|revoked|info"}` (conflicts and issues at most every 30 s per sync) |
 | `verify` | `{"sync_id","done","total"}` (progress of `syncs.verify`, ≤1/s) |
 | `account` | `account.status` (after any sign-in, key or app lock change) |
+| `files` | `{"sync_id", "root"}`: states of items under `root` may have changed (at most once a second per sync, and once after the last change; also when the sync is removed) |
 
 ## App lock
 
@@ -322,7 +337,46 @@ While `lock_enabled && app_locked` the engine refuses (`app_locked`) everything
 beyond running the syncs already set up: `remote.*`, `settings.set`,
 `syncs.validate|preview|browse|create|update|remove|setIgnoreRules|backupTarget|clearDebris`,
 `versions.*`, `issues.resolve*` and `manual.*`. Status, lists, pause/resume,
-sync now, verify, transfers and diagnostics keep working.
+sync now, verify, transfers, `files.*` and diagnostics keep working.
+
+## File manager integration
+
+Status icons and "Open on one.gy" in Nautilus, Nemo, Caja and Dolphin
+(extensions installed per user by the app, `desktop/app/src/main/shell-linux.js`)
+and File Explorer (`shell-win.js`).
+
+- Extensions connect to the socket named in `<state dir>/engine.json`, check
+  `ipc.hello {"nonce"}`'s `key_proof` against its `hello_key` (as the CLI
+  does), then call `files.subscribe` and `files.status`. Both work without
+  the IPC secret, also with `--ipc-stdio` and while the app is locked: they
+  are read-only and answer only for paths the caller names. `files.subscribe`
+  (no params) sends that connection `files` events and nothing else.
+- `files.status` states: `synced` (as on one.gy), `syncing` (in the current
+  plan, changed here since the last sync, or new while the sync is busy),
+  `paused` (the same while the sync is paused), `error` (an open issue on the
+  item or, for a folder, below it), `none` (outside every sync, `.onegy`,
+  excluded, or not seen yet). A folder is `syncing`/`paused` while anything
+  below it is planned; the sync root follows the sync's state.
+- On a `files` event, re-query the items shown under `root`.
+- "Open on one.gy" starts the app with `--open-item=<absolute path>` (a
+  running app gets it as a second instance); the app opens `files.webPath` in
+  the site view. On Windows it is a per-user context menu verb
+  (`HKCU\Software\Classes\*\shell\ONEGY.Open`, `Directory\shell\ONEGY.Open`).
+- Linux file managers load extensions at start: after the app installs or
+  removes them, they apply once the file manager restarts (or at the next
+  login). GTK ones need their Python bindings (`python3-nautilus`,
+  `nemo-python`, `python3-caja`; Fedora `nautilus-python`, `nemo-python`,
+  `caja-python`).
+- Windows status icons (`windows_explorer_status`, NTFS only): the engine
+  registers each sync root as a Cloud Files sync root of provider "ONE.GY"
+  (`client/internal/cloudfiles`: WinRT `StorageProviderSyncRootManager`,
+  then `CfRegisterSyncRoot`; hydration and population always full, so
+  nothing is ever dehydrated) and turns synced items into full placeholders
+  marked in sync after every op; File Explorer draws its own Status column.
+  Turning it off or `syncs.remove` reverts the placeholders and unregisters
+  the root. `localfs` reads Cloud Files placeholders (also OneDrive's) as
+  files or folders by their attributes; one whose data is not all on disk
+  stays special (stalled, never read).
 
 A client subscribes by calling `engine.subscribe` (no params) on its connection.
 Right after the reply the engine sends one `status` event, so a new client

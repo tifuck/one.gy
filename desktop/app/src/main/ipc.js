@@ -260,10 +260,13 @@ function registerIpc({
   ipcMain.handle('site:unlock', async (event, username) => {
     if (!window.isSiteFrame(event.senderFrame) || !isUsername(username)) return null;
     try {
+      const origin = settings.get().server_url;
       const account = await engine.call('account.status');
-      if (!mayUnlock(account, username)) return null;
+      // The key only goes to the server the account lives on: user ids and
+      // usernames of another server prove nothing.
+      if (!mayUnlock(account, username, origin)) return null;
       // The page's account as the server sees it (the page's own DOM is not proof).
-      const who = await window.site.webContents.session.fetch(`${settings.get().server_url}/desktop/whoami`, {
+      const who = await window.site.webContents.session.fetch(`${origin}/desktop/whoami`, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' }, cache: 'no-store', redirect: 'error',
       });
       const me = who.ok ? await who.json() : null;

@@ -91,6 +91,9 @@ func systemPath(p string) bool {
 	if p == "/" {
 		return true
 	}
+	if strings.HasPrefix(p, "/run/media/") { // udisks2 mounts removable drives here
+		return false
+	}
 	for _, d := range []string{"/etc", "/usr", "/proc", "/sys", "/dev", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/run"} {
 		if within(p, d) {
 			return true

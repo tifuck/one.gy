@@ -1023,9 +1023,12 @@ def apiv1_sync_folder_move(folder_id):
     if error:
         return error
     uid = g.api_user.id
+    # The target's sibling names are checked under the folder creation lock.
+    name_lock = _acquire_folder_creation_lock(uid, target_id)
     lifecycle_lock = _acquire_user_lifecycle_lock(uid)
     tree_lock = _acquire_user_folder_tree_lock(uid)
     try:
+        db.session.rollback()
         _sync_lock_user_row(uid)
         folder = _sync_load_owned_folder(folder_id, for_update=True)
         if not folder or folder.is_trashed:
@@ -1043,6 +1046,7 @@ def apiv1_sync_folder_move(folder_id):
     finally:
         _release_user_folder_tree_lock(tree_lock)
         _release_lifecycle_lock(lifecycle_lock)
+        _release_folder_creation_lock(name_lock)
     print(f'[SYNC] Moved folder {folder.id} to parent {target_id} (device {g.device.id})')
     return jsonify(_sync_folder_node(folder))
 

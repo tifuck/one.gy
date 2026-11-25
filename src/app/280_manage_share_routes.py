@@ -191,6 +191,11 @@ def manage_post(token):
                     file.max_downloads = min(max_dl, 1000000)
                 elif max_dl == 0:
                     file.max_downloads = None
+                # A burned file whose limit is removed or raised past its count
+                # is live again, so cleanup must not delete it.
+                if file.pending_delete_at is not None and (
+                        file.max_downloads is None or (file.download_count or 0) < file.max_downloads):
+                    file.pending_delete_at = None
             except (ValueError, TypeError):
                 pass
 
