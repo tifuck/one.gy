@@ -2,7 +2,7 @@
 ;(function(mp) {
   'use strict'
 
-  const { AUDIO_EXTS, _lsSet, audio, _applyOutputVolume, _applyCrossfadeVolumes } = mp
+  const { AUDIO_EXTS, audio, _applyOutputVolume, _applyCrossfadeVolumes } = mp
 
   let _crossfadeTimer = null
 
@@ -257,7 +257,8 @@
   }
 
   function _canAutoQueueSuggested() {
-    return mp._autoplayEnabled && mp._context === 'music-library'
+    // Always on, like Spotify: the queue plays out, then suggestions follow
+    return mp._context === 'music-library'
   }
 
   function _buildSourceUrl(fileId, fileName, isE2E) {
@@ -307,17 +308,6 @@
       var tmp = added[j]; added[j] = added[k]; added[k] = tmp
     }
     mp.shuffleOrder = mp.shuffleOrder.concat(added)
-  }
-
-  // ─── Autoplay Toggle ────────────────────────────────────────────
-
-  function _toggleAutoplay() {
-    mp._autoplayEnabled = !mp._autoplayEnabled
-    _lsSet('mp_autoplay', mp._autoplayEnabled ? '1' : '0')
-    if (mp.autoplayBtn) {
-      mp.autoplayBtn.classList.toggle('mp-btn-active', mp._autoplayEnabled)
-      mp.autoplayBtn.title = mp._autoplayEnabled ? 'Autoplay on' : 'Autoplay off'
-    }
   }
 
   // ─── Auto-queue suggested songs (music-library only) ───────────
@@ -571,7 +561,6 @@
     onFolderChanged,
     _canAutoQueueSuggested,
     _generateShuffleOrder,
-    _toggleAutoplay,
     _autoQueueSuggested,
     _startCrossfade,
     _finalizeCrossfade,

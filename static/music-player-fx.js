@@ -8,21 +8,22 @@
   let _analyser = null
   let _sourceNode = null
   let _fxRafId = null
-  let _fxSmoothed = null  // smoothed bar heights for silky animation
-  let _fxRgb = [55, 182, 255]  // bar colour, refreshed from --accent-rgb on resize
+  let _fxSmoothed = null  // smoothed band levels for silky animation
+  let _fxRgb = [55, 182, 255]  // line colour, refreshed from --accent-rgb on resize
 
   // ─── Chaos Mode State ──────────────────────────────────────────
   let _chaosClickTimes = []
   const _CHAOS_CLICKS = 10
   const _CHAOS_WINDOW = 2500 // ms
-  let _chaosParticles = []
-  let _chaosRings = []
-  let _chaosArcs = []
-  let _chaosHue = 0
+  const _CHAOS_PINK = [255, 61, 200]
+  const _CHAOS_CYAN = [60, 242, 255]
+  const _CHAOS_GOLD = [255, 211, 110]
+  let _chaosStars = []
+  let _chaosWaves = []
+  let _chaosShooters = []
+  let _chaosSpin = 0
   let _chaosPrevBass = 0
-  let _chaosShakeX = 0
-  let _chaosShakeY = 0
-  let _chaosFlash = 0
+  let _chaosLastT = 0
   let _chaosLockedUntil = 0        // timestamp: ignore clicks until this time after activation
 
   // ─── Audio Visualizer ─────────────────────────────────────────
@@ -246,49 +247,55 @@
         : prev + (clamped - prev) * decay
     }
 
-    // Draw bars with gradient and glow
-    // In chaos mode the canvas is very tall; keep bars short at the bottom
-    const barMaxH = mp._chaosMode ? Math.min(180, H * 0.22) : H * 0.98
-    const barMinH = mp._chaosMode ? Math.min(4, H * 0.005) : H * 0.12
-    const gap = 1.5
-    const barW = (W - gap * (barCount - 1)) / barCount
-    for (let i = 0; i < barCount; i++) {
-      const val = _fxSmoothed[i]
-      const barH = val > 0 ? Math.max(barMinH, val * barMaxH) : 2
-      const x = i * (barW + gap)
-      const y = H - barH
-
-      // Color: theme accent, brighter with intensity
-      const r = _fxRgb[0], g = _fxRgb[1], b = _fxRgb[2]
-      const alpha = 0.55 + val * 0.45
-
-      // Subtle glow on hot bars (skip in chaos mode for perf)
-      if (!mp._chaosMode && val > 0.5) {
-        mp._fxCtx.shadowColor = `rgba(${r}, ${g}, ${b}, ${(val - 0.5) * 0.6})`
-        mp._fxCtx.shadowBlur = 6
-      }
-
-      // Gradient from bottom (bright) to top (dimmer)
-      const grad = mp._fxCtx.createLinearGradient(x, H, x, y)
-      grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${alpha})`)
-      grad.addColorStop(0.6, `rgba(${r}, ${g}, ${b}, ${alpha * 0.7})`)
-      grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, ${alpha * 0.3})`)
-      mp._fxCtx.fillStyle = grad
-
-      // Flat-top bar
-      mp._fxCtx.fillRect(x, y, barW, barH)
-
-      mp._fxCtx.shadowBlur = 0
-    }
-
-    // ── Chaos mode overlay (drawn on top of bars) ──
+    _drawHorizon(mp._fxCtx, W, H)
     if (mp._chaosMode) _renderChaos(W, H, data, bufLen)
   }
 
+  // Band level at position 0..1 (0 = bass), interpolated between bands
+  function _bandAt(pos) {
+    const f = Math.max(0, Math.min(1, pos)) * (_fxSmoothed.length - 1)
+    const i = Math.floor(f)
+    const next = _fxSmoothed[Math.min(_fxSmoothed.length - 1, i + 1)]
+    return _fxSmoothed[i] + (next - _fxSmoothed[i]) * (f - i)
+  }
+
+  // Horizon: the bar's top hairline becomes a spectrum line, bass in the
+  // middle, rising at most 26px into the page.
+  function _drawHorizon(ctx, W, H) {
+    const base = H - 0.75
+    const amp = Math.min(26, H - 2)
+    const n = Math.max(48, Math.floor(W / 6))
+    const pts = []
+    for (let j = 0; j <= n; j++) {
+      const x = j / n
+      const v = _bandAt(Math.abs(x - 0.5) * 2)
+      const taper = 0.35 + 0.65 * Math.sin(Math.PI * x)
+      pts.push([x * W, base - v * v * amp * taper])
+    }
+    ctx.beginPath()
+    ctx.moveTo(0, base)
+    for (let k = 0; k < pts.length - 1; k++) {
+      ctx.quadraticCurveTo(pts[k][0], pts[k][1], (pts[k][0] + pts[k + 1][0]) / 2, (pts[k][1] + pts[k + 1][1]) / 2)
+    }
+    ctx.lineTo(W, base)
+    const r = _fxRgb[0], g = _fxRgb[1], b = _fxRgb[2]
+    const fill = ctx.createLinearGradient(0, base - amp, 0, base)
+    fill.addColorStop(0, 'rgba(' + r + ',' + g + ',' + b + ',0)')
+    fill.addColorStop(1, 'rgba(' + r + ',' + g + ',' + b + ',0.22)')
+    ctx.fillStyle = fill
+    ctx.fill()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.9)'
+    ctx.stroke()
+  }
+
   // ─── Chaos Mode (Easter Egg) ──────────────────────────────────
+  // A neon spectrum ring around the cover with a warp starfield, shooting
+  // stars and bass shockwaves. Nothing is filled: the page stays visible.
 
   function _toggleChaosMode() {
     mp._chaosMode = !mp._chaosMode
+    _resetChaos()
     if (mp._chaosMode) {
       // Lock out clicks for 3s so the user doesn't accidentally toggle it off
       _chaosLockedUntil = Date.now() + 3000
@@ -300,14 +307,7 @@
         if (mp.isVisible) _startFx()
       }
       if (mp.playerEl) mp.playerEl.classList.add('mp-fx-chaos')
-      _chaosParticles = []
-      _chaosRings = []
-      _chaosArcs = []
-      _chaosHue = 0
-      _chaosPrevBass = 0
-      _chaosShakeX = 0
-      _chaosShakeY = 0
-      _chaosFlash = 1.0  // trigger activation flash
+      _chaosWaves = [{ r: 0, a: 0.8 }, { r: -40, a: 0.8 }, { r: -80, a: 0.8 }]  // activation burst
       // Resize canvas after CSS transition for new height
       setTimeout(() => { _resizeFxCanvas() }, 350)
       // Button celebration wiggle
@@ -317,37 +317,36 @@
       }
     } else {
       if (mp.playerEl) mp.playerEl.classList.remove('mp-fx-chaos')
-      _chaosParticles = []
-      _chaosRings = []
-      _chaosArcs = []
-      _chaosFlash = 0
       setTimeout(() => { _resizeFxCanvas() }, 350)
     }
   }
 
+  function _resetChaos() {
+    _chaosStars = []
+    _chaosWaves = []
+    _chaosShooters = []
+    _chaosSpin = 0
+    _chaosPrevBass = 0
+    _chaosLastT = 0
+  }
+
   function _stopChaos() {
     mp._chaosMode = false
-    _chaosParticles = []
-    _chaosRings = []
-    _chaosArcs = []
-    _chaosFlash = 0
+    _resetChaos()
     if (mp.playerEl) mp.playerEl.classList.remove('mp-fx-chaos')
   }
 
-  // HSL helper: convert hue (0-360), sat (0-100), light (0-100), alpha (0-1) to CSS
-  function _hsla(h, s, l, a) {
-    return 'hsla(' + (h % 360) + ',' + s + '%,' + l + '%,' + a + ')'
+  function _rgba(c, a) {
+    return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')'
   }
 
   function _renderChaos(W, H, freqData, bufLen) {
     const ctx = mp._fxCtx
+    const now = performance.now()
+    const dt = _chaosLastT ? Math.min(0.05, (now - _chaosLastT) / 1000) : 0.016
+    _chaosLastT = now
     const bands = _chaosBands(freqData, bufLen)
     const bass = bands.bass
-    const mid = bands.mid
-    const treble = bands.treble
-
-    // Overall energy
-    const energy = bass * 0.5 + mid * 0.3 + treble * 0.2
 
     // Bass transient detection
     const bassDelta = bass - _chaosPrevBass
@@ -355,30 +354,16 @@
     const isHardBassHit = bassDelta > 0.2 && bass > 0.5
     _chaosPrevBass = bass
 
-    // ── Hue rotation ──
-    _chaosHue += 0.3 + energy * 2
-    if (isBassHit) _chaosHue += 30 + Math.random() * 30
+    const cx = W / 2
+    const cy = H * 0.55
+    const R = Math.max(44, Math.min(W, H) * 0.12) + bass * 14
+    _chaosSpin += dt * (0.15 + bands.mid * 0.8)
 
-    // ── Screen shake ──
-    if (isHardBassHit) {
-      _chaosShakeX = (Math.random() - 0.5) * 8
-      _chaosShakeY = (Math.random() - 0.5) * 6
-    }
-    _chaosShakeX *= 0.8
-    _chaosShakeY *= 0.8
-    if (Math.abs(_chaosShakeX) < 0.2) _chaosShakeX = 0
-    if (Math.abs(_chaosShakeY) < 0.2) _chaosShakeY = 0
-
-    ctx.save()
-    ctx.translate(_chaosShakeX, _chaosShakeY)
-
-    _chaosDrawGlow(ctx, W, H, bass)
-    _chaosSpawnParticles(W, H, bass, energy, isBassHit, isHardBassHit)
-    _chaosDrawParticles(ctx, W, H, bass, energy)
-    _chaosDrawSparkles(ctx, W, H, treble)
-    _chaosDrawVignette(ctx, W, H, bass)
-
-    ctx.restore()
+    _chaosDrawStars(ctx, W, H, cx, cy, bass, bands.treble, dt)
+    _chaosDrawShooters(ctx, W, H, isHardBassHit, dt)
+    _chaosDrawWaves(ctx, cx, cy, R, bass, isBassHit, dt)
+    _chaosDrawRing(ctx, cx, cy, R, H)
+    _chaosDrawCover(ctx, cx, cy, R)
   }
 
   // Average energy (0-1) of the bass, mid and treble bands
@@ -410,174 +395,155 @@
     return { bass: bass, mid: mid, treble: treble }
   }
 
-  function _chaosDrawGlow(ctx, W, H, bass) {
-    // ── Activation flash ──
-    if (_chaosFlash > 0) {
-      ctx.fillStyle = 'rgba(222,24,51,' + (_chaosFlash * 0.4) + ')'
-      ctx.fillRect(-5, -5, W + 10, H + 10)
-      _chaosFlash *= 0.92
-      if (_chaosFlash < 0.01) _chaosFlash = 0
-    }
-
-    // ── Ambient glow (bass-reactive aura, radiates upward from bottom) ──
-    if (bass > 0.2) {
-      // Glow centered at bottom, reaching up ~60% of canvas height
-      const glowReach = H * 0.6
-      const glowGrad = ctx.createRadialGradient(W / 2, H, 0, W / 2, H - glowReach, glowReach)
-      glowGrad.addColorStop(0, _hsla(_chaosHue, 80, 30, bass * 0.3))
-      glowGrad.addColorStop(0.5, _hsla(_chaosHue + 40, 70, 20, bass * 0.1))
-      glowGrad.addColorStop(1, 'rgba(0,0,0,0)')
-      ctx.fillStyle = glowGrad
-      ctx.fillRect(0, H * 0.3, W, H * 0.7)
-    }
-  }
-
-  function _chaosSpawnParticles(W, H, bass, energy, isBassHit, isHardBassHit) {
-    // ── Spawn particles from bar tops ──
-    const barCount = 48
-    const gap = 1.5
-    const barW = (W - gap * (barCount - 1)) / barCount
-    const spawnRate = isBassHit ? 14 : (2 + energy * 6)
-    // Use the same bar height cap as the drawn bars so particles spawn from the visible tops
-    const chaosBarMax = mp._chaosMode ? Math.min(180, H * 0.22) : H * 0.98
-    const pCap = 350
-
-    for (let s = 0; s < spawnRate; s++) {
-      if (_chaosParticles.length >= pCap) break
-      const barIdx = Math.floor(Math.random() * barCount)
-      const barVal = _fxSmoothed ? _fxSmoothed[barIdx] || 0 : 0
-      if (barVal < 0.05) continue
-      const barX = barIdx * (barW + gap) + barW / 2
-      const barH = barVal * chaosBarMax
-      const barY = H - barH
-
-      const speed = 1.5 + barVal * 5 + (isBassHit ? 4 : 0)
-      const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.9
-      const freq = barIdx / barCount
-      const hue = _chaosHue + freq * 120
-
-      _chaosParticles.push({
-        x: barX + (Math.random() - 0.5) * barW,
-        y: barY,
-        vx: Math.cos(angle) * speed * (0.8 + Math.random() * 0.4),
-        vy: Math.sin(angle) * speed * (0.8 + Math.random() * 0.4),
-        life: 1.0,
-        decay: 0.005 + Math.random() * 0.008,
-        size: 1.5 + barVal * 3 + Math.random() * 2,
-        hue: hue,
-        sat: 70 + Math.random() * 30,
-        glow: barVal > 0.6
-      })
-    }
-
-    // ── Bass burst: explosive center particle spray on hard hits ──
-    if (isHardBassHit) {
-      const burstCount = 20 + Math.floor(bass * 30)
-      for (let b = 0; b < burstCount; b++) {
-        if (_chaosParticles.length >= pCap) break
-        const angle = -Math.PI * Math.random()
-        const speed = 3 + Math.random() * 7 * bass
-        _chaosParticles.push({
-          x: W / 2 + (Math.random() - 0.5) * W * 0.4,
-          y: H - chaosBarMax * 0.5 + (Math.random() - 0.5) * chaosBarMax,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed - 2,
-          life: 1.0,
-          decay: 0.007 + Math.random() * 0.008,
-          size: 2 + Math.random() * 4,
-          hue: _chaosHue + Math.random() * 60 - 30,
-          sat: 80 + Math.random() * 20,
-          glow: true
-        })
+  // Warp starfield flying out of the ring; bass sets the speed
+  function _chaosDrawStars(ctx, W, H, cx, cy, bass, treble, dt) {
+    if (!_chaosStars.length) {
+      for (let i = 0; i < 240; i++) {
+        _chaosStars.push({ x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, z: Math.random(), c: i % 7 === 0 ? _CHAOS_PINK : i % 5 === 0 ? _CHAOS_CYAN : null })
       }
     }
-  }
-
-  function _chaosDrawParticles(ctx, W, H, bass, energy) {
-    // ── Update & render particles (perf: no shadowBlur, swap-and-pop removal) ──
-    let pLen = _chaosParticles.length
-    let writeIdx = 0
-    for (let i = 0; i < pLen; i++) {
-      const p = _chaosParticles[i]
-      p.vy -= 0.04 + bass * 0.12
-      p.vy += 0.015
-      p.vx *= 0.997
-      p.vy *= 0.997
-      p.x += p.vx
-      p.y += p.vy
-      p.life -= p.decay
-
-      if (p.life <= 0 || p.y > H + 20 || p.x < -40 || p.x > W + 40) continue
-
-      // Keep particle (compact array in-place)
-      _chaosParticles[writeIdx++] = p
-
-      const yRatio = p.y / H
-      const vertFade = yRatio > 0.15 ? 1.0 : (yRatio / 0.15)
-      const alpha = p.life * (0.6 + energy * 0.4) * vertFade
-      if (alpha < 0.01) continue
-
-      const radius = p.size * p.life
-
-      // Cheap glow: larger dim circle behind (no shadowBlur needed)
-      if (p.glow && alpha > 0.1) {
-        ctx.beginPath()
-        ctx.arc(p.x, p.y, radius * 2.5, 0, Math.PI * 2)
-        ctx.fillStyle = _hsla(p.hue, p.sat, 50, alpha * 0.15)
-        ctx.fill()
+    const speed = 0.06 + bass * bass * 0.9
+    const fov = Math.max(W, H) * 0.15
+    const white = [255, 255, 255]
+    for (const s of _chaosStars) {
+      const z0 = s.z
+      s.z -= speed * dt
+      if (s.z <= 0.02) {
+        s.x = Math.random() * 2 - 1
+        s.y = Math.random() * 2 - 1
+        s.z = 1
+        continue
       }
-
-      // Main particle
+      const b = Math.min(1, (1 - s.z) * 1.3)
+      ctx.strokeStyle = _rgba(s.c || white, b * (0.5 + treble * 0.4))
+      ctx.lineWidth = 0.5 + b * 1.4
       ctx.beginPath()
-      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2)
-      ctx.fillStyle = _hsla(p.hue, p.sat, 50 + p.life * 30, alpha)
-      ctx.fill()
-
-      // Bright core on large particles
-      if (p.size > 3.5) {
-        ctx.beginPath()
-        ctx.arc(p.x, p.y, radius * 0.3, 0, Math.PI * 2)
-        ctx.fillStyle = _hsla(p.hue, 30, 90, alpha * 0.7)
-        ctx.fill()
-      }
-    }
-    _chaosParticles.length = writeIdx
-  }
-
-  function _chaosDrawSparkles(ctx, W, H, treble) {
-    // ── Treble sparkles (tiny bright dots scattered across canvas) ──
-    if (treble > 0.15) {
-      const sparkleCount = Math.floor(treble * 20)
-      for (let s = 0; s < sparkleCount; s++) {
-        const sx = Math.random() * W
-        const sy = H * 0.1 + Math.random() * H * 0.7
-        const yFade = sy / H < 0.3 ? (sy / H / 0.3) : 1.0
-        const sAlpha = treble * (0.3 + Math.random() * 0.5) * yFade
-        const sSize = 0.5 + Math.random() * 1.5
-        ctx.beginPath()
-        ctx.arc(sx, sy, sSize, 0, Math.PI * 2)
-        ctx.fillStyle = _hsla(_chaosHue + 60 + Math.random() * 60, 50, 85, sAlpha)
-        ctx.fill()
-      }
+      ctx.moveTo(cx + s.x / z0 * fov, cy + s.y / z0 * fov)
+      ctx.lineTo(cx + s.x / s.z * fov, cy + s.y / s.z * fov)
+      ctx.stroke()
     }
   }
 
-  function _chaosDrawVignette(ctx, W, H, bass) {
-    // ── Vignette glow on edges (bass-reactive, full height) ──
-    if (bass > 0.15) {
-      const vigAlpha = bass * 0.15
-      // Left edge
-      const vigL = ctx.createLinearGradient(0, 0, W * 0.12, 0)
-      vigL.addColorStop(0, _hsla(_chaosHue, 80, 40, vigAlpha))
-      vigL.addColorStop(1, 'rgba(0,0,0,0)')
-      ctx.fillStyle = vigL
-      ctx.fillRect(0, 0, W * 0.12, H)
-      // Right edge
-      const vigR = ctx.createLinearGradient(W, 0, W * 0.88, 0)
-      vigR.addColorStop(0, _hsla(_chaosHue + 180, 80, 40, vigAlpha))
-      vigR.addColorStop(1, 'rgba(0,0,0,0)')
-      ctx.fillStyle = vigR
-      ctx.fillRect(W * 0.88, 0, W * 0.12, H)
+  // Occasional shooting stars across the upper sky, more on hard hits
+  function _chaosDrawShooters(ctx, W, H, isHardBassHit, dt) {
+    if (_chaosShooters.length < 3 && (isHardBassHit || Math.random() < dt * 0.25)) {
+      _chaosShooters.push({ x: W * (0.3 + Math.random() * 0.8), y: H * (0.1 + Math.random() * 0.3), vx: -(400 + Math.random() * 300), vy: 150 + Math.random() * 100, life: 1 })
+    }
+    _chaosShooters = _chaosShooters.filter(s => {
+      s.x += s.vx * dt
+      s.y += s.vy * dt
+      s.life -= dt * 0.9
+      if (s.life <= 0) return false
+      const len = 120 / Math.hypot(s.vx, s.vy)
+      const tx = s.x - s.vx * len
+      const ty = s.y - s.vy * len
+      const tail = ctx.createLinearGradient(s.x, s.y, tx, ty)
+      tail.addColorStop(0, 'rgba(255,255,255,' + s.life + ')')
+      tail.addColorStop(1, _rgba(_CHAOS_PINK, 0))
+      ctx.strokeStyle = tail
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.moveTo(s.x, s.y)
+      ctx.lineTo(tx, ty)
+      ctx.stroke()
+      return true
+    })
+  }
+
+  // Thin shockwaves leaving the ring on each kick
+  function _chaosDrawWaves(ctx, cx, cy, R, bass, isBassHit, dt) {
+    if (isBassHit && _chaosWaves.length < 6) _chaosWaves.push({ r: 0, a: 0.5 })
+    ctx.lineWidth = 1.5
+    _chaosWaves = _chaosWaves.filter(w => {
+      w.r += (140 + bass * 200) * dt
+      w.a -= 0.7 * dt
+      if (w.a <= 0) return false
+      if (w.r > 0) {
+        ctx.strokeStyle = _rgba(_CHAOS_CYAN, w.a)
+        ctx.beginPath()
+        ctx.arc(cx, cy, R + w.r, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+      return true
+    })
+  }
+
+  function _chaosRingPath(ctx, cx, cy, radiusAt, n) {
+    const pts = []
+    for (let i = 0; i < n; i++) {
+      const a = i / n * Math.PI * 2 - Math.PI / 2
+      const r = radiusAt(i < n / 2 ? i / (n / 2) : (n - i) / (n / 2))  // mirrored: bass on top
+      pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r])
+    }
+    ctx.beginPath()
+    ctx.moveTo((pts[n - 1][0] + pts[0][0]) / 2, (pts[n - 1][1] + pts[0][1]) / 2)
+    for (let k = 0; k < n; k++) {
+      const p = pts[k]
+      const q = pts[(k + 1) % n]
+      ctx.quadraticCurveTo(p[0], p[1], (p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+    }
+    ctx.closePath()
+  }
+
+  // Spectrum ring: neon outer line, cyan inner echo and a slow dashed orbit
+  function _chaosDrawRing(ctx, cx, cy, R, H) {
+    const len = Math.min(H * 0.18, 110)
+    let stroke = _rgba(_CHAOS_PINK, 0.95)
+    if (ctx.createConicGradient) {
+      stroke = ctx.createConicGradient(_chaosSpin, cx, cy)
+      stroke.addColorStop(0, _rgba(_CHAOS_PINK, 0.95))
+      stroke.addColorStop(0.33, _rgba(_CHAOS_GOLD, 0.95))
+      stroke.addColorStop(0.66, _rgba(_CHAOS_CYAN, 0.95))
+      stroke.addColorStop(1, _rgba(_CHAOS_PINK, 0.95))
+    }
+    ctx.save()
+    ctx.shadowColor = _rgba(_CHAOS_PINK, 0.8)
+    ctx.shadowBlur = 12
+    ctx.lineWidth = 2
+    ctx.strokeStyle = stroke
+    _chaosRingPath(ctx, cx, cy, f => { const v = _bandAt(f); return R + 4 + v * v * len }, 96)
+    ctx.stroke()
+    ctx.restore()
+
+    ctx.lineWidth = 1
+    ctx.strokeStyle = _rgba(_CHAOS_CYAN, 0.6)
+    _chaosRingPath(ctx, cx, cy, f => R + 2 + _bandAt(f) * len * 0.35, 96)
+    ctx.stroke()
+
+    const orbit = R + len * 0.8
+    ctx.save()
+    ctx.setLineDash([2, 10])
+    ctx.lineDashOffset = -_chaosSpin * 40
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)'
+    ctx.beginPath()
+    ctx.arc(cx, cy, orbit, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.restore()
+    const sa = _chaosSpin * 2
+    ctx.fillStyle = _rgba(_CHAOS_GOLD, 0.9)
+    ctx.beginPath()
+    ctx.arc(cx + Math.cos(sa) * orbit, cy + Math.sin(sa) * orbit, 2.5, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // The current cover inside the ring, or a hairline circle without one
+  function _chaosDrawCover(ctx, cx, cy, R) {
+    const img = mp.playerEl && mp.playerEl.querySelector('.music-player-art img')
+    const r = R - 6
+    if (img && img.complete && img.naturalWidth) {
+      ctx.save()
+      ctx.globalAlpha = 0.9
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0, Math.PI * 2)
+      ctx.clip()
+      ctx.drawImage(img, cx - r, cy - r, r * 2, r * 2)
+      ctx.restore()
+    } else {
+      ctx.lineWidth = 1
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)'
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0, Math.PI * 2)
+      ctx.stroke()
     }
   }
 

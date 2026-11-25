@@ -101,7 +101,6 @@
     mp.playlistBtn = document.getElementById('mpPlaylistBtn')
     mp.playlistPanel = document.getElementById('mpPlaylistPanel')
     mp.fxBtn = document.getElementById('mpFxBtn')
-    mp.autoplayBtn = document.getElementById('mpAutoplay')
     mp.devicesBtn = document.getElementById('mpDevicesBtn')
     mp.devicesPanel = document.getElementById('mpDevicesPanel')
     mp.devicesList = document.getElementById('mpDevicesList')
@@ -134,9 +133,6 @@
     if (rightEl && volumeEl) {
       rightEl.insertBefore(volumeEl, rightEl.firstChild)
     }
-    // Autoplay is a queue setting, not a transport control: right group too
-    var autoplayEl = document.getElementById('mpAutoplay')
-    if (rightEl && autoplayEl) rightEl.insertBefore(autoplayEl, rightEl.firstChild)
 
     // Add heart + "add to playlist" buttons inside info area, next to title/artist
     var infoEl = mp.playerEl.querySelector('.music-player-info')
@@ -224,12 +220,6 @@
     const savedFx = _lsGet('mp_fx')
     mp._fxEnabled = savedFx === null ? true : savedFx === '1'
     if (mp.fxBtn && mp._fxEnabled) mp.fxBtn.classList.add('mp-btn-active')
-
-    // Autoplay toggle (default: on)
-    if (mp.autoplayBtn) {
-      if (mp._autoplayEnabled) mp.autoplayBtn.classList.add('mp-btn-active')
-      mp.autoplayBtn.addEventListener('click', mp._toggleAutoplay)
-    }
 
     // Set initial volume from saved state (slider shows linear position, not curved volume)
     if (volumeSlider) {

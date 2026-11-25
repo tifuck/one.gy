@@ -597,7 +597,7 @@
 
 @media (max-width:620px){
   /* Mini bar: track + prev / play / next + close; the rest lives in fullscreen */
-  .ui-v2 .music-player:not(.mp-fs-open) :is(#mpShuffle, #mpRepeat, #mpAutoplay, #mpFxBtn, .mp-controls-divider, .mp-bar-heart, .mp-add-to-playlist){ display:none; }
+  .ui-v2 .music-player:not(.mp-fs-open) :is(#mpShuffle, #mpRepeat, #mpFxBtn, .mp-controls-divider, .mp-bar-heart, .mp-add-to-playlist){ display:none; }
   .ui-v2 .music-player:not(.mp-fs-open) .music-player-right .music-player-close{ display:inline-flex; }
   .ui-v2 .music-player-main{ gap:10px; padding:0 8px 0 12px; height:64px; }
   .ui-v2 .toast-container, .ui-v2:has(.fx-selbar.is-open) .toast-container{ top:calc(var(--nav-h) + 8px); bottom:auto; }

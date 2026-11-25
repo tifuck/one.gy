@@ -5,7 +5,7 @@
    ui-v2.css; player rules repeat the .ui-v2 scope so they win over its base
    bar look (_app_base.html loads music.css after it).
    music-player.js rearranges the bar at init: progress moves under the
-   controls, volume / autoplay / FX into .music-player-right, like + add into
+   controls, volume / FX into .music-player-right, like + add into
    .music-player-info. Fullscreen (<=850px) = .mp-fullscreen + .mp-fs-open.
    ========================================================================== */
 
@@ -345,8 +345,8 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .ui-v2 .mp-title-clickable{ cursor:pointer; }
 .ui-v2 .mp-artist-link{ cursor:pointer; }
 .ui-v2 .mp-title-clickable:hover .mp-title-inner, .ui-v2 .mp-artist-link:hover{ text-decoration:underline; text-underline-offset:2px; }
-/* Dashboard tracks are already the user's files: no like / add / autoplay */
-.ui-v2 .music-player.mp-own-library :is(.mp-bar-heart, .mp-add-to-playlist, .mp-fs-heart-btn, .mp-fs-add-btn, #mpAutoplay){ display:none; }
+/* Dashboard tracks are already the user's files: no like / add */
+.ui-v2 .music-player.mp-own-library :is(.mp-bar-heart, .mp-add-to-playlist, .mp-fs-heart-btn, .mp-fs-add-btn){ display:none; }
 .ui-v2 .music-player.mp-no-add :is(.mp-add-to-playlist, .mp-fs-add-btn){ display:none; }
 
 /* Buttons */
@@ -359,7 +359,7 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .ui-v2 .mp-btn:hover{ color:var(--text); background:var(--hover); }
 .ui-v2 .mp-btn-active, .ui-v2 .mp-btn-active:hover, .ui-v2 .mp-bar-heart.liked, .ui-v2 .mp-sync-active{ color:var(--accent); }
 /* Active toggles also get a dot, so the state does not rely on colour alone */
-.ui-v2 :is(#mpShuffle, #mpRepeat, #mpAutoplay, #mpFxBtn, #mpPlaylistBtn).mp-btn-active::after{
+.ui-v2 :is(#mpShuffle, #mpRepeat, #mpFxBtn, #mpPlaylistBtn).mp-btn-active::after{
   content:""; position:absolute; left:50%; bottom:2px; width:4px; height:4px; margin-left:-2px; border-radius:50%; background:currentColor;
 }
 .ui-v2 .mp-btn-play, .ui-v2 .mp-btn-play:hover{ width:34px; height:34px; border-radius:50%; background:var(--text); color:var(--bg); }
@@ -390,20 +390,19 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 
 /* Tools (right column) */
 .ui-v2 .music-player-right{ grid-column:3; grid-row:1 / -1; justify-self:end; display:flex; align-items:center; gap:2px; }
-.ui-v2 #mpAutoplay{ order:1; } .ui-v2 #mpFxBtn{ order:2; } .ui-v2 #mpDevicesBtn{ order:3; }
+.ui-v2 #mpFxBtn{ order:2; } .ui-v2 #mpDevicesBtn{ order:3; }
 .ui-v2 #mpPlaylistBtn{ order:4; } .ui-v2 .music-player-volume{ order:5; } .ui-v2 #mpClose{ order:6; }
 .ui-v2 .music-player-volume{ display:flex; align-items:center; gap:4px; margin-left:4px; }
 .ui-v2 input.music-player-volume-slider{ width:92px; }
 .ui-v2 #mpClose{ margin-left:6px; }
 .ui-v2 #mpClose svg{ width:14px; height:14px; }
 
-/* Visualizer: a faint accent wash behind the bar (toggle: FX button) */
-.ui-v2 .mp-visualizer{ display:none; position:absolute; left:0; right:0; bottom:0; width:100%; height:100%; pointer-events:none; opacity:.2;
-  -webkit-mask-image:linear-gradient(to top, black, transparent 85%); mask-image:linear-gradient(to top, black, transparent 85%); }
+/* Visualizer: a spectrum line rising from the bar's top edge (toggle: FX button) */
+.ui-v2 .mp-visualizer{ display:none; position:absolute; left:0; right:0; bottom:100%; width:100%; height:28px; pointer-events:none; }
 .ui-v2 .music-player.mp-fx-active .mp-visualizer{ display:block; }
 .ui-v2 .music-player.mp-fx-chaos{ overflow:visible; }
 .ui-v2 .music-player.mp-fx-chaos .mp-visualizer{
-  bottom:100%; height:85vh; opacity:1;
+  height:85vh;
   -webkit-mask-image:linear-gradient(to bottom, transparent 0%, rgba(0,0,0,.4) 8%, rgba(0,0,0,.85) 15%, black 22%);
   mask-image:linear-gradient(to bottom, transparent 0%, rgba(0,0,0,.4) 8%, rgba(0,0,0,.85) 15%, black 22%);
 }
@@ -568,9 +567,8 @@ body.mp-fs-open{ overflow:hidden; }
   .ui-v2 .music-player.mp-fullscreen .mp-btn-play svg{ width:26px; height:26px; }
   .ui-v2 .music-player.mp-fullscreen .music-player-right{ order:5; display:flex; justify-content:flex-end; gap:4px; margin-top:16px; }
   .ui-v2 .music-player.mp-fullscreen :is(.music-player-volume, #mpPlaylistBtn, #mpClose){ display:none; }
-  .ui-v2 .music-player.mp-fullscreen :is(#mpAutoplay, #mpFxBtn){ display:inline-flex; }
+  .ui-v2 .music-player.mp-fullscreen #mpFxBtn{ display:inline-flex; }
   .ui-v2 .music-player.mp-fullscreen #mpDevicesBtn{ order:0; margin-right:auto; }
-  .ui-v2 .music-player.mp-fullscreen.mp-own-library #mpAutoplay{ display:none; }
   .ui-v2 .music-player.mp-fullscreen :is(.mp-playlist-panel, .mp-devices-panel){
     position:fixed; left:0; right:0; bottom:0; width:auto; max-width:none; max-height:72vh; border-radius:16px 16px 0 0;
     padding-bottom:env(safe-area-inset-bottom); touch-action:pan-y; transform-origin:50% 100%;

@@ -1,5 +1,5 @@
 <!-- Music Player (music-player.js rearranges the bar at init: progress under
-     the controls, volume/autoplay/FX into the right group, like/add into the info) -->
+     the controls, volume/FX into the right group, like/add into the info) -->
 <div class="music-player" id="musicPlayer" data-uid="{{ _mp_uid }}">
   <!-- Fullscreen header (visible only in expanded mobile view) -->
   <div class="mp-fs-header" id="mpFsHeader">
@@ -63,9 +63,6 @@
       </button>
       <button class="mp-btn mp-btn-sm" id="mpRepeat" title="Repeat off">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-      </button>
-      <button class="mp-btn mp-btn-sm" id="mpAutoplay" title="Autoplay">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-5.095-8 0-8z"/><path d="M5.822 8c-5.096 0-5.096 8 0 8 5.095 0 5.095-8 0-8z"/><line x1="10.5" y1="12" x2="13.5" y2="12"/></svg>
       </button>
       <div class="music-player-volume">
         <button class="mp-btn mp-btn-sm" id="mpVolBtn" title="Mute">

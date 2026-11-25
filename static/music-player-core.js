@@ -69,7 +69,6 @@
   mp._context = 'dashboard' // 'dashboard' | 'browse'
   mp._browseShareToken = ''
   mp._currentBlobUrl = null
-  mp._autoplayEnabled = _lsGet('mp_autoplay') !== '0'  // default: on
   mp._suggestedStartIndex = -1  // index where suggested tracks begin in playlist
   mp._crossfadeActive = false
   mp._crossfadeAudio = null
@@ -257,7 +256,7 @@
   // ─── DOM References (set by init in music-player.js) ────────────
   // mp.playerEl, mp.titleEl, mp.titleInner, mp.artistEl, mp.currentTimeEl, mp.durationEl, mp.progressEl
   // mp.playBtn, mp.shuffleBtn, mp.repeatBtn
-  // mp.volumeBtn, mp.playlistBtn, mp.playlistPanel, mp.fxBtn, mp.autoplayBtn, mp.miniPlayBtn
+  // mp.volumeBtn, mp.playlistBtn, mp.playlistPanel, mp.fxBtn, mp.miniPlayBtn
   // mp.fsHeartBtn, mp.fsAddBtn
   // mp.devicesBtn, mp.devicesPanel, mp.devicesList, mp.phantomLabel, mp.miniDevicesBtn, mp.fsDevicesBtn
   // (references only one file uses are kept in that file)
