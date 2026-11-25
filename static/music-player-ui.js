@@ -231,6 +231,7 @@
         if (!item) return
         const idx = parseInt(item.dataset.index)
         if (!isNaN(idx)) {
+          if (mp._syncPhantomMode && mp._syncPlayOnRemote(mp.playlist, idx)) return
           if (mp.shuffleMode) {
             mp.shufflePos = mp.shuffleOrder.indexOf(idx)
             if (mp.shufflePos === -1) mp.shufflePos = 0

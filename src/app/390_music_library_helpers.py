@@ -164,7 +164,10 @@ _MUSIC_SYNC_STATE_MAX = 1024 * 1024
 # MusicDevice.last_seen is rewritten at most this often by sync polls; well
 # under the 30 s online window.
 _MUSIC_LAST_SEEN_WRITE_INTERVAL = timedelta(seconds=10)
-_MUSIC_COMMAND_ACTIONS = ('play', 'pause', 'next', 'prev', 'seek')
+_MUSIC_COMMAND_ACTIONS = ('play', 'pause', 'next', 'prev', 'seek', 'play_tracks', 'shuffle', 'repeat')
+_MUSIC_COMMAND_TRACKS_MAX = 200  # the player's own queue cap
+# A device that polled within this window is online: listed, and a valid command target.
+_MUSIC_ONLINE_WINDOW = timedelta(seconds=30)
 _MUSIC_SEEK_MAX_SECONDS = 24 * 3600
 _MUSIC_SQL_CHUNK = 500
 _MUSIC_COMMAND_PAYLOAD_MAX = 1024 * 1024
@@ -229,9 +232,9 @@ def _music_upsert_device(user_id, device_id, device_name, now):
                 user_id=user_id, device_id=device_id).with_for_update().populate_existing().first()
             if not device:
                 raise
+    # The name is only set on creation: a rename (PUT /music/api/sync/device),
+    # possibly made from another device, must survive this device's pushes.
     device.last_seen = now
-    if device_name and device_name != 'Unknown Device':
-        device.device_name = device_name
     return device
 
 
@@ -294,6 +297,47 @@ def _music_clear_stale_active_device(user_id, online_cutoff):
         return sync
     finally:
         _music_mailbox_unlock(mailbox_lock)
+
+
+def _music_command_tracks(tracks):
+    """Validated copy of a play_tracks queue (only the fields the player reads), or None."""
+    if not isinstance(tracks, list) or not 0 < len(tracks) <= _MUSIC_COMMAND_TRACKS_MAX:
+        return None
+
+    def _ref(value):
+        return value if isinstance(value, (str, int)) and not isinstance(value, bool) else None
+
+    clean = []
+    for t in tracks:
+        if not isinstance(t, dict) or not _music_valid_song_id(t.get('id')):
+            return None
+        artists = t.get('artists') if isinstance(t.get('artists'), list) else []
+        clean.append({
+            'id': t['id'],
+            'name': _music_json_str(t.get('name'), truncate_to=500) or 'Unknown',
+            'coverPath': _music_json_str(t.get('coverPath'), truncate_to=500) or None,
+            'artists': [{'id': a['id'], 'name': a['name'][:200]} for a in artists[:20]
+                        if isinstance(a, dict) and _ref(a.get('id')) is not None and isinstance(a.get('name'), str)],
+            'albumId': _ref(t.get('albumId')),
+            'suggested': t.get('suggested') is True,
+        })
+    return clean
+
+
+def _music_device_online(device, now):
+    last_seen = device.last_seen if device else None
+    if last_seen and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    return bool(last_seen) and now - last_seen <= _MUSIC_ONLINE_WINDOW
+
+
+def _music_has_pending_command(user_id, target_device_id, now):
+    return db.session.query(MusicSyncCommand.id).filter(
+        MusicSyncCommand.user_id == user_id,
+        MusicSyncCommand.target_device_id == target_device_id,
+        MusicSyncCommand.status == 'pending',
+        db.or_(MusicSyncCommand.expires_at.is_(None), MusicSyncCommand.expires_at >= now),
+    ).first() is not None
 
 
 def _music_command_payload(command):

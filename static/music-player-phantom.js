@@ -7,7 +7,10 @@
   let _syncPhantomQueueKey = null   // remote queue ids last rendered in the playlist panel
 
   function _syncResetForLocalPlayback() {
-    if (!mp._syncPhantomMode && !mp._syncPhantomKeepaliveActive && !mp._syncPhantomRAF && !mp._syncPhantomPositionTimer && !audio.loop) return
+    mp._syncRemoteTarget = null
+    mp._syncPhantomDeviceId = null
+    if (!mp._syncPhantomMode && !mp._syncPhantomKeepaliveActive && !mp._syncPhantomRAF && !mp._syncPhantomPositionTimer && !audio.loop &&
+        !(mp.playerEl && mp.playerEl.classList.contains('mp-phantom'))) return
 
     mp._syncPhantomMode = false
     mp._syncPhantomTrackId = null
@@ -30,10 +33,22 @@
     var remoteTracks = mp._syncTracksFromState(state)
     if (!remoteTracks || !Number.isInteger(state.currentIndex) ||
         state.currentIndex < 0 || state.currentIndex >= remoteTracks.length) return
+    // Keep the optimistic UI of a command just sent until a state pushed after
+    // it arrives (state_age_ms is server-measured), at most 3 s.
+    var sentAt = mp._syncCommandSentAt || 0
+    if (mp._syncPhantomMode && Date.now() - sentAt < 3000 && Date.now() - mp._syncNum(data.state_age_ms) < sentAt) return
     var remoteTrack = remoteTracks[state.currentIndex]
     var remotePlaying = state.isPlaying === true
 
     mp._syncPhantomMode = true
+    mp._syncPhantomDeviceId = data.active_device_id
+    mp._syncRemoteTarget = null
+    // Library tracks: hearts, art and links work on every page
+    if (mp._context !== 'music-library') {
+      mp._context = 'music-library'
+      mp._updateOwnLibraryState()
+    }
+    mp._syncShowDevicesButtons()
     mp._syncIsActive = false
     mp._syncStopKeepAlive()
 
@@ -125,8 +140,8 @@
     mp._syncPhantomStateTs = data.state_updated_at || null
     mp._syncPhantomStale = false
 
-    // Update interpolation state from poll
-    mp._syncPhantomTime = mp._syncNum(state.currentTime)
+    // Update interpolation state from poll (the state was pushed state_age_ms ago)
+    mp._syncPhantomTime = mp._syncNum(state.currentTime) + (remotePlaying ? mp._syncNum(data.state_age_ms) / 1000 : 0)
     mp._syncPhantomDuration = mp._syncNum(state.duration)
     mp._syncPhantomPlaying = remotePlaying
     mp._syncPhantomPollTs = Date.now()
@@ -243,6 +258,7 @@
 
   function _syncExitPhantom() {
     mp._syncPhantomMode = false
+    mp._syncPhantomDeviceId = null
     mp._syncPhantomTrackId = null
     mp._syncPhantomStale = false
     mp._syncPhantomStateTs = null
@@ -267,11 +283,7 @@
     mp.shufflePos = -1
     mp._suggestedStartIndex = -1
     mp.isPlaying = false
-    if (mp.isVisible) {
-      mp.closePlayer()
-      // closePlayer() stops sync; keep listening for the next remote session
-      if (mp._context === 'music-library') mp._syncStart()
-    }
+    if (mp.isVisible) mp.closePlayer()
     mp._syncUpdateDevicesButton()
   }
 

@@ -98,6 +98,10 @@
   mp._syncDevices = []             // list of known devices from server
   mp._syncForceActive = false      // send force_active on next push (explicit user action)
   mp._syncLoggedIn = false         // whether user is logged in (set in init)
+  mp._syncRemoteTarget = null      // {id, name}: idle remote device picked in Devices; plays go there
+  mp._syncPhantomDeviceId = null   // device the phantom mirrors
+  mp._syncPhantomDismissed = null  // active device whose mirror the user closed
+  mp._syncCommandSentAt = 0        // Date.now() of the last remote command (optimistic UI hold)
   mp._syncPhantomTime = 0          // interpolated current time for phantom progress
   mp._syncPhantomDuration = 0      // duration from last phantom state
   mp._syncPhantomPlaying = false   // whether remote is playing (for interpolation)

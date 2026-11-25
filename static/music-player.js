@@ -74,8 +74,9 @@
     // ── Cross-device sync setup ──
     _initSyncControls()
 
-    // Start sync polling after restore (so we know if we're already playing)
-    if (mp._context === 'music-library' && mp._syncLoggedIn && mp._syncEnabled) {
+    // Start sync polling after restore (so we know if we're already playing).
+    // Every page polls: the device is listed and controllable from anywhere.
+    if (mp._syncLoggedIn && mp._syncEnabled) {
       mp._syncStart()
     }
 
@@ -358,9 +359,19 @@
   }
 
   function _initSyncControls() {
-    // _nav.html renders the account-menu avatar button only for a signed-in user.
-    mp._syncLoggedIn = !!document.querySelector('.rd-avatar-btn')
+    // _app_base.html renders the player only for a signed-in user (data-uid);
+    // data-music: the music feature is on (the sync API needs it).
+    mp._syncLoggedIn = !!(mp.playerEl.dataset.uid && mp.playerEl.dataset.music)
     mp._initSyncDeviceId()
+    // Devices button in the music page's top bar: reachable with no bar shown
+    mp.pageDevicesBtn = document.getElementById('muDevicesBtn')
+    if (mp.pageDevicesBtn && mp._syncLoggedIn) {
+      mp.pageDevicesBtn.hidden = false
+      mp.pageDevicesBtn.addEventListener('click', function(e) {
+        e.stopPropagation()
+        mp._toggleDevicesPanel()
+      })
+    }
     if (mp.devicesBtn) {
       mp.devicesBtn.addEventListener('click', function(e) {
         e.stopPropagation()
@@ -380,11 +391,9 @@
         mp._toggleDevicesPanel()
       })
     }
-    // Show devices buttons for music-library context when logged in
-    if (mp._context === 'music-library' && mp._syncLoggedIn) {
-      if (mp.devicesBtn) mp.devicesBtn.style.display = ''
-      if (mp.miniDevicesBtn) mp.miniDevicesBtn.style.display = ''
-      if (mp.fsDevicesBtn) mp.fsDevicesBtn.style.display = ''
+    // Show devices buttons when logged in, except beside own-file playback (not synced)
+    if (mp._syncLoggedIn && (mp._context === 'music-library' || mp.currentIndex < 0)) {
+      mp._syncShowDevicesButtons()
     }
   }
 
@@ -397,7 +406,7 @@
   // touched: this capture-phase click may be the one starting a track, or
   // a restored track may already own it.
   function _bindAutoplayPrimer() {
-    if (_silentBlobUrl && mp._context === 'music-library' && mp._syncLoggedIn && mp._syncEnabled) {
+    if (_silentBlobUrl && mp._syncLoggedIn && mp._syncEnabled) {
       document.addEventListener('click', function _primeAutoplay() {
         if (_audioPlayPrimed) return
         _audioPlayPrimed = true

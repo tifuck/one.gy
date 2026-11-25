@@ -2,11 +2,21 @@
 ;(function(mp) {
   'use strict'
 
-  const { _jsonHeaders, _lsSet, _ssSet, audio, _coverUrl } = mp
+  const { _jsonHeaders, _lsGet, _lsSet, _ssSet, audio, _coverUrl } = mp
 
   // ─── Sync Engine State (shared sync state lives in core) ────────
   const _SYNC_QUEUE_RADIUS = 100    // tracks pushed on each side of the current one
+  const _SYNC_REMOTE_QUEUE_MAX = 200  // tracks sent with a play_tracks command (server cap)
+  const _SYNC_HEARTBEAT_MS = 4000   // unchanged state is re-pushed this often (server: stale after 10 s)
+  const _SYNC_LEASE_MS = 120000     // a tab holding the browser's device id renews it well within this
+  const _AUTO_NAME_RE = /^(Edge|Opera|Chrome|Firefox|Safari|Browser|ONE\.GY Desktop) on (iPad|iPhone|Android|Mac|Windows|Linux|ChromeOS|Device)$/
   let _syncTimer = null             // setTimeout handle for the next sync tick
+  let _syncTicker = null            // Worker timer for hidden pages (null: not tried, false: unavailable)
+  let _syncLeaseAt = 0              // when this tab last renewed the device id lease
+  let _syncClaimInFlight = false
+  let _syncLastPushSig = null       // state signature, time and position of the last accepted push
+  let _syncLastPushAt = 0
+  let _syncLastPushPos = 0
   let _syncRunning = false          // sync loop wanted (logged in, enabled, music-library)
   let _syncErrorCount = 0           // consecutive failed sync requests (exponential backoff)
   let _syncPollInFlight = false     // at most one GET poll at a time
@@ -22,19 +32,48 @@
 
   // ─── Cross-Device Sync Engine ─────────────────────────────────
 
+  function _newDeviceId() {
+    return crypto.randomUUID ? crypto.randomUUID() : ('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      var r = Math.random() * 16 | 0
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
+    }))
+  }
+
+  // One id per browser, so the devices list keeps one row per browser across
+  // reloads and restarts. A tab opened while another holds the id (its lease is
+  // fresh) gets an id of its own for its session.
   function _initSyncDeviceId() {
     if (!mp._syncDeviceId) {
-      mp._syncDeviceId = crypto.randomUUID ? crypto.randomUUID() : ('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        var r = Math.random() * 16 | 0
-        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
-      }))
+      var stable = _lsGet('mp_device_id')
+      var leaseAge = Date.now() - (parseInt(_lsGet('mp_device_lease'), 10) || 0)
+      mp._syncDeviceId = (stable && leaseAge > _SYNC_LEASE_MS) ? stable : _newDeviceId()
+      if (!stable) _lsSet('mp_device_id', mp._syncDeviceId)
       _ssSet('mp_device_id', mp._syncDeviceId)
     }
-    if (!mp._syncDeviceName) {
+    _syncRenewLease()
+    // Only renames are stored; detected names are refreshed (older builds stored them).
+    if (!mp._syncDeviceName || _AUTO_NAME_RE.test(mp._syncDeviceName)) {
       mp._syncDeviceName = _detectDeviceName()
-      _lsSet('mp_device_name', mp._syncDeviceName)
     }
   }
+
+  function _syncOwnsStableId() {
+    return !!mp._syncDeviceId && mp._syncDeviceId === _lsGet('mp_device_id')
+  }
+
+  function _syncRenewLease() {
+    if (Date.now() - _syncLeaseAt < _SYNC_LEASE_MS / 4 || !_syncOwnsStableId()) return
+    _syncLeaseAt = Date.now()
+    _lsSet('mp_device_lease', String(_syncLeaseAt))
+  }
+
+  // Release on leave: the next page of this tab keeps the id (sessionStorage),
+  // and a later tab may take it.
+  window.addEventListener('pagehide', function() {
+    if (!_syncOwnsStableId()) return
+    _syncLeaseAt = 0
+    _lsSet('mp_device_lease', '0')
+  })
 
   function _detectDeviceName() {
     var ua = navigator.userAgent || ''
@@ -50,7 +89,8 @@
     else if (/CrOS/.test(ua)) platform = 'ChromeOS'
     else platform = 'Device'
     // Detect browser
-    if (/Edg\//.test(ua)) browser = 'Edge'
+    if (/ONEGY-Desktop\//.test(ua)) browser = 'ONE.GY Desktop'
+    else if (/Edg\//.test(ua)) browser = 'Edge'
     else if (/OPR\/|Opera/.test(ua)) browser = 'Opera'
     else if (/Chrome\//.test(ua) && !/Edg\//.test(ua)) browser = 'Chrome'
     else if (/Firefox\//.test(ua)) browser = 'Firefox'
@@ -69,40 +109,76 @@
 
   function _syncStop() {
     _syncRunning = false
-    if (_syncTimer) {
-      clearTimeout(_syncTimer)
-      _syncTimer = null
-    }
+    _syncClearTimers()
     _syncStopKeepAlive()
   }
 
   function _syncKick() {
     if (!_syncRunning) return
-    if (_syncTimer) clearTimeout(_syncTimer)
+    _syncClearTimers()
     _syncTick()
+  }
+
+  function _syncClearTimers() {
+    if (_syncTimer) {
+      clearTimeout(_syncTimer)
+      _syncTimer = null
+    }
+    if (_syncTicker) _syncTicker.postMessage(0)
   }
 
   function _syncTick() {
     _syncTimer = null
     if (!_syncRunning) return
-    var delay = _syncNextDelay()
-    if (delay === null) return  // hidden and idle: visibilitychange kicks it again
     _syncPoll()
+    _syncSchedule(_syncNextDelay())
+  }
+
+  // Hidden pages time the loop in a worker: Chrome throttles a background
+  // page's own timers to one wake-up a minute after 5 minutes, which would
+  // drop an idle, minimized player off the devices list.
+  function _syncSchedule(delay) {
+    if (document.hidden) {
+      if (_syncTicker === null) {
+        _syncTicker = false
+        var url = mp.playerEl && mp.playerEl.dataset.ticker
+        try {
+          if (url && typeof Worker === 'function') {
+            _syncTicker = new Worker(url)
+            _syncTicker.onmessage = function() { _syncTick() }
+          }
+        } catch (e) {}
+      }
+      if (_syncTicker) {
+        _syncTicker.postMessage(delay)
+        return
+      }
+    }
     _syncTimer = setTimeout(_syncTick, delay)
   }
 
-  // Fast only while there is something to follow: this device is the active
-  // one (heartbeat under the server's 10 s staleness + remote commands), it
-  // mirrors a remote one, or another device is online. Idle: slow while
-  // visible, stopped while hidden. Failures back off exponentially.
+  function _syncOthersOnline() {
+    return mp._syncDevices.some(function(d) { return !d.is_self })
+  }
+
+  // This device outputs the session's audio and publishes its state.
+  function _syncPushing() {
+    return mp._syncIsActive && !mp._syncPhantomMode && mp._context === 'music-library' &&
+      (mp.isPlaying || (mp.isVisible && mp.currentIndex >= 0))
+  }
+
+  // Every signed-in page polls, so each open device is listed and can be
+  // controlled. Fast (1 s) while there is someone to answer: another device is
+  // online, this one mirrors or controls a remote one, or it is the active one.
+  // Alone it only heartbeats under the server's 30 s online window. Failures
+  // back off exponentially.
   function _syncNextDelay() {
-    var others = mp._syncDevices.some(function(d) { return !d.is_self })
-    var pushing = mp._syncIsActive && mp._context === 'music-library' && (mp.isPlaying || (mp.isVisible && mp.currentIndex >= 0))
+    var others = _syncOthersOnline()
     var delay
-    if (pushing) delay = others ? 1000 : 3000
-    else if (mp._syncPhantomMode) delay = document.hidden ? 5000 : 1000
-    else if (document.hidden) return null
-    else delay = others ? 3000 : 15000
+    if (_syncPushing()) delay = others ? 1000 : 3000
+    else if (mp._syncPhantomMode || mp._syncRemoteTarget) delay = document.hidden ? 5000 : 1000
+    else if (others) delay = document.hidden ? 3000 : 1000
+    else delay = document.hidden ? 10000 : 5000
     if (_syncErrorCount) delay = Math.max(delay, Math.min(30000, 1000 * Math.pow(2, _syncErrorCount)))
     return delay
   }
@@ -225,24 +301,31 @@
   function _syncPoll() {
     if (!mp._syncLoggedIn || !mp._syncEnabled || !mp._syncDeviceId) return
 
+    _syncRenewLease()
     if (_syncResultAckPending) _syncAcknowledgeCommandResult()
 
-    // If this device is actively playing music-library content, push state
-    if (mp._syncIsActive && mp._context === 'music-library' && mp.isPlaying) {
-      _syncStopKeepAlive()  // not needed while actively playing
-      _syncPushState()
-      return
-    }
-    // If this device is active but paused, still push (so other devices see paused state)
-    if (mp._syncIsActive && mp._context === 'music-library' && mp.isVisible && mp.currentIndex >= 0) {
-      _syncStartKeepAlive()  // keep audio context warm so remote commands can play
-      _syncPushState()
+    var pushing = _syncPushing()
+    if (pushing) {
+      // Paused: keep the audio context warm so remote commands can play
+      if (mp.isPlaying) _syncStopKeepAlive()
+      else _syncStartKeepAlive()
+      // A changed state goes out at once, an unchanged one as a heartbeat; in
+      // between a cheap GET watches for commands and transfers (with no other
+      // device online none can arrive).
+      var built = _syncBuildState()
+      if (_syncPushDue(built)) {
+        _syncPushState(built)
+        return
+      }
+      if (!_syncOthersOnline()) return
+    } else if (_syncCommandResult) {
+      _syncClaim()  // deliver a result (e.g. a refused command) from a device that does not push
       return
     }
 
-    // Otherwise, poll for remote state: one GET at a time, and a response that
-    // predates a local play / transfer / phantom exit is dropped (it would
-    // otherwise undo that action, e.g. throw "play here" back into phantom).
+    // Poll for remote state: one GET at a time, and a response that predates a
+    // local play / transfer / phantom exit is dropped (it would otherwise undo
+    // that action, e.g. throw "play here" back into phantom).
     if (_syncPollInFlight) return
     _syncPollInFlight = true
     var epoch = mp._syncEpoch
@@ -257,14 +340,38 @@
       _syncLastPollData = data
       mp._syncDevices = data.devices || []
 
+      // A command waits for this device: the active one claims it with a push
+      if (data.has_command) {
+        if (_syncPushing()) _syncPushState(_syncBuildState())
+        else _syncClaim()
+      }
+
       // Check if we were requested to transfer to ourselves
       if (data.transfer_to === mp._syncDeviceId) {
-        _syncAcceptTransfer(data)
+        if (_syncPushing()) _syncClearTransfer()  // already playing here
+        else _syncAcceptTransfer(data)
         return
       }
 
-      // If there is an active session on ANOTHER device
-      if (data.active && data.active_device_id && data.active_device_id !== mp._syncDeviceId && data.state) {
+      if (_syncPushing()) {
+        if (data.transfer_to) _syncYieldToDevice(data.transfer_to)
+        // Another device claimed the session: the push response hands this one over
+        else if (data.active && data.active_device_id && data.active_device_id !== mp._syncDeviceId) _syncPushState(_syncBuildState())
+        mp._syncUpdateDevicesButton()
+        return
+      }
+
+      // The picked remote device went offline
+      if (mp._syncRemoteTarget && !mp._syncDevices.some(function(d) { return d.device_id === mp._syncRemoteTarget.id })) {
+        _syncClearRemoteTarget()
+      }
+
+      var remoteActive = data.active && data.active_device_id && data.active_device_id !== mp._syncDeviceId && data.state
+      if (!remoteActive || data.active_device_id !== mp._syncPhantomDismissed) mp._syncPhantomDismissed = null
+      // Own files playing (or paused) in the bar are not replaced by a mirror
+      var ownPlayback = mp.isVisible && !mp._syncPhantomMode && mp.currentIndex >= 0 && mp._context !== 'music-library'
+
+      if (remoteActive && !mp._syncPhantomDismissed && !ownPlayback) {
         mp._syncEnterPhantom(data)
       } else if (mp._syncPhantomMode) {
         // Remote device stopped updating — check if we should pause phantom or exit
@@ -295,13 +402,10 @@
     })
   }
 
-  function _syncPushState() {
-    if (_syncPushPending) return
-    _syncPushPending = true
-
-    // Only a window around the current track is pushed (a queue can be
-    // hundreds of tracks), and only when it changed: otherwise the server
-    // reuses the window it stored under _syncQueueKey.
+  // Only a window around the current track is pushed (a queue can be
+  // hundreds of tracks), and only when it changed: otherwise the server
+  // reuses the window it stored under _syncQueueKey.
+  function _syncBuildState() {
     var start = Math.max(0, mp.currentIndex - _SYNC_QUEUE_RADIUS)
     var end = Math.min(mp.playlist.length, mp.currentIndex + _SYNC_QUEUE_RADIUS + 1)
     var queue = mp.playlist.slice(start, end).map(function(t) {
@@ -318,14 +422,36 @@
       currentIndex: mp.currentIndex - start,
       currentTime: audio.currentTime || 0,
       duration: (!isNaN(audio.duration) && isFinite(audio.duration)) ? audio.duration : 0,
-      isPlaying: mp.isPlaying,
+      // audio.paused flips in play() itself; the play event (isPlaying) comes later
+      isPlaying: mp.isPlaying || !audio.paused,
       shuffleMode: mp.shuffleMode,
       repeatMode: mp.repeatMode,
       shuffleOrder: windowOrder,
       shufflePos: windowOrder.indexOf(mp.currentIndex - start),
       suggestedStartIndex: mp._suggestedStartIndex < 0 ? -1 : Math.min(queue.length, Math.max(0, mp._suggestedStartIndex - start)),
     }
+    var sig = [queueJson, statePayload.currentIndex, statePayload.isPlaying, statePayload.shuffleMode,
+      statePayload.repeatMode, statePayload.shufflePos, statePayload.suggestedStartIndex, Math.round(statePayload.duration)].join('|')
+    return { queue: queue, queueJson: queueJson, state: statePayload, sig: sig }
+  }
 
+  // Push when the state changed, a seek moved the playhead off its expected
+  // position, something must reach the server, or the heartbeat is due.
+  function _syncPushDue(built) {
+    var now = Date.now()
+    var s = built.state
+    var expected = _syncLastPushPos + (s.isPlaying ? (now - _syncLastPushAt) / 1000 : 0)
+    return mp._syncForceActive || !!_syncCommandResult || built.sig !== _syncLastPushSig ||
+      now - _syncLastPushAt >= _SYNC_HEARTBEAT_MS || Math.abs(s.currentTime - expected) > 1.5
+  }
+
+  function _syncPushState(built) {
+    if (_syncPushPending) return
+    _syncPushPending = true
+
+    var queue = built.queue
+    var queueJson = built.queueJson
+    var statePayload = built.state
     var pushBody = {
       device_id: mp._syncDeviceId,
       device_name: mp._syncDeviceName,
@@ -350,6 +476,9 @@
     }).then(function(data) {
       _syncPushPending = false
       _syncErrorCount = 0
+      _syncLastPushSig = built.sig
+      _syncLastPushAt = Date.now()
+      _syncLastPushPos = statePayload.currentTime
 
       if (sentCommandResult && data.command_result_acknowledged === sentCommandResult.command_id && _syncCommandResult === sentCommandResult) {
         _syncCommandResult = null
@@ -375,7 +504,7 @@
       // The server no longer holds our queue window: send it right away.
       if (data.need_playlist) {
         _syncQueueKey = null
-        setTimeout(_syncPushState, 0)
+        setTimeout(function() { _syncPushState(_syncBuildState()) }, 0)
       }
 
       // Server rejected us as active — another device holds the active slot
@@ -392,9 +521,8 @@
       }
 
       // Handle transfer request
-      if (data.transfer_to && data.transfer_to !== mp._syncDeviceId) {
-        _syncYieldToDevice(data.transfer_to)
-      }
+      if (data.transfer_to === mp._syncDeviceId) _syncClearTransfer()  // already playing here
+      else if (data.transfer_to) _syncYieldToDevice(data.transfer_to)
 
       // Handle pending remote command
       if (data.pending_command) {
@@ -409,7 +537,23 @@
 
   function _syncExecuteCommand(cmd) {
     if (!cmd || !cmd.action || !cmd.command_id) return
+    // Transport commands need a local session; play_tracks starts one
+    var hasLocal = !mp._syncPhantomMode && mp._context === 'music-library' && mp.currentIndex >= 0
     try {
+      if (cmd.action === 'play_tracks') {
+        var tracks = _syncTracksFromState({ playlist: cmd.tracks })
+        if (!tracks || !Number.isInteger(cmd.index) || cmd.index < 0 || cmd.index >= tracks.length) {
+          _syncSetCommandResult(cmd, { error: 'INVALID TRACKS', error_code: 'invalid_command' })
+        } else {
+          mp._playLibraryTracks(tracks, cmd.index)
+          _syncSetCommandResult(cmd, { ok: true })
+        }
+        return
+      }
+      if (!hasLocal) {
+        _syncSetCommandResult(cmd, { error: 'NOTHING IS PLAYING ON THAT DEVICE', error_code: 'not_active' })
+        return
+      }
       switch (cmd.action) {
         case 'play':
           mp._resumeAudioContext()
@@ -443,6 +587,18 @@
           }
           _syncSetCommandResult(cmd, { ok: true })
           break
+        case 'shuffle':
+          if (cmd.on !== mp.shuffleMode) mp.toggleShuffle()
+          _syncSetCommandResult(cmd, { ok: true })
+          break
+        case 'repeat':
+          if (cmd.mode === 'none' || cmd.mode === 'all' || cmd.mode === 'one') {
+            mp.repeatMode = cmd.mode
+            if (cmd.mode === 'one' && mp._crossfadeActive) mp._cancelCrossfade()
+            mp._updateRepeatButton()
+          }
+          _syncSetCommandResult(cmd, { ok: true })
+          break
         default:
           // Answer anyway: an unanswered claimed command blocks the mailbox.
           _syncSetCommandResult(cmd, { error: 'UNSUPPORTED REMOTE COMMAND', error_code: 'invalid_command' })
@@ -459,21 +615,52 @@
     result.command_id = cmd.command_id
     result.action = cmd.action
     _syncCommandResult = result
+    setTimeout(_syncKick, 0)  // report it (and the new state) now, not on the next tick
   }
 
-  function _syncAcceptTransfer(data) {
-    var state = data.state
-    var remoteTracks = _syncTracksFromState(state)
-    if (!remoteTracks) return
-    mp._syncEpoch++
+  // Claim the next command addressed to this device while it is not the
+  // active one, delivering the previous command's result on the way.
+  function _syncClaim() {
+    if (_syncClaimInFlight) return
+    _syncClaimInFlight = true
+    var sent = _syncCommandResult
+    var body = { device_id: mp._syncDeviceId, device_name: mp._syncDeviceName, claim_only: true }
+    if (sent) body.command_result = sent
+    _syncFetch('/music/api/sync', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: _jsonHeaders(),
+      body: JSON.stringify(body),
+    }).then(function(data) {
+      _syncClaimInFlight = false
+      _syncErrorCount = 0
+      if (sent && data.command_result_acknowledged === sent.command_id && _syncCommandResult === sent) {
+        _syncCommandResult = null
+      }
+      if (data.pending_command) _syncExecuteCommand(data.pending_command)
+    }).catch(function(err) {
+      _syncClaimInFlight = false
+      _syncOnError(err)
+    })
+  }
 
-    // Clear transfer flag on server
+  function _syncClearTransfer() {
     fetch('/music/api/sync/transfer', {
       method: 'POST',
       credentials: 'same-origin',
       headers: _jsonHeaders(),
       body: JSON.stringify({ target_device_id: '' }),
     }).catch(function() {})
+  }
+
+  function _syncAcceptTransfer(data) {
+    var state = data.state
+    var remoteTracks = _syncTracksFromState(state)
+    // Clear transfer flag on server (also when there is nothing to take over)
+    _syncClearTransfer()
+    if (!remoteTracks) return
+    mp._syncEpoch++
+    mp._syncRemoteTarget = null
 
     // Exit phantom mode and clean up interpolation
     mp._syncPhantomMode = false
@@ -530,7 +717,7 @@
     if (mp.devicesBtn) mp.devicesBtn.style.display = ''
     mp._syncUpdateDevicesButton()
     // Immediately push state so the old active device sees us as active
-    setTimeout(function() { _syncPushState() }, 300)
+    setTimeout(_syncKick, 300)
     console.log('[MUSIC PLAYER] Accepted playback transfer from remote device')
   }
 
@@ -585,17 +772,77 @@
     })
   }
 
-  function _syncSendCommand(action, extra) {
+  // Commands go to the active device unless a target is given. Mirrors keep
+  // their optimistic UI until a state pushed after the command arrives.
+  function _syncSendCommand(action, extra, targetDeviceId) {
     var cmd = { action: action }
     if (extra) {
       for (var k in extra) cmd[k] = extra[k]
     }
+    var body = { command: cmd, requester_device_id: mp._syncDeviceId }
+    if (targetDeviceId) body.target_device_id = targetDeviceId
+    mp._syncCommandSentAt = Date.now()
     fetch('/music/api/sync/command', {
       method: 'POST',
       credentials: 'same-origin',
       headers: _jsonHeaders(),
-      body: JSON.stringify({ command: cmd, requester_device_id: mp._syncDeviceId }),
-    }).catch(function() {})
+      body: JSON.stringify(body),
+    }).then(function(r) {
+      if (r.ok) return
+      return r.json().then(function(data) {
+        if (data && data.error && typeof showToast === 'function') showToast(data.error, 'error')
+      })
+    }).catch(function() {}).then(function() {
+      _syncKick()  // pick up the result soon
+    })
+  }
+
+  // Play a queue on the device this page controls: the one it mirrors, or the
+  // one picked in the devices panel. Returns false when there is none.
+  function _syncPlayOnRemote(tracks, startIndex) {
+    if (!mp._syncLoggedIn || !mp._syncEnabled || !tracks.length) return false
+    var target = mp._syncPhantomMode ? null : (mp._syncRemoteTarget && mp._syncRemoteTarget.id)
+    if (!mp._syncPhantomMode && !target) return false
+    var index = Math.min(Math.max(0, startIndex || 0), tracks.length - 1)
+    var from = Math.max(0, Math.min(index - 50, tracks.length - _SYNC_REMOTE_QUEUE_MAX))
+    var sent = tracks.slice(from, from + _SYNC_REMOTE_QUEUE_MAX).map(function(t) {
+      return {
+        id: t.id, name: t.name, coverPath: t.coverPath || null,
+        artists: (t.artists || []).map(function(a) { return { id: a.id, name: a.name } }),
+        albumId: t.albumId || null, suggested: !!t.suggested,
+      }
+    })
+    _syncSendCommand('play_tracks', { tracks: sent, index: index - from }, target)
+    if (mp._syncPhantomMode) {
+      mp._syncPhantomUpdateTrack(tracks[index])
+    } else {
+      mp._setTitle(tracks[index].name)
+      if (mp.phantomLabel) mp.phantomLabel.textContent = 'Starting on ' + mp._syncRemoteTarget.name
+    }
+    return true
+  }
+
+  // Control an idle remote device: the bar shows it, and what is played here
+  // next starts there.
+  function _syncSetRemoteTarget(device) {
+    mp._syncRemoteTarget = { id: device.device_id, name: String(device.device_name || 'another device') }
+    mp._showPlayer()
+    if (mp.playerEl) mp.playerEl.classList.add('mp-phantom')
+    if (mp.phantomLabel) mp.phantomLabel.textContent = 'Connected to ' + mp._syncRemoteTarget.name
+    if (mp.currentIndex < 0) mp._setTitle('Pick something to play')
+    mp._syncShowDevicesButtons()
+    mp._syncUpdateDevicesButton()
+    _syncKick()
+  }
+
+  function _syncClearRemoteTarget() {
+    if (!mp._syncRemoteTarget) return
+    mp._syncRemoteTarget = null
+    if (mp._syncPhantomMode) return
+    if (mp.playerEl) mp.playerEl.classList.remove('mp-phantom')
+    if (mp.phantomLabel) mp.phantomLabel.textContent = ''
+    if (mp.isVisible && mp.currentIndex < 0) mp.closePlayer()
+    mp._syncUpdateDevicesButton()
   }
 
   function _syncRequestTransfer() {
@@ -640,6 +887,10 @@
       // Show devices button if not already shown
       if (mp.devicesBtn) mp.devicesBtn.style.display = ''
     }
+    if (_syncPushing() && _syncOthersOnline()) _syncKick()  // mirrors see it now, not next tick
+  })
+  audio.addEventListener('pause', function() {
+    if (_syncPushing() && _syncOthersOnline()) _syncKick()
   })
 
   Object.assign(mp, {
@@ -651,6 +902,10 @@
     _syncTracksFromState,
     _syncStopKeepAlive,
     _syncSendCommand,
+    _syncPlayOnRemote,
+    _syncSetRemoteTarget,
+    _syncClearRemoteTarget,
+    _syncPushing,
     _syncRequestTransfer,
     _syncTransferToDevice,
   })

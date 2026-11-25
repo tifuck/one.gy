@@ -5,10 +5,18 @@
   const { _jsonHeaders, _lsSet } = mp
 
   function _syncUpdateDevicesButton() {
-    var hasRemoteActive = mp._syncPhantomMode || (mp._syncDevices.length > 1 && mp._syncDevices.some(function(d) { return d.is_active && !d.is_self }))
+    var hasRemoteActive = mp._syncPhantomMode || !!mp._syncRemoteTarget || (mp._syncDevices.length > 1 && mp._syncDevices.some(function(d) { return d.is_active && !d.is_self }))
     if (mp.devicesBtn) mp.devicesBtn.classList.toggle('mp-sync-active', hasRemoteActive)
     if (mp.miniDevicesBtn) mp.miniDevicesBtn.classList.toggle('mp-sync-active', hasRemoteActive)
     if (mp.fsDevicesBtn) mp.fsDevicesBtn.classList.toggle('mp-sync-active', hasRemoteActive)
+    if (mp.pageDevicesBtn) mp.pageDevicesBtn.classList.toggle('mp-sync-active', hasRemoteActive)
+    if (mp.devicesPanel && mp.devicesPanel.classList.contains('mp-devices-visible')) _renderDevicesPanel(true)
+  }
+
+  function _syncShowDevicesButtons() {
+    if (mp.devicesBtn) mp.devicesBtn.style.display = ''
+    if (mp.miniDevicesBtn) mp.miniDevicesBtn.style.display = ''
+    if (mp.fsDevicesBtn) mp.fsDevicesBtn.style.display = ''
   }
 
   // ─── Devices Panel UI ──────────────────────────────────────────
@@ -30,9 +38,19 @@
     }
   }
 
-  function _renderDevicesPanel() {
+  var _panelKey = null  // what the open list shows; polls re-render it only on change
+
+  function _renderDevicesPanel(onlyIfChanged) {
     if (!mp.devicesList) return
+    var key = JSON.stringify([mp._syncDevices.map(function(d) { return [d.device_id, d.device_name, d.is_active, d.is_self] }),
+      mp._syncPhantomMode, mp._syncRemoteTarget, mp._syncEnabled, mp._syncPushing()])
+    if (onlyIfChanged && key === _panelKey) return
+    _panelKey = key
+    // Not rebuilt under an open rename field (the list refreshes on every poll)
+    if (mp.devicesList.querySelector('.mp-device-rename-input')) return
     var devices = mp._syncDevices.length ? mp._syncDevices : [{ device_id: mp._syncDeviceId, device_name: mp._syncDeviceName, is_self: true, is_active: mp._syncIsActive }]
+    var target = mp._syncRemoteTarget ? mp._syncRemoteTarget.id : null
+    var playingHere = mp._syncPushing()
     var html = ''
 
     // Sync toggle
@@ -65,13 +83,19 @@
       if (isActive && isSelf) {
         badge = '<span class="mp-device-badge mp-device-badge-active">This device &middot; Playing</span>'
       } else if (isActive && !isSelf) {
-        badge = '<span class="mp-device-badge mp-device-badge-active">Playing</span>'
+        badge = '<span class="mp-device-badge mp-device-badge-active">' + (mp._syncPhantomMode ? 'Playing &middot; controlling' : 'Playing &middot; tap to control') + '</span>'
       } else if (isSelf && mp._syncPhantomMode) {
-        badge = '<span class="mp-device-badge mp-device-badge-transfer">Tap to play here</span>'
+        badge = '<span class="mp-device-badge mp-device-badge-transfer">This device &middot; tap to play here</span>'
+      } else if (isSelf && target) {
+        badge = '<span class="mp-device-badge mp-device-badge-transfer">This device &middot; tap to disconnect</span>'
       } else if (isSelf) {
         badge = '<span class="mp-device-badge">This device</span>'
-      } else if (!isSelf && mp._syncIsActive) {
-        badge = '<span class="mp-device-badge mp-device-badge-transfer">Tap to transfer</span>'
+      } else if (d.device_id === target) {
+        badge = '<span class="mp-device-badge mp-device-badge-active">Connected</span>'
+      } else if (playingHere || mp._syncPhantomMode) {
+        badge = '<span class="mp-device-badge mp-device-badge-transfer">Tap to move playback here</span>'
+      } else {
+        badge = '<span class="mp-device-badge mp-device-badge-transfer">Tap to control</span>'
       }
       html += badge
       html += '</div>'
@@ -113,18 +137,25 @@
         var item = e.currentTarget
         var devId = item.dataset.deviceId
         if (!devId) return
+        var dev = devices.filter(function(x) { return x.device_id === devId })[0]
+        if (!dev) return
 
         if (devId === mp._syncDeviceId) {
-          // Clicked on self — "play on this device" (pull from remote)
-          if (mp._syncPhantomMode) {
-            mp._syncRequestTransfer()
-            mp.devicesPanel.classList.remove('mp-devices-visible')
-          }
+          if (mp._syncPhantomMode) mp._syncRequestTransfer()  // pull playback here
+          else if (mp._syncRemoteTarget) mp._syncClearRemoteTarget()  // stop controlling
+          else return
+        } else if (dev.is_active && !mp._syncPhantomMode) {
+          // Already playing there: mirror and control it (also after closing its bar)
+          mp._syncPhantomDismissed = null
+          mp._syncKick()
+        } else if (dev.is_active || devId === (mp._syncRemoteTarget && mp._syncRemoteTarget.id)) {
+          return  // already controlling it
+        } else if (playingHere || mp._syncPhantomMode) {
+          mp._syncTransferToDevice(devId)  // move the session there
         } else {
-          // Clicked on a remote device — push playback to it
-          mp._syncTransferToDevice(devId)
-          mp.devicesPanel.classList.remove('mp-devices-visible')
+          mp._syncSetRemoteTarget(dev)  // idle device: control it, play from here
         }
+        mp.devicesPanel.classList.remove('mp-devices-visible')
       })
     }
 
@@ -201,7 +232,7 @@
   // Close devices panel when clicking outside
   document.addEventListener('click', function(e) {
     if (mp.devicesPanel && mp.devicesPanel.classList.contains('mp-devices-visible')) {
-      if (!mp.devicesPanel.contains(e.target) && e.target !== mp.devicesBtn && (!mp.devicesBtn || !mp.devicesBtn.contains(e.target))) {
+      if (!mp.devicesPanel.contains(e.target) && !(e.target.closest && e.target.closest('#mpDevicesBtn, #mpMiniDevices, #mpFsDevicesBtn, #muDevicesBtn'))) {
         mp.devicesPanel.classList.remove('mp-devices-visible')
       }
     }
@@ -209,6 +240,7 @@
 
   Object.assign(mp, {
     _syncUpdateDevicesButton,
+    _syncShowDevicesButtons,
     _toggleDevicesPanel,
   })
 })(window._mpCore)

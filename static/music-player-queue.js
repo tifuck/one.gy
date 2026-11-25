@@ -13,12 +13,7 @@
    */
   function playMusicLibrary(tracks, startIndex) {
     if (!tracks || !tracks.length) return
-    mp._resumeAudioContext()
-    mp._context = 'music-library'
-    mp._updateOwnLibraryState()
-
-    // Build playlist from provided tracks
-    mp.playlist = tracks.map(t => ({
+    var list = tracks.map(t => ({
       id: t.id,
       name: t.title || 'Unknown',
       extension: 'opus',
@@ -32,6 +27,17 @@
       albumId: t.album_id || null,
       suggested: false,
     }))
+    // Controlling another device (mirroring it or picked in Devices): it plays there
+    if (mp._syncPlayOnRemote(list, startIndex || 0)) return
+    _playLibraryTracks(list, startIndex)
+  }
+
+  // Play a library queue (player track objects) on this device.
+  function _playLibraryTracks(list, startIndex) {
+    mp._resumeAudioContext()
+    mp._context = 'music-library'
+    mp._updateOwnLibraryState()
+    mp.playlist = list
 
     mp.currentIndex = -1
     mp._suggestedStartIndex = -1
@@ -80,12 +86,10 @@
       }
     }
 
-    // Cross-device sync is only for the music-library experience.
-    // Stop remote polling so dashboard/browse playback cannot be overwritten
-    // by phantom updates from an earlier music-library session.
+    // Own files are not synced: this device stops publishing, and the sync
+    // poll leaves a bar playing own files alone (no mirror replaces it).
     mp._syncIsActive = false
     mp._syncForceActive = false
-    mp._syncStop()
     if (mp.devicesPanel) mp.devicesPanel.classList.remove('mp-devices-visible')
     if (mp.devicesBtn) mp.devicesBtn.style.display = 'none'
     if (mp.miniDevicesBtn) mp.miniDevicesBtn.style.display = 'none'
@@ -557,6 +561,7 @@
 
   Object.assign(mp, {
     playMusicLibrary,
+    _playLibraryTracks,
     open,
     onFolderChanged,
     _canAutoQueueSuggested,

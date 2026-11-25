@@ -73,6 +73,14 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .mu-rail-toggle{ display:inline-flex; } /* shows or hides the library (panel-resize.js); a drawer on narrow windows */
 .mu-rail-toggle:hover, .mu-back:hover{ background:var(--hover); color:var(--text); }
 .mu-rail-toggle svg, .mu-back svg{ width:18px; height:18px; }
+/* Devices: pick a device to control even with no player bar showing */
+.mu-devices-btn{
+  flex:none; width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center;
+  border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
+}
+.mu-devices-btn[hidden]{ display:none; }
+.mu-devices-btn:hover{ background:var(--hover); color:var(--text); }
+.mu-devices-btn svg{ width:18px; height:18px; }
 .mu-search{ position:relative; flex:0 1 300px; min-width:0; }
 .mu-search svg{ position:absolute; left:9px; top:50%; width:15px; height:15px; margin-top:-7.5px; color:var(--text-faint); pointer-events:none; }
 .mu-search input{
@@ -414,6 +422,8 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
   background:var(--raise); box-shadow:var(--shadow-pop); transform-origin:100% 100%;
 }
 .ui-v2 .mp-playlist-panel.mp-playlist-visible, .ui-v2 .mp-devices-panel.mp-devices-visible{ display:block; animation:v2menu .14s cubic-bezier(.2,.9,.3,1) both; }
+/* Opened from the music page with the bar hidden: it sits above the screen's bottom edge */
+.ui-v2 .mp-devices-panel.mp-devices-visible{ visibility:visible; }
 .ui-v2 .mp-playlist-header, .ui-v2 .mp-devices-header{
   position:sticky; top:0; z-index:1; display:flex; align-items:center; height:42px; padding:0 14px; box-sizing:border-box;
   border-bottom:1px solid var(--line); background:var(--raise); font-size:.86rem; font-weight:600; color:var(--text);
@@ -586,7 +596,7 @@ body.mp-fs-open{ overflow:hidden; }
 @media (max-width:620px){
   .mu-bcrumb{ display:none; }
   .mu-back:not([hidden]){ display:inline-flex; margin-left:-4px; }
-  .mu-rail-toggle, .mu-back{ width:36px; height:36px; }
+  .mu-rail-toggle, .mu-back, .mu-devices-btn{ width:36px; height:36px; }
   .mu-search{ flex:1 1 auto; }
   .mu-topbar{ gap:6px; }
   .mu-search input{ height:36px; font-size:16px; }

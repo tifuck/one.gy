@@ -344,6 +344,20 @@ def music_api_sync_push():
     if data.get('register_only') is True:
         db.session.commit()
         return jsonify({'ok': True})
+    if data.get('claim_only') is True:
+        # A device that is not the active one (idle, or mirroring another)
+        # claims the commands addressed to it here; its GET poll says when.
+        mailbox_lock = _music_mailbox_lock(user_id)
+        try:
+            db.session.flush()
+            _prune_music_sync_commands(user_id=user_id, now=now)
+            acknowledged = _music_store_command_result(user_id, device_id, data.get('command_result'), now)
+            pending_command = _music_claim_next_command(user_id, device_id, now)
+            db.session.commit()
+        finally:
+            _music_mailbox_unlock(mailbox_lock)
+        return jsonify({'ok': True, 'pending_command': pending_command,
+                        'command_result_acknowledged': acknowledged})
 
     import json as _json
     is_accepted_active = False
@@ -393,8 +407,8 @@ def music_api_sync_push():
     # Check for transfer request.
     transfer_to = sync.transfer_to
 
-    # Build device list (only devices seen in last 30 seconds are "online")
-    online_cutoff = now - timedelta(seconds=30)
+    # Build device list (only devices seen in the online window are "online")
+    online_cutoff = now - _MUSIC_ONLINE_WINDOW
     all_devices = MusicDevice.query.filter_by(user_id=user_id).filter(MusicDevice.last_seen >= online_cutoff).all()
 
     # If the active device hasn't been seen in 30s, clear it from sync state
@@ -472,8 +486,8 @@ def music_api_sync_poll():
     import json as _json
     sync = MusicSyncState.query.filter_by(user_id=user_id).first()
 
-    # Build device list (only devices seen in last 30 seconds are "online")
-    online_cutoff = now - timedelta(seconds=30)
+    # Build device list (only devices seen in the online window are "online")
+    online_cutoff = now - _MUSIC_ONLINE_WINDOW
     all_devices = MusicDevice.query.filter_by(user_id=user_id).filter(MusicDevice.last_seen >= online_cutoff).all()
 
     # If the active device hasn't been seen in 30s, clear it from sync state
@@ -496,11 +510,14 @@ def music_api_sync_poll():
     state_data = None
     active_device_name = None
     state_updated_at = None
+    state_age_ms = None
     is_stale = True
     if sync and sync.state_json and sync.updated_at:
         staleness = (now - _aware(sync.updated_at)).total_seconds()
         is_stale = staleness > 10
         state_updated_at = _aware(sync.updated_at).isoformat()
+        # Server-measured, so mirrors place the playhead without trusting their clock.
+        state_age_ms = max(0, int(staleness * 1000))
         if not is_stale:
             try:
                 state_data = _json.loads(sync.state_json)
@@ -514,6 +531,7 @@ def music_api_sync_poll():
 
     # Results are requester-addressed and remain durable until an explicit ack.
     pending_result = _music_pending_result(user_id, device_id, now)
+    has_command = _music_has_pending_command(user_id, device_id, now)
 
     db.session.commit()
 
@@ -523,9 +541,11 @@ def music_api_sync_poll():
         'active_device_name': active_device_name,
         'state': state_data,
         'state_updated_at': state_updated_at,
+        'state_age_ms': state_age_ms,
         'devices': device_list,
         'transfer_to': sync.transfer_to if sync else None,
         'pending_result': pending_result,
+        'has_command': has_command,
         'registered': device is not None,
     })
 
@@ -555,6 +575,13 @@ def music_api_sync_transfer():
             user_id=user_id, device_id=target_device_id).first()
         if not target_device:
             return jsonify({'error': 'DEVICE NOT FOUND'}), 404
+        now = datetime.now(timezone.utc)
+        if not _music_device_online(target_device, now):
+            return jsonify({'error': 'DEVICE IS OFFLINE'}), 409
+        # Handing over nothing would leave the account pointed at an idle device.
+        updated = sync.updated_at.replace(tzinfo=timezone.utc) if sync.updated_at and sync.updated_at.tzinfo is None else sync.updated_at
+        if not sync.state_json or not updated or (now - updated) > _MUSIC_ONLINE_WINDOW:
+            return jsonify({'error': 'NOTHING IS PLAYING'}), 409
         # Request transfer to target device — also update active_device_id immediately
         # so the target device's first force-push is accepted without delay
         sync.transfer_to = target_device_id
@@ -593,10 +620,29 @@ def music_api_sync_command():
                 or not math.isfinite(seek_time) or not 0 <= seek_time <= _MUSIC_SEEK_MAX_SECONDS:
             return jsonify({'error': 'INVALID SEEK TIME'}), 400
         clean_command['seekTime'] = seek_time
+    elif action == 'play_tracks':
+        tracks = _music_command_tracks(command.get('tracks'))
+        index = command.get('index')
+        if tracks is None or isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(tracks):
+            return jsonify({'error': 'INVALID TRACKS'}), 400
+        clean_command['tracks'] = tracks
+        clean_command['index'] = index
+    elif action == 'shuffle':
+        if not isinstance(command.get('on'), bool):
+            return jsonify({'error': 'INVALID SHUFFLE'}), 400
+        clean_command['on'] = command['on']
+    elif action == 'repeat':
+        if command.get('mode') not in ('none', 'all', 'one'):
+            return jsonify({'error': 'INVALID REPEAT MODE'}), 400
+        clean_command['mode'] = command['mode']
 
     requester_device_id = _music_json_str(data.get('requester_device_id'))
     if not _music_valid_device_id(requester_device_id):
         return jsonify({'error': 'REQUESTER DEVICE ID REQUIRED'}), 400
+    # Optional: address one online device (idle ones too) instead of the active one.
+    explicit_target_id = _music_json_str(data.get('target_device_id'))
+    if explicit_target_id and not _music_valid_device_id(explicit_target_id):
+        return jsonify({'error': 'INVALID TARGET DEVICE ID'}), 400
     payload_json = _music_command_payload(clean_command)
     if payload_json is None:
         return jsonify({'error': 'COMMAND PAYLOAD TOO LARGE OR INVALID'}), 413
@@ -604,22 +650,29 @@ def music_api_sync_command():
     now = datetime.now(timezone.utc)
     mailbox_lock = _music_mailbox_lock(user_id)
     try:
-        sync = MusicSyncState.query.filter_by(user_id=user_id).with_for_update().first()
-        if not sync or not sync.active_device_id:
-            return jsonify({'error': 'NO ACTIVE SYNC SESSION'}), 404
-
-        updated = sync.updated_at
-        if updated and updated.tzinfo is None:
-            updated = updated.replace(tzinfo=timezone.utc)
-        target_device_id = sync.active_device_id
-        target_device = MusicDevice.query.filter_by(
-            user_id=user_id, device_id=target_device_id).first()
         requester_device = MusicDevice.query.filter_by(
             user_id=user_id, device_id=requester_device_id).first()
         if not requester_device:
             return jsonify({'error': 'REQUESTER DEVICE NOT FOUND'}), 404
-        if not target_device or not updated or (now - updated).total_seconds() > 30:
-            return jsonify({'error': 'NO ACTIVE SYNC SESSION'}), 404
+        if explicit_target_id:
+            target_device_id = explicit_target_id
+            target_device = MusicDevice.query.filter_by(
+                user_id=user_id, device_id=target_device_id).first()
+            if not target_device or not _music_device_online(target_device, now):
+                return jsonify({'error': 'DEVICE IS OFFLINE'}), 404
+        else:
+            sync = MusicSyncState.query.filter_by(user_id=user_id).with_for_update().first()
+            if not sync or not sync.active_device_id:
+                return jsonify({'error': 'NO ACTIVE SYNC SESSION'}), 404
+
+            updated = sync.updated_at
+            if updated and updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            target_device_id = sync.active_device_id
+            target_device = MusicDevice.query.filter_by(
+                user_id=user_id, device_id=target_device_id).first()
+            if not target_device or not updated or (now - updated).total_seconds() > 30:
+                return jsonify({'error': 'NO ACTIVE SYNC SESSION'}), 404
         if target_device_id == requester_device_id:
             return jsonify({'error': 'COMMAND TARGET MUST BE A REMOTE DEVICE'}), 400
 

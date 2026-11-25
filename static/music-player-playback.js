@@ -291,10 +291,14 @@
     _loadTrack(prevIdx)
   }
 
-  // Shuffle/repeat in phantom mode belong to the remote device (no remote
-  // command exists); the next poll would silently revert a local toggle.
+  // Shuffle/repeat in phantom mode belong to the remote device: send them there.
   function toggleShuffle() {
-    if (mp._syncPhantomMode) return
+    if (mp._syncPhantomMode) {
+      mp.shuffleMode = !mp.shuffleMode
+      mp._renderModeButtons()
+      mp._syncSendCommand('shuffle', { on: mp.shuffleMode })
+      return
+    }
     mp.shuffleMode = !mp.shuffleMode
     if (mp.shuffleBtn) {
       mp.shuffleBtn.classList.toggle('mp-btn-active', mp.shuffleMode)
@@ -305,7 +309,12 @@
   }
 
   function cycleRepeat() {
-    if (mp._syncPhantomMode) return
+    if (mp._syncPhantomMode) {
+      mp.repeatMode = mp.repeatMode === 'none' ? 'all' : (mp.repeatMode === 'all' ? 'one' : 'none')
+      mp._updateRepeatButton()
+      mp._syncSendCommand('repeat', { mode: mp.repeatMode })
+      return
+    }
     if (mp.repeatMode === 'none') {
       mp.repeatMode = 'all'
     } else if (mp.repeatMode === 'all') {
@@ -332,9 +341,13 @@
     }
     if (mp._chaosMode) mp._stopChaos()
     mp._stopFxLoop()
-    // Reset sync state
+    // Reset sync state. Polling goes on (this device stays listed and
+    // controllable); a closed mirror stays closed while that device plays.
+    if (mp._syncPhantomMode) mp._syncPhantomDismissed = mp._syncPhantomDeviceId
     mp._syncIsActive = false
-    mp._syncStop()
+    mp._syncStopKeepAlive()
+    mp._syncRemoteTarget = null
+    mp._syncPhantomDeviceId = null
     mp._syncPhantomMode = false
     mp._syncPhantomTrackId = null
     mp._syncPhantomKeepaliveActive = false
