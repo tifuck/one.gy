@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
-from app import (app, db, get_setting, get_numeric_setting, MUSIC_LIBRARY_PATH,
+from app import (app, db, get_setting, get_numeric_setting, _invalidate_settings_cache, MUSIC_LIBRARY_PATH,
                  MusicJob, MusicArtist, MusicGenreRule, MusicSourceBudget, MusicAlbumMatch,
                  MusicWorker, MusicLike, MusicPlaylistSong)
 
@@ -73,7 +73,10 @@ def now():
 
 
 def setting_on(key):
+    """Admin switch, read fresh: the app's 60 s settings cache would let the worker
+    keep going for a minute after the admin turned something off."""
     with app.app_context():
+        _invalidate_settings_cache(key)
         return bool(get_setting(key))
 
 

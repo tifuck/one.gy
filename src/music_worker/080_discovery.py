@@ -17,6 +17,10 @@ P_FRESH, P_TOP10, P_DISCOGRAPHY, P_ESSENTIALS, P_TOP_TRACKS = 1, 2, 3, 4, 5
 TOP_LIMIT = {'top_tracks': 10, 'essentials': 25}
 
 
+class DiscoveryStopped(Exception):
+    """The admin turned discovery off mid-scan; the artist is scanned again later."""
+
+
 def effective_mode(artist):
     if artist.rule_mode:
         return artist.rule_mode
@@ -302,6 +306,8 @@ def artist_sync(artist_row_id):
             picked.append((album, fresh, kind))
     genre_ids = {}
     for album, fresh, kind in picked:
+        if STOP.is_set() or _discovery_allowed():
+            raise DiscoveryStopped()
         full = dz_album(album['id'])
         if not full:
             continue
@@ -353,6 +359,11 @@ def artists_due(limit=20):
         rows = MusicArtist.query.filter(MusicArtist.next_scan_at.isnot(None), MusicArtist.next_scan_at <= now()) \
             .order_by(MusicArtist.score.desc()).limit(limit).all()
         return [a.id for a in rows]
+
+
+def artists_due_count():
+    with app.app_context():
+        return MusicArtist.query.filter(MusicArtist.next_scan_at.isnot(None), MusicArtist.next_scan_at <= now()).count()
 
 
 def _chart_track(artist_name, title):

@@ -155,7 +155,8 @@ def download_and_verify(card, video_id, preview_fp, confidence, strict):
         if codec not in ('opus', 'aac'):
             raise AcquireError('upload_rejected', f'codec {codec}')
         duration = float((probe.get('format') or {}).get('duration') or 0)
-        if abs(duration - card['duration']) > (1 if strict else DURATION_TOLERANCE_S):
+        # +1 s: Deezer rounds durations down to whole seconds, the file is exact.
+        if abs(duration - card['duration']) > (1 if strict else DURATION_TOLERANCE_S) + 1:
             raise AcquireError('duration_mismatch', f'{duration:.1f}s vs {card["duration"]}s')
         full_fp = fingerprint(path)
         ber = None

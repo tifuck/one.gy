@@ -122,12 +122,16 @@ def discovery_loop():
                 if _due('charts_at', CHARTS_EVERY):
                     set_activity('Checking the charts')
                     charts_scan()
-                for artist_id in artists_due():
+                due = artists_due()
+                for artist_id in due:
                     if STOP.is_set() or _discovery_allowed():
                         break
                     artist_sync(artist_id)
                 if not _discovery_allowed():
-                    set_activity('Up to date')
+                    left = artists_due_count()
+                    set_activity(f'Scanning artists: {left:,} left' if left else 'Up to date')
+        except DiscoveryStopped:
+            continue
         except SourcePaused as e:
             log(f'discovery waiting: {e}')
             set_activity(f'Waiting for {e.source} until {_until(e.until)}')
