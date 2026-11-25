@@ -229,7 +229,8 @@
       if (!restored) {
         restored = true
         var open = linked || lsGet(LS_OPEN)
-        if (open && S.notes.some(function (n) { return n.id === open })) { openNote(open); if (linked) showEditorMobile() }
+        // A blank note is no page to land on: show the list beside it.
+        if (open && S.notes.some(function (n) { return n.id === open })) { openNote(open).then(function () { if (S.openedBlank && S.noteId === open) showList() }); if (linked) showEditorMobile() }
         else { lsSet(LS_OPEN, null); showList() }
       }
     } catch (e) { listItemsEl().innerHTML = errState('Could not load notebooks.') }
@@ -405,6 +406,7 @@
     // a superseded open can never write its note into the current editor.
     var seq = ++S.openSeq
     S.pendingOpenId = id
+    S.openedBlank = false
     if (S.canvas && S.canvas.flush) S.canvas.flush()
     if (S.dirty) await saveNote()
     if (seq !== S.openSeq) return
@@ -465,40 +467,42 @@
         try { canvasData = validateCanvasData(JSON.parse(content || '{"blocks":[]}')) } catch (e) { canvasData = null }
         if (!canvasData) { fail('Canvas data is invalid. This note was not changed.'); return }
         endBusy()
+        S.openedBlank = !canvasData.blocks.length
         renderCanvasNote(n._title || S.titles[id] || 'Untitled', canvasData, !!d.is_trashed); return
       }
       endBusy()
       // From the fetched note, not S.view: the view can change during the awaits.
       renderEditor(n._title || S.titles[id] || 'Untitled', content, !!d.is_trashed)
+      var body = $('ntBody')
+      S.openedBlank = !!body && !body.textContent.trim() && !body.querySelector('img, table, hr, input')
     } catch (e) { if (seq === S.openSeq) fail('Could not decrypt this note. It was not changed.') }
   }
   function renderEditor (title, html, readonly) {
     S.currentType = 'document'
     var tools = readonly ? '' :
-      '<div class="nt-toolbar" role="toolbar" aria-label="Note formatting">' + BACK_BTN +
-      tbtn('undo', ico(TB.undo), 'Undo') + tbtn('redo', ico(TB.redo), 'Redo') + '<span class="nt-tb-sep"></span>' +
-      '<select class="nt-tb-select nt-tb-font" data-cmd="fontName" title="Font" aria-label="Font"><option value="inherit">Default</option>' + FONT_FACES.map(function (face) { return '<option>' + face + '</option>' }).join('') + '</select>' +
-      '<select class="nt-tb-select nt-tb-size" data-cmd="fontSize" title="Font size" aria-label="Font size">' + FONT_SIZES.map(function (size, i) { return '<option value="' + (i + 1) + '"' + (i === 2 ? ' selected' : '') + '>' + size + '</option>' }).join('') + '</select>' +
-      '<span class="nt-tb-sep"></span>' +
-      tbtn('bold', 'B', 'Bold', 'font-weight:700') + tbtn('italic', 'I', 'Italic', 'font-style:italic') + tbtn('underline', 'U', 'Underline', 'text-decoration:underline;text-underline-offset:2px') + tbtn('strikeThrough', 'S', 'Strikethrough', 'text-decoration:line-through') + menuBtn('fmt', 'x²', 'More formatting') +
-      '<span class="nt-tb-sep"></span>' +
-      tbtn2('formatBlock', 'H1', 'Heading 1', '<h1>') + tbtn2('formatBlock', 'H2', 'Heading 2', '<h2>') + tbtn2('formatBlock', 'H3', 'Heading 3', '<h3>') + tbtn2('formatBlock', ico(TB.quote), 'Quote', '<blockquote>') + tbtn2('formatBlock', ico(TB.code), 'Code block', '<pre>') +
-      '<span class="nt-tb-sep"></span>' +
-      tbtn('insertUnorderedList', ico(TB.ul), 'Bulleted list') + tbtn('insertOrderedList', ico(TB.ol), 'Numbered list') +
-      '<button type="button" class="nt-tb-btn" data-check title="Checklist (Ctrl+1)" aria-label="Checklist">' + ico(TB.check) + '</button>' +
-      '<span class="nt-tb-sep"></span>' +
-      Object.keys(ALIGN).map(function (key) { return tbtn(ALIGN[key][0], ico(ALIGN[key][2]), ALIGN[key][1] + ' (Ctrl+Shift+' + key.toUpperCase() + ')') }).join('') +
-      '<span class="nt-tb-sep"></span>' +
-      '<button type="button" class="nt-tb-btn" data-link title="Insert link (Ctrl+K)" aria-label="Insert link">' + ico(TB.link) + '</button><button type="button" class="nt-tb-btn" data-image title="Insert image" aria-label="Insert image">' + ico(TB.image) + '</button>' +
-      '<button type="button" class="nt-tb-btn" data-table title="Table" aria-label="Table" aria-haspopup="menu">' + ico(TB.table) + '</button>' + menuBtn('insert', ico('<path d="M12 5.5v13M5.5 12h13"/>'), 'Insert') +
-      '<label class="nt-tb-color" title="Text colour">' + ico(TB.color) + '<input type="color" data-color="foreColor" value="#d8231b" aria-label="Text colour"></label><label class="nt-tb-color" title="Highlight">' + ico(TB.mark) + '<input type="color" data-color="hiliteColor" value="#faef5a" aria-label="Highlight colour"></label>' +
-      tbtn('removeFormat', ico(TB.clear), 'Clear formatting') + MORE_BTN +
+      // Groups wrap whole; the break splits the bar into text (top) and paragraph / insert (bottom) rows when one row is too narrow.
+      '<div class="nt-toolbar" role="toolbar" aria-label="Note formatting"><div class="nt-tb-flow">' + BACK_BTN +
+      tbGroup('hist', tbtn('undo', ico(TB.undo), 'Undo') + tbtn('redo', ico(TB.redo), 'Redo')) +
+      tbGroup('font',
+        '<select class="nt-tb-select nt-tb-font" data-cmd="fontName" title="Font" aria-label="Font"><option value="inherit">Default</option>' + FONT_FACES.map(function (face) { return '<option>' + face + '</option>' }).join('') + '</select>' +
+        '<select class="nt-tb-select nt-tb-size" data-cmd="fontSize" title="Font size" aria-label="Font size">' + FONT_SIZES.map(function (size, i) { return '<option value="' + (i + 1) + '"' + (i === 2 ? ' selected' : '') + '>' + size + '</option>' }).join('') + '</select>') +
+      tbGroup('char', tbtn('bold', 'B', 'Bold', 'font-weight:700') + tbtn('italic', 'I', 'Italic', 'font-style:italic') + tbtn('underline', 'U', 'Underline', 'text-decoration:underline;text-underline-offset:2px') + tbtn('strikeThrough', 'S', 'Strikethrough', 'text-decoration:line-through') + menuBtn('fmt', 'x²', 'More formatting')) +
+      tbGroup('block', tbtn2('formatBlock', 'H1', 'Heading 1', '<h1>') + tbtn2('formatBlock', 'H2', 'Heading 2', '<h2>') + tbtn2('formatBlock', 'H3', 'Heading 3', '<h3>') + tbtn2('formatBlock', ico(TB.quote), 'Quote', '<blockquote>') + tbtn2('formatBlock', ico(TB.code), 'Code block', '<pre>')) +
+      '<span class="nt-tb-break" aria-hidden="true"></span>' +
+      tbGroup('list', tbtn('insertUnorderedList', ico(TB.ul), 'Bulleted list') + tbtn('insertOrderedList', ico(TB.ol), 'Numbered list') +
+        '<button type="button" class="nt-tb-btn" data-check title="Checklist (Ctrl+1)" aria-label="Checklist">' + ico(TB.check) + '</button>') +
+      tbGroup('align', Object.keys(ALIGN).map(function (key) { return tbtn(ALIGN[key][0], ico(ALIGN[key][2]), ALIGN[key][1] + ' (Ctrl+Shift+' + key.toUpperCase() + ')') }).join('')) +
+      tbGroup('insert', '<button type="button" class="nt-tb-btn" data-link title="Insert link (Ctrl+K)" aria-label="Insert link">' + ico(TB.link) + '</button><button type="button" class="nt-tb-btn" data-image title="Insert image" aria-label="Insert image">' + ico(TB.image) + '</button>' +
+        '<button type="button" class="nt-tb-btn" data-table title="Table" aria-label="Table" aria-haspopup="menu">' + ico(TB.table) + '</button>' + menuBtn('insert', ico('<path d="M12 5.5v13M5.5 12h13"/>'), 'Insert')) +
+      tbGroup('color', '<label class="nt-tb-color" title="Text colour">' + ico(TB.color) + '<input type="color" data-color="foreColor" value="#d8231b" aria-label="Text colour"></label><label class="nt-tb-color" title="Highlight">' + ico(TB.mark) + '<input type="color" data-color="hiliteColor" value="#faef5a" aria-label="Highlight colour"></label>' +
+        tbtn('removeFormat', ico(TB.clear), 'Clear formatting')) +
+      tbGroup('more', MORE_BTN) +
       '<span class="nt-tb-zoom"><button type="button" class="nt-tb-btn" data-zoom="-1" title="Zoom out" aria-label="Zoom out">' + ico(TB.zoomOut) + '</button>' +
       '<button type="button" class="nt-tb-btn nt-tb-zoomlevel" id="ntZoomLevel" data-zoom="0" title="Reset zoom" aria-label="Reset zoom">100%</button>' +
       '<button type="button" class="nt-tb-btn" data-zoom="1" title="Zoom in" aria-label="Zoom in">' + ico(TB.zoomIn) + '</button></span>' +
       SAVE_STATE +
       '<input type="file" id="ntImageInput" accept="image/*" multiple hidden>' +
-      '</div>'
+      '</div></div>'
     editorEl.innerHTML = editorHead(title, 'Untitled note', readonly) + tools +
       '<div class="nt-ed-body" id="ntBody" ' + (readonly ? '' : 'contenteditable="true"') + ' spellcheck="true"></div>'
     var body = $('ntBody')
@@ -600,6 +604,7 @@
   var MORE_BTN = menuBtn('more', '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></svg>', 'Note options')
   var MARK_COLORS = [{ color: null, label: 'No highlight' }, { color: '#FAEF5A', label: 'Yellow' }, { color: '#A6F0A0', label: 'Green' }, { color: '#9FE3FF', label: 'Blue' }, { color: '#FFB8D2', label: 'Pink' }, { color: '#FFD08A', label: 'Orange' }, { color: '#D9C7FF', label: 'Purple' }]
   function ico (paths) { return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>' }
+  function tbGroup (name, html) { return '<span class="nt-tb-grp nt-tbg-' + name + '">' + html + '</span>' }
   function tbtn (cmd, label, title, style) { return '<button type="button" class="nt-tb-btn" data-cmd="' + cmd + '" title="' + title + '" aria-label="' + title + '"' + (style ? ' style="' + style + '"' : '') + '>' + label + '</button>' }
   function tbtn2 (cmd, label, title, arg) { return '<button type="button" class="nt-tb-btn" data-cmd="' + cmd + '" data-arg="' + esc(arg) + '" title="' + title + '" aria-label="' + title + '">' + label + '</button>' }
 

@@ -68,6 +68,7 @@ class MainWindow {
     this.titlebar = null;
     this.siteUser = null; // username the current site page reported via the bridge
     this.siteInset = 0; // the site's rail width in CSS px (site:inset); the panel starts right of it
+    this.siteBottom = 0; // the site's music bar height in CSS px (site:bottom); the panel ends above it
     this.siteTitle = 'ONE.GY';
     this.siteWanted = null; // last main-frame URL the site view set out to load
     this.nudgeTimer = null;
@@ -314,6 +315,7 @@ class MainWindow {
     }
     this.siteUser = null;
     this.siteInset = 0;
+    this.siteBottom = 0;
     this.siteTitle = 'ONE.GY';
     this.siteWanted = null;
     this.createSite(load);
@@ -328,10 +330,12 @@ class MainWindow {
   layout() {
     const { width, height } = this.win.getContentBounds();
     const top = Math.min(TITLEBAR_H, height);
-    const inset = Math.min(width, Math.round(this.siteInset * this.opts.settings.get().site_zoom));
+    const zoom = this.opts.settings.get().site_zoom;
+    const inset = Math.min(width, Math.round(this.siteInset * zoom));
+    const bottom = Math.min(height - top, Math.round(this.siteBottom * zoom));
     if (this.titlebar) this.titlebar.setBounds({ x: 0, y: 0, width, height: top });
     if (this.site) this.site.setBounds({ x: 0, y: top, width, height: height - top });
-    if (this.panel) this.panel.setBounds({ x: inset, y: top, width: width - inset, height: height - top });
+    if (this.panel) this.panel.setBounds({ x: inset, y: top, width: width - inset, height: height - top - bottom });
     if (this.notice) {
       const w = Math.min(NOTICE_W, width);
       const h = Math.min(this.noticeHeight, height - top);
@@ -380,6 +384,13 @@ class MainWindow {
   setSiteInset(px) {
     if (px === this.siteInset) return;
     this.siteInset = px;
+    this.layout();
+  }
+
+  // The site's music bar height (CSS px) as its preload measured it; 0 = none.
+  setSiteBottom(px) {
+    if (px === this.siteBottom) return;
+    this.siteBottom = px;
     this.layout();
   }
 

@@ -250,6 +250,10 @@ function registerIpc({
     const inset = cleanInset(px);
     if (window.isSiteFrame(event.senderFrame) && inset !== null) window.setSiteInset(inset);
   });
+  ipcMain.on('site:bottom', (event, px) => {
+    const bottom = cleanInset(px);
+    if (window.isSiteFrame(event.senderFrame) && bottom !== null) window.setSiteBottom(bottom);
+  });
   ipcMain.on('site:leavePanel', (event, opts) => {
     if (window.isSiteFrame(event.senderFrame)) window.leavePanel(Boolean(opts && opts.now));
   });

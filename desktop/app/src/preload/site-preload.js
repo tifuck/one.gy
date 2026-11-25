@@ -66,8 +66,9 @@ if (origin && window.location.origin === origin && window.top === window) {
   };
   ipcRenderer.on('onegy:site-syncs', (_e, list) => deliverSyncs(list));
 
-  // The panel covers the page but not the rail: a rail link leaves it, and a
-  // rail menu (theme, account) closes it at once, as its popup opens under it.
+  // The panel covers the page but not the rail or the music bar: a rail link
+  // leaves it, and a rail menu (theme, account) or a music bar popup (queue,
+  // devices) closes it at once, as its popup opens under it.
   let panelOpen = false;
   ipcRenderer.on('onegy:panel', (_e, state) => {
     panelOpen = Boolean(state && state.open);
@@ -77,7 +78,7 @@ if (origin && window.location.origin === origin && window.top === window) {
   document.addEventListener('click', (e) => {
     if (!panelOpen || !(e.target instanceof Element)) return;
     if (e.target.closest('[data-desktop-rail] a[href]')) ipcRenderer.send('site:leavePanel');
-    else if (e.target.closest('[data-desktop-rail] [data-menu-btn]')) ipcRenderer.send('site:leavePanel', { now: true });
+    else if (e.target.closest('[data-desktop-rail] [data-menu-btn], #mpPlaylistBtn, #mpDevicesBtn')) ipcRenderer.send('site:leavePanel', { now: true });
   }, true);
 
   // Signed in on this computer, the site's sign-out signs out of the app (main
@@ -166,11 +167,28 @@ if (origin && window.location.origin === origin && window.top === window) {
     lastInset = px;
     ipcRenderer.send('site:inset', px);
   };
+  // The music bar's height in CSS px while it shows (0: hidden); the panel ends above it.
+  let lastBottom = -1;
+  const reportBottom = (bar) => {
+    const shown = bar && bar.isConnected && bar.classList.contains('mp-visible') && !bar.classList.contains('mp-fs-open');
+    const px = shown ? Math.max(0, Math.round(window.innerHeight - bar.getBoundingClientRect().top)) : 0;
+    if (px === lastBottom) return;
+    lastBottom = px;
+    ipcRenderer.send('site:bottom', px);
+  };
   window.addEventListener('DOMContentLoaded', () => {
     reportTheme();
     new MutationObserver(reportTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     const rail = document.querySelector('[data-desktop-rail]');
     reportInset(rail);
     if (rail) new ResizeObserver(() => reportInset(rail)).observe(rail);
+    const bar = document.getElementById('musicPlayer');
+    reportBottom(bar);
+    if (bar) {
+      const report = () => reportBottom(bar);
+      new MutationObserver(report).observe(bar, { attributes: true, attributeFilter: ['class'] });
+      bar.addEventListener('transitionend', report);
+      window.addEventListener('resize', report);
+    }
   });
 }

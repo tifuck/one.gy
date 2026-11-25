@@ -101,13 +101,18 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
   every change; the title bar, the window controls and the panel follow it.
 - Rail width: reports `[data-desktop-rail]`'s right edge in CSS px (0 without
   a rail) on load and on resize (`site:inset`); the panel starts there.
+- Music bar: reports the height of `#musicPlayer` in CSS px while it shows
+  (`.mp-visible`, not `.mp-fs-open`; 0 otherwise) on load, on class changes,
+  after its slide transition and on resize (`site:bottom`); the panel ends
+  above it, so the player stays usable while the panel is open.
 - Panel state: sets `html[data-desktop-panel]` to `sync` or `settings`
   while the panel is open, so the rail shows Sync or App settings as the
   current place (`desktop-shell.css`; v2 apps set it empty, which counts as
   `sync`). A click on a link in the rail while it is open closes the panel
   once the next page is there (`site:leavePanel`); a click on a rail menu
-  button (`[data-menu-btn]`, whose popup opens under the panel) closes it at
-  once (`site:leavePanel` with `{ now: true }`).
+  button (`[data-menu-btn]`) or the music bar's queue or devices button
+  (`#mpPlaylistBtn`, `#mpDevicesBtn`), whose popups open under the panel,
+  closes it at once (`site:leavePanel` with `{ now: true }`).
 - Sign-out: a submit of `form.js-logout-form` is held (window capture phase,
   before the site's own hooks) and handed to the app (`site:logout`). With
   this computer signed in the app asks "Sign out of ONE.GY on this
