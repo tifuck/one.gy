@@ -252,6 +252,7 @@
     }
     try {
       var state = {
+        uid: mp.playerEl ? (mp.playerEl.dataset.uid || '') : '',
         context: mp._context,
         browseShareToken: mp._browseShareToken,
         playlist: mp.playlist.map(function(t) {
@@ -301,7 +302,13 @@
       // Discard stale state (>4 hours old)
       if (Date.now() - state.ts > 4 * 60 * 60 * 1000) return false
       if (!state.playlist || !state.playlist.length) return false
-      if ((state.context || 'dashboard') !== requestedContext) return false
+      // Another account signed in on this tab since
+      if ((state.uid || '') !== (mp.playerEl ? (mp.playerEl.dataset.uid || '') : '')) return false
+      // Own files and the music library play on every app page; share and
+      // temp playlists only on the page that opened them.
+      var savedContext = state.context || 'dashboard'
+      var anyPage = { 'dashboard': 1, 'music-library': 1 }
+      if (savedContext !== requestedContext && !(anyPage[savedContext] && anyPage[requestedContext])) return false
       if (requestedContext === 'browse' && (state.browseShareToken || '') !== requestedBrowseShareToken) return false
 
       mp._context = state.context || 'dashboard'
@@ -363,12 +370,14 @@
       } catch(e) {}
 
       // Set up the audio source and seek (only while this restore is still
-      // the latest load: a track clicked before canplay owns the element).
+      // the latest load: a track clicked before then owns the element). Seek
+      // on loadedmetadata, not canplay: buffering the start first only to
+      // jump away doubles the gap between pages.
       mp._resumeAudioContext()
       var restoreSeq = ++mp._loadSeq
       audio.src = track.sourceUrl
       var onCanPlay = function() {
-        audio.removeEventListener('canplay', onCanPlay)
+        audio.removeEventListener('loadedmetadata', onCanPlay)
         if (restoreSeq !== mp._loadSeq) return
         if (savedTime > 0 && !isNaN(audio.duration) && savedTime < audio.duration) {
           audio.currentTime = savedTime
@@ -380,10 +389,10 @@
           })
         }
       }
-      audio.addEventListener('canplay', onCanPlay)
-      // Also handle the case where canplay fires before we attach the listener
-      if (audio.readyState >= 3) {
-        audio.removeEventListener('canplay', onCanPlay)
+      audio.addEventListener('loadedmetadata', onCanPlay)
+      // Also handle the case where loadedmetadata fires before we attach the listener
+      if (audio.readyState >= 1) {
+        audio.removeEventListener('loadedmetadata', onCanPlay)
         if (savedTime > 0) audio.currentTime = savedTime
         if (shouldPlay) {
           mp._resumeAudioContext()
@@ -400,6 +409,9 @@
 
   // Save state before page unload (navigation away)
   window.addEventListener('beforeunload', _saveState)
+  // pagehide comes later (the audio stopped there) and also fires where
+  // beforeunload does not (iOS, back/forward cache)
+  window.addEventListener('pagehide', _saveState)
 
   // Also save on visibility change (tab close, mobile switch)
   // On iOS, this is also where we handle background audio suspension and

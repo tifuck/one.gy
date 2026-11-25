@@ -32,18 +32,20 @@
   }
 
   function init(context, shareToken) {
-    mp._context = context || 'dashboard'
-    mp._browseShareToken = shareToken || ''
-
     mp.playerEl = document.getElementById('musicPlayer')
     if (!mp.playerEl) return
     _bindDomRefs()
 
+    // Once per page: a later call must not reset the context a restore set.
     if (mp.playerEl._mpInitialized) {
       mp._updateOwnLibraryState()
       return
     }
     mp.playerEl._mpInitialized = true
+    mp._context = context || 'dashboard'
+    mp._browseShareToken = shareToken || ''
+    // The add-to-playlist menu lives in music.js (music page only)
+    mp.playerEl.classList.toggle('mp-no-add', !document.getElementById('muView'))
 
     _restructureBar()
 
@@ -65,11 +67,12 @@
     // ── Media Session API (lock screen / notification controls) ──
     mp._initMediaSession()
 
+    // Try to restore playback state from a previous page (before the sync
+    // controls: the restored context decides whether they show)
+    mp._restoreState()
+
     // ── Cross-device sync setup ──
     _initSyncControls()
-
-    // Try to restore playback state from a previous page
-    mp._restoreState()
 
     // Start sync polling after restore (so we know if we're already playing)
     if (mp._context === 'music-library' && mp._syncLoggedIn && mp._syncEnabled) {
@@ -420,4 +423,11 @@
 
   // ─── Expose globally ───────────────────────────────────────────
   window.MusicPlayer = MusicPlayer
+
+  // Every app page carries the player (_app_base.html). Files and Music call
+  // init() themselves while their scripts run; any other page resumes here.
+  document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('musicPlayer')
+    if (el && !el._mpInitialized) init()
+  })
 })(window._mpCore)

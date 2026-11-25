@@ -134,11 +134,73 @@
   }
   function setPaused (paused) { if (view) view.classList.toggle('is-paused', paused) }
 
+  // ---- Cover tint ------------------------------------------------------------
+  // One vivid colour per cover (canvas average weighted toward saturated
+  // pixels, lightness pinned so white text reads on it). Drives the wash
+  // behind the top of the page and the genre tiles.
+  var tintCache = new Map(), washToken = 0
+  function rgbToHsl (r, g, b) {
+    r /= 255; g /= 255; b /= 255
+    var mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, h = 0, s = 0, d = mx - mn
+    if (d) {
+      s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn)
+      h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4
+      h /= 6
+    }
+    return [h, s, l]
+  }
+  function hslToRgb (h, s, l) {
+    function f (n) { var k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l); return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))) }
+    return [f(0), f(8), f(4)]
+  }
+  function pickTint (d) {
+    var r = 0, g = 0, b = 0, w = 0
+    for (var i = 0; i < d.length; i += 4) {
+      var mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2])
+      var sat = mx ? (mx - mn) / mx : 0, wt = sat * sat * (mx / 255) + 0.02
+      r += d[i] * wt; g += d[i + 1] * wt; b += d[i + 2] * wt; w += wt
+    }
+    var hsl = rgbToHsl(r / w, g / w, b / w)
+    return 'rgb(' + hslToRgb(hsl[0], Math.min(0.8, Math.max(hsl[1] < 0.08 ? 0 : 0.35, hsl[1])), 0.4).join(' ') + ')'
+  }
+  function tintOf (p) {
+    if (!p) return Promise.resolve(null)
+    var url = coverUrl(p)
+    if (!tintCache.has(url)) {
+      tintCache.set(url, new Promise(function (res) {
+        var img = new Image()
+        img.onload = function () {
+          try {
+            var c = document.createElement('canvas'); c.width = c.height = 24
+            var x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0, 24, 24)
+            res(pickTint(x.getImageData(0, 0, 24, 24).data))
+          } catch (e) { res(null) }
+        }
+        img.onerror = function () { res(null) }
+        img.src = url
+      }))
+    }
+    return tintCache.get(url)
+  }
+  // Page wash follows the open view; null falls back to the theme accent.
+  function wash (p) {
+    var main = view && view.parentNode, token = ++washToken
+    if (!main) return
+    if (!p) { main.style.removeProperty('--mu-tint'); return }
+    tintOf(p).then(function (c) { if (token !== washToken) return; if (c) main.style.setProperty('--mu-tint', c); else main.style.removeProperty('--mu-tint') })
+  }
+  function paintTiles () {
+    view.querySelectorAll('[data-tint]').forEach(function (el) {
+      tintOf(el.getAttribute('data-tint')).then(function (c) { if (c) el.style.setProperty('--mu-tile', c) })
+    })
+  }
+
   // ---- Rendering: shared bits ---------------------------------------------
   function loading () { view.innerHTML = '<div class="mu-skel" aria-hidden="true">' + new Array(13).join('<span class="rd-skel"></span>') + '</div>' }
   // at: [view, id] of the view being opened, so a UI update reload (core.js) comes back to it.
   function startView (at) { S.at = at; current = { tracks: [], albumName: '' }; loading(); view.scrollTop = 0; return ++viewEpoch }
   function isCurrentView (epoch) { return epoch === viewEpoch }
+  function render (h) { view.innerHTML = h; paintTiles() }
 
   // ---- Breadcrumb (toolbar) -------------------------------------------------
   // trail: [{ label, open }]. Rail views start a new trail, album / artist
@@ -167,39 +229,85 @@
     return '<div class="mu-sec-head">' + (t ? '<h2 class="mu-h2">' + esc(t) + '</h2>' : '') + (sub ? '<span class="mu-sec-sub">' + esc(sub) + '</span>' : '') +
       (more ? '<button type="button" class="mu-sec-more" data-go="' + esc(more) + '">Show all</button>' : '') + '</div>'
   }
-  function albumCard (a) {
+  function artistLinks (arts) {
+    return (arts || []).map(function (x) {
+      return x.id ? '<button type="button" class="mu-link" data-artist="' + esc(x.id) + '">' + esc(x.name) + '</button>' : esc(x.name)
+    }).join(', ')
+  }
+  function year (a) { return a.year || String(a.release_date || '').slice(0, 4) }
+  // sub: 'artist' (default) shows year + album artists, 'type' shows year + release type
+  function albumCard (a, sub) {
+    var line = sub === 'type' ? [year(a), typeLabel(a.album_type)] : [year(a), (a.artists || []).map(function (x) { return x.name }).join(', ')]
     return '<button type="button" class="mu-card" data-album="' + esc(a.id) + '" title="' + esc(a.name) + '">' +
       '<span class="mu-card-art">' + cover(a.cover_path) + '<span class="mu-card-play" data-play-album="' + esc(a.id) + '" aria-hidden="true">' + ICON_PLAY + '</span></span>' +
       '<span class="mu-card-name">' + esc(a.name) + '</span>' +
-      '<span class="mu-card-sub">' + esc([a.year, typeLabel(a.album_type)].filter(Boolean).join(' · ')) + '</span></button>'
+      '<span class="mu-card-sub">' + esc(line.filter(Boolean).join(' · ')) + '</span></button>'
   }
+  function albumCardType (a) { return albumCard(a, 'type') }
   function artistCard (a) {
     return '<button type="button" class="mu-card mu-card-artist" data-artist="' + esc(a.id) + '" title="' + esc(a.name) + '">' +
       '<span class="mu-card-art mu-round">' + cover(a.cover_path) + '</span>' +
       '<span class="mu-card-name">' + esc(a.name) + '</span>' +
       '<span class="mu-card-sub">' + plural(a.song_count || 0, 'song') + '</span></button>'
   }
-  function trackRow (t, i, albumName, showArt) {
+  function genreTile (g) {
+    return '<button type="button" class="mu-genre" data-genre="' + esc(g.name) + '"' + (g.cover_path ? ' data-tint="' + esc(g.cover_path) + '"' : '') + '>' +
+      '<span class="mu-genre-name">' + esc(g.name).replace(/\//g, '/<wbr>') + '</span><span class="mu-genre-sub">' + plural(g.song_count, 'song') + '</span>' +
+      (g.cover_path ? '<span class="mu-genre-art">' + cover(g.cover_path) + '</span>' : '') + '</button>'
+  }
+  // opts.art: cover column (lists of mixed albums); opts.album: album column
+  function trackRow (t, i, opts) {
     var liked = S.likes.has(t.id)
     var unavailable = t.available === false
-    var title = t.title || t.name, artists = artistNames(t.artists, t.featured_artists)
+    var title = t.title || t.name
+    var artists = artistLinks((t.artists || []).concat(t.featured_artists || []))
     return '<div class="mu-track' + (unavailable ? ' is-unavail' : '') + (t.id && t.id === currentTrackId() ? ' is-current' : '') + '" data-track-index="' + i + '" data-song-id="' + esc(t.id) + '"' + (unavailable ? '' : ' tabindex="0"') + '>' +
-      '<span class="mu-track-num">' + esc(showArt ? i + 1 : (t.track_number || (i + 1))) + '<svg class="mu-track-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4a.8.8 0 0 0 1.2.7l11.4-7.2a.8.8 0 0 0 0-1.4L8.2 4.1A.8.8 0 0 0 7 4.8z"/></svg></span>' +
-      (showArt ? '<span class="mu-track-art">' + cover(t.cover_path) + '</span>' : '') +
-      '<span class="mu-track-main"><span class="mu-track-title" title="' + esc(title) + '">' + esc(title) + '</span><span class="mu-track-artist">' + esc(artists) + '</span></span>' +
+      '<span class="mu-track-num">' + esc(opts.art ? i + 1 : (t.track_number || (i + 1))) + '<svg class="mu-track-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4a.8.8 0 0 0 1.2.7l11.4-7.2a.8.8 0 0 0 0-1.4L8.2 4.1A.8.8 0 0 0 7 4.8z"/></svg></span>' +
+      (opts.art ? '<span class="mu-track-art">' + cover(t.cover_path) + '</span>' : '') +
+      '<span class="mu-track-main"><span class="mu-track-title" title="' + esc(title) + '">' + esc(title) + '</span><span class="mu-track-artist">' + artists + '</span></span>' +
+      (opts.album ? '<span class="mu-track-album">' + (t.album_id ? '<button type="button" class="mu-link" data-album="' + esc(t.album_id) + '">' + esc(t.album_name || '') + '</button>' : '') + '</span>' : '') +
       '<button type="button" class="mu-track-like' + (liked ? ' is-liked' : '') + '" data-like="' + esc(t.id) + '" aria-label="' + (liked ? 'Unlike' : 'Like') + '">' + ICON_HEART + '</button>' +
       '<span class="mu-track-dur">' + fmtDur(t.duration_ms) + '</span></div>'
   }
-  function trackList (tracks, albumName, showArt) {
-    return '<div class="mu-tracks">' + tracks.map(function (t, i) { return trackRow(t, i, albumName, showArt) }).join('') + '</div>'
+  var ICON_CLOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>'
+  // opts: { art, album, discs }. Header row + rows; discs adds a heading per disc.
+  function trackList (tracks, opts) {
+    opts = opts || {}
+    var head = '<div class="mu-thead" aria-hidden="true"><span>#</span>' + (opts.art ? '<span></span>' : '') + '<span>Title</span>' +
+      (opts.album ? '<span class="mu-track-album">Album</span>' : '') + '<span></span><span class="mu-track-dur">' + ICON_CLOCK + '</span></div>'
+    var multiDisc = opts.discs && tracks.some(function (t) { return (t.disc_number || 1) > 1 })
+    var lastDisc = null
+    return '<div class="mu-tracks' + (opts.art ? ' has-art' : '') + (opts.album ? ' has-album' : '') + '">' + head + tracks.map(function (t, i) {
+      var h = ''
+      if (multiDisc && (t.disc_number || 1) !== lastDisc) { lastDisc = t.disc_number || 1; h = '<div class="mu-disc">Disc ' + lastDisc + '</div>' }
+      return h + trackRow(t, i, opts)
+    }).join('') + '</div>'
   }
-  function playButton () { return '<div class="mu-detail-actions"><button type="button" class="rd-btn rd-btn-primary" data-play-all>' + ICON_PLAY + 'Play</button></div>' }
-  function detailHead (art, kicker, title, sub, facts, actions) {
-    return '<header class="mu-detail-head"><div class="mu-detail-art' + (art.cls ? ' ' + art.cls : '') + '">' + art.html + '</div>' +
-      '<div class="mu-detail-meta"><span class="mu-eyebrow">' + esc(kicker) + '</span><h2 class="mu-detail-title" title="' + esc(title) + '">' + esc(title) + '</h2>' +
-      (sub ? '<div class="mu-detail-sub">' + esc(sub) + '</div>' : '') +
-      '<div class="mu-detail-facts">' + esc(facts) + '</div>' + (actions || '') + '</div></header>'
+  // extra: HTML after the button (album genre chips)
+  function playButton (extra) {
+    return '<div class="mu-actions"><button type="button" class="mu-play-big" data-play-all aria-label="Play" title="Play">' + ICON_PLAY + '</button>' + (extra || '') + '</div>'
   }
+  // art: { html, cls }; kicker: what this page is; meta: HTML (already escaped)
+  function hero (art, kicker, title, meta, desc) {
+    var len = String(title || '').length
+    return '<header class="mu-hero"><div class="mu-hero-art' + (art.cls ? ' ' + art.cls : '') + '">' + art.html + '</div>' +
+      '<div class="mu-hero-meta"><span class="mu-hero-kicker">' + esc(kicker) + '</span>' +
+      '<h1 class="mu-hero-title' + (len > 40 ? ' is-xlong' : len > 18 ? ' is-long' : '') + '" title="' + esc(title) + '">' + esc(title) + '</h1>' +
+      (desc ? '<p class="mu-hero-desc">' + esc(desc) + '</p>' : '') +
+      '<div class="mu-hero-facts">' + meta + '</div></div></header>'
+  }
+  function facts (parts) { return parts.filter(Boolean).map(function (p) { return '<span>' + p + '</span>' }).join('') }
+  function totalDur (tracks) {
+    var ms = tracks.reduce(function (n, t) { return n + (t.available === false ? 0 : (t.duration_ms || 0)) }, 0)
+    var m = Math.round(ms / 60000)
+    return m >= 60 ? Math.floor(m / 60) + ' hr ' + (m % 60) + ' min' : (m ? m + ' min' : '')
+  }
+  function longDate (d) {
+    if (!/^\d{4}-\d{2}-\d{2}/.test(d || '')) return d || ''
+    return new Date(d.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })
+  }
+  // Long track lists show 10 rows and a toggle for the rest.
+  function moreToggle (n) { return n > 10 ? '<button type="button" class="mu-sec-more mu-show-more" data-more-tracks>Show all ' + n + '</button>' : '' }
   function empty (title, text) {
     return '<div class="rd-empty mu-empty"><span class="rd-empty-icon">' + ICON_NOTE + '</span><h3 class="rd-empty-title">' + esc(title) + '</h3>' +
       (text ? '<p class="rd-empty-text">' + esc(text) + '</p>' : '') + '</div>'
@@ -208,31 +316,98 @@
   // ---- Views ---------------------------------------------------------------
   var current = { tracks: [], albumName: '' }
 
+  function quickTile (attrs, art, name, tint) {
+    return '<button type="button" class="mu-quick" ' + attrs + (tint ? ' data-wash="' + esc(tint) + '"' : '') + '><span class="mu-quick-art">' + art + '</span><span class="mu-quick-name">' + esc(name) + '</span></button>'
+  }
   async function viewHome () {
     setActive('home'); crumbRoot('Home', viewHome); var epoch = startView(['home'])
     try {
       var d = await jget('/music/api/home')
       if (!isCurrentView(epoch)) return
-      var h = ''
-      if ((d.recently_added || []).length) h += sectionTitle('Recently added', '', 'albums') + '<div class="mu-shelf">' + d.recently_added.map(albumCard).join('') + '</div>'
+      var recent = d.recently_added || [], h = ''
+      // Quick picks: liked songs, playlists, then the newest additions (8 tiles)
+      var quick = [quickTile('data-go="liked"', '<span class="mu-liked-art">' + ICON_HEART + '</span>', 'Liked songs')]
+      S.playlists.slice(0, 3).forEach(function (p) { quick.push(quickTile('data-playlist="' + esc(p.id) + '"', p.cover_path ? cover(p.cover_path) : '<span class="mu-art-ph">' + ICON_LIST + '</span>', p.name, p.cover_path)) })
+      recent.slice(0, 8 - quick.length).forEach(function (a) { quick.push(quickTile('data-album="' + esc(a.id) + '"', cover(a.cover_path), a.name, a.cover_path)) })
+      if (recent.length) h += '<div class="mu-quick-grid">' + quick.join('') + '</div>'
+      if (recent.length) h += sectionTitle('Recently added', '', 'albums') + '<div class="mu-shelf">' + recent.map(albumCard).join('') + '</div>'
+      if ((d.new_releases || []).length) h += sectionTitle('New releases') + '<div class="mu-shelf">' + d.new_releases.map(albumCard).join('') + '</div>'
+      if ((d.genres || []).length) h += sectionTitle('Browse by genre', '', 'genres') + '<div class="mu-shelf mu-shelf-genres">' + d.genres.map(genreTile).join('') + '</div>'
       if ((d.top_artists || []).length) h += sectionTitle('Top artists', '', 'artists') + '<div class="mu-shelf mu-shelf-artists">' + d.top_artists.map(artistCard).join('') + '</div>'
-      if ((d.all_albums || []).length) h += sectionTitle('Albums', String(d.all_albums.length)) + '<div class="mu-grid">' + d.all_albums.map(albumCard).join('') + '</div>'
-      view.innerHTML = h || empty('Your library is empty', 'Songs added to the music library show up here.')
+      S.homeWash = recent[0] && recent[0].cover_path
+      wash(S.homeWash)
+      render(h || empty('Your library is empty', 'Songs added to the music library show up here.'))
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load the library', 'Check your connection and try again.') }
   }
+
+  // Albums: type filter chips + sort, kept for the session.
+  var ALBUM_SORTS = [['added', 'Recently added'], ['release', 'Release date'], ['name', 'Name'], ['artist', 'Artist']]
+  var ALBUM_TYPES = [['', 'All'], ['album', 'Albums'], ['single', 'Singles'], ['ep', 'EPs']]
+  var albumPrefs = { type: '', sort: 'added' }
+  try { Object.assign(albumPrefs, JSON.parse(localStorage.getItem('onegy_music_albums') || '{}')) } catch (e) {}
+  function sortAlbums (arr, by) {
+    var key = {
+      added: function (a) { return a.added_at || '' },
+      release: function (a) { return a.release_date || a.year || '' },
+      name: function (a) { return (a.name || '').toLowerCase() },
+      artist: function (a) { return ((a.artists || [])[0] || {}).name ? a.artists[0].name.toLowerCase() : '' }
+    }[by] || function () { return '' }
+    var desc = by === 'added' || by === 'release'
+    return arr.slice().sort(function (x, y) { var a = key(x), b = key(y); return a === b ? 0 : ((a < b) !== desc ? -1 : 1) })
+  }
+  function renderAlbums (all) {
+    var types = {}; all.forEach(function (a) { types[a.album_type] = 1 })
+    if (albumPrefs.type && !types[albumPrefs.type]) albumPrefs.type = ''
+    var arr = sortAlbums(all.filter(function (a) { return !albumPrefs.type || a.album_type === albumPrefs.type }), albumPrefs.sort)
+    var chips = ALBUM_TYPES.filter(function (t) { return !t[0] || types[t[0]] }).map(function (t) {
+      return '<button type="button" class="mu-chip' + (albumPrefs.type === t[0] ? ' is-on' : '') + '" data-album-type="' + t[0] + '" aria-pressed="' + (albumPrefs.type === t[0]) + '">' + t[1] + '</button>'
+    }).join('')
+    var sort = '<label class="mu-sort"><span class="mu-sort-label">Sort</span><select data-album-sort aria-label="Sort albums">' +
+      ALBUM_SORTS.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === albumPrefs.sort ? ' selected' : '') + '>' + o[1] + '</option>' }).join('') + '</select></label>'
+    render('<div class="mu-filterbar"><div class="mu-chips" role="group" aria-label="Release type">' + chips + '</div>' + sort + '</div>' +
+      sectionTitle('', plural(arr.length, albumPrefs.type ? typeLabel(albumPrefs.type).toLowerCase().replace(/s?$/, '') : 'release')) +
+      '<div class="mu-grid">' + arr.map(albumCard).join('') + '</div>')
+  }
   async function viewAlbums () {
-    setActive('albums'); crumbRoot('Albums', viewAlbums); var epoch = startView(['albums'])
+    setActive('albums'); crumbRoot('Albums', viewAlbums); var epoch = startView(['albums']); wash(null)
     try { var d = await jget('/music/api/albums'); var arr = Array.isArray(d) ? d : (d.albums || [])
       if (!isCurrentView(epoch)) return
-      view.innerHTML = arr.length ? sectionTitle('', plural(arr.length, 'album')) + '<div class="mu-grid">' + arr.map(albumCard).join('') + '</div>' : empty('No albums yet')
+      S.albums = arr
+      if (arr.length) renderAlbums(arr); else render(empty('No albums yet'))
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load albums', 'Check your connection and try again.') }
   }
   async function viewArtists () {
-    setActive('artists'); crumbRoot('Artists', viewArtists); var epoch = startView(['artists'])
+    setActive('artists'); crumbRoot('Artists', viewArtists); var epoch = startView(['artists']); wash(null)
     try { var d = await jget('/music/api/artists'); var arr = Array.isArray(d) ? d : (d.artists || [])
       if (!isCurrentView(epoch)) return
-      view.innerHTML = arr.length ? sectionTitle('', plural(arr.length, 'artist')) + '<div class="mu-grid mu-grid-artists">' + arr.map(artistCard).join('') + '</div>' : empty('No artists yet')
+      render(arr.length ? sectionTitle('', plural(arr.length, 'artist')) + '<div class="mu-grid mu-grid-artists">' + arr.map(artistCard).join('') + '</div>' : empty('No artists yet'))
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load artists', 'Check your connection and try again.') }
+  }
+  async function viewGenres () {
+    setActive('genres'); crumbRoot('Genres', viewGenres); var epoch = startView(['genres']); wash(null)
+    try { var arr = await jget('/music/api/genres')
+      if (!isCurrentView(epoch)) return
+      render(arr.length ? sectionTitle('', plural(arr.length, 'genre')) + '<div class="mu-genre-grid">' + arr.map(genreTile).join('') + '</div>'
+        : empty('No genres yet', 'Genres appear once songs in the library have been tagged.'))
+    } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load genres', 'Check your connection and try again.') }
+  }
+  async function viewGenre (name, again) {
+    if (!again) crumbPush(name, function () { viewGenre(name, true) })
+    var epoch = startView(['genre', name])
+    try {
+      var r = await jget('/music/api/genre?name=' + encodeURIComponent(name))
+      if (!isCurrentView(epoch)) return
+      var songs = r.songs || [], albums = r.albums || [], artists = r.artists || []
+      current = { tracks: songs, albumName: '' }
+      var art = albums[0] && albums[0].cover_path
+      wash(art)
+      var h = hero({ html: '<span class="mu-genre-hero"' + (art ? ' data-tint="' + esc(art) + '"' : '') + '>' + esc(name.charAt(0)) + '</span>' }, 'Genre', name,
+        facts([plural(r.genre.song_count, 'song'), plural(albums.length, 'release'), plural(artists.length, 'artist')]))
+      if (songs.length) h += playButton() + '<div class="mu-collapsed">' + trackList(songs, { art: true, album: true }) + '</div>' + moreToggle(songs.length)
+      if (albums.length) h += sectionTitle('Releases', String(albums.length)) + '<div class="mu-grid">' + albums.map(albumCard).join('') + '</div>'
+      if (artists.length) h += sectionTitle('Artists', String(artists.length)) + '<div class="mu-shelf mu-shelf-artists">' + artists.map(artistCard).join('') + '</div>'
+      render(h)
+    } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load this genre', 'It may no longer have any songs.') }
   }
   async function viewAlbum (id, again) {
     if (!again) crumbPush('Album', function () { viewAlbum(id, true) })
@@ -244,11 +419,28 @@
       var a = r.album || r, tracks = r.tracks || a.tracks || []   // response is { album, tracks }
       current = { tracks: tracks, albumName: a.name }
       crumbLabel(a.name)
-      var facts = [a.year, typeLabel(a.album_type), plural(tracks.length, 'track')].filter(Boolean).join(' · ')
-      var h = detailHead({ html: cover(a.cover_path) }, 'Album', a.name, (a.artists || []).map(function (x) { return x.name }).join(', '), facts, tracks.length ? playButton() : '')
-      h += tracks.length ? trackList(tracks, a.name, false) : empty('This album has no tracks')
-      view.innerHTML = h
+      wash(a.cover_path)
+      var count = a.total_tracks && a.total_tracks > tracks.length ? tracks.length + ' of ' + plural(a.total_tracks, 'song') : plural(tracks.length, 'song')
+      var h = hero({ html: cover(a.cover_path) }, typeLabel(a.album_type) || 'Album', a.name,
+        facts(['<strong>' + artistLinks(a.artists) + '</strong>', esc(year(a)), esc(count), esc(totalDur(tracks))]))
+      var tags = (a.genres || []).length ? '<div class="mu-tags">' + a.genres.map(function (g) { return '<button type="button" class="mu-chip" data-genre="' + esc(g) + '">' + esc(g) + '</button>' }).join('') + '</div>' : ''
+      if (tracks.length) h += playButton(tags); else h += tags
+      h += tracks.length ? trackList(tracks, { discs: true }) : empty('This album has no tracks')
+      if (a.release_date || a.label) h += '<footer class="mu-credits">' + (a.release_date ? '<div>' + esc(longDate(a.release_date)) + '</div>' : '') + (a.label ? '<div>' + esc(a.label) + '</div>' : '') + '</footer>'
+      h += '<div id="muMoreBy"></div>'
+      render(h)
+      var first = (a.artists || [])[0]
+      if (first && first.id) moreBy(first, a.id, epoch)
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load this album', 'Check your connection and try again.') }
+  }
+  async function moreBy (artist, albumId, epoch) {
+    try {
+      var arr = await jget('/music/api/albums?artist_id=' + encodeURIComponent(artist.id))
+      var el = $('muMoreBy')
+      if (!isCurrentView(epoch) || !el) return
+      arr = (Array.isArray(arr) ? arr : []).filter(function (x) { return x.id !== albumId }).slice(0, 12)
+      if (arr.length) { el.innerHTML = sectionTitle('More by ' + artist.name) + '<div class="mu-shelf">' + arr.map(albumCardType).join('') + '</div>' }
+    } catch (e) {}
   }
   async function viewArtist (id, again) {
     if (!again) crumbPush('Artist', function () { viewArtist(id, true) })
@@ -257,27 +449,34 @@
       var r = await jget('/music/api/artist/' + encodeURIComponent(id))
       if (!isCurrentView(epoch)) return
       if (r.error) { view.innerHTML = empty(r.error); return }
-      var a = r.artist || r                                        // response is { artist, songs, albums }
-      a.albums = r.albums || a.albums || []
+      var a = r.artist || r                                        // response is { artist, songs, albums, featuring_albums }
+      var own = r.albums || [], feat = r.featuring_albums || []
       crumbLabel(a.name)
-      var top = r.top_songs || r.songs || []
-      var h = detailHead({ html: cover(a.cover_path), cls: 'mu-round' }, 'Artist', a.name, '', plural(a.albums.length, 'album'), top.length ? playButton() : '')
-      // Queue exactly the rows shown: Play used to continue into hidden songs.
-      if (top.length) { top = top.slice(0, 10); current = { tracks: top, albumName: '' }; h += sectionTitle('Popular') + trackList(top, '', true) }
-      if (a.albums.length) h += sectionTitle('Albums', String(a.albums.length)) + '<div class="mu-grid">' + a.albums.map(albumCard).join('') + '</div>'
-      view.innerHTML = h
+      wash(a.cover_path)
+      var songs = r.songs || []
+      var full = own.filter(function (x) { return x.album_type === 'album' || x.album_type === 'compilation' })
+      var short = own.filter(function (x) { return full.indexOf(x) < 0 })
+      var h = hero({ html: cover(a.cover_path), cls: 'mu-round' }, 'Artist', a.name, facts([plural(songs.length, 'song'), own.length ? plural(own.length, 'release') : '']))
+      if (songs.length) {
+        current = { tracks: songs, albumName: '' }
+        h += playButton() + sectionTitle('Songs', String(songs.length)) + '<div class="mu-collapsed">' + trackList(songs, { art: true, album: true }) + '</div>' + moreToggle(songs.length)
+      }
+      if (full.length) h += sectionTitle('Albums', String(full.length)) + '<div class="mu-grid">' + full.map(albumCardType).join('') + '</div>'
+      if (short.length) h += sectionTitle('Singles and EPs', String(short.length)) + '<div class="mu-grid">' + short.map(albumCardType).join('') + '</div>'
+      if (feat.length) h += sectionTitle('Appears on', String(feat.length)) + '<div class="mu-grid">' + feat.map(albumCard).join('') + '</div>'
+      render(h)
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load this artist', 'Check your connection and try again.') }
   }
   async function viewLiked () {
-    setActive('liked'); crumbRoot('Liked songs', viewLiked); var epoch = startView(['liked'])
+    setActive('liked'); crumbRoot('Liked songs', viewLiked); var epoch = startView(['liked']); wash(null)
     try {
       var arr = await jget('/music/api/liked-songs')
       if (!isCurrentView(epoch)) return
       arr = Array.isArray(arr) ? arr : (arr.songs || [])
       current = { tracks: arr, albumName: '' }
-      var h = detailHead({ html: ICON_HEART, cls: 'mu-liked-art' }, 'Playlist', 'Liked songs', '', plural(arr.length, 'song'), arr.length ? playButton() : '')
-      h += arr.length ? trackList(arr, '', true) : empty('No liked songs yet', 'Tap the heart on any track to save it here.')
-      view.innerHTML = h
+      var h = hero({ html: ICON_HEART, cls: 'mu-liked-art' }, 'Playlist', 'Liked songs', facts([USERNAME ? '<strong>' + esc(USERNAME) + '</strong>' : '', plural(arr.length, 'song'), esc(totalDur(arr))]))
+      h += arr.length ? playButton() + trackList(arr, { art: true, album: true }) : empty('No liked songs yet', 'Tap the heart on any track to save it here.')
+      render(h)
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load liked songs', 'Check your connection and try again.') }
   }
   async function viewPlaylist (id) {
@@ -290,21 +489,22 @@
       var tracks = p.songs || p.tracks || []
       current = { tracks: tracks, albumName: '' }
       crumbLabel(p.name)
-      var h = detailHead({ html: p.cover_path ? cover(p.cover_path) : '<span class="mu-art-ph">' + ICON_LIST + '</span>' }, 'Playlist', p.name, p.description || '', plural(tracks.length, 'song'), tracks.length ? playButton() : '')
-      h += tracks.length ? trackList(tracks, '', true) : empty('This playlist is empty', 'Add songs with the + button in the player.')
-      view.innerHTML = h
+      wash(p.cover_path)
+      var h = hero({ html: p.cover_path ? cover(p.cover_path) : '<span class="mu-art-ph">' + ICON_LIST + '</span>' }, 'Playlist', p.name, facts([plural(tracks.length, 'song'), esc(totalDur(tracks))]), p.description || '')
+      h += tracks.length ? playButton() + trackList(tracks, { art: true, album: true }) : empty('This playlist is empty', 'Add songs with the + button in the player.')
+      render(h)
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load this playlist', 'Check your connection and try again.') }
   }
   async function viewSearch (q) {
-    setActive(''); crumbRoot('Search', function () { viewSearch(q) }); var epoch = startView()
+    setActive(''); crumbRoot('Search', function () { viewSearch(q) }); var epoch = startView(); wash(null)
     try {
       var d = await jget('/music/api/search?q=' + encodeURIComponent(q))
       if (!isCurrentView(epoch)) return
       var h = ''
-      if ((d.songs || []).length) { current = { tracks: d.songs, albumName: '' }; h += sectionTitle('Songs', String(d.songs.length)) + trackList(d.songs, '', true) }
+      if ((d.songs || []).length) { current = { tracks: d.songs, albumName: '' }; h += sectionTitle('Songs', String(d.songs.length)) + trackList(d.songs, { art: true, album: true }) }
       if ((d.albums || []).length) h += sectionTitle('Albums', String(d.albums.length)) + '<div class="mu-grid">' + d.albums.map(albumCard).join('') + '</div>'
       if ((d.artists || []).length) h += sectionTitle('Artists', String(d.artists.length)) + '<div class="mu-grid mu-grid-artists">' + d.artists.map(artistCard).join('') + '</div>'
-      view.innerHTML = h || empty('No results for “' + q + '”', 'Try a different spelling or a shorter search.')
+      render(h || empty('No results for “' + q + '”', 'Try a different spelling or a shorter search.'))
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Search failed', 'Check your connection and try again.') }
   }
 
@@ -334,7 +534,7 @@
     railEl.querySelectorAll('[data-playlist]').forEach(function (b) { b.classList.toggle('is-active', b.getAttribute('data-playlist') === S.playlistId) })
   }
   function go (v) {
-    if (v === 'home') viewHome(); else if (v === 'albums') viewAlbums(); else if (v === 'artists') viewArtists(); else if (v === 'liked') viewLiked()
+    if (v === 'home') viewHome(); else if (v === 'albums') viewAlbums(); else if (v === 'artists') viewArtists(); else if (v === 'genres') viewGenres(); else if (v === 'liked') viewLiked()
   }
   // Player title/artist links (window.MusicBrowse.navigate) and /music#album:<id> deep links
   function navigate (type, id) {
@@ -362,9 +562,23 @@
       var more = e.target.closest('[data-go]'); if (more) { go(more.getAttribute('data-go')); return }
       var alb = e.target.closest('[data-album]'); if (alb) { viewAlbum(alb.getAttribute('data-album')); return }
       var art = e.target.closest('[data-artist]'); if (art) { viewArtist(art.getAttribute('data-artist')); return }
+      var gen = e.target.closest('[data-genre]'); if (gen) { viewGenre(gen.getAttribute('data-genre')); return }
+      var pl = e.target.closest('[data-playlist]'); if (pl) { viewPlaylist(pl.getAttribute('data-playlist')); return }
+      var at = e.target.closest('[data-album-type]'); if (at) { albumPrefs.type = at.getAttribute('data-album-type'); savePrefs(); renderAlbums(S.albums || []); return }
+      var mt = e.target.closest('[data-more-tracks]'); if (mt) { var c = mt.previousElementSibling; if (c) c.classList.remove('mu-collapsed'); mt.remove(); return }
       if (e.target.closest('[data-play-all]')) { playList(current.tracks, -1, current.albumName); return }
       var tr = e.target.closest('[data-track-index]'); if (tr) { playList(current.tracks, +tr.getAttribute('data-track-index'), current.albumName); return }
     })
+    view.addEventListener('change', function (e) {
+      if (e.target.matches('[data-album-sort]')) { albumPrefs.sort = e.target.value; savePrefs(); renderAlbums(S.albums || []) }
+    })
+    // Home quick tiles tint the page while hovered
+    view.addEventListener('pointerover', function (e) {
+      if (S.view !== 'home') return
+      var q = e.target.closest('.mu-quick'); if (!q || q.contains(e.relatedTarget)) return
+      wash(q.getAttribute('data-wash') || null)
+    })
+    view.addEventListener('pointerleave', function () { if (S.view === 'home') wash(S.homeWash) })
     // Track rows are focusable: Enter / Space plays
     view.addEventListener('keydown', function (e) {
       if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('mu-track')) { e.preventDefault(); e.target.click() }
@@ -397,6 +611,7 @@
     document.querySelectorAll('#muPlModal [data-rd-modal-close]').forEach(function (b) { b.onclick = closeModal })
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && $('muPlModal').classList.contains('rd-open')) closeModal() })
   }
+  function savePrefs () { try { localStorage.setItem('onegy_music_albums', JSON.stringify(albumPrefs)) } catch (e) {} }
   function openRail () { $('muRail').classList.add('is-open'); $('muRailScrim').classList.add('is-open'); $('muRailToggle').setAttribute('aria-expanded', 'true') }
   function closeRail () { var r = $('muRail'); if (r) r.classList.remove('is-open'); var s = $('muRailScrim'); if (s) s.classList.remove('is-open'); var t = $('muRailToggle'); if (t) t.setAttribute('aria-expanded', 'false') }
   function openModal () { var m = $('muPlModal'); m.classList.add('rd-open'); m.setAttribute('aria-hidden', 'false'); $('muPlName').value = ''; $('muPlDesc').value = ''; setTimeout(function () { $('muPlName').focus() }, 30) }
@@ -420,7 +635,7 @@
     window.MusicBrowse = { navigate: navigate }
     window.addEventListener('onegy:update', function (e) { e.detail.music = S.at })
     var at = window.OneGyUpdate && OneGyUpdate.resume && OneGyUpdate.resume.music
-    var open = at && { home: viewHome, albums: viewAlbums, artists: viewArtists, album: viewAlbum, artist: viewArtist, liked: viewLiked, playlist: viewPlaylist }[at[0]]
+    var open = at && { home: viewHome, albums: viewAlbums, artists: viewArtists, genres: viewGenres, genre: viewGenre, album: viewAlbum, artist: viewArtist, liked: viewLiked, playlist: viewPlaylist }[at[0]]
     if (open) open(at[1]); else if (!navigateFromHash()) viewHome()
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot()

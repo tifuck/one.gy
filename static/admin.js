@@ -970,24 +970,28 @@
   })
 
   // ---- Music (rendering lives in admin-music.js) -----------------------------
-  var MUSIC_HELPERS = { esc: esc, num: num, fmtBytes: fmtBytes, head: head, card: card, emptyState: emptyState, icon: I.music, trash: I.trash, refresh: I.refresh }
+  var MUSIC_HELPERS = { esc: esc, num: num, fmtBytes: fmtBytes, pill: pill, searchBox: searchBox, trash: I.trash, refresh: I.refresh }
   var MUSIC_POLL_MS = 5000
   async function tabMusic (epoch, silent) {
     epoch = startRender('music', epoch); if (epoch == null) return
     clearTimeout(S.muTimer)
     if (!silent) loading()
     try {
-      var d = await jget('/admin/api/music')
+      var d = await jget('/admin/api/music' + (S.muQ ? '?q=' + encodeURIComponent(S.muQ) : ''))
       if (!isCurrentRender('music', epoch)) return
       // A poll never repaints under a control the admin is using.
-      var busy = silent && (panel.querySelector('[data-music-busy]') || (document.activeElement && panel.contains(document.activeElement) && document.activeElement.matches('input[type="number"], textarea')))
+      var busy = silent && (panel.querySelector('[data-music-busy]') || (document.activeElement && panel.contains(document.activeElement) && document.activeElement.matches('input:not([type="checkbox"]), textarea, select')))
       if (!busy) {
         MUSIC_HELPERS.proxyDraft = S.muProxyDraft || ''
+        MUSIC_HELPERS.q = S.muQ || ''
         var y = window.scrollY, main = document.querySelector('.adm-main'), my = main ? main.scrollTop : 0
         var focusKey = document.activeElement && panel.contains(document.activeElement) ? document.activeElement.id : null
         paint(window.AdmMusic.render(d, MUSIC_HELPERS))
         if (silent) { window.scrollTo(0, y); if (main) main.scrollTop = my }
-        if (focusKey && $(focusKey)) $(focusKey).focus({ preventScroll: true })
+        if (focusKey && $(focusKey)) {
+          $(focusKey).focus({ preventScroll: true })
+          if ($(focusKey).type === 'search') $(focusKey).setSelectionRange($(focusKey).value.length, $(focusKey).value.length)
+        }
       }
     } catch (e) {
       if (!isCurrentRender('music', epoch)) return
@@ -1081,6 +1085,25 @@
       var epoch = S.renderEpoch
       var pg = t.closest('[data-page]'); if (pg) { var parts = pg.getAttribute('data-page').split(':'); if (parts[0] === 'users') { S.usersPage = +parts[1]; refreshTab('users', epoch) } else if (parts[0] === 'feedback') { S.fbPage = +parts[1]; refreshTab('feedback', epoch) } else { S.tempPage = +parts[1]; refreshTab('temp-files', epoch) } return }
       if (t.closest('[data-retry]')) { refreshTab(S.tab, epoch); return }
+      var mv = t.closest('[data-music-view]'); if (mv) { window.AdmMusic.setView(panel, mv.getAttribute('data-music-view')); return }
+      var mrf = t.closest('[data-music-rule-for]')
+      if (mrf) { S.muQ = mrf.getAttribute('data-music-rule-for'); window.AdmMusic.setView(panel, 'rules'); refreshTab('music', epoch); return }
+      var mac = t.closest('[data-music-artist-clear]')
+      if (mac) {
+        jsend('POST', '/admin/api/music/artists/' + mac.getAttribute('data-music-artist-clear'), { mode: null, weight: 1 }).then(function () { refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'COULD NOT SAVE') })
+        return
+      }
+      if (t.closest('[data-music-genre-add]')) {
+        var gname = $('muGenreName'), gweight = $('muGenreWeight')
+        if (!gname || !gname.value.trim()) { toast('ENTER A GENRE', 'error'); return }
+        jsend('POST', '/admin/api/music/genres', { genre: gname.value.trim(), weight: parseFloat(gweight.value) }).then(function () { refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'COULD NOT SAVE') })
+        return
+      }
+      var mgr = t.closest('[data-music-genre-remove]')
+      if (mgr) {
+        jsend('DELETE', '/admin/api/music/genres/' + mgr.getAttribute('data-music-genre-remove')).then(function () { refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'REMOVE FAILED') })
+        return
+      }
       if (t.closest('[data-music-retry]')) {
         jsend('POST', '/admin/api/music/retry').then(function (d) { toast(plural(d.count, 'song') + ' will retry now', 'success'); refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'RETRY FAILED') })
         return
@@ -1281,6 +1304,15 @@
         musicSave(mt, '/admin/api/music/proxies/' + mt.getAttribute('data-music-proxy'), { enabled: mt.checked })
         return
       }
+      if (mt.matches('[data-music-artist]')) {
+        var abody = mt.getAttribute('data-music-field') === 'mode' ? { mode: mt.value || null } : { weight: parseFloat(mt.value) }
+        musicSave(mt, '/admin/api/music/artists/' + mt.getAttribute('data-music-artist'), abody, 'SAVED')
+        return
+      }
+      if (mt.matches('[data-music-genre]')) {
+        musicSave(mt, '/admin/api/music/genres', { genre: mt.getAttribute('data-music-genre'), weight: parseFloat(mt.value) }, 'SAVED')
+        return
+      }
       if (mt.matches('[data-music-limit]')) {
         var v = parseInt(mt.value, 10)
         if (isNaN(v)) { refreshTab('music', S.renderEpoch); return }
@@ -1300,6 +1332,7 @@
       if (e.target.id === 'admFbSearch') { var fbQ = e.target.value.trim(), fbEpoch = S.renderEpoch; clearTimeout(S._ft); S._ft = setTimeout(function () { S._ft = null; if (!isCurrentRender('feedback', fbEpoch)) return; S.fbQ = fbQ; S.fbPage = 1; refreshTab('feedback', fbEpoch) }, 300) }
       if (e.target.matches('[data-setting], [data-setting-num]')) markSettingsDirty()
       if (e.target.id === 'muProxyText') S.muProxyDraft = e.target.value
+      if (e.target.id === 'muArtistSearch') { var muQ = e.target.value.trim(), muEpoch = S.renderEpoch; clearTimeout(S._mt); S._mt = setTimeout(function () { S._mt = null; if (!isCurrentRender('music', muEpoch)) return; S.muQ = muQ; refreshTab('music', muEpoch) }, 300) }
       if (e.target.id === 'admQuotaAmount') updateQuotaHint()
     })
   }

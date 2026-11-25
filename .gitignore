@@ -1,3 +1,6 @@
+# Agent worktrees (AGENTS.md: Worktrees)
+.worktrees/
+
 # Environment variables and secrets
 .env
 .env.local

@@ -1,4 +1,6 @@
 <!doctype html>
+{# The music player rides on every signed-in app page so playback carries on across pages (music-player-session.js) #}
+{% set _mp_uid = session.get('logged_in_user_id') %}
 {# data-update-hold: a page that answered a form post is never reloaded by a UI update (core.js) #}
 <html lang="en"{% if desktop_app %} class="is-desktop-app"{% endif %} data-rd-page="{{ nav_active|default('browse') }}"{% if request.method == 'POST' %} data-update-hold{% endif %}>
 <head>
@@ -44,6 +46,7 @@ if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===nul
   <link rel="stylesheet" href="{{ versioned_static('context-menu.css') }}">
   {% if ui_v2|default(true) %}<link rel="stylesheet" href="{{ versioned_static('ui-v2.css') }}">{% endif %}
   {% block head_extra %}{% endblock %}
+  {% if _mp_uid %}<link rel="stylesheet" href="{{ versioned_static('music.css') }}">{% endif %}
   {% if desktop_app %}<link rel="stylesheet" href="{{ versioned_static('desktop-shell.css') }}">{% endif %}
 </head>
 <body class="rd-body {{ 'ui-v2' if ui_v2|default(true) else 'rd-theme-editorial' }} rd-app{% if nav_ghost|default(false) %} rd-nav-ghost{% endif %}">
@@ -52,6 +55,8 @@ if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===nul
 <main class="rd-app-main rd-scroll" id="main">
   {% block content %}{% endblock %}
 </main>
+
+{% if _mp_uid %}{% include 'partials/_music_player.html' %}{% endif %}
 
 <div class="toast-container" id="toastContainer"></div>
 <script nonce="{{ csp_nonce }}">
@@ -67,6 +72,20 @@ if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===nul
 <script src="{{ versioned_static('panel-resize.js') }}" defer></script>
 <script src="{{ versioned_static('context-menu.js') }}" defer></script>
 <script src="{{ versioned_static('theme-switch.js') }}" defer></script>
+{% if _mp_uid %}
+<script src="{{ versioned_static('music-player-core.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-ui.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-fullscreen.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-fx.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-session.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-e2e.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-playback.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-queue.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-sync.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-phantom.js') }}" defer></script>
+<script src="{{ versioned_static('music-player-devices.js') }}" defer></script>
+<script src="{{ versioned_static('music-player.js') }}" defer></script>
+{% endif %}
 {% block scripts %}{% endblock %}
 </body>
 </html>

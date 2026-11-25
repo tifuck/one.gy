@@ -8,6 +8,13 @@
 # Matches WORKER_ONLINE_S in src/music_worker/100_runner.py.
 _MUSIC_WORKER_ONLINE_S = 60
 _MUSIC_MONITORED_MODES = ('new_only', 'top_tracks', 'essentials', 'discography', 'everything')
+# Matches MODE_RANK in src/music_worker/080_discovery.py.
+_MUSIC_MODE_RANK = {'off': 0, 'new_only': 1, 'top_tracks': 2, 'essentials': 3, 'discography': 4, 'everything': 5}
+_MUSIC_RULE_MODES = ('blocked',) + tuple(_MUSIC_MODE_RANK)
+_MUSIC_MAX_WEIGHT = 5.0
+_MUSIC_TOP_ARTISTS = 50
+_MUSIC_SEARCH_LIMIT = 20
+_MUSIC_GENRE_HINTS = 80
 _MUSIC_PROXY_SCHEMES = ('socks5h', 'socks5', 'socks4a', 'socks4', 'http', 'https')
 _MUSIC_PROXY_MAX_LINES = 500
 
@@ -54,7 +61,7 @@ def _music_library_snapshot():
     """Counts, songs added today per worker, recent additions and the last
     roster build, read from library.db."""
     snap = {'songs': 0, 'artists': 0, 'albums': 0, 'bytes': 0, 'added_today': 0,
-            'added_by_worker': {}, 'recent': [], 'roster_at': None}
+            'added_by_worker': {}, 'recent': [], 'roster_at': None, 'charts_at': None}
     if not _music_library_available():
         return snap
     conn = _get_music_db()
@@ -76,17 +83,35 @@ def _music_library_snapshot():
                     WHERE sa.song_id = s.id AND sa.role = 'primary' LIMIT 1) AS artist
             FROM files f JOIN songs s ON s.id = f.song_id LEFT JOIN albums a ON a.id = s.album_id
             ORDER BY f.created_at DESC LIMIT 8''')]
-        meta = conn.execute("SELECT value FROM _meta WHERE key = 'roster_at'").fetchone()
-        snap['roster_at'] = meta[0] if meta else None
+        for key in ('roster_at', 'charts_at'):
+            meta = conn.execute('SELECT value FROM _meta WHERE key = ?', [key]).fetchone()
+            snap[key] = meta[0] if meta else None
         return snap
     finally:
         conn.close()
 
 
-def _music_artist_monitored(artist):
+def _music_effective_mode(artist):
+    """Same rule as effective_mode() in the worker: admin rule, else discovery's
+    mode raised to its floor."""
     if artist.rule_mode:
-        return artist.rule_mode in _MUSIC_MONITORED_MODES
-    return artist.auto_mode in _MUSIC_MONITORED_MODES or artist.floor_mode in _MUSIC_MONITORED_MODES
+        return artist.rule_mode
+    mode = artist.auto_mode or 'off'
+    if artist.floor_mode and _MUSIC_MODE_RANK.get(artist.floor_mode, 0) > _MUSIC_MODE_RANK.get(mode, 0):
+        mode = artist.floor_mode
+    return mode
+
+
+def _music_iso(value):
+    return value.replace(tzinfo=timezone.utc).isoformat() if value else None
+
+
+def _music_artist_json(artist):
+    return {'id': artist.id, 'name': artist.name, 'score': round(artist.score or 0, 3),
+            'mode': _music_effective_mode(artist), 'rule_mode': artist.rule_mode,
+            'rule_weight': artist.rule_weight, 'genres': artist.genres, 'seeds': artist.seeds,
+            'fans': artist.nb_fan, 'have': artist.have, 'wanted': artist.wanted,
+            'scanned_at': _music_iso(artist.scanned_at)}
 
 
 @app.route('/admin/api/music')
@@ -122,7 +147,26 @@ def admin_api_music():
     problems = [{'code': code, 'count': count} for code, count in db.session.query(MusicJob.error_code, db.func.count())
                 .filter(MusicJob.state.in_(open_states), MusicJob.attempts > 0, MusicJob.error_code.isnot(None))
                 .group_by(MusicJob.error_code).order_by(db.func.count().desc()).all()]
-    artists = MusicArtist.query.with_entities(MusicArtist.rule_mode, MusicArtist.auto_mode, MusicArtist.floor_mode).all()
+    artists = MusicArtist.query.with_entities(MusicArtist.rule_mode, MusicArtist.auto_mode, MusicArtist.floor_mode,
+                                              MusicArtist.genres).all()
+    modes, genre_counts = {}, {}
+    for artist in artists:
+        mode = _music_effective_mode(artist)
+        modes[mode] = modes.get(mode, 0) + 1
+        for genre in (artist.genres or '').split(','):
+            if genre.strip():
+                genre_counts[genre.strip()] = genre_counts.get(genre.strip(), 0) + 1
+    due = MusicArtist.query.filter(MusicArtist.next_scan_at.isnot(None), MusicArtist.next_scan_at <= now).count()
+    top = MusicArtist.query.filter(MusicArtist.score > 0).order_by(MusicArtist.score.desc()).limit(_MUSIC_TOP_ARTISTS).all()
+    ruled = MusicArtist.query.filter(db.or_(MusicArtist.rule_mode.isnot(None), MusicArtist.rule_weight != 1.0)) \
+        .order_by(MusicArtist.name).all()
+    q = (request.args.get('q') or '').strip()[:100]
+    found = None
+    if q:
+        pattern = '%' + q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+        found = [_music_artist_json(a) for a in MusicArtist.query.filter(MusicArtist.name.ilike(pattern, escape='\\'))
+                 .order_by(MusicArtist.score.desc()).limit(_MUSIC_SEARCH_LIMIT).all()]
+    genre_rules = MusicGenreRule.query.order_by(MusicGenreRule.weight.desc(), MusicGenreRule.genre).all()
     sources = [{'source': b.source, 'used': b.used, 'errors': b.errors, 'slow': b.slow,
                 'paused_until': b.paused_until.replace(tzinfo=timezone.utc).isoformat()
                 if b.paused_until and b.paused_until.replace(tzinfo=timezone.utc) > now else None}
@@ -136,8 +180,13 @@ def admin_api_music():
         'library': {k: library[k] for k in ('songs', 'artists', 'albums', 'bytes', 'added_today', 'recent')},
         'queue': {'buckets': by_bucket, 'total': sum(by_bucket.values()), 'retrying': retrying, 'working': working},
         'problems': problems,
-        'roster': {'artists': len(artists), 'monitored': sum(1 for a in artists if _music_artist_monitored(a)),
-                   'built_at': library['roster_at']},
+        'roster': {'artists': len(artists), 'monitored': sum(n for m, n in modes.items() if m in _MUSIC_MONITORED_MODES),
+                   'modes': modes, 'due': due, 'built_at': library['roster_at'], 'charts_at': library['charts_at'],
+                   'top': [_music_artist_json(a) for a in top]},
+        'rules': {'artists': [_music_artist_json(a) for a in ruled],
+                  'genres': [{'id': r.id, 'genre': r.genre, 'weight': r.weight} for r in genre_rules],
+                  'genre_hints': sorted(genre_counts, key=genre_counts.get, reverse=True)[:_MUSIC_GENRE_HINTS],
+                  'search': found},
         'sources': sources,
         'direct': bool(get_setting('music_proxy_direct')),
         'proxies': [_music_proxy_json(p, now) for p in MusicProxy.query.order_by(MusicProxy.id.asc()).all()],
@@ -257,4 +306,82 @@ def admin_api_music_proxy_remove(proxy_id):
     db.session.delete(proxy)
     db.session.commit()
     print(f'[ADMIN] Music proxy {proxy.label} removed')
+    return jsonify({'success': True})
+
+
+def _music_weight(value):
+    """A rule weight from JSON, or None when it is not a number in (0, _MUSIC_MAX_WEIGHT]."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 < value <= _MUSIC_MAX_WEIGHT else None
+
+
+@app.route('/admin/api/music/artists/<int:artist_id>', methods=['POST'])
+@limiter.limit(admin_rate_limit)
+@admin_required
+def admin_api_music_artist_rule(artist_id):
+    """Set an artist's rule: mode (null = discovery decides) and/or weight.
+    The artist is re-scanned on the worker's next pass."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not ('mode' in data or 'weight' in data):
+        return jsonify({'error': 'NOTHING TO CHANGE'}), 400
+    mode = data.get('mode')
+    if 'mode' in data and mode is not None and mode not in _MUSIC_RULE_MODES:
+        return jsonify({'error': 'UNKNOWN MODE'}), 400
+    weight = _music_weight(data.get('weight')) if 'weight' in data else None
+    if 'weight' in data and weight is None:
+        return jsonify({'error': f'WEIGHT MUST BE A NUMBER ABOVE 0 AND AT MOST {_MUSIC_MAX_WEIGHT:g}'}), 400
+    artist = db.session.get(MusicArtist, artist_id)
+    if artist is None:
+        return jsonify({'error': 'ARTIST NOT FOUND'}), 404
+    now = datetime.now(timezone.utc)
+    if 'mode' in data:
+        artist.rule_mode = mode
+    if weight is not None:
+        artist.rule_weight = weight
+    artist.next_scan_at = now
+    if artist.monitored_since is None and _music_effective_mode(artist) in _MUSIC_MONITORED_MODES:
+        artist.monitored_since = now
+    db.session.commit()
+    print(f'[ADMIN] Music artist {artist.name}: mode {artist.rule_mode or "auto"}, weight {artist.rule_weight:g}')
+    return jsonify({'success': True, 'artist': _music_artist_json(artist)})
+
+
+@app.route('/admin/api/music/genres', methods=['POST'])
+@limiter.limit(admin_rate_limit)
+@admin_required
+def admin_api_music_genre_rule():
+    """Set a genre weight (0 blocks the genre; 1 removes the rule)."""
+    data = request.get_json(silent=True)
+    genre = data.get('genre') if isinstance(data, dict) else None
+    if not isinstance(genre, str) or not genre.strip() or len(genre.strip()) > 64:
+        return jsonify({'error': 'GENRE NAME IS REQUIRED (AT MOST 64 CHARACTERS)'}), 400
+    genre = genre.strip()
+    value = data.get('weight')
+    weight = 0.0 if value == 0 and not isinstance(value, bool) else _music_weight(value)
+    if weight is None:
+        return jsonify({'error': f'WEIGHT MUST BE 0 TO {_MUSIC_MAX_WEIGHT:g}'}), 400
+    rule = MusicGenreRule.query.filter(db.func.lower(MusicGenreRule.genre) == genre.lower()).first()
+    if weight == 1.0:
+        if rule is not None:
+            db.session.delete(rule)
+    elif rule is None:
+        db.session.add(MusicGenreRule(genre=genre, weight=weight))
+    else:
+        rule.weight = weight
+    db.session.commit()
+    print(f'[ADMIN] Music genre {genre}: weight {weight:g}')
+    return jsonify({'success': True})
+
+
+@app.route('/admin/api/music/genres/<int:rule_id>', methods=['DELETE'])
+@limiter.limit(admin_rate_limit)
+@admin_required
+def admin_api_music_genre_remove(rule_id):
+    rule = db.session.get(MusicGenreRule, rule_id)
+    if rule is None:
+        return jsonify({'error': 'GENRE RULE NOT FOUND'}), 404
+    db.session.delete(rule)
+    db.session.commit()
+    print(f'[ADMIN] Music genre rule {rule.genre} removed')
     return jsonify({'success': True})

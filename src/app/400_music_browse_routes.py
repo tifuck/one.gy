@@ -110,60 +110,90 @@ def music_cover(cover_id):
 
 # ─── Music Catalog API ──────────────────────────────────────────────────────
 
+def _music_album_list(conn, rows):
+    """Album card dicts (with album artists) for rows of id, name, year,
+    release_date, album_type, total_tracks, cover_path, available_count, added_at."""
+    result = [{
+        'id': a['id'], 'name': a['name'], 'year': a['year'], 'release_date': a['release_date'],
+        'album_type': a['album_type'], 'total_tracks': a['total_tracks'],
+        'cover_path': _resolve_album_cover(conn, a['id'], a['cover_path']),
+        'available_count': a['available_count'], 'added_at': a['added_at'],
+    } for a in rows]
+    artists_map = {}
+    ids = [a['id'] for a in result]
+    for chunk in _music_chunks(ids):
+        a_ph = ','.join('?' for _ in chunk)
+        for row in conn.execute(f'''
+            SELECT aa.album_id, ar.id as artist_id, ar.name as artist_name
+            FROM album_artists aa
+            JOIN artists ar ON ar.id = aa.artist_id
+            WHERE aa.album_id IN ({a_ph})
+        ''', chunk).fetchall():
+            artists_map.setdefault(row['album_id'], []).append({'id': row['artist_id'], 'name': row['artist_name']})
+    for alb in result:
+        alb['artists'] = artists_map.get(alb['id'], [])
+    return result
+
+
+_MUSIC_ALBUM_CARD_SELECT = '''
+    SELECT a.id, a.name, a.year, a.release_date, a.album_type, a.total_tracks, a.cover_path,
+           COUNT(DISTINCT s.id) as available_count, MAX(s.created_at) as added_at
+    FROM albums a
+    JOIN songs s ON s.album_id = a.id
+'''
+
+
+def _music_genre_tiles(conn, limit=None):
+    """Genres of available songs, most songs first, each with a cover."""
+    rows = conn.execute(f'''
+        SELECT g.genre, COUNT(DISTINCT g.song_id) as song_count, COUNT(DISTINCT s.album_id) as album_count
+        FROM song_genres g
+        JOIN songs s ON s.id = g.song_id
+        WHERE g.song_id IN {_MUSIC_AVAILABLE_SUBQUERY}
+        GROUP BY g.genre
+        ORDER BY song_count DESC, g.genre
+    ''').fetchall()
+    if limit:
+        rows = rows[:limit]
+    covers = {}
+    for row in conn.execute(f'''
+        SELECT g.genre, s.album_id, a.cover_path
+        FROM song_genres g
+        JOIN songs s ON s.id = g.song_id
+        LEFT JOIN albums a ON a.id = s.album_id
+        WHERE g.song_id IN {_MUSIC_AVAILABLE_SUBQUERY}
+        ORDER BY a.release_date DESC
+    ''').fetchall():
+        if row['genre'] not in covers and row['album_id']:
+            cover = _resolve_album_cover(conn, row['album_id'], row['cover_path'])
+            if cover:
+                covers[row['genre']] = cover
+    return [{'name': r['genre'], 'song_count': r['song_count'], 'album_count': r['album_count'],
+             'cover_path': covers.get(r['genre'])} for r in rows]
+
+
 @app.route('/music/api/home')
 @limiter.limit(music_api_rate_limit)
 @_music_required
 def music_api_home():
-    """Home page data: recently added albums, top artists, featured albums."""
+    """Home page data: recently added and new albums, genres, top artists."""
     if not _AVAILABLE_SONG_IDS or not _music_library_available():
-        return jsonify({'recently_added': [], 'top_artists': [], 'all_albums': []})
+        return jsonify({'recently_added': [], 'new_releases': [], 'genres': [], 'top_artists': []})
     conn = _get_music_db(with_available=True)
     try:
-        # Get albums that have available songs.
-        # Capped to avoid unbounded payloads on very large libraries — the dedicated
-        # /music/api/albums endpoint is the canonical source for full listings.
-        HOME_ALBUMS_CAP = 500
-        albums = conn.execute(f'''
-            SELECT DISTINCT a.id, a.name, a.year, a.release_date, a.album_type,
-                   a.total_tracks, a.cover_path,
-                   COUNT(DISTINCT s.id) as available_count
-            FROM albums a
-            JOIN songs s ON s.album_id = a.id
+        HOME_SHELF = 12
+        recently_added = conn.execute(f'''{_MUSIC_ALBUM_CARD_SELECT}
+            WHERE s.id IN {_MUSIC_AVAILABLE_SUBQUERY}
+            GROUP BY a.id
+            ORDER BY added_at DESC, a.name
+            LIMIT ?
+        ''', [HOME_SHELF]).fetchall()
+        new_releases = conn.execute(f'''{_MUSIC_ALBUM_CARD_SELECT}
             WHERE s.id IN {_MUSIC_AVAILABLE_SUBQUERY}
             GROUP BY a.id
             ORDER BY a.release_date DESC, a.name
             LIMIT ?
-        ''', [HOME_ALBUMS_CAP]).fetchall()
-        album_list = []
-        album_ids = []
-        for a in albums:
-            album_ids.append(a['id'])
-            album_list.append({
-                'id': a['id'], 'name': a['name'], 'year': a['year'],
-                'album_type': a['album_type'], 'total_tracks': a['total_tracks'],
-                'cover_path': _resolve_album_cover(conn, a['id'], a['cover_path']),
-                'available_count': a['available_count'],
-            })
-        # Get album artists
-        if album_ids:
-            a_ph = ','.join('?' for _ in album_ids)
-            album_artist_rows = conn.execute(f'''
-                SELECT aa.album_id, ar.id as artist_id, ar.name as artist_name
-                FROM album_artists aa
-                JOIN artists ar ON ar.id = aa.artist_id
-                WHERE aa.album_id IN ({a_ph})
-            ''', album_ids).fetchall()
-            album_artists_map = {}
-            for row in album_artist_rows:
-                aid = row['album_id']
-                if aid not in album_artists_map:
-                    album_artists_map[aid] = []
-                album_artists_map[aid].append({'id': row['artist_id'], 'name': row['artist_name']})
-            for alb in album_list:
-                alb['artists'] = album_artists_map.get(alb['id'], [])
-        else:
-            for alb in album_list:
-                alb['artists'] = []
+        ''', [HOME_SHELF]).fetchall()
         # Top artists by available song count
         top_artists = conn.execute(f'''
             SELECT ar.id, ar.name, COUNT(DISTINCT sa.song_id) as song_count,
@@ -177,17 +207,16 @@ def music_api_home():
             WHERE sa.song_id IN {_MUSIC_AVAILABLE_SUBQUERY}
             GROUP BY ar.id
             HAVING song_count > 0
-            ORDER BY song_count DESC
+            ORDER BY song_count DESC, ar.name
             LIMIT 20
         ''').fetchall()
         artist_list = [{'id': a['id'], 'name': a['name'], 'song_count': a['song_count'],
                          'cover_path': _resolve_artist_cover(conn, a['id'], a['cover_path'])} for a in top_artists]
-        # Recently added = newest release_date albums (top 10)
-        recently_added = album_list[:10]
         return jsonify({
-            'recently_added': recently_added,
+            'recently_added': _music_album_list(conn, recently_added),
+            'new_releases': _music_album_list(conn, new_releases),
+            'genres': _music_genre_tiles(conn, HOME_SHELF),
             'top_artists': artist_list,
-            'all_albums': album_list,
         })
     finally:
         conn.close()
@@ -197,61 +226,89 @@ def music_api_home():
 @limiter.limit(music_api_rate_limit)
 @_music_required
 def music_api_albums():
-    """All albums with available songs."""
+    """All albums with available songs, newest release first."""
     artist_id = request.args.get('artist_id')
     if not _AVAILABLE_SONG_IDS or not _music_library_available():
         return jsonify([])
     conn = _get_music_db(with_available=True)
     try:
         if artist_id:
-            albums = conn.execute(f'''
-                SELECT DISTINCT a.id, a.name, a.year, a.album_type, a.total_tracks, a.cover_path,
-                       COUNT(DISTINCT s.id) as available_count
-                FROM albums a
-                JOIN songs s ON s.album_id = a.id
+            albums = conn.execute(f'''{_MUSIC_ALBUM_CARD_SELECT}
                 JOIN song_artists sa ON sa.song_id = s.id AND sa.artist_id = ?
                 WHERE s.id IN {_MUSIC_AVAILABLE_SUBQUERY}
                 GROUP BY a.id
-                ORDER BY a.year DESC, a.name
+                ORDER BY a.release_date DESC, a.name
             ''', [artist_id]).fetchall()
         else:
-            albums = conn.execute(f'''
-                SELECT DISTINCT a.id, a.name, a.year, a.album_type, a.total_tracks, a.cover_path,
-                       COUNT(DISTINCT s.id) as available_count
-                FROM albums a
-                JOIN songs s ON s.album_id = a.id
+            albums = conn.execute(f'''{_MUSIC_ALBUM_CARD_SELECT}
                 WHERE s.id IN {_MUSIC_AVAILABLE_SUBQUERY}
                 GROUP BY a.id
-                ORDER BY a.year DESC, a.name
+                ORDER BY a.release_date DESC, a.name
             ''').fetchall()
-        result = []
-        album_ids = []
-        for a in albums:
-            album_ids.append(a['id'])
-            result.append({
-                'id': a['id'], 'name': a['name'], 'year': a['year'],
-                'album_type': a['album_type'], 'total_tracks': a['total_tracks'],
-                'cover_path': _resolve_album_cover(conn, a['id'], a['cover_path']),
-                'available_count': a['available_count'],
-            })
-        # Get album artists
-        if album_ids:
-            a_ph = ','.join('?' for _ in album_ids)
-            artist_rows = conn.execute(f'''
-                SELECT aa.album_id, ar.id as artist_id, ar.name as artist_name
-                FROM album_artists aa
-                JOIN artists ar ON ar.id = aa.artist_id
-                WHERE aa.album_id IN ({a_ph})
-            ''', album_ids).fetchall()
-            artists_map = {}
-            for row in artist_rows:
-                aid = row['album_id']
-                if aid not in artists_map:
-                    artists_map[aid] = []
-                artists_map[aid].append({'id': row['artist_id'], 'name': row['artist_name']})
-            for alb in result:
-                alb['artists'] = artists_map.get(alb['id'], [])
-        return jsonify(result)
+        return jsonify(_music_album_list(conn, albums))
+    finally:
+        conn.close()
+
+
+@app.route('/music/api/genres')
+@limiter.limit(music_api_rate_limit)
+@_music_required
+def music_api_genres():
+    """All genres of available songs."""
+    if not _AVAILABLE_SONG_IDS or not _music_library_available():
+        return jsonify([])
+    conn = _get_music_db(with_available=True)
+    try:
+        return jsonify(_music_genre_tiles(conn))
+    finally:
+        conn.close()
+
+
+@app.route('/music/api/genre')
+@limiter.limit(music_detail_rate_limit)
+@_music_required
+def music_api_genre():
+    """One genre (?name=, may contain '/'): its songs, albums and artists."""
+    name = (request.args.get('name') or '').strip()
+    if not name or not _AVAILABLE_SONG_IDS or not _music_library_available():
+        return jsonify({'error': 'GENRE NOT FOUND'}), 404
+    GENRE_SONGS_CAP, GENRE_ALBUMS_CAP, GENRE_ARTISTS_CAP = 200, 200, 50
+    conn = _get_music_db(with_available=True)
+    try:
+        song_rows = conn.execute(f'''
+            SELECT s.id FROM song_genres g
+            JOIN songs s ON s.id = g.song_id
+            LEFT JOIN albums a ON a.id = s.album_id
+            WHERE g.genre = ? AND g.song_id IN {_MUSIC_AVAILABLE_SUBQUERY}
+            ORDER BY a.release_date DESC, s.disc_number, s.track_number
+        ''', [name]).fetchall()
+        if not song_rows:
+            return jsonify({'error': 'GENRE NOT FOUND'}), 404
+        song_ids = [r['id'] for r in song_rows]
+        albums = conn.execute(f'''{_MUSIC_ALBUM_CARD_SELECT}
+            JOIN song_genres g ON g.song_id = s.id AND g.genre = ?
+            WHERE s.id IN {_MUSIC_AVAILABLE_SUBQUERY}
+            GROUP BY a.id
+            ORDER BY a.release_date DESC, a.name
+            LIMIT ?
+        ''', [name, GENRE_ALBUMS_CAP]).fetchall()
+        artists = conn.execute(f'''
+            SELECT ar.id, ar.name, COUNT(DISTINCT sa.song_id) as song_count
+            FROM song_genres g
+            JOIN song_artists sa ON sa.song_id = g.song_id AND sa.role = 'primary'
+            JOIN artists ar ON ar.id = sa.artist_id
+            WHERE g.genre = ? AND g.song_id IN {_MUSIC_AVAILABLE_SUBQUERY}
+            GROUP BY ar.id
+            ORDER BY song_count DESC, ar.name
+            LIMIT ?
+        ''', [name, GENRE_ARTISTS_CAP]).fetchall()
+        return jsonify({
+            'genre': {'name': name, 'song_count': len(song_ids), 'album_count': len(albums)},
+            'songs': _enrich_songs_from_library(song_ids[:GENRE_SONGS_CAP]),
+            'albums': _music_album_list(conn, albums),
+            'artists': [{'id': a['id'], 'name': a['name'], 'song_count': a['song_count'],
+                         'cover_path': _resolve_artist_cover(conn, a['id'], None)} for a in artists],
+        })
     finally:
         conn.close()
 
@@ -267,7 +324,7 @@ def music_api_album(album_id):
     try:
         album = conn.execute('''
             SELECT a.id, a.name, a.year, a.release_date, a.album_type,
-                   a.total_tracks, a.cover_path
+                   a.total_tracks, a.cover_path, a.label
             FROM albums a WHERE a.id = ?
         ''', [album_id]).fetchone()
         if not album:
@@ -275,9 +332,13 @@ def music_api_album(album_id):
         album_data = {
             'id': album['id'], 'name': album['name'], 'year': album['year'],
             'release_date': album['release_date'], 'album_type': album['album_type'],
-            'total_tracks': album['total_tracks'],
+            'total_tracks': album['total_tracks'], 'label': album['label'],
             'cover_path': _resolve_album_cover(conn, album['id'], album['cover_path']),
         }
+        album_data['genres'] = [r['genre'] for r in conn.execute('''
+            SELECT g.genre FROM song_genres g JOIN songs s ON s.id = g.song_id
+            WHERE s.album_id = ? GROUP BY g.genre ORDER BY COUNT(*) DESC, g.genre
+        ''', [album_id]).fetchall()]
         # Album artists
         album_artists = conn.execute('''
             SELECT ar.id, ar.name FROM album_artists aa

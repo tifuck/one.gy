@@ -4,7 +4,7 @@
 // Supports both server-encrypted and E2E encrypted audio files.
 //
 // The player is split into classic scripts that load in this order (see
-// templates/files.html and templates/music.html):
+// templates/_app_base.html):
 //   music-player-core.js        namespace, shared state, helpers, <audio>
 //   music-player-ui.js          player bar rendering, playlist panel
 //   music-player-fullscreen.js  mobile fullscreen view, swipe gestures

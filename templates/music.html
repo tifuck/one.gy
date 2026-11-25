@@ -2,7 +2,6 @@
 {% block title %}Music{% endblock %}
 {% set nav_active = 'music' %}
 {% set ui_v2 = true %}
-{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('music.css') }}">{% endblock %}
 
 {% block content %}
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token">
@@ -18,6 +17,7 @@
         <button type="button" class="mu-nav-item rd-side-row is-active" data-view="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/></svg>Home</button>
         <button type="button" class="mu-nav-item rd-side-row" data-view="albums"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.5"/></svg>Albums</button>
         <button type="button" class="mu-nav-item rd-side-row" data-view="artists"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>Artists</button>
+        <button type="button" class="mu-nav-item rd-side-row" data-view="genres"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Genres</button>
         <button type="button" class="mu-nav-item rd-side-row" data-view="liked"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.2a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z"/></svg>Liked songs<span class="mu-liked-count" id="muLikedCount"></span></button>
         <div class="rd-side-subhead"><span>Playlists</span><button type="button" id="muCreatePl" title="New playlist" aria-label="New playlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
         <div id="muRailPlaylists"></div>
@@ -62,8 +62,6 @@
   </div>
 </div>
 
-{% if not music_disabled %}{% include 'partials/_music_player.html' %}{% endif %}
-
 <!-- Create playlist modal -->
 {% if not music_disabled %}
 <div class="rd-modal" id="muPlModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="muPlTitle">
@@ -97,18 +95,6 @@ var MUSIC_DISABLED = {{ 'true' if music_disabled else 'false' }};
 try { if (!MUSIC_DISABLED) localStorage.setItem('onegy_last_page', JSON.stringify({ page: '/music' })) } catch(e) {}</script>
 {% if not music_disabled %}
 <script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-core.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-ui.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-fullscreen.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-fx.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-session.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-e2e.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-playback.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-queue.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-sync.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-phantom.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-devices.js') }}" defer></script>
-<script src="{{ versioned_static('music-player.js') }}" defer></script>
 <script src="{{ versioned_static('music.js') }}" defer></script>
 {% endif %}
 {% endblock %}

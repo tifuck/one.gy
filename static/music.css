@@ -1,9 +1,9 @@
 /* ============================================================================
    music.css — Music (UI v2): the library browser (.mu-*) plus the player bar
-   (.music-player / .mp-*, music-player.js) shared with the Files page.
+   (.music-player / .mp-*, music-player.js) shared with every app page.
    Token-only. Shared chrome (rail rows, buttons, inputs, dialogs) comes from
    ui-v2.css; player rules repeat the .ui-v2 scope so they win over its base
-   bar look (music.css loads after it on both pages).
+   bar look (_app_base.html loads music.css after it).
    music-player.js rearranges the bar at init: progress moves under the
    controls, volume / autoplay / FX into .music-player-right, like + add into
    .music-player-info. Fullscreen (<=850px) = .mp-fullscreen + .mp-fs-open.
@@ -18,6 +18,10 @@
 }
 /* The desktop bar is fixed: shrink the shell so it never covers content */
 body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
+/* The bar rides on every app page (_app_base.html): the other full-height
+   shells end above it, scrolling pages scroll past it. */
+.ui-v2:has(.music-player.mp-visible:not(.mp-fs-open)) :is(.nt-shell, .adm-layout, .adm-side){ height:calc(100dvh - var(--nav-h) - 68px); }
+.ui-v2:has(.music-player.mp-visible:not(.mp-fs-open)):not(:has(.fx-shell, .nt-shell, .mu-shell, .bw-shell, .adm-layout)) .rd-app-main{ padding-bottom:68px; }
 .mu-main{ min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
 .mu-rail-scrim{ display:none; }
 
@@ -79,108 +83,199 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .mu-search input::placeholder{ color:var(--text-faint); }
 .mu-search input:focus{ outline:none; background:var(--surface); box-shadow:inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
 
+/* ---- Cover wash ------------------------------------------------------------
+   music.js sets --mu-tint on .mu-main from the open view's cover (album,
+   artist, genre, hovered home tile); it eases between views. */
+@property --mu-tint{ syntax:'<color>'; inherits:true; initial-value:transparent; }
+.mu-main{ position:relative; --mu-tint:rgba(var(--accent-rgb),.5); transition:--mu-tint .7s ease; }
+.mu-main::before{
+  content:""; position:absolute; inset:0 0 auto; height:min(460px,62vh); pointer-events:none;
+  background:linear-gradient(180deg, color-mix(in srgb,var(--mu-tint) 60%,transparent), color-mix(in srgb,var(--mu-tint) 20%,transparent) 50%, transparent);
+}
+.mu-main .mu-topbar{ background:transparent; border-bottom-color:transparent; }
+.mu-link{ padding:0; border:0; background:none; color:inherit; font:inherit; cursor:pointer; }
+.mu-link:hover{ color:var(--text); text-decoration:underline; text-underline-offset:2px; }
+
 /* ---- View region ----------------------------------------------------------- */
-.mu-view{ position:relative; flex:1 1 auto; min-height:0; overflow-y:auto; padding:16px 20px 48px; }
+.mu-view{ position:relative; z-index:1; flex:1 1 auto; min-height:0; overflow-y:auto; padding:16px 24px 56px; }
 .mu-view:focus{ outline:none; }
 /* One quick fade per view swap (innerHTML replaces the children) */
 .mu-view > *{ animation:muIn .22s cubic-bezier(.2,.8,.2,1) backwards; }
 @keyframes muIn{ from{ opacity:0; transform:translateY(5px); } }
 
-.mu-sec-head{ display:flex; align-items:center; gap:8px; min-height:28px; margin:26px 4px 8px; }
-.mu-sec-head:first-child{ margin-top:0; }
-.mu-h2{ font-size:.95rem; font-weight:600; letter-spacing:-.01em; color:var(--text); }
-.mu-sec-sub{ font-size:.8rem; font-weight:500; color:var(--text-faint); font-variant-numeric:tabular-nums; }
-.mu-sec-head > .mu-sec-sub:first-child{ color:var(--text-dim); }
+.mu-sec-head{ display:flex; align-items:baseline; gap:10px; min-height:30px; margin:36px 4px 12px; }
+.mu-sec-head:first-child{ margin-top:4px; }
+.mu-h2{ font-size:1.4rem; font-weight:800; letter-spacing:-.025em; color:var(--text); }
+.mu-sec-sub{ font-size:.84rem; font-weight:600; color:var(--text-dim); font-variant-numeric:tabular-nums; }
 .mu-sec-more{
-  margin-left:auto; height:26px; padding:0 8px; border:0; border-radius:6px; background:none;
-  color:var(--text-dim); font:inherit; font-size:.8rem; font-weight:500; cursor:pointer; transition:background .12s, color .12s;
+  margin-left:auto; padding:0; border:0; background:none; color:var(--text-dim);
+  font:inherit; font-size:.84rem; font-weight:700; cursor:pointer;
 }
-.mu-sec-more:hover{ color:var(--text); background:var(--hover); }
-.mu-eyebrow{ font-size:.8rem; font-weight:500; color:var(--text-dim); }
+.mu-sec-more:hover{ color:var(--text); text-decoration:underline; text-underline-offset:2px; }
+.mu-show-more{ display:block; margin:10px 12px 0; }
+
+/* ---- Home quick picks ------------------------------------------------------ */
+.mu-quick-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:8px; margin:8px 0 4px; }
+.mu-quick{
+  display:flex; align-items:center; gap:12px; min-width:0; height:60px; padding:0 12px 0 0; overflow:hidden;
+  border:0; border-radius:6px; background:color-mix(in srgb,var(--text) 9%,transparent); color:var(--text);
+  font:inherit; font-size:.9rem; font-weight:700; text-align:left; cursor:pointer; transition:background .15s;
+}
+.mu-quick:hover{ background:color-mix(in srgb,var(--text) 16%,transparent); }
+.mu-quick-art{ width:60px; height:60px; flex:none; box-shadow:4px 0 16px -6px rgba(0,0,0,.45); }
+.mu-quick-art img{ display:block; width:100%; height:100%; object-fit:cover; }
+.mu-quick-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-liked-art{
+  display:grid; place-items:center; width:100%; height:100%; color:var(--on-media);
+  background:linear-gradient(135deg, var(--accent), color-mix(in srgb,var(--accent) 35%,var(--on-media)));
+}
+.mu-liked-art svg{ width:42%; height:42%; fill:currentColor; }
 
 /* ---- Cards (albums / artists) ---------------------------------------------- */
-.mu-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(164px,1fr)); gap:8px; }
-/* Home shelves: one row that scrolls sideways */
+.mu-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(172px,1fr)); gap:6px; }
+/* Shelves: one row that scrolls sideways */
 .mu-shelf{
-  display:grid; grid-auto-flow:column; grid-auto-columns:176px; gap:8px; margin:0 -20px; padding:0 20px 6px;
-  overflow-x:auto; overscroll-behavior-x:contain; scroll-snap-type:x proximity; scroll-padding-inline:20px;
+  display:grid; grid-auto-flow:column; grid-auto-columns:184px; gap:6px; margin:0 -24px; padding:0 18px 6px;
+  overflow-x:auto; overscroll-behavior-x:contain; scroll-snap-type:x proximity; scroll-padding-inline:18px; scrollbar-width:none;
 }
+.mu-shelf::-webkit-scrollbar{ display:none; }
 .mu-shelf > *{ scroll-snap-align:start; }
-.mu-shelf-artists{ grid-auto-columns:160px; }
+.mu-shelf-artists{ grid-auto-columns:172px; }
+.mu-shelf-genres{ grid-auto-columns:232px; gap:14px; padding-inline:24px; }
 .mu-card{
-  position:relative; min-width:0; display:flex; flex-direction:column; gap:2px; padding:6px 6px 8px;
-  border:0; border-radius:12px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer;
-  transition:background .12s;
+  position:relative; min-width:0; display:flex; flex-direction:column; gap:3px; padding:10px 10px 12px;
+  border:0; border-radius:8px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer;
+  transition:background .18s;
 }
 .mu-card:hover{ background:var(--hover); }
-.mu-card:focus-visible{ outline-offset:0; border-radius:12px; }
-.mu-card-art{ position:relative; display:block; aspect-ratio:1; margin-bottom:6px; overflow:hidden; border-radius:8px; background:var(--surface); }
-.mu-card-art::after{ content:""; position:absolute; inset:0; border-radius:inherit; box-shadow:inset 0 0 0 1px var(--line); pointer-events:none; }
+.mu-card:focus-visible{ outline-offset:0; }
+.mu-card-art{
+  position:relative; display:block; aspect-ratio:1; margin-bottom:8px; overflow:hidden; border-radius:6px;
+  background:var(--surface); box-shadow:0 10px 26px -12px rgba(0,0,0,.55);
+}
 .mu-card-art img{ display:block; width:100%; height:100%; object-fit:cover; }
 .mu-art-ph{ display:flex; width:100%; height:100%; align-items:center; justify-content:center; background:var(--surface); color:var(--text-faint); }
 .mu-art-ph svg{ width:34%; height:34%; }
 .mu-round, .mu-card-artist .mu-card-art{ border-radius:50%; }
-.mu-card-artist{ align-items:center; text-align:center; }
-.mu-card-artist .mu-card-name, .mu-card-artist .mu-card-sub{ max-width:100%; }
 .mu-card-play{
-  position:absolute; right:8px; bottom:8px; z-index:1; width:38px; height:38px; display:grid; place-items:center;
-  border-radius:50%; background:var(--accent); color:var(--accent-contrast); box-shadow:0 6px 16px -4px rgba(0,0,0,.45);
-  opacity:0; transform:translateY(6px); transition:opacity .16s, transform .16s cubic-bezier(.2,.8,.2,1), box-shadow .14s;
+  position:absolute; right:8px; bottom:8px; z-index:1; width:46px; height:46px; display:grid; place-items:center;
+  border-radius:50%; background:var(--accent); color:var(--accent-contrast); box-shadow:0 8px 18px -4px rgba(0,0,0,.5);
+  opacity:0; transform:translateY(8px); transition:opacity .18s, transform .2s cubic-bezier(.2,.8,.2,1);
 }
-.mu-card-play svg{ width:16px; height:16px; margin-left:2px; }
+.mu-card-play svg{ width:18px; height:18px; margin-left:2px; }
 .mu-card:hover .mu-card-play, .mu-card:focus-visible .mu-card-play{ opacity:1; transform:none; }
-.mu-card-play:hover{ box-shadow:0 6px 16px -4px rgba(0,0,0,.45), inset 0 0 0 100px rgba(255,255,255,.12); }
-.mu-card-name{ padding:0 2px; font-size:.84rem; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.mu-card-sub{ padding:0 2px; font-size:.76rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.mu-card .mu-card-play:hover{ transform:scale(1.07); }
+.mu-card-name{ font-size:.9rem; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-card-sub{ font-size:.8rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.mu-card-artist .mu-card-name, .mu-card-artist .mu-card-sub{ max-width:100%; }
 
-/* ---- Detail head (album / artist / playlist / liked) ----------------------- */
-.mu-detail-head{ display:flex; align-items:flex-end; gap:24px; margin:4px 4px 24px; }
-.mu-detail-art{ position:relative; width:184px; height:184px; flex:none; overflow:hidden; border-radius:10px; background:var(--surface); box-shadow:0 0 0 1px var(--line), 0 14px 36px -16px rgba(0,0,0,.55); }
-.mu-detail-art img{ display:block; width:100%; height:100%; object-fit:cover; }
-.mu-detail-art.mu-round{ border-radius:50%; }
-.mu-liked-art{ display:grid; place-items:center; background:var(--accent-soft); color:var(--accent); }
-.mu-liked-art svg{ width:42%; height:42%; fill:currentColor; }
-.mu-detail-meta{ min-width:0; display:flex; flex-direction:column; align-items:flex-start; gap:6px; padding-bottom:2px; }
-.mu-detail-title{
-  max-width:100%; font-size:clamp(1.5rem,2.4vw,2.2rem); font-weight:700; letter-spacing:-.03em; line-height:1.12;
-  overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden;
+/* ---- Genre tiles ------------------------------------------------------------ */
+/* --mu-tile comes from the genre's newest cover (music.js); text is --on-media */
+.mu-genre-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(196px,1fr)); gap:16px; }
+.mu-genre{
+  --mu-tile:color-mix(in srgb,var(--accent) 70%,rgb(0 0 0));
+  position:relative; display:flex; flex-direction:column; align-items:flex-start; gap:2px; aspect-ratio:1.5; min-width:0;
+  padding:16px; overflow:hidden; border:0; border-radius:10px; background:var(--mu-tile); color:var(--on-media);
+  font:inherit; text-align:left; cursor:pointer; transition:background .5s;
 }
-.mu-detail-sub{ max-width:100%; font-size:.9rem; font-weight:500; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.mu-detail-facts{ font-size:.8rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
-.mu-detail-actions{ display:flex; gap:8px; margin-top:10px; }
-.mu-detail-actions .rd-btn{ height:36px; padding:0 18px 0 14px; border-radius:18px; }
-.mu-detail-actions .rd-btn svg{ width:14px; height:14px; }
+.mu-genre-name{ position:relative; z-index:1; max-width:68%; font-size:1.25rem; font-weight:800; letter-spacing:-.02em; line-height:1.1; overflow-wrap:break-word; }
+.mu-genre-sub{ position:relative; z-index:1; font-size:.78rem; font-weight:600; opacity:.8; }
+.mu-genre-art{
+  position:absolute; right:-12%; bottom:-6%; width:52%; aspect-ratio:1; overflow:hidden; border-radius:4px;
+  box-shadow:0 8px 22px rgba(0,0,0,.45); transform:rotate(25deg); transition:transform .25s cubic-bezier(.2,.8,.2,1);
+}
+.mu-genre-art img{ display:block; width:100%; height:100%; object-fit:cover; }
+.mu-genre:hover .mu-genre-art, .mu-genre:focus-visible .mu-genre-art{ transform:rotate(18deg) scale(1.06); }
+.mu-genre-hero{
+  --mu-tile:color-mix(in srgb,var(--accent) 70%,rgb(0 0 0));
+  display:grid; place-items:center; width:100%; height:100%; background:var(--mu-tile); color:var(--on-media);
+  font-size:5.5rem; font-weight:800; letter-spacing:-.05em;
+}
+
+/* ---- Hero (album / artist / genre / playlist / liked) ---------------------- */
+.mu-hero{ display:flex; align-items:flex-end; gap:28px; padding:28px 4px 24px; }
+.mu-hero-art{
+  width:clamp(148px,17vw,232px); aspect-ratio:1; flex:none; overflow:hidden; border-radius:6px;
+  background:var(--surface); box-shadow:0 20px 50px -12px rgba(0,0,0,.6);
+}
+.mu-hero-art img{ display:block; width:100%; height:100%; object-fit:cover; }
+.mu-hero-art.mu-round{ border-radius:50%; }
+.mu-hero-meta{ min-width:0; display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+.mu-hero-kicker{ font-size:.84rem; font-weight:600; color:var(--text); }
+.mu-hero-title{
+  max-width:100%; margin:2px 0 8px; font-size:clamp(2.4rem,1rem + 4.2vw,5.4rem); font-weight:800; letter-spacing:-.045em; line-height:1;
+  overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; padding-bottom:.06em;
+}
+.mu-hero-title.is-long{ font-size:clamp(2rem,.9rem + 2.8vw,3.8rem); letter-spacing:-.035em; }
+.mu-hero-title.is-xlong{ font-size:clamp(1.6rem,.8rem + 1.8vw,2.6rem); letter-spacing:-.025em; -webkit-line-clamp:3; line-clamp:3; }
+.mu-hero-desc{ max-width:60ch; font-size:.9rem; color:var(--text-dim); }
+.mu-hero-facts{ display:flex; flex-wrap:wrap; align-items:center; row-gap:2px; font-size:.86rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.mu-hero-facts > span + span::before{ content:"·"; margin:0 7px; }
+.mu-hero-facts strong{ color:var(--text); font-weight:700; }
+
+.mu-actions{ display:flex; align-items:center; gap:20px; padding:4px 4px 22px; }
+.mu-play-big{
+  width:56px; height:56px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:var(--accent); color:var(--accent-contrast); cursor:pointer;
+  box-shadow:0 10px 24px -8px rgba(0,0,0,.55); transition:transform .12s, filter .12s;
+}
+.mu-play-big svg{ width:22px; height:22px; margin-left:3px; }
+.mu-play-big:hover{ transform:scale(1.05); filter:brightness(1.08); }
+.mu-play-big:active{ transform:scale(.96); }
+
+/* Chips: album genres and the Albums filter */
+.mu-tags{ display:flex; flex-wrap:wrap; gap:8px; }
+.mu-chip{
+  height:32px; padding:0 14px; border:0; border-radius:16px; background:color-mix(in srgb,var(--text) 9%,transparent);
+  color:var(--text); font:inherit; font-size:.82rem; font-weight:600; white-space:nowrap; cursor:pointer; transition:background .12s, color .12s;
+}
+.mu-chip:hover{ background:color-mix(in srgb,var(--text) 16%,transparent); }
+.mu-chip.is-on{ background:var(--text); color:var(--bg); }
+.mu-filterbar{ display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; margin:8px 4px 0; }
+.mu-chips{ display:flex; flex-wrap:wrap; gap:8px; flex:1 1 auto; }
+.mu-sort{ display:flex; align-items:center; gap:8px; font-size:.82rem; color:var(--text-dim); }
+.mu-sort select{
+  height:32px; padding:0 10px; border:0; border-radius:8px; background:var(--surface); color:var(--text);
+  font:inherit; font-size:.82rem; font-weight:600; cursor:pointer;
+}
+.mu-filterbar + .mu-sec-head{ margin-top:18px; }
 
 /* ---- Track list ------------------------------------------------------------- */
-.mu-tracks{ display:flex; flex-direction:column; gap:1px; }
-.mu-track{
-  display:grid; grid-template-columns:32px minmax(0,1fr) 32px 44px; align-items:center; gap:10px;
-  min-height:52px; padding:5px 8px; border-radius:8px; cursor:pointer;
-  -webkit-tap-highlight-color:transparent; transition:background .1s;
-}
-.mu-track:has(.mu-track-art){ grid-template-columns:32px 40px minmax(0,1fr) 32px 44px; }
-.mu-track:hover{ background:var(--hover); }
-.mu-track:focus-visible{ outline-offset:-2px; border-radius:8px; }
+.mu-tracks{ --mu-cols:32px minmax(0,1fr) 32px 56px; display:flex; flex-direction:column; gap:1px; }
+.mu-tracks.has-art{ --mu-cols:32px 40px minmax(0,1fr) 32px 56px; }
+.mu-tracks.has-art.has-album{ --mu-cols:32px 40px minmax(0,1.4fr) minmax(0,1fr) 32px 56px; }
+.mu-thead, .mu-track{ display:grid; grid-template-columns:var(--mu-cols); align-items:center; gap:12px; padding:0 12px; }
+.mu-thead{ height:36px; margin-bottom:8px; border-bottom:1px solid var(--line); font-size:.8rem; color:var(--text-dim); }
+.mu-thead > :first-child{ text-align:center; }
+.mu-thead .mu-track-dur{ display:flex; justify-content:flex-end; }
+.mu-thead svg{ width:16px; height:16px; }
+.mu-track{ min-height:56px; padding-block:6px; border-radius:6px; cursor:pointer; -webkit-tap-highlight-color:transparent; transition:background .1s; }
+.mu-track:hover, .mu-track:focus-within{ background:var(--hover); }
+.mu-track:focus-visible{ outline-offset:-2px; }
 .mu-track.is-unavail{ opacity:.4; cursor:default; }
-.mu-track-num{ position:relative; text-align:center; font-size:.82rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.mu-track-num{ position:relative; text-align:center; font-size:.9rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
 .mu-track-play{ position:absolute; left:50%; top:50%; width:14px; height:14px; margin:-7px 0 0 -7px; color:var(--text); opacity:0; }
 .mu-track:not(.is-unavail):hover .mu-track-num{ color:transparent; }
 .mu-track:not(.is-unavail):hover .mu-track-play{ opacity:1; }
-.mu-track-art{ width:40px; height:40px; overflow:hidden; border-radius:6px; background:var(--surface); }
+.mu-track-art{ width:40px; height:40px; overflow:hidden; border-radius:4px; background:var(--surface); }
 .mu-track-art img, .mu-track-art .mu-art-ph{ display:block; width:100%; height:100%; object-fit:cover; }
-.mu-track-main{ min-width:0; display:flex; flex-direction:column; gap:1px; }
-.mu-track-title{ font-size:.86rem; font-weight:500; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.mu-track-artist{ font-size:.78rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-track-main{ min-width:0; display:flex; flex-direction:column; gap:2px; }
+.mu-track-title{ font-size:.92rem; font-weight:500; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-track-artist, .mu-track-album{ min-width:0; font-size:.82rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-track:hover :is(.mu-track-artist, .mu-track-album){ color:var(--text); }
 .mu-track-like{
-  width:30px; height:30px; display:grid; place-items:center; padding:0; border:0; border-radius:7px; background:none;
-  color:var(--text-dim); cursor:pointer; opacity:0; transition:opacity .12s, color .12s, background .12s;
+  width:32px; height:32px; display:grid; place-items:center; padding:0; border:0; border-radius:50%; background:none;
+  color:var(--text-dim); cursor:pointer; opacity:0; transition:opacity .12s, color .12s, transform .12s;
 }
 .mu-track:hover .mu-track-like, .mu-track:focus-within .mu-track-like, .mu-track-like.is-liked{ opacity:1; }
-.mu-track-like:hover{ color:var(--text); background:var(--press); }
-.mu-track-like svg{ width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linejoin:round; }
+.mu-track-like:hover{ color:var(--text); transform:scale(1.08); }
+.mu-track-like svg{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linejoin:round; }
 .mu-track-like.is-liked, .mu-track-like.is-liked:hover{ color:var(--accent); }
 .mu-track-like.is-liked svg{ fill:currentColor; }
-.mu-track-dur{ text-align:right; font-size:.8rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.mu-track-dur{ text-align:right; font-size:.84rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.mu-disc{ padding:20px 12px 8px; font-size:.86rem; font-weight:700; color:var(--text-dim); }
+/* Long lists open on their first 10 rows (row 1 is the header) */
+.mu-collapsed .mu-tracks > .mu-track:nth-child(n+12){ display:none; }
 /* Now playing: accent title + a small level meter in the number column */
 .mu-track.is-current .mu-track-title{ color:var(--accent); }
 .mu-track.is-current .mu-track-num{ color:transparent; }
@@ -197,6 +292,12 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
   0%  { background-size:3px 55%, 3px 100%, 3px 35%; }
   50% { background-size:3px 100%, 3px 40%, 3px 80%; }
   100%{ background-size:3px 30%, 3px 75%, 3px 100%; }
+}
+.mu-credits{ display:grid; gap:2px; margin:28px 12px 0; font-size:.8rem; color:var(--text-dim); }
+#muMoreBy .mu-sec-head{ margin-top:40px; }
+@media (max-width:1000px){
+  .mu-tracks.has-art.has-album{ --mu-cols:32px 40px minmax(0,1fr) 32px 56px; }
+  .mu-tracks .mu-track-album{ display:none; }
 }
 
 /* ---- Loading / empty -------------------------------------------------------- */
@@ -246,6 +347,7 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .ui-v2 .mp-title-clickable:hover .mp-title-inner, .ui-v2 .mp-artist-link:hover{ text-decoration:underline; text-underline-offset:2px; }
 /* Dashboard tracks are already the user's files: no like / add / autoplay */
 .ui-v2 .music-player.mp-own-library :is(.mp-bar-heart, .mp-add-to-playlist, .mp-fs-heart-btn, .mp-fs-add-btn, #mpAutoplay){ display:none; }
+.ui-v2 .music-player.mp-no-add :is(.mp-add-to-playlist, .mp-fs-add-btn){ display:none; }
 
 /* Buttons */
 .ui-v2 .mp-btn{
@@ -377,7 +479,8 @@ body.mp-fs-open{ overflow:hidden; }
   .mu-rail-scrim.is-open{ opacity:1; pointer-events:auto; }
   .mu-topbar{ padding:0 12px; }
   .mu-view{ padding:14px 12px 40px; }
-  .mu-shelf{ margin:0 -12px; padding:0 12px 6px; scroll-padding-inline:12px; }
+  .mu-shelf{ margin:0 -12px; padding:0 6px 6px; scroll-padding-inline:6px; }
+  .mu-shelf-genres{ padding-inline:12px; }
 }
 
 /* Mobile player: floating mini bar + fullscreen "Now playing". 850px is the
@@ -490,25 +593,37 @@ body.mp-fs-open{ overflow:hidden; }
   .mu-topbar{ gap:6px; }
   .mu-search input{ height:36px; font-size:16px; }
   .mu-search svg{ left:10px; }
-  .mu-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; }
+  .mu-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px; }
   .mu-grid-artists{ grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .mu-card{ padding:8px; }
   .mu-view > .mu-skel{ grid-template-columns:repeat(2,minmax(0,1fr)); padding-top:30px; }
-  .mu-shelf{ grid-auto-columns:144px; gap:4px; }
-  .mu-shelf-artists{ grid-auto-columns:116px; }
-  .mu-sec-head{ margin-top:20px; }
+  .mu-shelf{ grid-auto-columns:148px; gap:2px; }
+  .mu-shelf-artists{ grid-auto-columns:120px; }
+  .mu-shelf-genres{ grid-auto-columns:168px; gap:10px; }
+  .mu-genre-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .mu-genre{ padding:12px; }
+  .mu-genre-name{ font-size:1.02rem; }
+  .mu-quick-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+  .mu-quick{ height:52px; gap:8px; font-size:.8rem; }
+  .mu-quick-art{ width:52px; height:52px; }
+  .mu-sec-head{ margin-top:28px; }
+  .mu-h2{ font-size:1.2rem; }
   .mu-card-play{ display:none; }
-  .mu-detail-head{ align-items:center; gap:16px; margin:2px 2px 18px; }
-  .mu-detail-art{ width:112px; height:112px; border-radius:8px; }
-  .mu-detail-title{ font-size:1.2rem; letter-spacing:-.02em; }
-  .mu-detail-sub{ font-size:.84rem; }
-  .mu-detail-facts{ font-size:.76rem; }
-  .mu-detail-actions{ margin-top:6px; }
-  .mu-track, .mu-track:has(.mu-track-art){ gap:10px; padding:5px 4px; }
-  .mu-track{ grid-template-columns:24px minmax(0,1fr) 32px 38px; }
-  .mu-track:has(.mu-track-art){ grid-template-columns:40px minmax(0,1fr) 32px 38px; }
+  .mu-hero{ flex-direction:column; align-items:flex-start; gap:18px; padding:12px 2px 18px; }
+  .mu-hero-art{ align-self:center; width:min(58vw,232px); }
+  .mu-hero-title, .mu-hero-title.is-long{ font-size:clamp(1.6rem,7vw,2.2rem); letter-spacing:-.03em; }
+  .mu-hero-title.is-xlong{ font-size:1.4rem; }
+  .mu-actions{ padding-bottom:14px; }
+  .mu-play-big{ width:50px; height:50px; }
+  .mu-thead{ display:none; }
+  .mu-thead, .mu-track{ gap:10px; padding:5px 4px; }
+  .mu-tracks{ --mu-cols:24px minmax(0,1fr) 32px 40px; }
+  .mu-tracks.has-art, .mu-tracks.has-art.has-album{ --mu-cols:40px minmax(0,1fr) 32px 40px; }
   /* With cover art the number column is noise on a phone */
-  .mu-track:has(.mu-track-art) .mu-track-num{ display:none; }
+  .mu-tracks.has-art .mu-track-num{ display:none; }
   .mu-track-dur{ font-size:.76rem; }
+  .mu-filterbar{ flex-direction:column; align-items:stretch; }
+  .mu-chips{ flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
 }
 /* Touch: no hover, so likes stay visible (dim) and rows get roomier targets */
 @media (pointer:coarse){
@@ -524,7 +639,7 @@ body.mp-fs-open{ overflow:hidden; }
 
 @media (prefers-reduced-motion:reduce){
   .mu-view > *, .mu-view > .mu-skel, .mu-track.is-current .mu-track-num::after{ animation:none !important; }
-  .mu-shell, .mu-rail, .mu-card-play, .ui-v2 .music-player{ transition:none !important; }
+  .mu-shell, .mu-main, .mu-rail, .mu-card-play, .mu-genre, .mu-genre-art, .mu-play-big, .ui-v2 .music-player{ transition:none !important; }
   .ui-v2 .music-player.mp-fullscreen, .ui-v2 .music-player.mp-fullscreen :is(.mp-playlist-visible, .mp-devices-visible),
   .ui-v2 :is(.mp-playlist-panel, .mp-devices-panel){ animation:none !important; }
   .ui-v2 .music-player:not(.mp-fx-chaos) .mp-visualizer{ display:none; }
