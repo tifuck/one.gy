@@ -831,6 +831,8 @@ class MusicArtist(db.Model):
     genres = db.Column(db.String(300), nullable=True)
     albums_seen = db.Column(db.Text, nullable=True)
     mode_synced = db.Column(db.String(16), nullable=True)
+    # Weight the artist's open jobs were prioritized with (None = 1.0, as before weights).
+    weight_synced = db.Column(db.Float, nullable=True)
     monitored_since = db.Column(db.DateTime, nullable=True)
     last_release = db.Column(db.String(10), nullable=True)
     next_scan_at = db.Column(db.DateTime, nullable=True, index=True)

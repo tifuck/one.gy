@@ -16,7 +16,8 @@ def retry_delay(attempts):
 def jobs_upsert(rows):
     """Queue wanted songs. rows: dicts with dedupe_key, norm_key, artist_dz,
     payload, bucket, priority. A known key keeps its state; an open job only
-    moves to a better bucket / higher priority. Returns how many were new."""
+    moves to a better bucket / higher priority; a job skipped because its artist
+    was blocked is queued again. Returns how many were new."""
     if not rows:
         return 0
     with app.app_context():
@@ -37,6 +38,10 @@ def jobs_upsert(rows):
                 db.session.add(job)
                 existing[row['dedupe_key']] = job
                 created += 1
+            elif job.state == 'skipped' and job.error_code == 'blocked':
+                job.state, job.error_code, job.run_after = 'ready', None, None
+                job.bucket, job.priority, job.updated_at = row['bucket'], row['priority'], t
+                created += 1
             elif job.state in OPEN_STATES and (row['bucket'] < job.bucket or row['priority'] > job.priority):
                 job.bucket = min(job.bucket, row['bucket'])
                 job.priority = max(job.priority, row['priority'])
@@ -50,6 +55,23 @@ def jobs_open_norm_keys(artist_dz):
         rows = db.session.query(MusicJob.norm_key).filter(
             MusicJob.artist_dz == int(artist_dz), MusicJob.state.in_(OPEN_STATES)).all()
         return {r[0] for r in rows if r[0]}
+
+
+def jobs_scale_priority(artist_dz, factor):
+    """An artist's weight changed: scale the priority of its open jobs to match."""
+    with app.app_context():
+        MusicJob.query.filter(MusicJob.artist_dz == int(artist_dz), MusicJob.state.in_(OPEN_STATES)).update(
+            {MusicJob.priority: MusicJob.priority * factor}, synchronize_session=False)
+        db.session.commit()
+
+
+def jobs_block(artist_dz):
+    """An artist was blocked: its not-yet-leased jobs are skipped (queued again if unblocked)."""
+    with app.app_context():
+        n = MusicJob.query.filter(MusicJob.artist_dz == int(artist_dz), MusicJob.state == 'ready').update(
+            {MusicJob.state: 'skipped', MusicJob.error_code: 'blocked'}, synchronize_session=False)
+        db.session.commit()
+        return n
 
 
 def jobs_lease(limit=1):

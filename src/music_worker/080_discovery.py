@@ -35,14 +35,22 @@ def _genre_weights():
         return {fold(r.genre): r.weight for r in MusicGenreRule.query.all()}
 
 
-def artist_weight(artist, genre_weights):
-    """Admin artist weight x the strongest weight among the artist's genres (0 = blocked genre)."""
-    weight = artist.rule_weight or 1.0
-    genres = [fold(g) for g in (artist.genres or '').split(',') if g]
-    matched = [genre_weights[g] for g in genres if g in genre_weights]
-    if matched:
-        weight *= 0.0 if min(matched) == 0 else max(matched)
-    return weight
+def artist_weight(rule_weight, genres, genre_weights, ruled=False):
+    """Admin artist weight x the strongest weight among the artist's genres. A genre
+    without a rule counts as 1, so a side genre cannot downgrade an artist. A blocked
+    main genre (the first) gives 0, unless the artist has an admin rule (plan 10)."""
+    matched = [genre_weights.get(fold(g), 1.0) for g in (genres or '').split(',') if g]
+    if matched and matched[0] == 0 and not ruled:
+        return 0.0
+    return (rule_weight or 1.0) * max([w for w in matched if w] or [1.0])
+
+
+def rules_signature():
+    """Changes when an admin edits a genre or artist weight, so the roster is re-ranked."""
+    with app.app_context():
+        genres = sorted([fold(r.genre), r.weight] for r in MusicGenreRule.query.all())
+        artists = sorted([a.deezer_id, a.rule_weight] for a in MusicArtist.query.filter(MusicArtist.rule_weight != 1.0))
+    return hashlib.sha256(json.dumps([genres, artists]).encode()).hexdigest()[:16]
 
 
 def _dz_artist_for(name, mbid, known):
@@ -91,6 +99,7 @@ def _percentiles(values):
 def roster_build():
     """Rank candidate artists and set their discovery modes."""
     log('roster: rebuilding')
+    rules = rules_signature()
     with app.app_context():
         known = {a.mbid: {'id': a.deezer_id, 'name': a.name, 'nb_fan': a.nb_fan}
                  for a in MusicArtist.query.filter(MusicArtist.mbid.isnot(None)).all()}
@@ -150,7 +159,8 @@ def roster_build():
             if c.get('genre_seed') and not artist.genres:
                 artist.genres = c['genre_seed']
             current = 0.5 * fan_pct.get(c['nb_fan'], 0.0) + 0.5 * c['current']
-            artist.score = (0.5 * c['all_time'] + 0.5 * current) * artist_weight(artist, genre_weights)
+            weight = artist_weight(artist.rule_weight, artist.genres, genre_weights, bool(artist.rule_mode))
+            artist.score = (0.5 * c['all_time'] + 0.5 * current) * weight
             scored.append(artist)
         for artist in rows.values():
             if artist.deezer_id not in cands:
@@ -176,6 +186,7 @@ def roster_build():
         db.session.commit()
         monitored = sum(1 for a in rows.values() if effective_mode(a) in MONITORED)
     meta_set('roster_at', t.isoformat())
+    meta_set('roster_rules', rules)
     log(f'roster: {len(cands)} candidates, {monitored} monitored artists')
 
 
@@ -221,7 +232,7 @@ def _want(wants, track, album, bucket, priority, mode):
 _LB_CLASSICS_OFF_UNTIL = [0.0]
 
 
-def _want_classics(wants, dz_id, mbid, weight, mode):
+def _want_classics(wants, dz_id, mbid, mode):
     """Best effort: the artist's all-time top 10 by ListenBrainz listens join the
     top-10 bucket, so old hits rank with current ones."""
     if time.time() < _LB_CLASSICS_OFF_UNTIL[0]:
@@ -243,7 +254,7 @@ def _want_classics(wants, dz_id, mbid, weight, mode):
             continue
         for hit in dz_search_track(entry.get('artist_name') or '', title):
             if int(hit['artist']['id']) == int(dz_id) and similarity(hit['title'], title) >= 0.9:
-                _want(wants, hit, hit.get('album') or {}, P_TOP10, (hit.get('rank') or 0) * weight, mode)
+                _want(wants, hit, hit.get('album') or {}, P_TOP10, hit.get('rank') or 0, mode)
                 break
 
 
@@ -258,14 +269,24 @@ def artist_sync(artist_row_id):
         set_activity(f'Scanning {artist.name}')
         seen = set(json.loads(artist.albums_seen or '[]')) if artist.mode_synced == mode else set()
         since = (artist.monitored_since or now()).strftime('%Y-%m-%d')
-        weight = artist_weight(artist, _genre_weights())
+        genre_weights = _genre_weights()
+        rule_weight, genres = artist.rule_weight, artist.genres
         is_rule = bool(artist.rule_mode)
+        weight = artist_weight(rule_weight, genres, genre_weights, is_rule)
+        weight_synced = artist.weight_synced or 1.0
         mbid = artist.mbid
+        name = artist.name
     if mode not in MONITORED or weight == 0:
+        blocked = jobs_block(dz_id) if weight == 0 or mode == 'blocked' else 0
+        if blocked:
+            log(f'{name}: blocked; skipped {blocked} queued songs')
         with app.app_context():
             artist = db.session.get(MusicArtist, artist_row_id)
             artist.next_scan_at = now() + timedelta(days=30)
             artist.mode_synced = mode
+            if blocked:
+                # Unblocking rescans every album, which queues the skipped songs again.
+                artist.albums_seen, artist.weight_synced = '[]', None
             db.session.commit()
         return 0
     info = dz_artist(dz_id)
@@ -278,9 +299,9 @@ def artist_sync(artist_row_id):
     if mode != 'new_only':
         for i, track in enumerate(top[:top_limit]):
             bucket = P_TOP10 if i < 10 else {'essentials': P_ESSENTIALS, 'top_tracks': P_TOP_TRACKS}.get(mode, P_DISCOGRAPHY)
-            _want(wants, track, track.get('album') or {}, bucket, (track.get('rank') or 0) * weight, mode)
+            _want(wants, track, track.get('album') or {}, bucket, track.get('rank') or 0, mode)
     if mode != 'new_only' and mbid:
-        _want_classics(wants, dz_id, mbid, weight, mode)
+        _want_classics(wants, dz_id, mbid, mode)
     top_album_hits = {}
     for track in top[:25]:
         album_id = (track.get('album') or {}).get('id')
@@ -306,7 +327,8 @@ def artist_sync(artist_row_id):
             picked.append((album, fresh, kind))
     genre_ids = {}
     for album, fresh, kind in picked:
-        if STOP.is_set() or _discovery_allowed():
+        # Only the service's discovery thread obeys the switches; a CLI sync-artist is never the leader.
+        if STOP.is_set() or (threading.current_thread().name == 'discovery' and _discovery_allowed()):
             raise DiscoveryStopped()
         full = dz_album(album['id'])
         if not full:
@@ -316,12 +338,29 @@ def artist_sync(artist_row_id):
         bucket = P_FRESH if fresh else (P_ESSENTIALS if mode == 'essentials' else P_DISCOGRAPHY)
         for track in (full.get('tracks') or {}).get('data') or []:
             track.setdefault('artist', full.get('artist') or {})
-            _want(wants, track, full, bucket, (track.get('rank') or 0) * weight, mode)
+            _want(wants, track, full, bucket, track.get('rank') or 0, mode)
         seen.add(album['id'])
+    top_album = (top[0].get('album') or {}).get('id') if top else None
+    if not genre_ids and not genres and top_album:
+        # No album read this scan (Top tracks mode): take genres from the top song's album.
+        for genre in ((dz_album(top_album) or {}).get('genres') or {}).get('data') or []:
+            genre_ids[genre['name']] = genre_ids.get(genre['name'], 0) + 1
+    if genre_ids:
+        genres = ','.join(sorted(genre_ids, key=genre_ids.get, reverse=True)[:3])[:300]
+    # Genres are only known after the scan, so the weight is applied here.
+    weight = artist_weight(rule_weight, genres, genre_weights, is_rule)
+    if weight == 0:
+        with app.app_context():
+            artist = db.session.get(MusicArtist, artist_row_id)
+            artist.genres = genres
+            db.session.commit()
+        return artist_sync(artist_row_id)
+    if weight != weight_synced:
+        jobs_scale_priority(dz_id, weight / weight_synced)
     held = lib_norm_keys(dz_id) if os.path.isfile(LIB_DB) else set()
     queued = jobs_open_norm_keys(dz_id)
     rows = [{'dedupe_key': f'dz:{w["payload"]["track_id"]}', 'norm_key': key, 'artist_dz': w['payload']['artist_dz'],
-             'payload': w['payload'], 'bucket': w['bucket'], 'priority': w['priority']}
+             'payload': w['payload'], 'bucket': w['bucket'], 'priority': w['priority'] * weight}
             for key, w in wants.items() if key not in held and key not in queued]
     rows.sort(key=lambda r: (r['bucket'], -r['priority']))
     room = ARTIST_SONG_CAP - len(held) - len(queued)
@@ -335,10 +374,10 @@ def artist_sync(artist_row_id):
         if info:
             artist.name = info.get('name') or artist.name
             artist.nb_fan = info.get('nb_fan') or artist.nb_fan
-        if genre_ids:
-            artist.genres = ','.join(sorted(genre_ids, key=genre_ids.get, reverse=True)[:3])[:300]
+        artist.genres = genres
         artist.albums_seen = json.dumps(sorted(seen))
         artist.mode_synced = mode
+        artist.weight_synced = weight
         artist.last_release = last_release
         artist.scanned_at = now()
         artist.next_scan_at = now() + _scan_interval(mode, last_release)
@@ -389,10 +428,21 @@ def charts_scan():
     wants = {}
     for position, (track, _region) in enumerate(entries):
         _want(wants, track, track.get('album') or {}, P_FRESH, 1_000_000 - position, 'everything')
+    genre_weights = _genre_weights()
+    with app.app_context():
+        chart_artists = MusicArtist.query.filter(
+            MusicArtist.deezer_id.in_({int(w['payload']['artist_dz']) for w in wants.values()})).all()
+        # The weight the artist's other jobs carry, so a later re-scan scales all of them alike.
+        weights = {a.deezer_id: 0.0 if a.rule_mode == 'blocked' or artist_weight(a.rule_weight, a.genres, genre_weights, bool(a.rule_mode)) == 0
+                   else a.weight_synced or 1.0 for a in chart_artists}
     held_by_artist = {}
     rows = []
     for key, w in wants.items():
         artist_dz = w['payload']['artist_dz']
+        weight = weights.get(int(artist_dz), 1.0)
+        if weight == 0:
+            continue
+        w['priority'] *= weight
         if artist_dz not in held_by_artist:
             held_by_artist[artist_dz] = (lib_norm_keys(artist_dz) if os.path.isfile(LIB_DB) else set()) | jobs_open_norm_keys(artist_dz)
         if key not in held_by_artist[artist_dz]:

@@ -1,7 +1,9 @@
 # The service: one discovery thread, acquire threads and housekeeping, each
 # checking the admin switches before every unit of work. Plus the CLI.
 
-ACQUIRE_THREADS = 2
+# Download threads per egress (YouTube limits each IP separately), up to the max.
+ACQUIRE_THREADS_PER_EGRESS = 2
+MAX_ACQUIRE_THREADS = 16
 DISK_CHECK_EVERY = 300
 HEARTBEAT_EVERY = 10
 # A worker not seen for this long is offline (and loses the discovery role).
@@ -116,7 +118,7 @@ def discovery_loop():
             if blocked:
                 set_activity(blocked)
             else:
-                if _due('roster_at', ROSTER_EVERY):
+                if _due('roster_at', ROSTER_EVERY) or meta_get('roster_rules') != rules_signature():
                     set_activity('Ranking artists')
                     roster_build()
                 if _due('charts_at', CHARTS_EVERY):
@@ -144,9 +146,13 @@ def discovery_loop():
         STOP.wait(30)
 
 
-def acquire_loop():
+def acquire_loop(index):
     while not STOP.is_set():
         try:
+            if index >= ACQUIRE_THREADS_PER_EGRESS * max(1, len(egresses())):
+                ACTIVITY.pop(threading.current_thread().name, None)
+                STOP.wait(HEARTBEAT_EVERY)
+                continue
             if not setting_on('music_downloads_enabled') or not WORKER_FLAGS['download']:
                 set_activity('Off' if not setting_on('music_downloads_enabled') else 'Off on this worker')
                 STOP.wait(HEARTBEAT_EVERY)
@@ -230,7 +236,8 @@ def run():
     threads = [threading.Thread(target=discovery_loop, name='discovery', daemon=True),
                threading.Thread(target=housekeeping_loop, name='housekeeping', daemon=True),
                threading.Thread(target=heartbeat_loop, name='heartbeat', daemon=True)]
-    threads += [threading.Thread(target=acquire_loop, name=f'acquire-{i}', daemon=True) for i in range(ACQUIRE_THREADS)]
+    threads += [threading.Thread(target=acquire_loop, args=(i,), name=f'acquire-{i}', daemon=True)
+                for i in range(MAX_ACQUIRE_THREADS)]
     for thread in threads:
         thread.start()
     while not STOP.wait(1):
