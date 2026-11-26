@@ -10,7 +10,9 @@ The contract between `client/internal/ipc` (server; the engine is the
   0600). Without `XDG_RUNTIME_DIR`: `<state dir>/run/engine.sock`.
 - Windows: named pipe `\\.\pipe\onegy-engine-<USERNAME>`, DACL = current user only
   (the pipe keeps its name from before the engine became `onegy daemon`).
-- Framing: one JSON object per line (`\n`-terminated, UTF-8). JSON-RPC 2.0.
+- Framing: one JSON object per line (`\n`-terminated, UTF-8). JSON-RPC 2.0. A
+  connection runs at most 64 calls at once; the engine reads further frames as
+  calls finish.
 - The engine also accepts `--socket <path>` (tests, multiple instances) and
   writes `<state dir>/engine.json` `{"pid", "socket", "version", "hello_key"}`
   (0600) once listening; the `onegy` CLI connects to the socket named there and
@@ -130,8 +132,13 @@ The engine keeps the last 500 finished transfers.
 `kind`: `conflict`, `name_clash`, `case_clash`, `invalid_name`, `path_too_long`,
 `symlink`, `permission`, `locked`, `quota`, `ignore_parse`, `read_only`,
 `mass_delete`, `root_missing`, `remote_root_missing`, `disk_full`, `integrity`,
-`too_large`, `watch_limit`, `sync_error` (an op keeps failing, or a plan repeats
-without progress and the sync is `stalled`).
+`too_large`, `watch_limit`, `sync_error` (an op keeps failing, a plan repeats
+without progress and the sync is `stalled`, or a pass stopped on an internal
+error: the sync is `error` and tries again after a backoff of 30 s doubling up
+to 10 min, sooner on `syncs.syncNow`), `account_mismatch` (the sync was
+created under another account or server than the one signed in, per its
+`.onegy/sync.json`; it does not run and is `stalled` until it is removed or
+that account signs in again; actions: `remove_sync`).
 `actions` ⊆ `keep_both`, `keep_remote`, `keep_local`, `rename`, `retry`,
 `ignore`, `delete_remote`, `restore_local`, `restore_remote_root`, `remove_sync`, `open`.
 
@@ -162,7 +169,7 @@ merge); unknown keys are rejected.
 | `engine.nudge` | — | `{}`; poll the server now |
 | `engine.environment` | `{"on_battery": bool, "metered": bool}` | `{}`; the app reports power/network changes; syncs whose (inherited) `battery`/`metered` policy is `pause` pause while it holds |
 | `engine.clearCaches` | — | `{}`; drops unwrapped keys, cached capabilities and the remote tree cache, then takes a new snapshot |
-| `account.status` | — | `{"signed_in", "locked", "full_keys", "app_locked", "lock_enabled", "pin_set", "pin_expires_at", "pin_strict", "pin_attempts_left", "pin_erased_at", "system_unlock", "system_unlock_available", "signed_requests", "hardware_key", "server", "username", "user_id", "device_id", "device_name", "storage_used", "storage_limit", "versioning"}` (see "App lock"; `versioning`: one.gy keeps previous versions on replace, from `GET /apiv1/me`) |
+| `account.status` | — | `{"signed_in", "locked", "full_keys", "app_locked", "lock_enabled", "pin_set", "pin_expires_at", "pin_strict", "pin_attempts_left", "pin_erased_at", "system_unlock", "system_unlock_available", "signed_requests", "hardware_key", "server", "username", "user_id", "device_id", "device_name", "storage_used", "storage_limit", "versioning", "key_store_error"}` (see "App lock"; `versioning`: one.gy keeps previous versions on replace, from `GET /apiv1/me`; `key_store_error`: why the OS key store or secrets file could not be read or written, `""` when fine; the device secrets are then in memory only and after a restart only the password unlocks; a corrupt secrets file is never overwritten) |
 | `account.authorize` | `{"server", "username", "password", "totp_code"?, "device_name"}` | `account.status`; the app is left unlocked so a PIN can be chosen |
 | `account.unlock` | `{"password", "new_pin"?, "pin_strict"?}` | `account.status`; opens the password-sealed keys (works offline), then unlocks the app online; `new_pin` (opt-in) also sets the PIN, validated before anything changes |
 | `account.appUnlock` | `{"pin"}` | `account.status`; errors `invalid_pin` (re-read `pin_attempts_left`), `pin_locked`, `pin_expired`, `pin_not_set` (use `account.unlock`) |

@@ -167,14 +167,25 @@ def on_starting(server):
     if not os.path.exists(certfile) or not os.path.exists(keyfile):
         import subprocess
         print('[GUNICORN] Generating self-signed SSL certificate...')
-        subprocess.run([
-            'openssl', 'req', '-x509', '-newkey', 'rsa:4096',
-            '-keyout', keyfile,
-            '-out', certfile,
-            '-days', '365',
-            '-nodes',
-            '-subj', '/CN=localhost'
-        ], check=True)
+        created = [path for path in (keyfile, certfile) if not os.path.exists(path)]
+        try:
+            subprocess.run([
+                'openssl', 'req', '-x509', '-newkey', 'rsa:4096',
+                '-keyout', keyfile,
+                '-out', certfile,
+                '-days', '365',
+                '-nodes',
+                '-subj', '/CN=localhost'
+            ], check=True, timeout=120)
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            # A half-written file would be reused on the next start.
+            for path in created:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            print(f'[GUNICORN] ERROR: SSL certificate generation failed: {e}')
+            raise
         try:
             os.chmod(keyfile, 0o600)
         except OSError:

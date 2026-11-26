@@ -10,6 +10,7 @@ import (
 
 	"github.com/tifuck/one.gy/client/internal/account"
 	"github.com/tifuck/one.gy/client/internal/api"
+	"github.com/tifuck/one.gy/client/internal/logx"
 )
 
 // Poller keeps the tree fresh (plan 7.4): GET /sync/cursor (ETag, so an idle
@@ -89,6 +90,7 @@ func (p *Poller) next() time.Duration {
 func (p *Poller) Run(ctx context.Context) {
 	t := time.NewTimer(0)
 	defer t.Stop()
+	panics := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -96,15 +98,31 @@ func (p *Poller) Run(ctx context.Context) {
 		case <-t.C:
 		case <-p.nudge:
 		}
-		p.poll(ctx)
+		err := p.safePoll(ctx)
+		wait := p.next()
+		if err != nil {
+			// e.g. unexpected server data that the next poll sees again:
+			// back off (10 s doubling, capped at 10 min) instead of spinning.
+			panics++
+			wait = max(wait, jitter(min(5*time.Second<<min(panics, 7), 10*time.Minute)))
+		} else {
+			panics = 0
+		}
 		if !t.Stop() {
 			select {
 			case <-t.C:
 			default:
 			}
 		}
-		t.Reset(p.next())
+		t.Reset(wait)
 	}
+}
+
+// safePoll polls; a panic ends only this poll (logged with its stack).
+func (p *Poller) safePoll(ctx context.Context) (err error) {
+	defer logx.Recover(&err, "remote poll")
+	p.poll(ctx)
+	return nil
 }
 
 func (p *Poller) poll(ctx context.Context) {
@@ -127,7 +145,13 @@ func (p *Poller) poll(ctx context.Context) {
 			p.mu.Unlock()
 		}
 	}
-	cur, _ := p.tree.Cursor(ctx)
+	cur, err := p.tree.Cursor(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Error("remote poll: cannot read the stored cursor", "err", err)
+		}
+		return
+	}
 	seq, newETag, changedOnServer, err := c.Cursor(ctx, etag)
 	if err == nil && (cur == nil || (changedOnServer && seq != *cur)) {
 		var applied bool

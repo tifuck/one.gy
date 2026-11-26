@@ -152,7 +152,7 @@ echo "    done"
 if [[ -n "$GO_BIN" ]]; then
     step "Building the CLI binaries (served from /cli)"
     PATH="$(dirname "$GO_BIN"):$PATH" bash client/build.sh >/dev/null
-    echo "    done"
+    echo "    done; CLI updates are signed with CLI_SIGNING_KEY_FILE (default ~/.config/onegy/cli-signing.key): back it up"
 fi
 
 # ─── 7. Service ─────────────────────────────────────────────────────────────

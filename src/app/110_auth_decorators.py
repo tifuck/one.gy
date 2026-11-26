@@ -647,6 +647,18 @@ def _scope_folder_value(value):
     return value if value > 0 else None
 
 
+# Device routes a locked app may call without a folder target: device
+# self-management that touches no drive content, and tree-keys, which checks
+# the scope per item itself (_tree_scope_allows). Any other mutation or content
+# read whose target is not recognised below is denied.
+_DEVICE_UNSCOPED_ENDPOINTS = frozenset({
+    'apiv1_device_update_self', 'apiv1_device_delete_self', 'apiv1_device_pop_key',
+    'apiv1_device_unlock', 'apiv1_device_grant_refresh', 'apiv1_device_grant_drop',
+    'apiv1_device_set_pin', 'apiv1_device_remove_pin', 'apiv1_device_set_system_unlock',
+    'apiv1_device_remove_system_unlock', 'apiv1_device_unlock_failed', 'apiv1_device_set_scope',
+    'apiv1_device_web_session', 'apiv1_sync_tree_keys',
+})
+
 # Mutations that create in the drive root when this body field is omitted.
 _DEVICE_ROOT_DEFAULT_FIELDS = {
     'apiv1_create_folder': 'parent_id',
@@ -655,19 +667,42 @@ _DEVICE_ROOT_DEFAULT_FIELDS = {
 }
 
 
+# Target of a file or upload session this user does not have: nothing to
+# protect, so the route answers its own 404 (sync clients treat that as gone).
+_DEVICE_TARGET_GONE = object()
+
+
 def _device_request_folder_targets():
-    """Folder ids (None = drive root) this device request reads content from or writes to."""
+    """Folder ids (None = drive root) this device request reads content from or
+    writes to; _DEVICE_TARGET_GONE for a file or upload session that cannot be
+    resolved. Raises BadRequest for a file id that is not a string."""
+    from werkzeug.exceptions import BadRequest
     targets = []
     view_args = request.view_args or {}
 
     def file_folder(file_id):
-        file = db.session.get(File, file_id) if file_id else None
+        if file_id is None or file_id == '':
+            return
+        if not isinstance(file_id, str):
+            raise BadRequest('file id must be a string')
+        file = db.session.get(File, file_id)
         if file is not None and file.registered_user_id == g.api_user.id:
             targets.append(file.folder_id)
+        else:
+            targets.append(_DEVICE_TARGET_GONE)
 
     file_folder(view_args.get('file_id'))
     if 'folder_id' in view_args:
         targets.append(_scope_folder_value(view_args['folder_id']))
+    if 'session_id' in view_args:
+        upload = SyncUploadSession.query.filter_by(
+            id=view_args['session_id'], user_id=g.api_user.id).first()
+        if upload is None:
+            targets.append(_DEVICE_TARGET_GONE)
+        elif upload.replace_file_id:
+            file_folder(upload.replace_file_id)
+        else:
+            targets.append(_scope_folder_value(upload.folder_id))
     # is_json, not mimetype == 'application/json': routes parse +json bodies too.
     if request.is_json:
         # Upload routes skip the default body cap; bound it before parsing
@@ -704,6 +739,8 @@ def _device_scope_error():
     engine still holds the master key while running (key tree = later layer)."""
     if request.method == 'GET' and not (request.url_rule and request.url_rule.rule.endswith('/content')):
         return None
+    if request.endpoint in _DEVICE_UNSCOPED_ENDPOINTS:
+        return None
     try:
         scope = json.loads(g.device.sync_scope or '{}')
     except ValueError:
@@ -712,10 +749,18 @@ def _device_scope_error():
         scope = {}
     if scope.get('root') is True:
         return None
-    roots = {f for f in (scope.get('folders') or []) if isinstance(f, int) and not isinstance(f, bool)}
-    for folder_id in _device_request_folder_targets():
+    folders = scope.get('folders')
+    roots = {f for f in (folders if isinstance(folders, list) else [])
+             if isinstance(f, int) and not isinstance(f, bool)}
+    locked = _sync_error(403, 'locked', 'ONE.GY Desktop is locked; unlock it to reach files outside your synced folders')
+    targets = _device_request_folder_targets()
+    if not targets:
+        return locked
+    for folder_id in targets:
+        if folder_id is _DEVICE_TARGET_GONE:
+            continue
         if folder_id is None or not roots.intersection(_folder_ancestor_ids(folder_id)):
-            return _sync_error(403, 'locked', 'ONE.GY Desktop is locked; unlock it to reach files outside your synced folders')
+            return locked
     return None
 
 
@@ -771,9 +816,11 @@ def device_auth_required(f):
         g.device = device
         g.device_unlocked = not device.lock_enabled or _request_has_device_grant(device)
         if not g.device_unlocked:
-            from werkzeug.exceptions import RequestEntityTooLarge
+            from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
             try:
                 scope_error = _device_scope_error()
+            except BadRequest:
+                return _sync_error(400, 'bad_request', 'Invalid request')
             except RequestEntityTooLarge:
                 if request.is_json:
                     return _sync_error(413, 'bad_request', 'Request body too large')

@@ -19,6 +19,7 @@ import (
 	"github.com/tifuck/one.gy/client/internal/api"
 	"github.com/tifuck/one.gy/client/internal/fakeserver"
 	"github.com/tifuck/one.gy/client/internal/localfs"
+	"github.com/tifuck/one.gy/client/internal/logx"
 	"github.com/tifuck/one.gy/client/internal/reconcile"
 	"github.com/tifuck/one.gy/client/internal/remote"
 	"github.com/tifuck/one.gy/client/internal/state"
@@ -238,6 +239,75 @@ func TestDownloadReplacesIntoDebrisAndRecovers(t *testing.T) {
 	}
 }
 
+// When the downloaded file cannot take the old one's place after that went
+// to debris, the old file is moved back, or, when its path is taken by now,
+// its debris entry is recorded and an issue says where it is.
+func TestDownloadPlaceFailureKeepsOldFile(t *testing.T) {
+	for _, taken := range []bool{false, true} {
+		f := setup(t, "e2ee")
+		id := f.srv.AddFile(&f.rootID, "doc.txt", []byte("remote version"))
+		f.sync()
+		n, _ := f.db.GetNode(context.Background(), "file", id)
+		local := f.write("doc.txt", []byte("old local"))
+		op := reconcile.Op{Kind: reconcile.Download, Path: "doc.txt", EntryKind: localfs.KindFile, RemoteID: id, RemoteName: "doc.txt",
+			ContentVersion: n.ContentVersion, PayloadChecksum: n.PayloadChecksum, Local: local}
+		x := f.exec("e2ee")
+		staged := 0
+		x.Crash = func(point string, _ reconcile.OpKind) bool {
+			if point == "staged" {
+				if staged++; staged == 2 { // the old file is in debris now
+					if taken {
+						os.WriteFile(filepath.Join(f.root, "doc.txt"), []byte("new here"), 0o644)
+					} else {
+						plain, _ := filepath.Glob(filepath.Join(f.root, ".onegy", "tmp", "*.plain"))
+						os.Remove(plain[0])
+					}
+				}
+			}
+			return false
+		}
+		err := x.Execute(context.Background(), op)
+		var ie *IssueError
+		debris, _ := filepath.Glob(filepath.Join(f.root, ".onegy", "debris", "*", "doc.txt"))
+		var recorded int
+		f.db.QueryRow("SELECT COUNT(*) FROM debris").Scan(&recorded)
+		b, _ := os.ReadFile(filepath.Join(f.root, "doc.txt"))
+		if !taken {
+			if err == nil || string(b) != "old local" || len(debris) != 0 || recorded != 0 {
+				t.Fatalf("moved back: err %v, target %q, debris %v, recorded %d", err, b, debris, recorded)
+			}
+			continue
+		}
+		if !errors.As(err, &ie) || string(b) != "new here" || len(debris) != 1 || recorded != 1 {
+			t.Fatalf("path taken: err %v, target %q, debris %v, recorded %d", err, b, debris, recorded)
+		}
+		if old, _ := os.ReadFile(debris[0]); string(old) != "old local" {
+			t.Fatalf("debris holds %q", old)
+		}
+	}
+}
+
+// An op with a missing or malformed one.gy id fails instead of addressing id
+// 0 or "", whose "not found" would read as already gone and drop rows.
+func TestRemoteOpsRefuseBadIDs(t *testing.T) {
+	f := setup(t, "standard")
+	x := f.exec("standard")
+	for _, op := range []reconcile.Op{
+		{Kind: reconcile.TrashRemote, Path: "a.txt", EntryKind: localfs.KindFile},
+		{Kind: reconcile.TrashRemote, Path: "d", EntryKind: localfs.KindDir, RemoteID: "x1"},
+		{Kind: reconcile.TrashRemote, Path: "d", EntryKind: localfs.KindDir},
+	} {
+		if err := x.Execute(context.Background(), op); err == nil || errors.Is(err, ErrSuperseded) {
+			t.Fatalf("%s %q: %v", op.Path, op.RemoteID, err)
+		}
+	}
+	for k, v := range f.srv.Requests {
+		if strings.Contains(k, "/trash") && v > 0 {
+			t.Fatalf("sent %s", k)
+		}
+	}
+}
+
 func TestDownloadChecks(t *testing.T) {
 	f := setup(t, "e2ee")
 	f.srv.WithMeta = true
@@ -412,5 +482,28 @@ func TestTransferStatus(t *testing.T) {
 	}
 	if n := len(p.List(TDone)); n > keepFinished+100 {
 		t.Fatalf("%d finished transfers kept", n)
+	}
+}
+
+// A panic inside an op (a bug, unexpected server data) fails that op and
+// closes its journal row instead of killing the engine.
+func TestOpPanicFailsTheOp(t *testing.T) {
+	f := setup(t, "e2ee")
+	f.write("a.txt", []byte("hello"))
+	in, _ := localfs.Lstat(filepath.Join(f.root, "a.txt"))
+	op := reconcile.Op{Kind: reconcile.Upload, Path: "a.txt", EntryKind: localfs.KindFile, RemoteName: "a.txt", Size: in.Size,
+		Local: &reconcile.Expect{Kind: localfs.KindFile, ID: in.ID, Size: in.Size, MtimeNs: in.MtimeNs}}
+	x := f.exec("e2ee")
+	x.Crash = func(point string, _ reconcile.OpKind) bool {
+		if point == "staged" {
+			panic("unexpected data")
+		}
+		return false
+	}
+	if err := x.Execute(context.Background(), op); !errors.Is(err, logx.ErrPanic) {
+		t.Fatalf("want a recovered panic, got %v", err)
+	}
+	if ops, err := f.db.UnfinishedOps(context.Background(), ""); err != nil || len(ops) != 0 {
+		t.Fatalf("journal left open: %v %v", ops, err)
 	}
 }

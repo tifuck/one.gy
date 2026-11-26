@@ -60,9 +60,10 @@ class _StorageManagerFiles:
                 f.flush()
                 os.fsync(f.fileno())
         except OSError as e:
-            # Non-fatal: if the marker can't be written, finalize still proceeds normally.
-            # The marker only matters for crash recovery, which is an edge case of an edge case.
-            print(f'[STORAGE] Warning: failed to write .committed marker for {filename}: {e}')
+            # Not raised: the DB commit already landed, so finalize must still run.
+            # Without the marker a crash before finalize can only be recovered
+            # through the payload checksum or the .meta file.
+            print(f'[ERROR] [STORAGE] Failed to write .committed marker for {filename}: {e}')
 
     def write_staged_file_metadata(self, filename, metadata):
         """Write expected DB metadata for a staged file before committing.
@@ -311,15 +312,14 @@ class _StorageManagerFiles:
     def _capture_delete_generation(self, category, object_id):
         """AUDIT FIX H4: snapshot the live row's generation marker at tombstone
         creation time, so Phase B can tell the deleted generation apart from any
-        object later re-created under the same key. Best-effort: runs with
-        autoflush disabled so a caller's pending metadata DELETE is not flushed
-        out from under the read; when the row is already gone the marker is
-        None and the tombstone is processed with legacy (delete) behavior."""
-        try:
-            with db.session.no_autoflush:
-                return self._current_delete_generation(category, object_id)
-        except Exception:
-            return None
+        object later re-created under the same key. Runs with autoflush
+        disabled so a caller's pending metadata DELETE is not flushed out from
+        under the read; when the row is already gone the marker is None and the
+        tombstone is processed with legacy (delete) behavior. A lookup ERROR
+        propagates (like the rest of _queue_remote_delete): a None marker would
+        let Phase B delete a re-created object's remote copies unchecked."""
+        with db.session.no_autoflush:
+            return self._current_delete_generation(category, object_id)
 
     def _queue_remote_delete(self, category, file_id):
         """Queue a deferred remote delete. Local disk is cleaned immediately;
@@ -419,33 +419,39 @@ class _StorageManagerFiles:
                         continue
                     object_id = os.path.basename(object_id)
                     if category == 'files':
-                        self.delete_file(object_id)
+                        deleted = self.delete_file(object_id)
                     elif category == 'notes':
-                        self.delete_note(object_id)
+                        deleted = self.delete_note(object_id)
                     elif category == 'thumbnails':
-                        self._delete_thumbnail_by_basename(object_id)
+                        deleted = self._delete_thumbnail_by_basename(object_id)
                     else:
                         print(f'[STORAGE] Unknown logical delete category: {category}')
+                        continue
+                    if not deleted:
+                        print(f'[WARNING] [STORAGE] Could not durably delete {category}/{object_id}; left for orphan cleanup')
                     continue
 
+                deleted = True
                 if THUMBNAILS_DIR in path_str:
                     basename = os.path.basename(path)
                     if basename.startswith('.cache_'):
                         basename = basename[len('.cache_'):]
-                    self._delete_thumbnail_by_basename(basename)
+                    deleted = self._delete_thumbnail_by_basename(basename)
                 elif NOTES_DIR in path_str:
                     basename = os.path.basename(path)
                     if basename.startswith('.cache_'):
                         basename = basename[len('.cache_'):]
-                    self.delete_note(basename)
+                    deleted = self.delete_note(basename)
                 elif upload_dir in path_str:
                     basename = os.path.basename(path)
                     if basename.startswith('.cache_'):
                         basename = basename[len('.cache_'):]
-                    self.delete_file(basename)
+                    deleted = self.delete_file(basename)
                 else:
                     if os.path.exists(path_str):
                         os.remove(path_str)
+                if not deleted:
+                    print(f'[WARNING] [STORAGE] Could not durably delete {path_str}; left for orphan cleanup')
             except Exception as e:
                 print(f'[STORAGE] Failed to remove {path}: {e}')
         # Commit queued remote deletes and replica cleanup in one batch

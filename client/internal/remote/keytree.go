@@ -158,8 +158,8 @@ func (t *Tree) WrapNew(ctx context.Context, n *api.Node, key []byte) *api.Node {
 	var res *api.TreeKeysResponse
 	if n.Type == "folder" {
 		id, _ := strconv.ParseInt(n.IDString(), 10, 64)
-		item, err := folderKeys(id, under, pk, n.TreeKeyWrap, nil, key)
-		if err != nil {
+		item, ferr := folderKeys(id, under, pk, n.TreeKeyWrap, nil, key)
+		if ferr != nil {
 			return n
 		}
 		res, err = c.SetTreeKeys(ctx, []api.TreeFolderKeys{item}, nil)
@@ -167,8 +167,8 @@ func (t *Tree) WrapNew(ctx context.Context, n *api.Node, key []byte) *api.Node {
 			return &res.Folders[0]
 		}
 	} else if n.IsE2E && key != nil {
-		w, nonce, err := wrapB64(key, pk)
-		if err != nil {
+		w, nonce, werr := wrapB64(key, pk)
+		if werr != nil {
 			return n
 		}
 		res, err = c.SetTreeKeys(ctx, nil, []api.TreeFileKeys{{ID: n.IDString(), Wrap: w, Nonce: nonce, Folder: under}})
@@ -177,7 +177,7 @@ func (t *Tree) WrapNew(ctx context.Context, n *api.Node, key []byte) *api.Node {
 		}
 	}
 	if err != nil {
-		slog.Debug("key tree wrap not stored", "node", n.IDString(), "err", err)
+		slog.Warn("key tree wrap not stored; added later", "node", n.IDString(), "err", err)
 	}
 	return n
 }

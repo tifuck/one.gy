@@ -325,7 +325,7 @@ def _sync_create_file(spec, payload_path, sums, thumbnail_part, thumbnail_nonce)
         _release_file_rewrite_lock(id_lock)
     if outcome == 'folder_missing':
         return _sync_error(404, 'not_found', 'Folder not found'), None
-    if outcome == 'db_error':
+    if outcome in ('db_error', 'lock_lost'):
         return _sync_busy(), None
     if outcome == 'reused':
         return _sync_existing_response(row), row.id
@@ -362,8 +362,8 @@ def _sync_replace_file(spec, payload_path, sums, thumbnail_part, thumbnail_nonce
             return _sync_error(413, 'quota_exceeded', 'Storage limit exceeded'), None
         version = _snapshot_file_version(file, disk_size)
         filename = file.filename
-        storage.store_file_staged(filename, payload_path)
         try:
+            storage.store_file_staged(filename, payload_path)
             file.size = size
             file.disk_size = disk_size
             file.content_hash = content_hash
@@ -391,10 +391,7 @@ def _sync_replace_file(spec, payload_path, sums, thumbnail_part, thumbnail_nonce
             storage.rollback_staged_file(filename)
             _file_version_discard(version)
             raise
-        storage.mark_staged_file_committed(filename)
-        storage.finalize_staged_file(filename)
-        _commit_file_post_finalize_state(file_id, 'SYNC REPLACE')
-        _file_version_committed(version)
+        _finish_committed_rewrite(filename, file_id, version, 'SYNC REPLACE')
         _sync_publish_replaced_thumbnail(file, thumbnail_part, thumbnail_nonce)
     finally:
         _release_lifecycle_lock(lifecycle_lock)
@@ -497,12 +494,14 @@ def apiv1_sync_upload_file():
 # ─── Upload sessions ─────────────────────────────────────────────────────────
 
 def _sync_parts(session):
-    """{index: (sha256, size)} of the parts received so far."""
+    """{index: (sha256, size)} of the parts received so far, or None when the
+    record is unreadable (the session is then treated as gone)."""
     try:
         entries = json.loads(session.parts_received or '[]')
         return {int(i): (sha, int(n)) for i, sha, n in entries}
-    except (TypeError, ValueError):
-        return {}
+    except (TypeError, ValueError) as e:
+        print(f'[ERROR] [SYNC-UPLOAD] Session {session.id} has an unreadable parts_received; treating it as closed: {e}')
+        return None
 
 
 def _sync_session_json(session):
@@ -538,7 +537,8 @@ def _sync_load_session(session_id, for_update=False):
 
 def _sync_session_open(session):
     return (session is not None and session.state == 'open'
-            and _sync_aware(session.expires_at) > datetime.now(timezone.utc))
+            and _sync_aware(session.expires_at) > datetime.now(timezone.utc)
+            and _sync_parts(session) is not None)
 
 
 def _sync_session_expiry():
@@ -855,7 +855,14 @@ def apiv1_sync_upload_complete(session_id):
         part_dir = _sync_session_dir(session.id)
         assembled = os.path.join(part_dir, 'assembled')
         try:
-            digest, size = _sync_assemble(session, parts, assembled)
+            try:
+                digest, size = _sync_assemble(session, parts, assembled)
+            except (FileNotFoundError, ValueError) as e:
+                # A stored part is gone or damaged: no retry of this session can
+                # succeed, so close it and let the client start over.
+                print(f'[ERROR] [SYNC-UPLOAD] Session {session.id} has unusable stored parts ({e}); aborting it')
+                _sync_mark_session(session, 'aborted')
+                return _sync_error(400, 'bad_request', 'Stored parts are unusable; start the upload over')
             if size != int(session.cipher_size) or digest != session.cipher_sha256:
                 print(f'[SYNC-UPLOAD] Session {session.id} assembled to a different size/sha256; aborting it')
                 _sync_mark_session(session, 'aborted')

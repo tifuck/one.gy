@@ -128,7 +128,7 @@ def lrclib_lyrics(artist, title, album, duration_s):
 
 
 def fetch_bytes(source, url, max_bytes=30 * 1024 * 1024):
-    body = http_get(source, url, as_json=False, timeout=60)
-    if body is None or len(body) > max_bytes:
-        raise SourceError(f'{source}: download too large or empty')
+    body = http_get(source, url, as_json=False, timeout=60, max_bytes=max_bytes)
+    if body is None:
+        raise SourceError(f'{source}: download empty')
     return body

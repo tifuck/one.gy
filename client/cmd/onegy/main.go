@@ -29,6 +29,10 @@ var serverDomain = "one.gy"
 // updated with the app and must never replace itself.
 var bundled = ""
 
+// Hex Ed25519 public key of this server's CLI releases, embedded by build.sh
+// (-X main.updatePublicKey=...). Empty: self-update is off (release_sign.go).
+var updatePublicKey = ""
+
 func baseURL() string {
 	return "https://" + serverDomain
 }
@@ -64,6 +68,22 @@ func httpClient(insecure bool) *http.Client {
 			return nil
 		},
 	}
+}
+
+// updateClient is client restricted to redirects within the origin of the
+// first request: update manifests and binaries come from this server only.
+func updateClient(client *http.Client) *http.Client {
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("too many redirects")
+		}
+		if req.URL.Scheme != via[0].URL.Scheme || !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+			return fmt.Errorf("refusing update redirect to another origin")
+		}
+		return nil
+	}
+	return &c
 }
 
 const maxResponseBody = 64 << 10
@@ -140,6 +160,7 @@ type versionResponse struct {
 	SHA256      string `json:"sha256"`
 	DownloadURL string `json:"download_url"`
 	Version     string `json:"version"`
+	Signature   string `json:"signature"`
 }
 
 // parseVersion reads MAJOR.MINOR.PATCH[-pre] (client/VERSION's format).
@@ -234,6 +255,15 @@ func checkForUpdate(client *http.Client, insecure bool) bool {
 		fmt.Fprintf(os.Stderr, "Warning: skipping auto-update because --insecure is set\n")
 		return false
 	}
+	pub, err := releasePublicKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-update disabled: %v\n", err)
+		return false
+	}
+	if pub == nil {
+		return false
+	}
+	client = updateClient(client)
 	currentHash, err := selfHash()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not compute self-hash: %v\n", err)
@@ -254,6 +284,10 @@ func checkForUpdate(client *http.Client, insecure bool) bool {
 	// AUDIT FIX (F2): a different hash alone is no update; never install an
 	// older or equal release (downgrade to a vulnerable build).
 	if !newerVersion(ver.Version, config.Version) {
+		return false
+	}
+	if err := verifyUpdateSignature(pub, ver); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: refusing update %s: %v; continuing with the current version\n", sanitizeTerminalText(ver.Version), err)
 		return false
 	}
 
@@ -354,7 +388,7 @@ func checkForUpdate(client *http.Client, insecure bool) bool {
 	finalManifestCtx, cancelFinalManifest := context.WithTimeout(context.Background(), 20*time.Second)
 	currentVer, err := fetchVersion(finalManifestCtx, client)
 	cancelFinalManifest()
-	if err != nil || currentVer.SHA256 != ver.SHA256 || currentVer.DownloadURL != ver.DownloadURL || currentVer.Version != ver.Version {
+	if err != nil || currentVer.SHA256 != ver.SHA256 || currentVer.DownloadURL != ver.DownloadURL || currentVer.Version != ver.Version || currentVer.Signature != ver.Signature {
 		fmt.Fprintf(os.Stderr, "Warning: update generation changed before installation; retry on the next run\n")
 		return false
 	}
@@ -416,6 +450,8 @@ Usage:
 %s
 Flags:
   --insecure                       Skip TLS certificate verification (devtls builds only)
+  --allow-legacy-v1                download: accept the legacy v1 file format, which
+                                   cannot detect a server cutting off the end of the file
 
 Examples:
   onegy upload secret-doc.pdf
@@ -447,6 +483,8 @@ func main() {
 			return
 		case "ipc":
 			os.Exit(runIPC(args[1:]))
+		case "release-sign":
+			os.Exit(runReleaseSign(args[1:]))
 		case "login", "unlock", "lock", "logout", "status", "sync", "issues":
 			os.Exit(runSyncCLI(args[0], args[1:]))
 		}
@@ -455,6 +493,7 @@ func main() {
 	// Parse flags
 	insecure := false
 	skipUpdate := false
+	allowLegacyV1 := false
 	filtered := make([]string, 0, len(args))
 	for _, arg := range args {
 		switch arg {
@@ -462,6 +501,8 @@ func main() {
 			insecure = true
 		case "--skip-update":
 			skipUpdate = true
+		case "--allow-legacy-v1":
+			allowLegacyV1 = true
 		default:
 			filtered = append(filtered, arg)
 		}
@@ -528,7 +569,7 @@ func main() {
 			os.Exit(1)
 		}
 		rawURL := args[1]
-		if err := cmdDownload(rawURL, insecure); err != nil {
+		if err := cmdDownload(rawURL, insecure, allowLegacyV1); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

@@ -219,6 +219,23 @@ def browse_folder_download_file(share_token, file_id, filename=None):
         on_finalize=lambda completed: finalize_reserved_download(file.id, completed)
     )
 
+def _zip_member_payload_path(file, zip_path, pre_skipped):
+    """Local payload path for a ZIP member, or None after recording in the skip
+    manifest why it is missing or unreadable (get_file_path raises OSError when
+    the local copy exists but cannot be read and no other node served it)."""
+    try:
+        file_path = storage.get_file_path(file.filename)
+    except OSError as e:
+        print(f'[ZIP] Payload unreadable for file {file.id}: {e}')
+        pre_skipped.append(_zip_skip_entry(zip_path, 'PAYLOAD UNREADABLE'))
+        return None
+    if file_path and os.path.exists(file_path):
+        return file_path
+    print(f'[ZIP] Payload not available for file {file.id}')
+    pre_skipped.append(_zip_skip_entry(zip_path, 'PAYLOAD NOT AVAILABLE'))
+    return None
+
+
 @app.route('/f/<share_token>/folder/<int:subfolder_id>/<foldername>.zip')
 @app.route('/f/<share_token>/folder/<int:subfolder_id>')
 @limiter.limit(download_rate_limit)
@@ -281,40 +298,46 @@ def browse_folder_download_subfolder(share_token, subfolder_id, foldername=None)
         ).all():
             files_by_folder.setdefault(f.folder_id, []).append(f)
 
-        def _walk(fld_obj, path_prefix):
-            fld_e2e_boundary = _e2e_upload_boundary_for_folder(fld_obj)
-            for file in files_by_folder.get(fld_obj.id, []):
-                # AUDIT FIX P1: never ZIP an expired file through a folder token.
-                if not _file_not_expired(file):
+        def _walk(root, root_prefix):
+            # Iterative depth-first walk: a deep tree must not hit the recursion limit.
+            stack = [(root, root_prefix)]
+            seen = set()
+            while stack:
+                fld_obj, path_prefix = stack.pop()
+                if fld_obj.id in seen:
                     continue
-                if not is_owner and fld_e2e_boundary and not file.is_e2e_encrypted:
-                    continue
-                if not file.is_public and file.registered_user_id and not folder.is_public and not folder_is_browsable:
-                    if not is_owner:
+                seen.add(fld_obj.id)
+                fld_e2e_boundary = _e2e_upload_boundary_for_folder(fld_obj)
+                for file in files_by_folder.get(fld_obj.id, []):
+                    # AUDIT FIX P1: never ZIP an expired file through a folder token.
+                    if not _file_not_expired(file):
                         continue
-                if file.password_hash:
-                    continue
-                # Hide E2EE files without link/passphrase-scoped keys from non-owners.
-                if file.is_e2e_encrypted and not is_owner and not _e2e_file_has_non_owner_key(file):
-                    continue
-                zip_path = os.path.join(path_prefix, safe_zip_entry_name(file.orig_name))
-                # Skip files that have exhausted their max_downloads limit
-                if file.max_downloads and (file.download_count or 0) >= file.max_downloads:
-                    pre_skipped.append(_zip_skip_entry(zip_path, 'DOWNLOAD LIMIT REACHED'))
-                    continue
-                if _zip_skip_if_e2e(file, zip_path, pre_skipped):
-                    continue
-                file_path = storage.get_file_path(file.filename)
-                if file_path and os.path.exists(file_path):
-                    files_to_zip.append((file_path, zip_path, file))
-                else:
-                    pre_skipped.append(_zip_skip_entry(zip_path, 'PAYLOAD NOT AVAILABLE'))
-            for sf in children_map.get(fld_obj.id, []):
-                # AUDIT FIX P2: an expired sub-folder cuts off everything below it.
-                if not _folder_not_expired(sf) or _locked_folder_share(sf, folder):
-                    continue
-                sf_path = os.path.join(path_prefix, safe_zip_entry_name(sf.name))
-                _walk(sf, sf_path)
+                    if not is_owner and fld_e2e_boundary and not file.is_e2e_encrypted:
+                        continue
+                    if not file.is_public and file.registered_user_id and not folder.is_public and not folder_is_browsable:
+                        if not is_owner:
+                            continue
+                    if file.password_hash:
+                        continue
+                    # Hide E2EE files without link/passphrase-scoped keys from non-owners.
+                    if file.is_e2e_encrypted and not is_owner and not _e2e_file_has_non_owner_key(file):
+                        continue
+                    zip_path = os.path.join(path_prefix, safe_zip_entry_name(file.orig_name))
+                    # Skip files that have exhausted their max_downloads limit
+                    if file.max_downloads and (file.download_count or 0) >= file.max_downloads:
+                        pre_skipped.append(_zip_skip_entry(zip_path, 'DOWNLOAD LIMIT REACHED'))
+                        continue
+                    if _zip_skip_if_e2e(file, zip_path, pre_skipped):
+                        continue
+                    file_path = _zip_member_payload_path(file, zip_path, pre_skipped)
+                    if file_path:
+                        files_to_zip.append((file_path, zip_path, file))
+                for sf in reversed(children_map.get(fld_obj.id, [])):
+                    # AUDIT FIX P2: an expired sub-folder cuts off everything below it.
+                    if not _folder_not_expired(sf) or _locked_folder_share(sf, folder):
+                        continue
+                    sf_path = os.path.join(path_prefix, safe_zip_entry_name(sf.name))
+                    stack.append((sf, sf_path))
 
         _walk(root_obj, '')
         return files_to_zip
@@ -526,11 +549,9 @@ def browse_folder_download_all(share_token):
             continue
         if _zip_skip_if_e2e(file, zip_path, pre_skipped):
             continue
-        file_path = storage.get_file_path(file.filename)
-        if file_path and os.path.exists(file_path):
+        file_path = _zip_member_payload_path(file, zip_path, pre_skipped)
+        if file_path:
             files_to_zip.append((file_path, zip_path, file))
-        else:
-            pre_skipped.append(_zip_skip_entry(zip_path, 'PAYLOAD NOT AVAILABLE'))
     print(f'[BROWSE DOWNLOAD] Download-all ZIP: {len(files_to_zip)} files in folder {_log_safe(folder.name)} '
           f'({len(pre_skipped)} pre-skipped)')
 
@@ -759,11 +780,9 @@ def browse_folder_download_selected(share_token):
                 continue
             if _zip_skip_if_e2e(file, entry, pre_skipped):
                 continue
-            file_path = storage.get_file_path(file.filename)
-            if file_path and os.path.exists(file_path):
+            file_path = _zip_member_payload_path(file, entry, pre_skipped)
+            if file_path:
                 files_to_download.append((file_path, entry, file))
-            else:
-                pre_skipped.append(_zip_skip_entry(entry, 'PAYLOAD NOT AVAILABLE'))
     
     # Collect files from selected folders recursively.
     # Bulk-load the subtree + files up front, then walk in-memory in the same
@@ -787,40 +806,46 @@ def browse_folder_download_selected(share_token):
         ).all():
             files_by_folder.setdefault(f.folder_id, []).append(f)
 
-        def _walk(fld_obj, prefix):
-            fld_e2e_boundary = _e2e_upload_boundary_for_folder(fld_obj)
-            for f in files_by_folder.get(fld_obj.id, []):
-                # AUDIT FIX P1: never ZIP an expired file through a folder token.
-                if not _file_not_expired(f):
+        def _walk(root, root_prefix):
+            # Iterative depth-first walk: a deep tree must not hit the recursion limit.
+            stack = [(root, root_prefix)]
+            seen = set()
+            while stack:
+                fld_obj, prefix = stack.pop()
+                if fld_obj.id in seen:
                     continue
-                if not is_owner and fld_e2e_boundary and not f.is_e2e_encrypted:
-                    continue
-                if not f.is_public and f.registered_user_id and not folder.is_public and not folder_is_browsable:
-                    if not is_owner:
+                seen.add(fld_obj.id)
+                fld_e2e_boundary = _e2e_upload_boundary_for_folder(fld_obj)
+                for f in files_by_folder.get(fld_obj.id, []):
+                    # AUDIT FIX P1: never ZIP an expired file through a folder token.
+                    if not _file_not_expired(f):
                         continue
-                if f.password_hash:
-                    continue
-                # Hide E2EE files without link/passphrase-scoped keys from non-owners.
-                if f.is_e2e_encrypted and not is_owner and not _e2e_file_has_non_owner_key(f):
-                    continue
-                zip_path = os.path.join(prefix, safe_zip_entry_name(f.orig_name))
-                # Skip files that have exhausted their max_downloads limit
-                if f.max_downloads and (f.download_count or 0) >= f.max_downloads:
-                    pre_skipped.append(_zip_skip_entry(zip_path, 'DOWNLOAD LIMIT REACHED'))
-                    continue
-                if _zip_skip_if_e2e(f, zip_path, pre_skipped):
-                    continue
-                fp = storage.get_file_path(f.filename)
-                if fp and os.path.exists(fp):
-                    result.append((fp, zip_path, f))
-                else:
-                    pre_skipped.append(_zip_skip_entry(zip_path, 'PAYLOAD NOT AVAILABLE'))
-            for sf in children_map.get(fld_obj.id, []):
-                # AUDIT FIX P2: an expired sub-folder cuts off everything below it.
-                if not _folder_not_expired(sf) or _locked_folder_share(sf, folder):
-                    continue
-                sf_path = os.path.join(prefix, safe_zip_entry_name(sf.name))
-                _walk(sf, sf_path)
+                    if not is_owner and fld_e2e_boundary and not f.is_e2e_encrypted:
+                        continue
+                    if not f.is_public and f.registered_user_id and not folder.is_public and not folder_is_browsable:
+                        if not is_owner:
+                            continue
+                    if f.password_hash:
+                        continue
+                    # Hide E2EE files without link/passphrase-scoped keys from non-owners.
+                    if f.is_e2e_encrypted and not is_owner and not _e2e_file_has_non_owner_key(f):
+                        continue
+                    zip_path = os.path.join(prefix, safe_zip_entry_name(f.orig_name))
+                    # Skip files that have exhausted their max_downloads limit
+                    if f.max_downloads and (f.download_count or 0) >= f.max_downloads:
+                        pre_skipped.append(_zip_skip_entry(zip_path, 'DOWNLOAD LIMIT REACHED'))
+                        continue
+                    if _zip_skip_if_e2e(f, zip_path, pre_skipped):
+                        continue
+                    fp = _zip_member_payload_path(f, zip_path, pre_skipped)
+                    if fp:
+                        result.append((fp, zip_path, f))
+                for sf in reversed(children_map.get(fld_obj.id, [])):
+                    # AUDIT FIX P2: an expired sub-folder cuts off everything below it.
+                    if not _folder_not_expired(sf) or _locked_folder_share(sf, folder):
+                        continue
+                    sf_path = os.path.join(prefix, safe_zip_entry_name(sf.name))
+                    stack.append((sf, sf_path))
 
         _walk(root_obj, path_prefix)
         return result

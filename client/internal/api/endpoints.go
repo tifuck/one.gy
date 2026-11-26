@@ -227,11 +227,12 @@ func (c *Client) Tree(ctx context.Context, root int64, pageToken string, limit i
 // --- content ---
 
 // Content streams file content into w starting at offset (Range resume) and
-// returns the bytes written. ifMatch ("" = none) is the expected
-// payload_checksum; a changed file answers 412 precondition_failed. Only the
-// request is retried; a body cut short returns the bytes written so far so
-// the caller resumes at offset+n.
-func (c *Client) Content(ctx context.Context, fileID string, w io.Writer, offset int64, ifMatch string) (int64, error) {
+// returns the bytes written. size is the node's size: a body longer than
+// size-offset is an error and never written past it. ifMatch ("" = none) is
+// the expected payload_checksum; a changed file answers 412
+// precondition_failed. Only the request is retried; a body cut short returns
+// the bytes written so far so the caller resumes at offset+n.
+func (c *Client) Content(ctx context.Context, fileID string, w io.Writer, offset, size int64, ifMatch string) (int64, error) {
 	h := http.Header{}
 	if offset > 0 {
 		h.Set("Range", fmt.Sprintf("bytes=%d-", offset))
@@ -253,9 +254,16 @@ func (c *Client) Content(ctx context.Context, fileID string, w io.Writer, offset
 			return 0, fmt.Errorf("unexpected Content-Range %q", resp.Header.Get("Content-Range"))
 		}
 	}
-	n, err := io.Copy(w, resp.Body)
+	want := size - offset
+	n, err := io.Copy(w, io.LimitReader(resp.Body, want))
 	if err != nil && ctx.Err() == nil {
 		err = fmt.Errorf("%w: %v", ErrOffline, err)
+	}
+	if err == nil && n == want {
+		var one [1]byte
+		if k, _ := io.ReadFull(resp.Body, one[:]); k > 0 {
+			err = fmt.Errorf("server sent more than the file's %d bytes", size)
+		}
 	}
 	return n, err
 }

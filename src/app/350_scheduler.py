@@ -11,7 +11,9 @@ def _run_isolated_task(prefix, name, task_fn):
             db.session.rollback()
         except Exception:
             pass
-        print(f'[{prefix}] Sub-task {name!r} failed: {e}')
+        import traceback
+        trace = traceback.format_exc().rstrip().replace('\n', f'\n[{prefix}] ')
+        print(f'[{prefix}] Sub-task {name!r} failed: {type(e).__name__}: {e}\n[{prefix}] {trace}')
 
 def _skip_if_already_running(job_fn):
     """Skip a job invocation while a previous run of it is still executing.

@@ -880,17 +880,24 @@ def notes_update_note(note_id):
         # then finalize the staged content file associated with this request.
         try:
             storage.mark_staged_note_committed(n.id, staging_id=staging_id)
-            storage.finalize_staged_note(n.id, staging_id=staging_id)
             try:
-                repaired = storage.reconcile_note_to_local(n.id, verified_at=datetime.now(timezone.utc))
-                if repaired:
-                    db.session.commit()
-            except Exception as e:
+                storage.finalize_staged_note(n.id, staging_id=staging_id)
+            except OSError as e:
+                # The commit stands; startup recovery swaps in the staged copy
+                # its .committed marker and .meta describe.
+                print(f'[ERROR] [NOTES] Note {n.id} committed version {new_version} but its staged content '
+                      f'could not be swapped in; left for startup recovery: {e}')
+            else:
                 try:
-                    db.session.rollback()
-                except Exception:
-                    pass
-                print(f'[NOTES] Warning: note {n.id} saved locally but replication re-queue failed: {e}')
+                    repaired = storage.reconcile_note_to_local(n.id, verified_at=datetime.now(timezone.utc))
+                    if repaired:
+                        db.session.commit()
+                except Exception as e:
+                    try:
+                        db.session.rollback()
+                    except Exception:
+                        pass
+                    print(f'[NOTES] Warning: note {n.id} saved locally but replication re-queue failed: {e}')
         finally:
             _release_lifecycle_lock(lifecycle_lock)
             _release_user_quota_lock(quota_lock)

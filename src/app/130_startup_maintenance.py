@@ -101,7 +101,13 @@ def _startup_recover_staged_files(file_replication_requeue_ids):
                 staged_path = os.path.join(uploads_dir, staged_file)
                 committed_path = os.path.join(uploads_dir, base_filename + '.committed')
                 meta_path = os.path.join(uploads_dir, base_filename + '.meta')
-                if _staged_file_matches_committed_checksum(base_filename, staged_path):
+                try:
+                    staged_matches = _staged_file_matches_committed_checksum(base_filename, staged_path)
+                except OSError as e:
+                    print(f'[ERROR] [STARTUP] Could not read staged file {base_filename} ({e}); '
+                          f'keeping .new/.committed/.meta untouched, retrying next boot')
+                    continue
+                if staged_matches:
                     final_path = os.path.join(uploads_dir, base_filename)
                     try:
                         os.replace(staged_path, final_path)
@@ -113,7 +119,9 @@ def _startup_recover_staged_files(file_replication_requeue_ids):
                             reason = 'marker+checksum'
                         print(f'[STARTUP] Recovered staged file: {base_filename} ({reason}; finalized .new -> original)')
                     except OSError as e:
-                        print(f'[STARTUP] Failed to recover staged file {base_filename}: {e}')
+                        print(f'[ERROR] [STARTUP] Failed to recover staged file {base_filename} ({e}); '
+                              f'keeping .new/.committed/.meta, retrying next boot')
+                        continue
                     try:
                         os.remove(committed_path)
                     except OSError:
@@ -172,14 +180,22 @@ def _startup_recover_staged_notes():
                 staged_note_path = os.path.join(NOTES_DIR, staged_note)
                 committed_note_path = os.path.join(NOTES_DIR, staged_base + '.committed')
                 meta_note_path = os.path.join(NOTES_DIR, staged_base + '.meta')
-                if _staged_note_metadata_matches(note_id, staged_note_path, meta_note_path):
+                try:
+                    staged_matches = _staged_note_metadata_matches(note_id, staged_note_path, meta_note_path)
+                except OSError as e:
+                    print(f'[ERROR] [STARTUP] Could not read staged note {note_id} ({e}); '
+                          f'keeping .new/.meta untouched, retrying next boot')
+                    continue
+                if staged_matches:
                     final_note_path = os.path.join(NOTES_DIR, note_id)
                     try:
                         os.replace(staged_note_path, final_note_path)
                         note_staged_recovered += 1
                         print(f'[STARTUP] Recovered staged note: {note_id} (metadata; finalized .new -> original)')
                     except OSError as e:
-                        print(f'[STARTUP] Failed to recover staged note {note_id}: {e}')
+                        print(f'[ERROR] [STARTUP] Failed to recover staged note {note_id} ({e}); '
+                              f'keeping .new/.meta, retrying next boot')
+                        continue
                     try:
                         os.remove(committed_note_path)
                     except OSError:
@@ -416,7 +432,11 @@ def _startup_reconcile_file_disk_state(file_replication_requeue_ids):
         for file_id, stored_filename, known_disk_size, known_checksum, row_upload_time in payload_rows:
             last_upload_time = row_upload_time
             last_upload_id = file_id
-            file_path = storage.get_file_path(stored_filename)
+            try:
+                file_path = storage.get_file_path(stored_filename)
+            except OSError as e:
+                print(f'[STARTUP] Skipping payload-state reconcile for {file_id}: {e}')
+                continue
             if not file_path or not os.path.exists(file_path):
                 continue
             disk_size = os.path.getsize(file_path)

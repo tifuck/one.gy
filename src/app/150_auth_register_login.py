@@ -15,6 +15,7 @@ def create_welcome_folder(user):
     if not get_setting('welcome_folder_enabled'):
         return
     
+    written_ids = []  # payloads (and thumbnails) on disk that no committed row owns yet
     try:
         import tempfile as _wf_tempfile
         
@@ -73,7 +74,6 @@ def create_welcome_folder(user):
         
         # 3) Create File records for each file
         created_count = 0
-        encrypted_paths = []  # Track for cleanup on failure
         for orig_name, file_bytes in files_to_add:
             try:
                 file_id = str(uuid.uuid4())
@@ -88,13 +88,12 @@ def create_welcome_folder(user):
                         tmp_f.write(file_bytes)
                     content_hash, payload_checksum = encrypt_file_chunked(tmp_path, tmp_enc_path)
                     disk_size = os.path.getsize(tmp_enc_path)
+                    written_ids.append(file_id)
                     storage.store_file(encrypted_filename, tmp_enc_path)
                 finally:
                     for _p in (tmp_path, tmp_enc_path):
                         if os.path.exists(_p):
                             os.unlink(_p)
-                
-                encrypted_paths.append(encrypted_filename)
                 
                 file_record = File(
                     id=file_id,
@@ -128,19 +127,12 @@ def create_welcome_folder(user):
                 
                 created_count += 1
             except Exception as e:
+                # DB error poisons the session — abort all remaining files
                 print(f'[AUTH] Welcome folder: failed to create file {orig_name}: {e}')
-                # DB error poisons the session — must rollback and abort all remaining files
-                db.session.rollback()
-                # Clean up all encrypted files created so far (via StorageManager)
-                for enc_fn in encrypted_paths:
-                    try:
-                        storage.delete_file(enc_fn)
-                    except Exception:
-                        pass
-                print(f'[AUTH] Welcome folder: aborted due to error, cleaned up {len(encrypted_paths)} files')
-                return
+                raise
         
         db.session.commit()
+        written_ids = []
         print(f'[AUTH] Created welcome folder with {created_count} files for user: {user.username}')
         
     except Exception as e:
@@ -149,6 +141,23 @@ def create_welcome_folder(user):
             db.session.rollback()
         except Exception:
             pass
+        _discard_welcome_payloads(written_ids)
+
+
+def _discard_welcome_payloads(file_ids):
+    """Remove the payloads and thumbnails of welcome files whose rows never committed."""
+    for file_id in file_ids:
+        try:
+            if not storage.delete_file(f'{file_id}.enc'):
+                print(f'[ERROR] [AUTH] Welcome folder: could not remove payload {file_id}.enc; left for orphan cleanup')
+        except Exception as e:
+            print(f'[ERROR] [AUTH] Welcome folder: could not remove payload {file_id}.enc: {e}')
+        try:
+            delete_thumbnail_from_disk(file_id)
+        except Exception as e:
+            print(f'[ERROR] [AUTH] Welcome folder: could not remove thumbnail of {file_id}: {e}')
+    if file_ids:
+        print(f'[AUTH] Welcome folder: aborted, cleaned up {len(file_ids)} file(s)')
 
 @app.route('/register', methods=['GET', 'POST'])
 @limiter.limit("5 per minute", methods=["POST"], key_func=get_remote_address)
@@ -976,6 +985,11 @@ def login():
                     return jsonify({'success': False, 'two_factor_required': True, 'redirect': url_for('verify_2fa')})
                 return redirect(url_for('verify_2fa'))
 
+            # Notification trigger flags. Committed before the session is
+            # written: a failed commit must not leave a signed-in cookie behind its 500.
+            user.login_count = (user.login_count or 0) + 1
+            db.session.commit()
+
             # SECURITY FIX: Prevent session fixation attack by regenerating session
             # Preserve guest session ID if it exists
             _clear_failed_login(normalized_login_user)
@@ -999,10 +1013,6 @@ def login():
             _mint_session_sid()
             # SECURITY: Do NOT cache is_admin - always check from database via decorators
             session.permanent = True  # Regenerate session ID
-            
-            # Notification trigger flags
-            user.login_count = (user.login_count or 0) + 1
-            db.session.commit()
             session['just_logged_in'] = True
             session.pop('_served_login_notifs', None)
             session.pop('_session_notif_dismissed', None)

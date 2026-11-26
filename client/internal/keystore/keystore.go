@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -80,16 +81,16 @@ func (s *Store) Get(name string) (string, error) {
 	return v, nil
 }
 
-// Set keeps value in memory and, unless memory-only, in the OS key store.
-// persisted reports whether the key-store write happened.
-func (s *Store) Set(name, value string) (persisted bool) {
+// Set keeps value in memory and, unless memory-only, in the OS key store
+// (or the secrets file). An error means only the memory copy holds it.
+func (s *Store) Set(name, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mem[name] = value
 	if s.memoryOnly {
-		return false
+		return nil
 	}
-	return s.save(name, value) == nil
+	return s.save(name, value)
 }
 
 // Delete removes the memory and key-store copies. An error means a stored
@@ -169,7 +170,12 @@ func (s *Store) readFile() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return all, json.Unmarshal(b, &all)
+	if err := json.Unmarshal(b, &all); err != nil {
+		// Never overwritten: it may still hold the only stored copy of the
+		// secrets. Delete (sign-out) drops it.
+		return nil, fmt.Errorf("the secrets file %s is corrupt; move it away and unlock with your password: %w", s.file, err)
+	}
+	return all, nil
 }
 
 // writeFile replaces the secrets file atomically, created 0600 from the start.

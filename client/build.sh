@@ -9,7 +9,15 @@
 #
 #  Outputs:
 #    ../static/cli/<os>-<arch>/onegy      — compiled binaries
-#    ../static/cli/manifest.json           — SHA-256 hashes per platform
+#    ../static/cli/manifest.json           — SHA-256 hashes per platform, each
+#                                            signed with the release key
+#
+#  Release signing: self-update installs only manifest entries signed with the
+#  Ed25519 key in CLI_SIGNING_KEY_FILE (environment, else ../.env; default
+#  ~/.config/onegy/cli-signing.key). The key is generated on the first build;
+#  its public half is embedded in the binaries. It must stay outside the
+#  project tree. Losing it means clients built with it stop self-updating
+#  (reinstall with /cli.sh).
 #
 #  Requires: Go 1.22+ in PATH
 ###############################################################################
@@ -91,6 +99,40 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
     exit 1
 fi
 
+SIGNING_KEY_FILE="$(python3 - "$ENV_FILE" "$PROJECT_DIR" <<'PY'
+import os
+import re
+import shlex
+import sys
+
+value = os.environ.get('CLI_SIGNING_KEY_FILE')
+if value is None:
+    with open(sys.argv[1], encoding='utf-8') as env_file:
+        for line in env_file:
+            match = re.match(r'^\s*(?:export\s+)?CLI_SIGNING_KEY_FILE\s*=\s*(.*)$', line)
+            if not match:
+                continue
+            lexer = shlex.shlex(match.group(1), posix=True)
+            lexer.whitespace_split = True
+            lexer.commenters = '#'
+            fields = list(lexer)
+            if len(fields) > 1:
+                raise SystemExit('ERROR: CLI_SIGNING_KEY_FILE must contain at most one dotenv value')
+            value = fields[0] if fields else ''
+if not value:
+    value = '~/.config/onegy/cli-signing.key'
+
+path = os.path.expanduser(value)
+if not os.path.isabs(path):
+    raise SystemExit(f'ERROR: CLI_SIGNING_KEY_FILE must be an absolute or ~ path: {value}')
+project = os.path.realpath(sys.argv[2])
+key_dir = os.path.realpath(os.path.dirname(path))
+if key_dir == project or key_dir.startswith(project + os.sep):
+    raise SystemExit('ERROR: CLI_SIGNING_KEY_FILE must be outside the project tree (it would be served or committed)')
+print(os.path.join(key_dir, os.path.basename(path)))
+PY
+)"
+
 echo "Building onegy $VERSION for domain: $DOMAIN"
 echo ""
 
@@ -99,7 +141,9 @@ echo ""
 mkdir -p "$(dirname "$OUTDIR")"
 STAGING="$(mktemp -d "$(dirname "$OUTDIR")/.cli-build.XXXXXX")"
 PUBLISH_TMP=""
+SIGN_TOOL_DIR="$(mktemp -d)"
 cleanup() {
+    rm -rf "$SIGN_TOOL_DIR"
     if [[ -n "$PUBLISH_TMP" ]]; then
         rm -f "$PUBLISH_TMP"
     fi
@@ -128,6 +172,17 @@ export GOPATH="${GOPATH:-${HOME:-/root}/go}"
 export GOMODCACHE="${GOMODCACHE:-$GOPATH/pkg/mod}"
 go mod download
 
+# A native build of the same binary holds the release signer (`onegy
+# release-sign`); it generates the key if missing and prints the public key.
+CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$SIGN_TOOL_DIR/onegy" ./cmd/onegy
+UPDATE_PUBLIC_KEY="$(umask 077 && "$SIGN_TOOL_DIR/onegy" release-sign keygen "$SIGNING_KEY_FILE")"
+if [[ ! "$UPDATE_PUBLIC_KEY" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "ERROR: could not load the CLI signing key $SIGNING_KEY_FILE"
+    exit 1
+fi
+echo "Release signing key: $SIGNING_KEY_FILE (public ${UPDATE_PUBLIC_KEY:0:16}...)"
+echo ""
+
 # Cross-compile each target
 for target in "${TARGETS[@]}"; do
     GOOS="${target%/*}"
@@ -140,7 +195,7 @@ for target in "${TARGETS[@]}"; do
     mkdir -p "$OUTPATH"
 
     CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -mod=readonly -trimpath -buildvcs=false \
-        -ldflags "-s -w -X main.serverDomain=$DOMAIN -X github.com/tifuck/one.gy/client/internal/config.Version=$VERSION" \
+        -ldflags "-s -w -X main.serverDomain=$DOMAIN -X main.updatePublicKey=$UPDATE_PUBLIC_KEY -X github.com/tifuck/one.gy/client/internal/config.Version=$VERSION" \
         -o "$BINARY" ./cmd/onegy
 
     chmod +x "$BINARY"
@@ -181,10 +236,14 @@ for plat, info in manifest.items():
     print(f'    {plat}: {info[\"sha256\"][:16]}... ({info[\"size\"]} bytes)')
 " "$STAGING" "$VERSION"
 
+"$SIGN_TOOL_DIR/onegy" release-sign sign "$SIGNING_KEY_FILE" "$DOMAIN" "$STAGING/manifest.json"
+echo "  manifest.json signed"
+
 python3 - "$STAGING" "${TARGETS[@]}" <<'PY'
 import hashlib
 import json
 import os
+import re
 import sys
 
 outdir = sys.argv[1]
@@ -204,6 +263,8 @@ for platform in expected:
         raise SystemExit(f'ERROR: manifest validation failed for {platform}')
     if entry.get('download_url') != f'/static/cli/{platform}/onegy':
         raise SystemExit(f'ERROR: invalid download URL for {platform}')
+    if not re.fullmatch(r'[0-9a-f]{128}', str(entry.get('signature', ''))):
+        raise SystemExit(f'ERROR: missing or malformed signature for {platform}')
 print('  all staged outputs validated')
 PY
 

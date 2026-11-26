@@ -577,8 +577,12 @@ def apiv1_sync_changes():
         elif kind == 1:
             changes.append(_sync_file_node(obj))
         else:
-            tombstones.append({'type': obj.object_type, 'id': int(obj.object_id) if obj.object_type == 'folder' else obj.object_id,
-                               'seq': int(obj.change_seq)})
+            try:
+                object_id = int(obj.object_id) if obj.object_type == 'folder' else obj.object_id
+            except (TypeError, ValueError):
+                print(f'[ERROR] [SYNC] Skipping tombstone {obj.id} with a malformed folder id (user {uid})')
+                continue
+            tombstones.append({'type': obj.object_type, 'id': object_id, 'seq': int(obj.change_seq)})
     return jsonify({
         'changes': changes,
         'tombstones': tombstones,
@@ -1148,6 +1152,7 @@ def apiv1_sync_folder_restore(folder_id):
     try:
         lifecycle_lock = _acquire_user_lifecycle_lock(uid)
         tree_lock = _acquire_user_folder_tree_lock(uid)
+        db.session.rollback()
         _sync_lock_user_row(uid)
         user = db.session.get(User, uid)
         folder = _sync_load_owned_folder(folder_id, for_update=True)
@@ -1183,6 +1188,7 @@ def apiv1_sync_folder_backup(folder_id):
     # The tree lock keeps a concurrent move from nesting two backups.
     tree_lock = _acquire_user_folder_tree_lock(uid)
     try:
+        db.session.rollback()
         _sync_lock_user_row(uid)
         folder = _sync_load_owned_folder(folder_id, for_update=True)
         if not folder or folder.is_trashed:

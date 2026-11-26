@@ -657,14 +657,31 @@ def _guest_temp_inflight_path():
 
 
 def _read_guest_temp_inflight_entries():
-    """Return the live (non-expired) reservation entries. Caller holds the lock."""
+    """Return the live (non-expired) reservation entries. Caller holds the lock.
+
+    An unreadable ledger raises (fail closed, never overwritten: that would drop
+    every live reservation) until it is older than the reservation TTL; nothing
+    in it can still be live then, so it is moved aside and the ledger restarts."""
     path = _guest_temp_inflight_path()
     try:
         with open(path, 'r') as f:
             entries = json.load(f)
-    except Exception:
+    except FileNotFoundError:
         return []
+    except (OSError, ValueError):
+        entries = None
     if not isinstance(entries, list):
+        try:
+            age = time.time() - os.stat(path).st_mtime
+        except FileNotFoundError:
+            return []
+        if age < _GUEST_TEMP_INFLIGHT_TTL_SECONDS:
+            print('[ERROR] [UPLOAD] Guest temp in-flight ledger is unreadable; refusing guest '
+                  'admissions until it is repaired or expires')
+            raise RuntimeError('Guest temp in-flight ledger is unreadable')
+        quarantine = f'{path}.corrupt-{int(time.time())}'
+        os.replace(path, quarantine)
+        print(f'[ERROR] [UPLOAD] Moved expired unreadable guest temp ledger aside to {os.path.basename(quarantine)}')
         return []
     now = time.time()
     live = []
@@ -715,7 +732,8 @@ def _reserve_guest_temp_inflight(reserve_bytes, total_cap_bytes):
     """Try to reserve reserve_bytes of in-flight guest temp storage.
 
     Returns an opaque reservation token the caller MUST pass to
-    _release_guest_temp_inflight(), or None when the cap would be exceeded."""
+    _release_guest_temp_inflight(), or None when the cap would be exceeded.
+    Raises when the ledger cannot be read or written."""
     reserve_bytes = int(reserve_bytes)
     if reserve_bytes <= 0:
         return None
@@ -730,8 +748,8 @@ def _reserve_guest_temp_inflight(reserve_bytes, total_cap_bytes):
         _write_guest_temp_inflight_entries(entries)
         return token
     except Exception as e:
-        print(f'[WARNING] Guest temp in-flight reservation failed: {e}')
-        return None
+        print(f'[ERROR] Guest temp in-flight reservation failed: {e}')
+        raise
     finally:
         _release_scoped_lock(lock)
 
@@ -751,12 +769,10 @@ def _release_guest_temp_inflight(token):
 
 
 def _guest_temp_remaining_bytes(total_cap_bytes):
-    """Best-effort remaining guest budget = cap - committed - in-flight (>= 0)."""
+    """Remaining guest budget = cap - committed - in-flight (>= 0)."""
     lock = _acquire_scoped_lock(_GUEST_TEMP_INFLIGHT_SCOPE, prefix='guest')
     try:
         inflight = _sum_guest_temp_inflight(_read_guest_temp_inflight_entries())
-    except Exception:
-        inflight = 0
     finally:
         _release_scoped_lock(lock)
     committed = _guest_temp_storage_used_bytes()

@@ -254,6 +254,24 @@ def _ensure_model_indexes():
               f'will table-scan: {", ".join(sorted(set(missing)))}')
 
 
+def _existing_unique_index_names(inspector, table_name):
+    names = {idx['name'] for idx in inspector.get_indexes(table_name)}
+    names.update(constraint['name'] for constraint in inspector.get_unique_constraints(table_name)
+                 if constraint.get('name'))
+    return names
+
+
+def _missing_unique_indexes():
+    """_UNIQUE_INDEX_SPECS indexes absent from the live database: uniqueness the
+    app relies on is not enforced there. Read by monitoring, so every gunicorn
+    worker (and not only the db-upgrade process that tried to create them)
+    reports the same state."""
+    inspector = inspect(db.engine)
+    return sorted(index_name for index_name, table_name, _columns, _not_null, _model in _UNIQUE_INDEX_SPECS
+                  if _table_exists(inspector, table_name)
+                  and index_name not in _existing_unique_index_names(inspector, table_name))
+
+
 def _ensure_column_unique_constraints():
     """AUDIT FIX (O5): a unique=True column added by ADD COLUMN never got its UNIQUE
     key (table.indexes does not hold column-level UniqueConstraints). Create the
@@ -522,12 +540,7 @@ def _ensure_unique_indexes():
         try:
             if not _table_exists(inspector, table_name):
                 continue
-            existing_indexes = {idx['name'] for idx in inspector.get_indexes(table_name)}
-            existing_indexes.update(
-                constraint['name'] for constraint in inspector.get_unique_constraints(table_name)
-                if constraint.get('name')
-            )
-            if index_name in existing_indexes:
+            if index_name in _existing_unique_index_names(inspector, table_name):
                 continue
             quoted_table = _quote_identifier(table_name)
             quoted_columns = ', '.join(_quote_identifier(col) for col in columns)
@@ -791,15 +804,17 @@ def _staged_meta_matches_value(actual, expected):
 
 
 def _read_staged_metadata(meta_path):
-    try:
-        if not os.path.isfile(meta_path):
-            return None
-        with open(meta_path, 'r') as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except Exception as e:
-        print(f'[STARTUP] Failed to read staged metadata {meta_path}: {e}')
+    """None when there is no usable metadata. An OSError reading an existing
+    .meta propagates: an unreadable file is not evidence of anything."""
+    if not os.path.isfile(meta_path):
         return None
+    with open(meta_path, 'r') as f:
+        try:
+            data = json.load(f)
+        except ValueError as e:
+            print(f'[STARTUP] Failed to parse staged metadata {meta_path}: {e}')
+            return None
+    return data if isinstance(data, dict) else None
 
 
 def _staged_file_metadata_matches(base_filename, staged_path, meta_path):
@@ -815,7 +830,7 @@ def _staged_file_metadata_matches(base_filename, staged_path, meta_path):
     try:
         if data.get('disk_size') is not None and os.path.getsize(staged_path) != int(data.get('disk_size')):
             return False
-    except Exception:
+    except (TypeError, ValueError):
         return False
     # AUDIT FIX (staged-file payload checksum verification): a same-size stale
     # .new file must NOT be finalized just because its disk_size + metadata
@@ -830,12 +845,8 @@ def _staged_file_metadata_matches(base_filename, staged_path, meta_path):
     # metadata's payload_checksum, and only skip the hash check entirely for
     # older staged artifacts that carry neither.
     expected_payload_checksum = file_obj.payload_checksum or data.get('payload_checksum')
-    if expected_payload_checksum:
-        try:
-            if storage._sha256_file(staged_path) != expected_payload_checksum:
-                return False
-        except Exception:
-            return False
+    if expected_payload_checksum and storage._sha256_file(staged_path) != expected_payload_checksum:
+        return False
     checks = (
         ('size', file_obj.size),
         ('disk_size', file_obj.disk_size),
@@ -865,25 +876,26 @@ def _staged_file_matches_committed_checksum(base_filename, staged_path):
          successful db.commit() and is therefore proof the commit happened
          (with a disk_size sanity check whenever the row records one).
     A row that is gone, or a staged file with neither checksum, metadata nor
-    marker evidence, still fails closed -> discarded, as before."""
+    marker evidence, still fails closed -> discarded, as before. An OSError
+    stat-ing or hashing the staged bytes (or reading .meta) PROPAGATES: an I/O
+    failure is not a mismatch, and the caller keeps every artifact for the
+    next boot instead of discarding a possibly committed payload."""
     file_id = base_filename[:-4] if base_filename.endswith('.enc') else base_filename
     file_obj = db.session.get(File, file_id)
     if not file_obj:
         return False
     try:
-        if not os.path.isfile(staged_path):
-            return False
         staged_size = os.path.getsize(staged_path)
-    except OSError:
+    except FileNotFoundError:
         return False
 
     if file_obj.payload_checksum:
         try:
             if file_obj.disk_size is not None and staged_size != int(file_obj.disk_size):
                 return False
-            return storage._sha256_file(staged_path) == file_obj.payload_checksum
-        except Exception:
+        except (TypeError, ValueError):
             return False
+        return storage._sha256_file(staged_path) == file_obj.payload_checksum
 
     # Legacy row: no committed checksum to compare against.
     meta_path = os.path.join(os.path.dirname(staged_path), base_filename + '.meta')
@@ -917,9 +929,9 @@ def _staged_note_metadata_matches(note_id, staged_path, meta_path):
     try:
         if data.get('size') is not None and os.path.getsize(staged_path) != int(data.get('size')):
             return False
-        if data.get('content_checksum') and storage._sha256_file(staged_path) != data.get('content_checksum'):
-            return False
-    except Exception:
+    except (TypeError, ValueError):
+        return False
+    if data.get('content_checksum') and storage._sha256_file(staged_path) != data.get('content_checksum'):
         return False
     checks = (
         ('size', note_obj.size),

@@ -168,7 +168,7 @@ func (l *live) name(n *api.Node) string {
 
 func (l *live) content(n *api.Node) string {
 	var buf bytes.Buffer
-	if _, err := l.web.Content(context.Background(), n.IDString(), &buf, 0, ""); err != nil {
+	if _, err := l.web.Content(context.Background(), n.IDString(), &buf, 0, n.Size, ""); err != nil {
 		l.t.Fatal(err)
 	}
 	p, err := e2ee.DecryptData(buf.Bytes(), l.key(n))
@@ -241,7 +241,7 @@ func (l *live) waitRemoteFile(folder int64, name string, plain []byte, limit tim
 		l.t.Fatalf("%s exists %d times on one.gy", name, len(found))
 	}
 	var buf bytes.Buffer
-	if _, err := l.web.Content(context.Background(), found[0].IDString(), &buf, 0, found[0].PayloadChecksum); err != nil {
+	if _, err := l.web.Content(context.Background(), found[0].IDString(), &buf, 0, found[0].Size, found[0].PayloadChecksum); err != nil {
 		l.t.Fatal(err)
 	}
 	got, err := e2ee.DecryptData(buf.Bytes(), l.key(&found[0]))

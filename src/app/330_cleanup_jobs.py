@@ -672,6 +672,59 @@ def _orphan_reap_refused(kind, orphan_count, listed_count):
     return True
 
 
+# The reverse check's mirror image: a pass that finds most rows' local payloads
+# absent means the volume is wrong (unmounted, swapped, empty mount point), not
+# that the data is gone, so no row is flagged. Disaster recovery onto a fresh
+# disk is still healed, one batch per scrub pass (MISSING LOCAL FILE -> error ->
+# triage -> re-fetched from a synced remote).
+# shortcut: fixed thresholds, no override; a real DR heals at scrub pace, not in
+# one cleanup pass.
+def _reverse_orphan_check_refused(kind, missing_count, row_count):
+    if missing_count <= ORPHAN_REAP_SANITY_MIN or missing_count * 2 <= row_count:
+        return False
+    print(f'[ERROR] [CLEANUP] Refusing to flag {missing_count} of {row_count} {kind} rows as locally missing: '
+          f'most local payloads are absent, so the storage volume is suspect (unmounted or swapped), '
+          f'not the data. No replica row was changed.')
+    return True
+
+
+def _revive_present_local_replicas(model, id_column, local_node_id, on_disk):
+    """Local rows parked as 'missing' whose payload is back on disk (a volume
+    that was remounted) return to 'synced' unverified, so the scrub re-hashes
+    them first. on_disk(item_id) answers from the pass's single listing."""
+    if not local_node_id:
+        return 0
+    try:
+        missing_ids = [row[0] for row in db.session.query(id_column).filter(
+            model.node_id == local_node_id, model.status == 'missing',
+        ).all()]
+    except Exception as e:
+        db.session.rollback()
+        print(f'[CLEANUP] Error loading missing local {model.__tablename__} rows: {e}')
+        return 0
+    present = [item_id for item_id in missing_ids if on_disk(item_id)]
+    revived = 0
+    for start in range(0, len(present), _REVERSE_ORPHAN_CHUNK_SIZE):
+        chunk = present[start:start + _REVERSE_ORPHAN_CHUNK_SIZE]
+        try:
+            revived += model.query.filter(
+                id_column.in_(chunk), model.node_id == local_node_id, model.status == 'missing',
+            ).update({
+                model.status: 'synced',
+                model.error_count: 0,
+                model.last_error: None,
+                model.verified_at: None,
+                model.checksum_verified: False,
+            }, synchronize_session=False)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            print(f'[CLEANUP] Error reviving local {model.__tablename__} rows: {e}')
+    if revived:
+        print(f'[CLEANUP] Revived {revived} missing local {model.__tablename__} rows whose payload is back on disk')
+    return revived
+
+
 
 def cleanup_orphaned_files():
     # Only load needed columns (id, filename) -- avoids loading LargeBinary thumbnail data
@@ -806,9 +859,9 @@ def cleanup_orphaned_files():
     # Detect reverse orphans: DB records whose local payload is missing.
     # Preserve metadata; the row may still be recoverable from a remote mirror,
     # and deleting metadata would make an otherwise valid remote payload unusable.
-    # An EMPTY listing is still a valid answer (disaster recovery: DB restored
-    # onto a fresh disk); only a failed listing skips the check. Re-fetches run
-    # through replication, which refuses to fill a low disk.
+    # A failed listing (missing storage dir) skips the check, and a listing that
+    # would flag most rows is refused (_reverse_orphan_check_refused). Re-fetches
+    # run through replication, which refuses to fill a low disk.
     disk_filenames = None
     try:
         disk_filenames = set(storage.list_files())
@@ -818,7 +871,12 @@ def cleanup_orphaned_files():
     reverse_count = 0
     if disk_filenames is not None:
         local_node_id = getattr(storage, '_local_node_id', None)
+        _filename_by_id = dict(_file_rows)
+        _revive_present_local_replicas(FileReplica, FileReplica.file_id, local_node_id,
+                                       lambda file_id: _filename_by_id.get(file_id) in disk_filenames)
         missing_ids = [file_id for file_id, filename in _file_rows if filename not in disk_filenames]
+        if _reverse_orphan_check_refused('File', len(missing_ids), len(_file_rows)):
+            missing_ids = []
         lost_ids = []
         for start in range(0, len(missing_ids), _REVERSE_ORPHAN_CHUNK_SIZE):
             chunk = missing_ids[start:start + _REVERSE_ORPHAN_CHUNK_SIZE]
@@ -839,7 +897,7 @@ def cleanup_orphaned_files():
                     # A remote copy exists: hand the local row to replication
                     # ('error' -> triage -> pending -> pulled back from the
                     # remote). 'missing' is reserved for payloads with no copy
-                    # anywhere, because nothing ever revives a 'missing' row.
+                    # anywhere; only the payload reappearing on disk revives it.
                     rehydrate = live_ids & remote_synced
                     if rehydrate:
                         FileReplica.query.filter(
@@ -941,7 +999,11 @@ def cleanup_orphaned_notes():
     reverse_count = 0
     if disk_note_ids is not None:
         local_node_id = getattr(storage, '_local_node_id', None)
+        _revive_present_local_replicas(NoteReplica, NoteReplica.note_id, local_node_id,
+                                       lambda note_id: note_id in disk_note_ids)
         missing_rows = [row for row in _note_rows if row[0] not in disk_note_ids]
+        if _reverse_orphan_check_refused('Note', len(missing_rows), len(_note_rows)):
+            missing_rows = []
         lost_ids = []
         for start in range(0, len(missing_rows), _REVERSE_ORPHAN_CHUNK_SIZE):
             chunk = missing_rows[start:start + _REVERSE_ORPHAN_CHUNK_SIZE]

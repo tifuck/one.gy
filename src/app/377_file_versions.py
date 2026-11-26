@@ -102,6 +102,22 @@ def _file_version_committed(version):
         print(f'[VERSIONS] Queueing replication of version {version_id} failed (self-heals): {e}')
 
 
+def _finish_committed_rewrite(filename, file_id, version, action_label):
+    """After a staged rewrite of file_id committed: swap the staged payload in,
+    requeue replication and record the version. The commit cannot be undone, so
+    a failed swap is logged and left (.new + .committed + .meta) for
+    _startup_recover_staged_files() instead of failing the request."""
+    storage.mark_staged_file_committed(filename)
+    try:
+        storage.finalize_staged_file(filename)
+    except OSError as e:
+        print(f'[ERROR] [{action_label}] File {file_id} committed new content but its staged payload '
+              f'could not be swapped in; left for startup recovery: {e}')
+    else:
+        _commit_file_post_finalize_state(file_id, action_label)
+    _file_version_committed(version)
+
+
 def _file_version_discard(version):
     """The rewrite failed before committing: drop the version's payload link."""
     if version is not None:
@@ -290,8 +306,8 @@ def _restore_file_version(user_id, file_id, version_id, body, label):
 
         new_version = _snapshot_file_version(live, version.disk_size)
         filename = live.filename
-        storage.store_file_staged(filename, payload)
         try:
+            storage.store_file_staged(filename, payload)
             live.size = version.size
             live.disk_size = version.disk_size
             live.content_hash = version.content_hash
@@ -331,10 +347,7 @@ def _restore_file_version(user_id, file_id, version_id, body, label):
             storage.rollback_staged_file(filename)
             _file_version_discard(new_version)
             raise
-        storage.mark_staged_file_committed(filename)
-        storage.finalize_staged_file(filename)
-        _commit_file_post_finalize_state(file_id, label)
-        _file_version_committed(new_version)
+        _finish_committed_rewrite(filename, file_id, new_version, label)
         delete_thumbnail_from_disk(file_id)
     finally:
         _release_lifecycle_lock(lifecycle_lock)

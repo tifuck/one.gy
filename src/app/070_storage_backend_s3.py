@@ -640,12 +640,8 @@ class _S3Backend(_StorageBackend):
             raise
 
     def exists(self, category, file_id):
-        try:
-            client = self._get_client()
-            client.head_object(Bucket=self._bucket, Key=self._key(category, file_id))
-            return True
-        except Exception:
-            return False
+        """False only on a confirmed 404; other errors raise ('unknown', not 'missing')."""
+        return self.exists_verified(category, file_id)
 
     def exists_verified(self, category, file_id):
         """Like exists() but raises on connection errors instead of returning False.
@@ -664,12 +660,18 @@ class _S3Backend(_StorageBackend):
             raise  # Non-404 error = connectivity/auth problem
 
     def size(self, category, file_id):
+        """None only on a confirmed 404; other errors raise."""
+        import botocore.exceptions as _botoexc
+        client = self._get_client()
         try:
-            client = self._get_client()
             resp = client.head_object(Bucket=self._bucket, Key=self._key(category, file_id))
-            return resp['ContentLength']
-        except Exception:
+        except client.exceptions.NoSuchKey:
             return None
+        except _botoexc.ClientError as e:
+            if e.response['ResponseMetadata']['HTTPStatusCode'] == 404:
+                return None
+            raise
+        return resp['ContentLength']
 
     def stat(self, category, file_id, want_checksum=False):
         """Existence + size + (optional) SHA-256 from a SINGLE head_object.

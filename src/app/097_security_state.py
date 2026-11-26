@@ -5,6 +5,9 @@
 # lock. Atomic replace keeps readers from observing partial JSON after a crash.
 _SECURITY_STATE_MAX_BYTES = 64 * 1024
 _SECURITY_STATE_CLEANUP_MAX_PER_PASS = 4000
+# Longest window any caller keeps state for (TOTP lockout decay, 24 h). An
+# unreadable file older than this can no longer hold anything a caller honours.
+_SECURITY_STATE_CORRUPT_HOLD_SECONDS = 24 * 3600
 
 
 def _security_state_dir():
@@ -52,15 +55,36 @@ def _read_security_state_path(path):
             payload = state_file.read(_SECURITY_STATE_MAX_BYTES + 1)
     except FileNotFoundError:
         return {}
-    if len(payload) > _SECURITY_STATE_MAX_BYTES:
-        raise RuntimeError(f'Oversized security state file: {os.path.basename(path)}')
-    try:
-        state = json.loads(payload.decode('utf-8'))
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise RuntimeError(f'Invalid security state file: {os.path.basename(path)}') from e
+    state = None
+    if len(payload) <= _SECURITY_STATE_MAX_BYTES:
+        try:
+            state = json.loads(payload.decode('utf-8'))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
     if not isinstance(state, dict):
-        raise RuntimeError(f'Invalid security state object: {os.path.basename(path)}')
+        return _corrupt_security_state(path)
     return state
+
+
+def _corrupt_security_state(path):
+    """An unreadable state file fails closed (RuntimeError): it may hold a
+    consumed nonce or a lockout. Once it is older than every window a caller
+    keeps state for, nothing in it can still apply, so it is moved aside and
+    the key starts fresh instead of failing forever."""
+    name = os.path.basename(path)
+    try:
+        age = time.time() - os.stat(path).st_mtime
+    except FileNotFoundError:
+        return {}
+    if age < _SECURITY_STATE_CORRUPT_HOLD_SECONDS:
+        print(f'[ERROR] [SECURITY] Unreadable security state {name}; failing closed until it is '
+              f'{_SECURITY_STATE_CORRUPT_HOLD_SECONDS // 3600} h old')
+        raise RuntimeError(f'Invalid security state file: {name}')
+    quarantine = f'{path}.corrupt-{int(time.time())}'
+    os.replace(path, quarantine)
+    print(f'[ERROR] [SECURITY] Moved unreadable security state {name} aside to '
+          f'{os.path.basename(quarantine)}; the key starts fresh')
+    return {}
 
 
 def _read_security_state(namespace, key):

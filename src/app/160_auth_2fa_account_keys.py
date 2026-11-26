@@ -31,14 +31,18 @@ def _decrypt_totp_secret(stored_secret, user=None):
             print(f'[AUTH] TOTP secret could not be decrypted and is not a legacy plaintext base32 secret — '
                   f'likely FERNET_KEY rotation/mismatch for user {getattr(user, "username", "?")}. Refusing to corrupt it.')
             raise
-        # Legacy plaintext secret — migrate to encrypted form in-place
+        # Legacy plaintext secret — migrate to encrypted form in its own
+        # transaction, so the caller's pending changes are not committed with it.
         if user is not None:
             try:
-                user.two_factor_secret = _encrypt_totp_secret(stored_secret)
-                db.session.commit()
+                with db.engine.begin() as connection:
+                    connection.execute(
+                        User.__table__.update()
+                        .where(User.__table__.c.id == user.id,
+                               User.__table__.c.two_factor_secret == stored_secret)
+                        .values(two_factor_secret=_encrypt_totp_secret(stored_secret)))
                 print(f'[AUTH] Migrated plaintext TOTP secret to encrypted form for user: {user.username}')
             except Exception as _e:
-                db.session.rollback()
                 print(f'[AUTH] Warning: failed to migrate TOTP secret for user {getattr(user, "username", "?")}): {_e}')
         return stored_secret
 
@@ -310,6 +314,11 @@ def verify_2fa():
         # AUDIT FIX H2: clear failure counter on completed login.
         _clear_failed_login((user.username or '').strip().lower())
 
+        # Notification trigger flags. Committed before the session is written:
+        # a failed commit must not leave a signed-in cookie behind its 500.
+        user.login_count = (user.login_count or 0) + 1
+        db.session.commit()
+
         # 2FA verified — complete login
         old_guest_id = session.get('user_id')
         was_just_registered = session.get('just_registered', False)
@@ -324,10 +333,6 @@ def verify_2fa():
         # AUDIT FIX M14: per-session id for precise logout revocation.
         _mint_session_sid()
         session.permanent = True
-        
-        # Notification trigger flags
-        user.login_count = (user.login_count or 0) + 1
-        db.session.commit()
         session['just_logged_in'] = True
         session.pop('_served_login_notifs', None)
         session.pop('_session_notif_dismissed', None)

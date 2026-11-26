@@ -574,25 +574,21 @@ class _StorageManagerNodeAdmin:
                           f'remote verification (node removal/drain race)')
                     counts['skipped_files'] += 1
                 else:
-                    deleted_ok = local_backend.delete('files', filename)
-                    if not deleted_ok:
-                        # On-disk delete failed — do NOT erase the local replica
-                        # row, or the file becomes an untracked local orphan that
-                        # cleanup_orphaned_files will not reap (its File row still
-                        # references it). Skip this entry; it will retry next cycle.
+                    # Row first, then the unlink: a failed commit must not leave
+                    # a 'synced' local row for a deleted payload. A failed unlink
+                    # leaves an untracked local copy that the next purge (which
+                    # walks File rows and checks the disk) retries.
+                    if local_node_id:
+                        local_replica = FileReplica.query.filter_by(file_id=fid, node_id=local_node_id).first()
+                        if local_replica:
+                            db.session.delete(local_replica)
+                    db.session.commit()
+                    if not local_backend.delete('files', filename):
+                        print(f'[WARNING] [STORAGE] Local purge of files/{filename} failed after its replica row was removed; the next purge retries it')
                         counts['skipped_files'] += 1
                     else:
                         counts['purged_files'] += 1
                         counts['bytes_freed'] += size
-                        # Remove local replica row since the local copy is gone
-                        # AUDIT FIX P2-8: commit immediately after each purge so a
-                        # crash mid-purge does not leave the DB saying the local
-                        # copy is still 'synced' when the file is already deleted.
-                        if local_node_id:
-                            local_replica = FileReplica.query.filter_by(file_id=fid, node_id=local_node_id).first()
-                            if local_replica:
-                                db.session.delete(local_replica)
-                        db.session.commit()
             except Exception as e:
                 print(f'[STORAGE] Purge failed for file {filename}: {e}')
                 try:
@@ -677,19 +673,18 @@ class _StorageManagerNodeAdmin:
                 else:
                     if fresh_note.size is None or int(fresh_note.size) != final_size:
                         fresh_note.size = final_size
-                    deleted_ok = local_backend.delete('notes', note_id)
-                    if not deleted_ok:
+                    # Row first, then the unlink (see the file purge).
+                    if local_node_id:
+                        local_replica = NoteReplica.query.filter_by(note_id=note_id, node_id=local_node_id).first()
+                        if local_replica:
+                            db.session.delete(local_replica)
+                    db.session.commit()
+                    if not local_backend.delete('notes', note_id):
+                        print(f'[WARNING] [STORAGE] Local purge of notes/{note_id} failed after its replica row was removed; the next purge retries it')
                         counts['skipped_notes'] += 1
                     else:
                         counts['purged_notes'] += 1
                         counts['bytes_freed'] += note_size or 0
-                        # Remove local replica row since the local copy is gone
-                        # AUDIT FIX P2-8: commit immediately after each purge.
-                        if local_node_id:
-                            local_replica = NoteReplica.query.filter_by(note_id=note_id, node_id=local_node_id).first()
-                            if local_replica:
-                                db.session.delete(local_replica)
-                        db.session.commit()
             except Exception as e:
                 print(f'[STORAGE] Purge failed for note {note_id}: {e}')
                 try:
@@ -780,21 +775,20 @@ class _StorageManagerNodeAdmin:
                           f'remote verification (node removal/drain race)')
                     counts['skipped_thumbnails'] += 1
                 else:
-                    deleted_ok = local_backend.delete('thumbnails', thumb_id)
-                    if not deleted_ok:
+                    # Row first, then the unlink (see the file purge).
+                    if local_node_id:
+                        local_replica = ThumbnailReplica.query.filter_by(
+                            file_id=fid, thumb_type=thumb_type, node_id=local_node_id
+                        ).first()
+                        if local_replica:
+                            db.session.delete(local_replica)
+                    db.session.commit()
+                    if not local_backend.delete('thumbnails', thumb_id):
+                        print(f'[WARNING] [STORAGE] Local purge of thumbnails/{thumb_id} failed after its replica row was removed; the next purge retries it')
                         counts['skipped_thumbnails'] += 1
                     else:
                         counts['purged_thumbnails'] += 1
                         counts['bytes_freed'] += size
-                        # Remove local replica row since the local copy is gone
-                        # AUDIT FIX P2-8: commit immediately after each purge.
-                        if local_node_id:
-                            local_replica = ThumbnailReplica.query.filter_by(
-                                file_id=fid, thumb_type=thumb_type, node_id=local_node_id
-                            ).first()
-                            if local_replica:
-                                db.session.delete(local_replica)
-                        db.session.commit()
             except Exception as e:
                 print(f'[STORAGE] Purge failed for thumbnail {thumb_id}: {e}')
                 try:

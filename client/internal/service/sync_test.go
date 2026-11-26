@@ -131,11 +131,19 @@ func TestSyncMethods(t *testing.T) {
 			bID = f.(map[string]any)["id"].(string)
 		}
 	}
+	// A bad item later in the list starts nothing, not even the good ones before it.
+	bad := t.TempDir()
+	if _, e := rc.call("manual.download", map[string]any{"remote_ids": []string{bID, "no-such-file"}, "local_dir": bad}); e == nil {
+		t.Fatal("manual download of a missing file accepted")
+	}
 	rc.ok("manual.download", map[string]any{"remote_ids": []string{bID}, "local_dir": dl})
 	waitFor(t, "manual download", func() bool {
 		b, _ := os.ReadFile(filepath.Join(dl, "b.txt"))
 		return string(b) == "from the web"
 	})
+	if ents, _ := os.ReadDir(bad); len(ents) != 0 {
+		t.Fatalf("a refused manual download still started: %v", ents)
+	}
 
 	// Diagnostics: logs and a summary without names.
 	zp := filepath.Join(t.TempDir(), "diag.zip")

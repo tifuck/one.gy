@@ -222,14 +222,19 @@ func TestContentRangeAndIfMatch(t *testing.T) {
 		w.Write(data)
 	})
 	var buf bytes.Buffer
-	if n, err := c.Content(context.Background(), "u1", &buf, 0, "abc"); err != nil || n != 10 || buf.String() != string(data) {
+	if n, err := c.Content(context.Background(), "u1", &buf, 0, 10, "abc"); err != nil || n != 10 || buf.String() != string(data) {
 		t.Fatal(n, err)
 	}
 	buf.Reset()
-	if n, err := c.Content(context.Background(), "u1", &buf, 4, "abc"); err != nil || n != 6 || buf.String() != "456789" {
+	if n, err := c.Content(context.Background(), "u1", &buf, 4, 10, "abc"); err != nil || n != 6 || buf.String() != "456789" {
 		t.Fatal(n, err)
 	}
-	if _, err := c.Content(context.Background(), "u1", io.Discard, 0, "other"); !IsCode(err, "precondition_failed") {
+	// A body longer than the file is refused, and nothing past it is written.
+	buf.Reset()
+	if n, err := c.Content(context.Background(), "u1", &buf, 0, 8, "abc"); err == nil || errors.Is(err, ErrOffline) || n != 8 || buf.Len() != 8 {
+		t.Fatal(n, err)
+	}
+	if _, err := c.Content(context.Background(), "u1", io.Discard, 0, 10, "other"); !IsCode(err, "precondition_failed") {
 		t.Fatal(err)
 	}
 }

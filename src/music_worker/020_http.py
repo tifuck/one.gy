@@ -7,9 +7,14 @@
 # (including its own YouTube daily cap), and each request goes to the egress
 # that can serve it soonest. A proxy that fails to connect is paused and the
 # others carry on.
+from email.utils import parsedate_to_datetime
+
 import requests
 
 from app import fernet, MusicProxy
+
+# Longest any rate-limit pause may last, whatever a server's Retry-After says.
+MAX_PAUSE_S = 6 * 3600
 
 
 class SourcePaused(Exception):
@@ -90,7 +95,7 @@ class Source:
         with self.lock:
             t = time.time()
             self.strikes += 1
-            pause = retry_after if retry_after else min(60 * 2 ** (self.strikes - 1), 6 * 3600)
+            pause = min(retry_after, MAX_PAUSE_S) if retry_after else min(60 * 2 ** (self.strikes - 1), MAX_PAUSE_S)
             self.paused_until = max(self.paused_until, t + pause)
             self.slow = min(self.slow * 2, 16.0)
             self.clean_since = self.paused_until
@@ -236,69 +241,106 @@ def load_budgets(egress):
         src.day, src.used, src.errors = row.day, row.used, row.errors
         src.slow = max(1.0, row.slow or 1.0)
         if row.paused_until:
-            src.paused_until = row.paused_until.replace(tzinfo=timezone.utc).timestamp()
+            src.paused_until = min(row.paused_until.replace(tzinfo=timezone.utc).timestamp(),
+                                   time.time() + MAX_PAUSE_S)
 
 
 def flush_budgets():
     """Persist counters and back-off state per source and egress, and each
-    proxy's health and usage for the admin Music tab."""
+    proxy's health and usage for the admin Music tab. A failed commit marks
+    everything it carried dirty again, so the next flush retries it."""
     pool = egresses()
+    flushed = []
     with app.app_context():
-        for egress in pool:
-            used_changed = False
-            for name, src in egress.sources.items():
-                with src.lock:
-                    if not src.dirty or src.day is None:
+        try:
+            for egress in pool:
+                used_changed = False
+                for name, src in egress.sources.items():
+                    with src.lock:
+                        if not src.dirty or src.day is None:
+                            continue
+                        used_changed = True
+                        state = dict(used=src.used, errors=src.errors, slow=src.slow, last_error=src.last_error,
+                                     paused_until=datetime.fromtimestamp(src.paused_until, timezone.utc)
+                                     if src.paused_until > time.time() else None)
+                        day = src.day
+                        src.dirty = False
+                        flushed.append(src)
+                    key = egress.budget_key(name)
+                    row = MusicSourceBudget.query.filter_by(source=key, day=day).first()
+                    if not row:
+                        row = MusicSourceBudget(source=key, day=day)
+                        db.session.add(row)
+                    for field, value in state.items():
+                        setattr(row, field, value)
+                    row.updated_at = now()
+                if egress.proxy and (egress.dirty or used_changed):
+                    row = db.session.get(MusicProxy, int(egress.key[1:]))
+                    if row is None:
                         continue
-                    used_changed = True
-                    state = dict(used=src.used, errors=src.errors, slow=src.slow, last_error=src.last_error,
-                                 paused_until=datetime.fromtimestamp(src.paused_until, timezone.utc)
-                                 if src.paused_until > time.time() else None)
-                    day = src.day
-                    src.dirty = False
-                key = egress.budget_key(name)
-                row = MusicSourceBudget.query.filter_by(source=key, day=day).first()
-                if not row:
-                    row = MusicSourceBudget(source=key, day=day)
-                    db.session.add(row)
-                for field, value in state.items():
-                    setattr(row, field, value)
-                row.updated_at = now()
-            if egress.proxy and (egress.dirty or used_changed):
-                row = db.session.get(MusicProxy, int(egress.key[1:]))
-                if row is None:
-                    continue
-                with egress.lock:
-                    egress.dirty = False
-                    if egress.status != 'new':
-                        row.status, row.last_error = egress.status, egress.last_error
-                    row.paused_until = datetime.fromtimestamp(egress.paused_until, timezone.utc) \
-                        if egress.paused_until > time.time() else None
-                    if egress.last_ok:
-                        row.last_ok = egress.last_ok
-                row.day = now().date()
-                row.downloads_today = egress.sources['youtube'].used
-                row.requests_today = sum(s.used for n, s in egress.sources.items() if n != 'youtube')
-        db.session.commit()
+                    with egress.lock:
+                        egress.dirty = False
+                        flushed.append(egress)
+                        if egress.status != 'new':
+                            row.status, row.last_error = egress.status, egress.last_error
+                        row.paused_until = datetime.fromtimestamp(egress.paused_until, timezone.utc) \
+                            if egress.paused_until > time.time() else None
+                        if egress.last_ok:
+                            row.last_ok = egress.last_ok
+                    row.day = now().date()
+                    row.downloads_today = egress.sources['youtube'].used
+                    row.requests_today = sum(s.used for n, s in egress.sources.items() if n != 'youtube')
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            for obj in flushed:
+                with obj.lock:
+                    obj.dirty = True
+            raise
 
 
 def _retry_after(value):
-    try:
-        return max(1, int(float(value)))
-    except (TypeError, ValueError):
+    """Seconds from a Retry-After style header (delta-seconds or HTTP-date),
+    clamped to MAX_PAUSE_S so a bogus value cannot park a source for days."""
+    if value is None:
         return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        try:
+            when = parsedate_to_datetime(str(value))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            seconds = (when - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+    return int(min(max(1, seconds), MAX_PAUSE_S))
 
 
-def http_get(source, url, params=None, as_json=True, allow_404=False, timeout=30):
-    """GET through the best egress for `source`. Returns parsed JSON (or bytes),
-    None for a 404 when allow_404; raises SourcePaused when every egress is
-    limited, SourceError otherwise. Proxy failures move to another egress."""
+def _read_capped(resp, source, max_bytes):
+    length = resp.headers.get('Content-Length')
+    if length and length.isdigit() and int(length) > max_bytes:
+        raise SourceError(f'{source}: download too large ({length} bytes)')
+    chunks, total = [], 0
+    for chunk in resp.iter_content(64 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            raise SourceError(f'{source}: download too large (over {max_bytes} bytes)')
+        chunks.append(chunk)
+    return b''.join(chunks)
+
+
+def http_get(source, url, params=None, as_json=True, allow_404=False, timeout=30, max_bytes=None):
+    """GET through the best egress for `source`. Returns parsed JSON (or bytes,
+    streamed and capped at max_bytes), None for a 404 when allow_404; raises
+    SourcePaused when every egress is limited, SourceError otherwise. Proxy
+    failures move to another egress."""
     for attempt in range(4):
         egress = pick(source)
         src = egress.sources[source]
         src.wait()
         try:
-            resp = egress.session.get(url, params=params, timeout=timeout,
+            resp = egress.session.get(url, params=params, timeout=timeout, stream=not as_json,
                                       headers={'Accept': 'application/json' if as_json else '*/*'})
         except requests.RequestException as e:
             if egress.proxy:
@@ -309,45 +351,48 @@ def http_get(source, url, params=None, as_json=True, allow_404=False, timeout=30
                 continue
             src.note_error(e)
             raise SourceError(f'{source}: {e}')
-        if egress.proxy:
-            egress.worked()
-        remaining = resp.headers.get('X-RateLimit-Remaining')
-        if remaining == '0':
-            with src.lock:
-                src.next_at = max(src.next_at, time.time() + (_retry_after(resp.headers.get('X-RateLimit-Reset-In')) or 10))
-        code = resp.status_code
-        if code == 404 and allow_404:
-            src.ok()
-            return None
-        if code in (429, 503):
-            try:
-                src.penalize(f'HTTP {code}', _retry_after(resp.headers.get('Retry-After')), egress.label)
-            except SourcePaused:
-                continue
-        if code >= 500 and attempt < 2:
-            STOP.wait(2 ** attempt)
-            continue
-        if code >= 400:
-            src.note_error(f'HTTP {code}')
-            raise SourceError(f'{source}: HTTP {code} for {url[:120]}')
-        src.ok()
-        if not as_json:
-            return resp.content
         try:
-            data = resp.json()
-        except ValueError:
-            src.note_error('invalid JSON')
-            raise SourceError(f'{source}: invalid JSON from {url[:120]}')
-        if source == 'deezer' and isinstance(data, dict) and isinstance(data.get('error'), dict):
-            error_code = data['error'].get('code')
-            if error_code == 4:
+            if egress.proxy:
+                egress.worked()
+            remaining = resp.headers.get('X-RateLimit-Remaining')
+            if remaining == '0':
+                with src.lock:
+                    src.next_at = max(src.next_at, time.time() + (_retry_after(resp.headers.get('X-RateLimit-Reset-In')) or 10))
+            code = resp.status_code
+            if code == 404 and allow_404:
+                src.ok()
+                return None
+            if code in (429, 503):
                 try:
-                    src.penalize('quota exceeded', 5, egress.label)
+                    src.penalize(f'HTTP {code}', _retry_after(resp.headers.get('Retry-After')), egress.label)
                 except SourcePaused:
                     continue
-            if error_code == 800:
-                return None
-            src.note_error(data['error'])
-            raise SourceError(f'deezer: {data["error"]}')
-        return data
+            if code >= 500 and attempt < 2:
+                STOP.wait(2 ** attempt)
+                continue
+            if code >= 400:
+                src.note_error(f'HTTP {code}')
+                raise SourceError(f'{source}: HTTP {code} for {url[:120]}')
+            src.ok()
+            if not as_json:
+                return _read_capped(resp, source, max_bytes) if max_bytes else resp.content
+            try:
+                data = resp.json()
+            except ValueError:
+                src.note_error('invalid JSON')
+                raise SourceError(f'{source}: invalid JSON from {url[:120]}')
+            if source == 'deezer' and isinstance(data, dict) and isinstance(data.get('error'), dict):
+                error_code = data['error'].get('code')
+                if error_code == 4:
+                    try:
+                        src.penalize('quota exceeded', 5, egress.label)
+                    except SourcePaused:
+                        continue
+                if error_code == 800:
+                    return None
+                src.note_error(data['error'])
+                raise SourceError(f'deezer: {data["error"]}')
+            return data
+        finally:
+            resp.close()
     raise SourcePaused(source, time.time() + 30)

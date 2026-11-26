@@ -89,6 +89,7 @@ func (t *Tree) snapshot(ctx context.Context, c *api.Client) error {
 	}
 	var asOf int64
 	token := ""
+	seen := map[string]bool{}
 	for page := 0; ; page++ {
 		tr, err := c.Tree(ctx, 0, token, 2000)
 		if err != nil {
@@ -113,7 +114,8 @@ func (t *Tree) snapshot(ctx context.Context, c *api.Client) error {
 		if tr.NextPageToken == "" {
 			break
 		}
-		if tr.NextPageToken == token {
+		seen[token] = true
+		if seen[tr.NextPageToken] { // a cycle would page forever
 			return fmt.Errorf("server repeated tree page token")
 		}
 		token = tr.NextPageToken

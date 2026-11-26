@@ -7,7 +7,8 @@ Reads the app's /metrics page and posts to a chat webhook when the set of open
 critical/warning issues changes (new or resolved), plus a daily reminder while
 anything stays open. The issue rules live in the app (src/app/355_monitoring.py,
 exported as `onegy_issue` lines); this script only adds the one thing the app
-cannot report about itself: that it is unreachable.
+cannot report about itself: that its metrics cannot be read (unreachable,
+timeout, TLS failure, rejected token or an HTTP error, each reported as such).
 
 Run it from cron OUTSIDE the app's service (so it still fires when the app is
 down), every 5 minutes:
@@ -19,7 +20,8 @@ Configuration (read from .env next to this file, then the environment):
     MONITOR_WEBHOOK_URL    Discord/Slack-compatible webhook; empty = print only
     MONITOR_METRICS_URL    default https://127.0.0.1:<WEB_PORT>/metrics
 
-Exit status: 0 nothing critical open, 1 a critical issue is open, 2 misconfigured.
+Exit status: 0 nothing critical open, 1 a critical issue is open, 2 misconfigured,
+3 an alert was due but the webhook post failed.
 State is kept in instance/monitor_check_state.json.
 """
 import json
@@ -28,6 +30,7 @@ import re
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.request
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -78,7 +81,24 @@ def fetch_issues(url, token):
         with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECONDS, context=ctx) as resp:
             return parse_issues(resp.read().decode('utf-8', 'replace'))
     except Exception as e:
-        return {'app_unreachable:': {'severity': 'critical', 'summary': f'App metrics unreachable: {e}'}}
+        code, summary = fetch_failure(e)
+        return {f'{code}:': {'severity': 'critical', 'summary': summary}}
+
+
+def fetch_failure(e):
+    """(issue code, summary) for a failed /metrics fetch, by cause."""
+    if isinstance(e, urllib.error.HTTPError):
+        if e.code in (401, 403):
+            return 'metrics_auth_failed', f'App rejected METRICS_TOKEN (HTTP {e.code})'
+        if e.code == 404:
+            return 'metrics_disabled', 'App /metrics returned 404 (METRICS_TOKEN not set in the app?)'
+        return 'metrics_http_error', f'App /metrics returned HTTP {e.code}'
+    reason = getattr(e, 'reason', e)
+    if isinstance(reason, ssl.SSLError):
+        return 'metrics_tls_error', f'TLS error reaching app metrics: {reason}'
+    if isinstance(reason, TimeoutError):
+        return 'app_timeout', f'App metrics timed out after {FETCH_TIMEOUT_SECONDS}s'
+    return 'app_unreachable', f'App metrics unreachable: {e}'
 
 
 def build_message(current, previous, domain):
@@ -126,6 +146,7 @@ def main():
 
     changed = set(current) != set(previous)
     remind = bool(current) and now - state.get('notified_at', 0) >= REMIND_AFTER_SECONDS
+    delivered = True
     if changed or remind:
         message = build_message(current, previous, os.environ.get('DOMAIN', ''))
         print('[MONITOR] ' + message.replace('\n', '\n[MONITOR] '))
@@ -134,18 +155,20 @@ def main():
                 post_webhook(webhook, message)
                 state['notified_at'] = now
             except Exception as e:
-                # Keep the old issue set so the change is announced again next run.
                 print(f'[MONITOR] ERROR: webhook post failed: {e}')
-                current = previous
+                delivered = False
         else:
             state['notified_at'] = now
-    state['issues'] = current
+    # Keep the old issue set after a failed post so the change is announced again next run.
+    state['issues'] = current if delivered else previous
     state['checked_at'] = now
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
     tmp = STATE_PATH + '.tmp'
     with open(tmp, 'w') as fh:
         json.dump(state, fh)
     os.replace(tmp, STATE_PATH)
+    if not delivered:
+        return 3
     return 1 if any(i['severity'] == 'critical' for i in current.values()) else 0
 
 

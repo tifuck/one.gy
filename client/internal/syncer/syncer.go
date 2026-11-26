@@ -155,6 +155,7 @@ type Runner struct {
 	cancelPass context.CancelFunc
 	future     map[string]time.Time // uploads whose mtime is in the future: when that version was first seen
 	pending    map[string]bool      // paths the current plan touches, and their parent folders ("" = the root)
+	failHold   time.Time            // after an internal error: no pass before (syncNow and retry skip it)
 }
 
 type environment struct{ battery, metered bool }
@@ -166,6 +167,7 @@ type retry struct {
 
 type action struct {
 	kind, path, verb string
+	downgrade        bool // keep_remote answers the E2EE downgrade issue: a standard file may replace the encrypted one
 }
 
 // NewRunner creates the runner of sync id.
@@ -177,16 +179,32 @@ func NewRunner(env *Env, id string) *Runner {
 // ErrGone: the sync no longer exists.
 var ErrGone = errors.New("sync removed")
 
+// marker is <root>/.onegy/sync.json: the sync and the account (server and
+// user) it was created under.
+type marker struct {
+	SyncID    string `json:"sync_id"`
+	AccountID int64  `json:"account_id"`
+	Server    string `json:"server"`
+}
+
+func readMarker(root string) (m marker, ok bool) {
+	b, err := os.ReadFile(filepath.Join(root, ".onegy", "sync.json"))
+	return m, err == nil && json.Unmarshal(b, &m) == nil
+}
+
 // MarkerMatches reports whether <root>/.onegy/sync.json belongs to syncID.
 func MarkerMatches(root, syncID string) bool {
-	b, err := os.ReadFile(filepath.Join(root, ".onegy", "sync.json"))
-	if err != nil {
-		return false
-	}
-	var m struct {
-		SyncID string `json:"sync_id"`
-	}
-	return json.Unmarshal(b, &m) == nil && m.SyncID == syncID
+	m, ok := readMarker(root)
+	return ok && m.SyncID == syncID
+}
+
+// accountMatches reports whether a is the account the sync was created under.
+// Synced rows, remote ids and the folder's contents belong to that account:
+// run under another one, a two-way sync would delete everything here and an
+// upload or backup sync would copy the folder into the other account.
+func (m marker) accountMatches(a *state.Account) bool {
+	return a != nil && a.SignedIn && m.AccountID != 0 && m.AccountID == a.UserID &&
+		strings.TrimRight(m.Server, "/") == strings.TrimRight(a.ServerURL, "/")
 }
 
 // Stats returns the pending work of the last plan.
@@ -295,10 +313,22 @@ func (r *Runner) Pass(ctx context.Context) error {
 		return nil
 	}
 	r.setDetail("")
-	if !MarkerMatches(row.LocalRoot, row.ID) {
+	m, ok := readMarker(row.LocalRoot)
+	if !ok || m.SyncID != row.ID {
 		r.setState(ctx, "root_missing", false)
 		r.syncIssues(ctx, []reconcile.Issue{{Kind: "root_missing", Message: "The local folder is missing or was replaced. Nothing is synced until it is back.",
 			Actions: []string{"retry", "remove_sync"}}})
+		return nil
+	}
+	a, err := db.GetAccount(ctx)
+	if err != nil {
+		return err
+	}
+	if !m.accountMatches(a) {
+		r.setState(ctx, "stalled", false)
+		r.syncIssues(ctx, []reconcile.Issue{{Kind: "account_mismatch",
+			Message: "This sync belongs to another one.gy account or server. Nothing is synced; remove it and add the folder again to sync it with this account.",
+			Actions: []string{"remove_sync"}}})
 		return nil
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -726,7 +756,7 @@ func (r *Runner) parallel(ctx context.Context, x *exec.Executor, ops []reconcile
 		go func() {
 			defer wg.Done()
 			for o := range ch {
-				if err := r.one(ctx, x, o); err != nil {
+				if err := r.safeOne(ctx, x, o); err != nil {
 					mu.Lock()
 					if first == nil {
 						first = err
@@ -798,6 +828,13 @@ func (r *Runner) one(ctx context.Context, x *exec.Executor, o reconcile.Op) erro
 		}
 	}
 	return nil
+}
+
+// safeOne is one for the content workers: a panic outside the executor's
+// own recovery ends the pass (as logx.ErrPanic) instead of the engine.
+func (r *Runner) safeOne(ctx context.Context, x *exec.Executor, o reconcile.Op) (err error) {
+	defer logx.Recover(&err, "sync op")
+	return r.one(ctx, x, o)
 }
 
 func (r *Runner) failed(why string) {
@@ -961,17 +998,24 @@ func (r *Runner) deviceID() string {
 // cleanDebris deletes debris older than debris_days (0 = right after the
 // delete was synced; the app moved nothing to the OS trash for us).
 func (r *Runner) cleanDebris(ctx context.Context, row *state.SyncRow, cfg Config) {
-	paths, err := r.env.Exec.DB.TakeDebris(ctx, row.ID, time.Now().Add(-time.Duration(cfg.DebrisDays)*24*time.Hour))
+	db := r.env.Exec.DB
+	paths, err := db.OldDebris(ctx, row.ID, time.Now().Add(-time.Duration(cfg.DebrisDays)*24*time.Hour))
 	if err != nil {
 		return
 	}
 	days := map[string]bool{}
 	for _, p := range paths {
-		if !strings.HasPrefix(p, ".onegy/debris/") || strings.Contains(p, "..") {
-			continue
+		if strings.HasPrefix(p, ".onegy/debris/") && !strings.Contains(p, "..") {
+			// The record goes only with the files, so a failed delete is retried.
+			if err := os.RemoveAll(filepath.Join(row.LocalRoot, filepath.FromSlash(p))); err != nil {
+				slog.Warn("debris not deleted; trying again later", "sync_id", r.ID, "err", redact(err, row.LocalRoot, p))
+				continue
+			}
+			days[strings.Join(strings.SplitN(p, "/", 4)[:3], "/")] = true
 		}
-		os.RemoveAll(filepath.Join(row.LocalRoot, filepath.FromSlash(p)))
-		days[strings.Join(strings.SplitN(p, "/", 4)[:3], "/")] = true
+		if err := db.DropDebris(ctx, row.ID, p); err != nil {
+			slog.Warn("debris record not dropped", "sync_id", r.ID, "err", err)
+		}
 	}
 	var ds []string
 	for d := range days {

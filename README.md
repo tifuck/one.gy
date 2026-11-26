@@ -184,8 +184,8 @@ computer in sync, encrypted with the same keys as the website.
 [**Download the desktop app**](https://github.com/tifuck/one.gy/releases/latest)
 
 The **`onegy` CLI** for Linux and macOS is served by your own instance. It
-encrypts before it uploads, decrypts any share link it downloads, and checks
-every update against a SHA-256 manifest. See `/docs` on your server.
+encrypts before it uploads, decrypts any share link it downloads, and installs
+only updates signed with your instance's release key. See `/docs` on your server.
 
 <br clear="right">
 
@@ -237,6 +237,7 @@ Open `https://<your-domain>/register` and register immediately after setup. **Th
 
 > [!WARNING]
 > Back up `.env`. Losing `FERNET_KEY` makes server-side encrypted data and storage-node credentials unrecoverable.
+> Also back up the CLI release signing key (`CLI_SIGNING_KEY_FILE`, default `~/.config/onegy/cli-signing.key`, created by the first CLI build): CLIs built with a lost key never update themselves again.
 
 ### Running and updating
 

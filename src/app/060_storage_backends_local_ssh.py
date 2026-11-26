@@ -273,9 +273,11 @@ class _LocalBackend(_StorageBackend):
         os.rename(old_path, new_path)
 
     def list_files(self, category):
+        # The category dirs are created at init, so a missing one means the
+        # storage volume is gone (unmounted, swapped): never report it as empty.
         base = self._paths.get(category)
-        if not base or not os.path.exists(base):
-            return []
+        if not base or not os.path.isdir(base):
+            raise FileNotFoundError(f'local storage dir for {category!r} is missing: {base}')
         return [f for f in os.listdir(base) if os.path.isfile(os.path.join(base, f))]
 
     def health_check(self):
@@ -683,8 +685,10 @@ class _SSHBackend(_StorageBackend):
         for d in reversed(dirs_to_create):
             try:
                 sftp.mkdir(d)
-            except Exception:
-                pass
+            except OSError:
+                # A concurrent creator is fine; anything else (permissions,
+                # full disk) must surface instead of failing later on put.
+                sftp.stat(d)
 
     @_serialize_shared_ssh_connection()
     def _close(self):
@@ -1026,13 +1030,13 @@ class _SSHBackend(_StorageBackend):
 
     @_serialize_shared_ssh_connection()
     def exists(self, category, file_id):
+        """False only when the object is confirmed absent; a connection or
+        permission error raises (it is 'unknown', not 'missing')."""
+        sftp = self._connect()
         try:
-            sftp = self._connect()
             sftp.stat(self._remote_path(category, file_id))
             return True
         except FileNotFoundError:
-            return False
-        except Exception:
             return False
 
     @_serialize_shared_ssh_connection()
@@ -1049,12 +1053,13 @@ class _SSHBackend(_StorageBackend):
 
     @_serialize_shared_ssh_connection()
     def size(self, category, file_id):
+        """None only when the object is confirmed absent; other errors raise."""
+        sftp = self._connect()
         try:
-            sftp = self._connect()
             stat = sftp.stat(self._remote_path(category, file_id))
-            return stat.st_size
-        except Exception:
+        except FileNotFoundError:
             return None
+        return stat.st_size
 
     @_serialize_shared_ssh_connection()
     def list_files(self, category):

@@ -301,9 +301,10 @@ def _acquire_upload_idempotency_database_lock(scope_key):
         return None
     lock_name = 'onegy_upload_' + hashlib.sha256(
         scope_key.encode('utf-8')).hexdigest()[:51]
-    connection = db.engine.connect()
+    connection = None
     deadline = time.monotonic() + _UPLOAD_IDEMPOTENCY_DB_LOCK_WAIT_SECONDS
     try:
+        connection = db.engine.connect()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -321,13 +322,33 @@ def _acquire_upload_idempotency_database_lock(scope_key):
             if acquired is None:
                 raise RuntimeError('MariaDB upload idempotency lock is unavailable')
     except Exception:
-        connection.close()
+        if connection is not None:
+            connection.close()
         raise
+
+
+def _upload_db_lock_still_held(lock_handle):
+    """True while this request's GET_LOCK is still owned by its connection. A
+    killed lock connection silently frees the lock, so a writer checks this
+    right before its commit and fails closed when it is gone."""
+    if not lock_handle:
+        return True
+    connection, lock_name = lock_handle
+    try:
+        return connection.execute(
+            text('SELECT IS_USED_LOCK(:lock_name) = CONNECTION_ID()'),
+            {'lock_name': lock_name},
+        ).scalar() == 1
+    except Exception as e:
+        print(f'[ERROR] Could not verify upload idempotency database lock {lock_name}: {e}')
+        return False
 
 
 def _release_upload_idempotency_database_lock(lock_handle):
     if not lock_handle:
         return
+    if has_request_context() and g.get('upload_key_db_lock') is lock_handle:
+        g.upload_key_db_lock = None
     connection, lock_name = lock_handle
     try:
         released = connection.execute(
@@ -335,9 +356,9 @@ def _release_upload_idempotency_database_lock(lock_handle):
             {'lock_name': lock_name},
         ).scalar()
         if released != 1:
-            print(f'[WARNING] Upload idempotency database lock was not owned at release: {lock_name}')
+            print(f'[ERROR] Upload idempotency database lock was not owned at release: {lock_name}')
     except Exception as e:
-        print(f'[WARNING] Could not release upload idempotency database lock {lock_name}: {e}')
+        print(f'[ERROR] Could not release upload idempotency database lock {lock_name}: {e}')
     finally:
         connection.close()
 

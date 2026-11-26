@@ -945,24 +945,41 @@ def _render_shared_folder_browse(folder, is_owner, share_token, folder_is_browsa
 
 
 def _collect_shared_folder_zip_files(folder, pre_skipped, folder_id, path_prefix='', parent_is_owner=False,
-                                     folder_is_public=False, _visited=None):
+                                     folder_is_public=False):
     """
-    Recursively collect files from folder, checking individual file permissions.
+    Collect files from the folder tree (depth-first, iterative so a deep tree
+    cannot hit the recursion limit), checking individual file permissions.
     parent_is_owner: whether the current user owns the root folder being downloaded
     folder_is_public: whether the root folder being downloaded is public
-    AUDIT FIX D3: _visited guards against a parent_id cycle, which would
-    otherwise recurse until the worker died.
+    AUDIT FIX D3: the visited set guards against a parent_id cycle.
+    Sub-folders left unwalked at _MAX_FOLDER_TREE_NODES are listed in the skip
+    manifest, so a truncated archive never looks complete.
     """
     files_to_zip = []
-    if _visited is None:
-        _visited = set()
-    if folder_id in _visited:
-        print(f'[WARNING] Folder cycle detected while collecting files at folder {folder_id}; skipping')
-        return files_to_zip
-    _visited.add(folder_id)
-    if len(_visited) > _MAX_FOLDER_TREE_NODES:
-        print(f'[WARNING] Folder download walk exceeded {_MAX_FOLDER_TREE_NODES} folders; truncating')
-        return files_to_zip
+    visited = set()
+    stack = [(folder_id, path_prefix)]
+    while stack:
+        folder_id, path_prefix = stack.pop()
+        if folder_id in visited:
+            print(f'[WARNING] Folder cycle detected while collecting files at folder {folder_id}; skipping')
+            continue
+        if len(visited) >= _MAX_FOLDER_TREE_NODES:
+            print(f'[WARNING] Folder download walk exceeded {_MAX_FOLDER_TREE_NODES} folders; truncating')
+            for unwalked_id, unwalked_prefix in reversed(stack + [(folder_id, path_prefix)]):
+                if unwalked_id not in visited:
+                    pre_skipped.append(_zip_skip_entry(os.path.join(unwalked_prefix, ''), 'FOLDER LIMIT REACHED'))
+            break
+        visited.add(folder_id)
+        files_to_zip.extend(_collect_shared_folder_zip_level(
+            folder, pre_skipped, folder_id, path_prefix, parent_is_owner, folder_is_public, stack))
+    return files_to_zip
+
+
+def _collect_shared_folder_zip_level(folder, pre_skipped, folder_id, path_prefix, parent_is_owner,
+                                     folder_is_public, stack):
+    """One folder of _collect_shared_folder_zip_files(): its files, plus its
+    non-trashed sub-folders pushed onto stack in walk order."""
+    files_to_zip = []
     folder_obj = db.session.get(Folder, folder_id)
     if not folder_obj or folder_obj.is_trashed:
         print(f'[FOLDER DOWNLOAD] Folder {folder_id} not found or trashed')
@@ -1009,23 +1026,20 @@ def _collect_shared_folder_zip_files(folder, pre_skipped, folder_id, path_prefix
         if _zip_skip_if_e2e(file, zip_path, pre_skipped):
             continue
 
-        file_path = storage.get_file_path(file.filename)
-        if file_path and os.path.exists(file_path):
+        file_path = _zip_member_payload_path(file, zip_path, pre_skipped)
+        if file_path:
             files_to_zip.append((file_path, zip_path, file))
             print(f'[FOLDER DOWNLOAD] Added file: {file.orig_name}')
-        else:
-            print(f'[FOLDER DOWNLOAD] File not found on disk: {file_path}')
-            pre_skipped.append(_zip_skip_entry(zip_path, 'PAYLOAD NOT AVAILABLE'))
 
-    # Recursively add files from non-trashed subfolders (pass parent ownership)
+    # Queue non-trashed subfolders (parent ownership carries down)
     subfolders = Folder.query.filter_by(parent_id=folder_id, is_trashed=False).all()
     print(f'[FOLDER DOWNLOAD] Found {len(subfolders)} subfolders in folder {folder_id}')
-    for subfolder in subfolders:
+    for subfolder in reversed(subfolders):
         # AUDIT FIX P2: an expired sub-folder cuts off everything below it.
         if not _folder_not_expired(subfolder) or _locked_folder_share(subfolder, folder):
             print(f'[FOLDER DOWNLOAD] Skipping expired subfolder: {_log_safe(subfolder.name)}')
             continue
         subfolder_path = os.path.join(path_prefix, safe_zip_entry_name(subfolder.name))
-        files_to_zip.extend(_collect_shared_folder_zip_files(folder, pre_skipped, subfolder.id, subfolder_path, parent_is_owner, folder_is_public, _visited))
+        stack.append((subfolder.id, subfolder_path))
 
     return files_to_zip

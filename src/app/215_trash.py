@@ -203,10 +203,19 @@ def permanently_delete_folder_recursive(folder_id, _paths_to_delete=None, retent
         fid = stack.pop()
         if fid in visited:
             continue
-        visited.add(fid)
-        if len(visited) > _MAX_FOLDER_TREE_NODES:
-            print(f'[WARNING] Permanent-delete walk from folder {folder_id} exceeded {_MAX_FOLDER_TREE_NODES} folders; truncating')
+        if len(visited) >= _MAX_FOLDER_TREE_NODES:
+            # The folders already walked are deleted below, so every folder
+            # still queued would keep a parent_id into deleted rows. Detach
+            # them (as for D5): each becomes a trash root of its own, purged
+            # by a later run, and nothing is left dangling.
+            print(f'[WARNING] Permanent-delete walk from folder {folder_id} exceeded {_MAX_FOLDER_TREE_NODES} folders; detaching the unwalked rest as separate trash roots')
+            for unwalked_id in [fid] + stack:
+                fld = folder_map.get(unwalked_id)
+                if fld is not None and unwalked_id not in visited:
+                    fld.parent_id = None
+                    fld.original_parent_id = None
             break
+        visited.add(fid)
         fld = folder_map.get(fid)
         if fld is None:
             continue

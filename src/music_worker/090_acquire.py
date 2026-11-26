@@ -210,24 +210,34 @@ def _image(urls):
             continue
         try:
             return _jpeg(fetch_bytes(source, url), 1200)
-        except (SourceError, OSError, ValueError):
+        except Exception as e:
+            log(f'image from {source} skipped: {str(e)[:200]}')
             continue
     return None
 
 
 def gather_extras(card, album):
-    """Album art, artist images, lyrics and genres (plan section 12)."""
+    """Album art, artist images, lyrics and genres (plan section 12).
+
+    Runs after the audio is verified, so every extra is best effort: a failed
+    or rate-limited lookup only drops that extra. A SourcePaused is not lost:
+    the source's limiter already holds the pause for later calls."""
     cover = None
     if not lib_has_cover(album['id']):
         try:
             itunes = itunes_cover_url(album.get('upc'))
-        except SourceError:
+        except (SourceError, SourcePaused) as e:
+            log(f'iTunes cover lookup skipped: {str(e)[:200]}')
             itunes = None
         cover = _image([('itunes', itunes), ('deezer', album.get('cover_xl'))])
     artist_images = {}
     for dz_id, _name, _role in card['artists']:
         if not lib_has_artist_image(dz_id):
-            info = dz_artist(dz_id) or {}
+            try:
+                info = dz_artist(dz_id) or {}
+            except (SourceError, SourcePaused) as e:
+                log(f'artist {dz_id} image lookup skipped: {str(e)[:200]}')
+                continue
             image = _image([('deezer', info.get('picture_xl'))])
             if image:
                 artist_images[dz_id] = image
@@ -237,8 +247,8 @@ def gather_extras(card, album):
                               album.get('title', ''), card['duration'])
         if found and not found[2] and (found[0] or found[1]):
             lyrics = (found[0], found[1])
-    except SourceError:
-        pass
+    except (SourceError, SourcePaused) as e:
+        log(f'lyrics lookup skipped: {str(e)[:200]}')
     genres = [g['name'] for g in (album.get('genres') or {}).get('data') or []]
     return {'cover': cover, 'artist_images': artist_images, 'lyrics': lyrics, 'genres': genres}
 

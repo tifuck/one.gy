@@ -167,6 +167,7 @@ def admin_delete_user(user_id):
         for file in user_files:
             paths_to_delete.extend(_file_payload_delete_keys(file))
             db.session.delete(file)
+        paths_to_delete.extend(_delete_file_versions_of([file.id for file in user_files]))
         
         # Delete all user's folders
         user_folders = Folder.query.filter_by(user_id=user.id).all()

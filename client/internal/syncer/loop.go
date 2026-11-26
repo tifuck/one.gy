@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/rand"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/tifuck/one.gy/client/internal/logx"
 	"github.com/tifuck/one.gy/client/internal/reconcile"
 	"github.com/tifuck/one.gy/client/internal/state"
 	"github.com/tifuck/one.gy/client/internal/watch"
@@ -94,12 +96,31 @@ func (r *Runner) Run(ctx context.Context) {
 		}
 	}()
 	var lastPass time.Time
+	fails := 0 // internal errors in a row: unreadable sync row, panicked pass
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
 		row, err := r.env.Exec.DB.GetSync(ctx, r.ID)
-		if err != nil || row == nil {
+		if ctx.Err() != nil || (err == nil && row == nil) {
 			return
+		}
+		if err != nil {
+			fails++
+			wait := failDelay(fails)
+			slog.Error("cannot read the sync from the state database", "sync_id", r.ID, "err", err, "retry_in", wait)
+			r.mu.Lock()
+			r.detail, r.busy, r.retryAt = "Cannot read this sync's state ("+err.Error()+"); trying again", false, time.Now().Add(wait)
+			r.state = "error"
+			r.mu.Unlock()
+			if r.env.Events.Sync != nil {
+				r.env.Events.Sync(r.ID)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+			continue
 		}
 		if w == nil {
 			if w, err = watch.New(row.LocalRoot, watch.Options{Poll: pollFor(row.FSKind)}); err == nil {
@@ -111,20 +132,39 @@ func (r *Runner) Run(ctx context.Context) {
 		}
 		cfg := parseConfig(row.Config)
 		run, next := r.due(time.Now(), cfg, lastPass)
+		r.mu.Lock()
+		forced, holdUntil := r.forced, r.failHold
+		r.mu.Unlock()
+		if wait := time.Until(holdUntil); wait > 0 && !forced {
+			run, next = false, wait // backing off after an internal error (syncNow and retry skip the wait)
+		}
 		if run {
 			r.mu.Lock()
 			r.forced, r.dirty = false, false
 			r.mu.Unlock()
-			err := r.Pass(ctx)
+			err := r.safePass(ctx)
 			lastPass = time.Now()
+			held := errors.Is(err, logx.ErrPanic)
 			switch {
 			case errors.Is(err, ErrGone), ctx.Err() != nil:
 				return
+			case held:
+				fails++
+				next = failDelay(fails)
+				r.internalError(ctx, err, time.Now().Add(next))
 			case err != nil:
+				fails = 0
 				next = min(next, 30*time.Second) // offline or failed: try again soon
+			default:
+				fails = 0
 			}
-			_, next2 := r.due(time.Now(), cfg, lastPass)
-			next = min(next, next2)
+			if !held {
+				r.mu.Lock()
+				r.failHold = time.Time{}
+				r.mu.Unlock()
+				_, next2 := r.due(time.Now(), cfg, lastPass)
+				next = min(next, next2)
+			}
 		}
 		if !timer.Stop() {
 			select {
@@ -152,6 +192,31 @@ func (r *Runner) Run(ctx context.Context) {
 		case <-timer.C:
 		}
 	}
+}
+
+// safePass runs a pass; a panic (e.g. on unexpected server data) ends only
+// this pass, as an error wrapping logx.ErrPanic.
+func (r *Runner) safePass(ctx context.Context) (err error) {
+	defer logx.Recover(&err, "sync pass")
+	return r.Pass(ctx)
+}
+
+// internalError shows a panicked pass: error state, an issue, and when the
+// sync tries again.
+func (r *Runner) internalError(ctx context.Context, err error, retry time.Time) {
+	r.mu.Lock()
+	r.detail, r.busy, r.retryAt, r.failHold = "Syncing stopped on an internal error; trying again", false, retry, retry
+	r.mu.Unlock()
+	r.setState(ctx, "error", false)
+	r.fileIssue(ctx, reconcile.Issue{Kind: "sync_error", Message: "Syncing stopped on an internal error (" + err.Error() + "); it is tried again later. The engine log has the details.",
+		Actions: []string{"retry"}})
+}
+
+// failDelay backs off after internal errors: 30 s doubling, capped at 10
+// min, ±20% so syncs failing together do not retry together.
+func failDelay(n int) time.Duration {
+	d := min(30*time.Second<<min(max(n-1, 0), 5), 10*time.Minute)
+	return time.Duration(float64(d) * (0.8 + 0.4*rand.Float64()))
 }
 
 // pollFor: network shares and FAT drives get scans instead of change events.

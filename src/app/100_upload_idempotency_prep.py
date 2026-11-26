@@ -183,10 +183,14 @@ def _acquire_upload_key_locks(upload_scope):
         return None, None, True
     try:
         db_lock = _acquire_upload_idempotency_database_lock(upload_scope)
-    except RuntimeError as db_lock_err:
-        print(f'[UPLOAD] Upload idempotency database lock not acquired ({db_lock_err}); '
-              'failing closed with 503')
-        return flock, None, True
+    except Exception as db_lock_err:
+        print(f'[UPLOAD] Upload idempotency database lock not acquired '
+              f'({type(db_lock_err).__name__}: {db_lock_err}); failing closed with 503')
+        _release_upload_idempotency_lock(flock)
+        return None, None, True
+    if has_request_context():
+        # _commit_new_upload() re-checks ownership right before its commit.
+        g.upload_key_db_lock = db_lock
     return flock, db_lock, False
 
 
@@ -214,7 +218,9 @@ def _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_writte
     is gated on an explicit sentinel."""
     if payload_written and encrypted_filename:
         try:
-            storage.delete_file(encrypted_filename)
+            if not storage.delete_file(encrypted_filename):
+                print(f'[ERROR] Upload cleanup could not durably delete payload {encrypted_filename}; '
+                      f'left for orphan cleanup')
         except Exception as e:
             print(f'[ERROR] Upload cleanup failed to remove payload {encrypted_filename}: {e}')
     if thumbnail_written and file_id:
@@ -238,8 +244,10 @@ def _commit_new_upload(file_record, staged_path, owner_id, key_scope,
 
     Returns (outcome, row): ('committed', file_record), ('reused', winner) when
     another request committed the idempotency key first, ('folder_missing',
-    None) or ('db_error', None). Unless committed, the session is rolled back
-    and nothing this call wrote is left behind, also when it raises."""
+    None), ('lock_lost', None) when the upload-key database lock vanished
+    (fail closed: retryable 503) or ('db_error', None). Unless committed, the
+    session is rolled back and nothing this call wrote is left behind, also
+    when it raises."""
     file_id = file_record.id
     encrypted_filename = file_record.filename
     upload_key = file_record.upload_idempotency_key
@@ -296,6 +304,14 @@ def _commit_new_upload(file_record, staged_path, owner_id, key_scope,
             _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_written, thumbnail_written)
             payload_written = thumbnail_written = False
             return 'folder_missing', None
+
+        if has_request_context() and not _upload_db_lock_still_held(g.get('upload_key_db_lock')):
+            print(f'[ERROR] [{log_prefix}] Upload idempotency database lock lost before commit of {file_id}; '
+                  'failing closed with 503')
+            db.session.rollback()
+            _cleanup_failed_upload_artifacts(encrypted_filename, file_id, payload_written, thumbnail_written)
+            payload_written = thumbnail_written = False
+            return 'lock_lost', None
 
         try:
             # AUDIT FIX H3: refuse to commit unless the File row is still tracked
@@ -498,7 +514,8 @@ def _request_body_was_truncated():
 
     Returns False when the request carries no Content-Length (chunked bodies)
     or the counter could not be installed -- i.e. fails OPEN only where no
-    verification is possible at all, never on a body we did measure."""
+    verification is possible at all, never on a body we did measure. An error
+    while verifying counts as truncated."""
     try:
         declared = request.content_length
         if declared is None:
@@ -524,8 +541,8 @@ def _request_body_was_truncated():
             return True
         return False
     except Exception as e:
-        print(f'[UPLOAD] Could not verify request body length: {e}')
-        return False
+        print(f'[ERROR] [UPLOAD] Could not verify request body length ({e}); treating body as truncated')
+        return True
 
 
 def _zip_skip_if_e2e(file_obj, zip_path, pre_skipped):

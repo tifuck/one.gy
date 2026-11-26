@@ -123,6 +123,30 @@ func (r *Runner) syncIssues(ctx context.Context, list []reconcile.Issue) {
 	}
 }
 
+// fileIssue files one issue outside a plan (kept as sticky, so the next
+// plan keeps it open until resolved).
+func (r *Runner) fileIssue(ctx context.Context, is reconcile.Issue) {
+	r.addSticky(is)
+	db := r.env.Exec.DB
+	open, err := db.OpenIssues(ctx, r.ID)
+	if err != nil {
+		return
+	}
+	b, _ := json.Marshal(issueDetail{Message: is.Message, Actions: is.Actions, Detail: is.Detail})
+	for _, o := range open {
+		if issueKey(o.Kind, o.RelPath, View(o).Detail) == issueKey(is.Kind, is.Path, is.Detail) {
+			if o.Detail != string(b) {
+				db.UpdateIssueDetail(ctx, o.ID, string(b))
+			}
+			return
+		}
+	}
+	row := &state.IssueRow{SyncID: r.ID, Kind: is.Kind, RelPath: is.Path, Detail: string(b)}
+	if db.AddIssue(ctx, row) == nil {
+		r.announce(View(row), false)
+	}
+}
+
 func (r *Runner) announce(v IssueView, resolved bool) {
 	v.Resolved = resolved
 	if r.env.Events.Issue != nil {
@@ -203,7 +227,7 @@ func (r *Runner) Resolve(ctx context.Context, row *state.IssueRow, act, name str
 				delete(r.retries, k)
 			}
 		}
-		r.holdUp, r.holdDown = time.Time{}, time.Time{}
+		r.holdUp, r.holdDown, r.failHold = time.Time{}, time.Time{}, time.Time{}
 		r.mu.Unlock()
 	case act == "ignore":
 		if v.Path == "" {
@@ -234,13 +258,16 @@ func (r *Runner) Resolve(ctx context.Context, row *state.IssueRow, act, name str
 		}
 	case act == "keep_both" || act == "keep_remote" || act == "keep_local":
 		r.mu.Lock()
-		r.actions = append(r.actions, action{kind: v.Kind, path: v.Path, verb: act})
+		r.actions = append(r.actions, action{kind: v.Kind, path: v.Path, verb: act,
+			downgrade: act == "keep_remote" && v.Kind == "integrity" && v.Message == reconcile.DowngradeMessage})
 		r.mu.Unlock()
 		r.dropSticky(v.Path)
 	default:
 		return ErrBadAction
 	}
-	r.env.Exec.DB.ResolveIssue(ctx, row.ID)
+	if err := r.env.Exec.DB.ResolveIssue(ctx, row.ID); err != nil {
+		return err
+	}
 	r.announce(v, true)
 	r.Wake()
 	return nil
@@ -362,7 +389,7 @@ func (r *Runner) applyActions(ctx context.Context, x *exec.Executor, in *reconci
 		case a.verb == "keep_remote" && n != nil && n.Kind == localfs.KindFile:
 			op = reconcile.Op{Kind: reconcile.Download, Path: a.path, EntryKind: localfs.KindFile, RemoteID: n.ID, RemoteName: n.Name, Size: n.Size,
 				SHA256: n.SHA256, ContentVersion: n.ContentVersion, PayloadChecksum: n.PayloadChecksum, Local: &reconcile.Expect{Absent: true},
-				Downgrade: true, Base: base[a.path], Reason: "keep the one.gy version (user decision)"}
+				Downgrade: a.downgrade, Base: base[a.path], Reason: "keep the one.gy version (user decision)"}
 			if e != nil {
 				op.Local = expectOf(e)
 			}

@@ -499,12 +499,15 @@ class _StorageManagerReads:
         A positive verdict against File.payload_checksum is cached per path
         with the file's stat signature, so repeat calls (HEAD, page renders,
         ZIP admission) only stat() instead of re-hashing the whole payload;
-        any stat or checksum change forces a full re-hash."""
+        any stat or checksum change forces a full re-hash.
+
+        An I/O error stat-ing or hashing a present file raises OSError: it
+        proves nothing about the bytes, so it must not read as corruption."""
         if not file_obj or not local_path or not os.path.isfile(local_path):
             return False
         try:
             local_stat = os.stat(local_path)
-        except Exception:
+        except FileNotFoundError:
             return False
         local_size = local_stat.st_size
         expected_size = int(file_obj.disk_size) if file_obj.disk_size is not None else None
@@ -520,10 +523,13 @@ class _StorageManagerReads:
         local_checksum = None
         try:
             local_checksum = self._sha256_file(local_path)
-        except Exception as e:
+        except FileNotFoundError:
+            self._forget_local_integrity(local_path)
+            return False
+        except OSError as e:
             self._forget_local_integrity(local_path)
             print(f'[STORAGE] Failed to checksum local file {file_obj.id}: {e}')
-            return False
+            raise
         if not file_obj.payload_checksum:
             if self._local_payload_corroborated(file_obj.id, local_checksum, local_size):
                 file_obj.payload_checksum = local_checksum
@@ -568,7 +574,9 @@ class _StorageManagerReads:
 
     def get_file_path(self, filename):
         """Get local path for a file. Stages from remote if needed.
-        Returns None if the file cannot be found on any backend."""
+        Returns None if the file cannot be found on any backend. Raises OSError
+        when the local payload is present but unreadable and no other node
+        served it: that is 'unavailable' (500), not 'not found' (404)."""
         _validate_storage_file_id(filename)
         try:
             self._ensure_local_backend_ready()
@@ -579,6 +587,7 @@ class _StorageManagerReads:
         # during the top-of-function check, so the final fallback does not
         # re-serve bytes that were just rejected. See AUDIT FIX P0-1.
         _local_corrupt = False
+        _local_io_error = None
         # Check canonical path (when local node is configured)
         try:
             if local_backend and local_backend.exists('files', filename):
@@ -593,6 +602,9 @@ class _StorageManagerReads:
                         return local_path
                 else:
                     return local_path
+        except OSError as e:
+            _local_io_error = e
+            print(f'[STORAGE] Failed to check local file files/{filename}: {e}')
         except Exception as e:
             print(f'[STORAGE] Failed to check local file files/{filename}: {e}')
 
@@ -723,8 +735,13 @@ class _StorageManagerReads:
                     # not been verified yet; hold it to the same bar.
                     if file_obj is None or self._verify_local_file_integrity(file_obj, local_path, 'GET_FILE_PATH'):
                         return local_path
+            except OSError as e:
+                _local_io_error = e
             except Exception:
                 pass
+        if _local_io_error is not None:
+            print(f'[ERROR] [STORAGE] files/{filename} is on local disk but unreadable and no other node served it: {_local_io_error}')
+            raise OSError(f'local payload files/{filename} is unreadable: {_local_io_error}') from _local_io_error
         return None
 
     def _object_exists_anywhere(self, category, disk_id):

@@ -792,12 +792,28 @@ def cleanup_local_staged_files():
                 print(f'[CLEANUP] Skipping staged thumbnail purge for {thumb_id}: live remote verification failed')
                 continue
             size = local_size or 0
+            # Same fence as the files branch: a thumbnail published after the
+            # remote verification above has no remote copy yet.
+            thumb_lock = _acquire_thumbnail_publication_lock(fid, thumb_type)
             try:
+                db.session.rollback()
+                fresh_path = storage._local_backend.get_path('thumbnails', thumb_id)
+                generation_changed = (
+                    db.session.get(File, fid) is None
+                    or not os.path.isfile(fresh_path)
+                    or os.path.getsize(fresh_path) != local_size
+                    or storage._sha256_file(fresh_path) != local_checksum
+                )
+                if generation_changed:
+                    print(f'[CLEANUP] Skipping staged thumbnail purge for {thumb_id}: thumbnail changed after remote verification')
+                    continue
                 storage._local_backend.delete('thumbnails', thumb_id)
                 removed_thumbs += 1
                 bytes_freed += size
             except Exception as e:
                 print(f'[CLEANUP] Error removing staged thumbnail {thumb_id}: {e}')
+            finally:
+                _release_thumbnail_publication_lock(thumb_lock)
     total = removed_files + removed_notes + removed_thumbs
     if total > 0:
         mb_freed = bytes_freed / (1024 * 1024)

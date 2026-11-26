@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/tifuck/one.gy/client/e2ee"
@@ -53,6 +54,9 @@ func (x *Executor) createRemoteDir(ctx context.Context, j *job) error {
 			return issuef("name_clash", o.Path, "one.gy already has a folder with this name here.", "rename", "ignore")
 		case err != nil:
 			return apiIssue(err, o.Path)
+		}
+		if _, err := folderID(n.IDString()); err != nil {
+			return err
 		}
 		j.rec.Node = x.treeWrap(ctx, n)
 		if err := j.set(ctx, state.OpRemoteDone); err != nil {
@@ -145,7 +149,10 @@ func (x *Executor) moveSteps(ctx context.Context, j *job, parent *int64) error {
 		switch {
 		case !sameParent(n.ParentID, parent):
 			if o.EntryKind == localfs.KindDir {
-				id, _ := strconv.ParseInt(o.RemoteID, 10, 64)
+				id, err := folderID(o.RemoteID)
+				if err != nil {
+					return err
+				}
 				if cyc, cerr := x.insideFolder(ctx, parent, id); cerr != nil || cyc {
 					return orErr(cerr, ErrRemoteCycle)
 				}
@@ -160,7 +167,10 @@ func (x *Executor) moveSteps(ctx context.Context, j *job, parent *int64) error {
 			}
 			req.IfSeq = seq
 			if o.EntryKind == localfs.KindDir {
-				id, _ := strconv.ParseInt(o.RemoteID, 10, 64)
+				id, ierr := folderID(o.RemoteID)
+				if ierr != nil {
+					return ierr
+				}
 				res, err = c.RenameFolder(ctx, id, req)
 			} else {
 				res, err = c.RenameFile(ctx, o.RemoteID, req)
@@ -216,6 +226,16 @@ func (x *Executor) insideFolder(ctx context.Context, target *int64, id int64) (b
 		target = n.ParentID
 	}
 	return false, nil
+}
+
+// folderID parses a one.gy folder id. A bad one fails the op: id 0 addresses
+// no folder, and its "not found" would read as already gone.
+func folderID(s string) (int64, error) {
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("bad one.gy folder id %q", s)
+	}
+	return id, nil
 }
 
 func orErr(err, fallback error) error {
@@ -292,9 +312,15 @@ func (x *Executor) trashRemote(ctx context.Context, j *job) error {
 		}
 		var n *api.Node
 		if o.EntryKind == localfs.KindDir {
-			id, _ := strconv.ParseInt(o.RemoteID, 10, 64)
+			id, ierr := folderID(o.RemoteID)
+			if ierr != nil {
+				return ierr
+			}
 			n, err = c.TrashFolder(ctx, id, seq)
 		} else {
+			if o.RemoteID == "" {
+				return errors.New("no one.gy file id")
+			}
 			n, err = c.TrashFile(ctx, o.RemoteID, seq)
 		}
 		switch {

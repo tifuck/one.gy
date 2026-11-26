@@ -19,12 +19,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 
 	"github.com/tifuck/one.gy/client/internal/api"
 	"github.com/tifuck/one.gy/client/internal/ignore"
 	"github.com/tifuck/one.gy/client/internal/localfs"
+	"github.com/tifuck/one.gy/client/internal/logx"
 	"github.com/tifuck/one.gy/client/internal/reconcile"
 	"github.com/tifuck/one.gy/client/internal/remote"
 	"github.com/tifuck/one.gy/client/internal/state"
@@ -209,7 +211,9 @@ func (x *Executor) Recover(ctx context.Context) error {
 		var rec record
 		if err := json.Unmarshal([]byte(row.Pre), &rec); err != nil {
 			slog.Error("journal: unreadable op, dropping it", "op", row.ID, "err", err)
-			x.env.DB.FinishOp(ctx, row.ID, state.OpFailed, "unreadable journal record")
+			if err := x.finish(row.ID, state.OpFailed, "unreadable journal record"); err != nil {
+				return err
+			}
 			continue
 		}
 		if row.State == state.OpPlanned {
@@ -236,11 +240,21 @@ func unfinished(err error) bool {
 
 func (x *Executor) run(ctx context.Context, j *job, before func()) (err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			if _, ok := r.(crashPanic); !ok {
-				panic(r)
-			}
+		r := recover()
+		if r == nil {
+			return
+		}
+		if _, ok := r.(crashPanic); ok {
 			err = ErrCrashed
+			return
+		}
+		// A bug or unexpected data: this op fails like any other (the next
+		// plan starts it afresh, with the usual retry backoff).
+		slog.Error("op panicked", "op", j.row.ID, "kind", j.row.Kind, "panic", r, "stack", string(debug.Stack()))
+		err = fmt.Errorf("%w: %v", logx.ErrPanic, r)
+		x.cleanup(j.row.ID)
+		if ferr := x.finish(j.row.ID, state.OpFailed, err.Error()); ferr != nil {
+			err = errors.Join(err, ferr)
 		}
 	}()
 	if before != nil {
@@ -255,12 +269,27 @@ func (x *Executor) run(ctx context.Context, j *job, before func()) (err error) {
 		return err
 	case errors.Is(err, ErrSuperseded):
 		x.cleanup(j.row.ID)
-		x.env.DB.FinishOp(context.Background(), j.row.ID, state.OpSuperseded, "")
+		if ferr := x.finish(j.row.ID, state.OpSuperseded, ""); ferr != nil {
+			return ferr // not dropped quietly: the journal still has the op
+		}
 		return err
 	}
 	x.cleanup(j.row.ID)
-	x.env.DB.FinishOp(context.Background(), j.row.ID, state.OpFailed, err.Error())
+	if ferr := x.finish(j.row.ID, state.OpFailed, err.Error()); ferr != nil {
+		return errors.Join(err, ferr)
+	}
 	return err
+}
+
+// finish closes an op's journal row. A failure leaves the row open, so the
+// state DB no longer matches what happened (Recover would resume the op).
+func (x *Executor) finish(opID int64, st, msg string) error {
+	err := x.env.DB.FinishOp(context.Background(), opID, st, msg)
+	if err != nil {
+		slog.Error("journal: could not close op", "op", opID, "state", st, "err", err)
+		return fmt.Errorf("journal: could not close op %d: %w", opID, err)
+	}
+	return nil
 }
 
 func (x *Executor) dispatch(ctx context.Context, j *job) error {

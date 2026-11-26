@@ -27,6 +27,8 @@ class _StorageManagerInit:
     SINGLE_COPY_AUDIT_INTERVAL_SECONDS = 900
     SINGLE_COPY_ALERT_AFTER_SECONDS = 3600
     LOCAL_INTEGRITY_CACHE_MAX_ENTRIES = 4096
+    REFRESH_BACKENDS_MAX_ATTEMPTS = 5
+    BACKENDS_VERSION_BUMP_ATTEMPTS = 3
 
     def __init__(self, app_instance):
         self._app = app_instance
@@ -277,6 +279,10 @@ class _StorageManagerInit:
         return min(r.id for r in local_rows)
 
     def _build_backend_state(self):
+        # Writes here go through their own sessions: a request that lands on an
+        # uninitialised/stale worker must not have its pending ORM changes
+        # committed or rolled back by the build.
+        from sqlalchemy.orm import Session as _FreshSession
         local_paths = {
             'files': self._app.config['UPLOAD_FOLDER'],
             'notes': NOTES_DIR,
@@ -300,7 +306,6 @@ class _StorageManagerInit:
             # this build with a version read on its own connection, while the
             # caller's session may still hold an older REPEATABLE READ snapshot
             # (a disabled node would then be published under the new version).
-            from sqlalchemy.orm import Session as _FreshSession
             with _FreshSession(db.engine) as fresh_session:
                 all_local_rows = fresh_session.query(StorageNode).filter_by(node_type='local').all()
                 nodes = fresh_session.query(StorageNode).filter_by(is_enabled=True).all()
@@ -317,20 +322,21 @@ class _StorageManagerInit:
                 _dup_msg = 'NODE ALIASES THE PRIMARY LOCAL DISK: NOT A SEPARATE COPY'
                 try:
                     changed = 0
-                    for _model in (FileReplica, NoteReplica, ThumbnailReplica):
-                        changed += db.session.query(_model).filter(
-                            _model.node_id.in_(extra_local_ids),
-                            _model.status == 'synced',
-                        ).update({
-                            _model.status: 'error',
-                            _model.verified_at: None,
-                            _model.last_error: _dup_msg,
-                        }, synchronize_session=False) or 0
+                    with _FreshSession(db.engine) as write_session:
+                        for _model in (FileReplica, NoteReplica, ThumbnailReplica):
+                            changed += write_session.query(_model).filter(
+                                _model.node_id.in_(extra_local_ids),
+                                _model.status == 'synced',
+                            ).update({
+                                _model.status: 'error',
+                                _model.verified_at: None,
+                                _model.last_error: _dup_msg,
+                            }, synchronize_session=False) or 0
+                        write_session.commit()
                     if changed:
                         print(f'[STORAGE] Demoted {changed} false synced replica row(s) on '
                               f'additional local node(s) {extra_local_ids}: {_dup_msg}')
                 except Exception as _dup_err:
-                    db.session.rollback()
                     print(f'[STORAGE] Failed to demote duplicate-local replica rows: {_dup_err}')
             failed_node_ids = []
             for node in nodes:
@@ -350,9 +356,10 @@ class _StorageManagerInit:
                     print(f'[STORAGE] Failed to init backend for node {node.id} ({node.name}): {e}')
                     failed_node_ids.append(node.id)
             if failed_node_ids:
-                StorageNode.query.filter(StorageNode.id.in_(failed_node_ids)).update(
-                    {StorageNode.status: 'error'})
-            db.session.commit()
+                with _FreshSession(db.engine) as write_session:
+                    write_session.query(StorageNode).filter(StorageNode.id.in_(failed_node_ids)).update(
+                        {StorageNode.status: 'error'}, synchronize_session=False)
+                    write_session.commit()
         except Exception as e:
             print(f'[STORAGE] Failed to load storage nodes: {e}')
             # A build without the node rows is partial (local-only or empty);
@@ -362,26 +369,28 @@ class _StorageManagerInit:
                 raise
         if not new_backends:
             try:
-                local_node = StorageNode.query.filter_by(node_type='local').order_by(
-                    StorageNode.id.asc()).first()
-                if not local_node:
-                    try:
-                        local_node = StorageNode(
-                            name='Local Disk', node_type='local', is_primary=True, is_enabled=True,
-                            status='online', last_seen_at=datetime.now(timezone.utc),
-                        )
-                        local_node.set_config({'path': self._app.config['UPLOAD_FOLDER']})
-                        db.session.add(local_node)
-                        db.session.commit()
-                        print('[STORAGE] Auto-created local disk storage node')
-                    except Exception:
-                        db.session.rollback()
-                        local_node = StorageNode.query.filter_by(node_type='local').order_by(
-                            StorageNode.id.asc()).first()
-                        if not local_node:
-                            raise
-                new_backends[local_node.id] = new_local_backend
-                new_local_node_id = local_node.id
+                with _FreshSession(db.engine) as write_session:
+                    local_node = write_session.query(StorageNode).filter_by(node_type='local').order_by(
+                        StorageNode.id.asc()).first()
+                    if not local_node:
+                        try:
+                            local_node = StorageNode(
+                                name='Local Disk', node_type='local', is_primary=True, is_enabled=True,
+                                status='online', last_seen_at=datetime.now(timezone.utc),
+                            )
+                            local_node.set_config({'path': self._app.config['UPLOAD_FOLDER']})
+                            write_session.add(local_node)
+                            write_session.commit()
+                            print('[STORAGE] Auto-created local disk storage node')
+                        except Exception:
+                            write_session.rollback()
+                            local_node = write_session.query(StorageNode).filter_by(node_type='local').order_by(
+                                StorageNode.id.asc()).first()
+                            if not local_node:
+                                raise
+                    local_node_id = local_node.id
+                new_backends[local_node_id] = new_local_backend
+                new_local_node_id = local_node_id
             except Exception as e:
                 print(f'[STORAGE] Failed to ensure local node during refresh: {e}')
         return new_local_backend, new_backends, new_local_node_id
@@ -405,27 +414,36 @@ class _StorageManagerInit:
     def _bump_backends_version(self):
         """Increment the storage_backends_version counter so other workers detect staleness.
         CONCURRENCY FIX F5: uses SELECT ... FOR UPDATE so two workers bumping
-        concurrently cannot lose an increment (previously a non-atomic RMW)."""
-        try:
-            row = db.session.query(AppSetting).filter_by(key='storage_backends_version').with_for_update().first()
-            if row:
-                row.value = str(int(row.value) + 1)
-                row.updated_at = datetime.now(timezone.utc)
-            else:
-                row = AppSetting(key='storage_backends_version', value='1')
-                db.session.add(row)
-            db.session.commit()
-            # AUDIT FIX A1: _read_backends_version() reads the row directly (not
-            # through _get_raw_setting), so this counter is not cache-served
-            # today. Invalidate anyway so a future caller that switches to
-            # get_numeric_setting() cannot silently read a stale version.
-            _invalidate_settings_cache('storage_backends_version')
-        except Exception as e:
+        concurrently cannot lose an increment (previously a non-atomic RMW).
+        Callers have already committed the node change, so a failure is retried
+        a few times and then logged as [ERROR], not raised."""
+        for attempt in range(1, self.BACKENDS_VERSION_BUMP_ATTEMPTS + 1):
             try:
-                db.session.rollback()
-            except Exception:
-                pass
-            print(f'[STORAGE] Failed to bump backends version: {e}')
+                row = db.session.query(AppSetting).filter_by(key='storage_backends_version').with_for_update().first()
+                if row:
+                    row.value = str(int(row.value) + 1)
+                    row.updated_at = datetime.now(timezone.utc)
+                else:
+                    row = AppSetting(key='storage_backends_version', value='1')
+                    db.session.add(row)
+                db.session.commit()
+                # AUDIT FIX A1: _read_backends_version() reads the row directly (not
+                # through _get_raw_setting), so this counter is not cache-served
+                # today. Invalidate anyway so a future caller that switches to
+                # get_numeric_setting() cannot silently read a stale version.
+                _invalidate_settings_cache('storage_backends_version')
+                return True
+            except Exception as e:
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+                print(f'[STORAGE] Failed to bump backends version (attempt {attempt}): {e}')
+                if attempt < self.BACKENDS_VERSION_BUMP_ATTEMPTS:
+                    time.sleep(0.2 * attempt)
+        print(f'[ERROR] [STORAGE] Could not bump the backends version: other workers keep their old '
+              f'storage node set until the next successful bump or restart')
+        return False
 
     def _check_backends_freshness(self):
         """Check if this worker's backends are stale and refresh if needed.
@@ -468,7 +486,13 @@ class _StorageManagerInit:
             raise
 
     def _seed_local_replicas(self):
-        """One-time: create 'synced' FileReplica/NoteReplica/ThumbnailReplica rows for the local node for data on disk."""
+        """One-time: create 'synced' FileReplica/NoteReplica/ThumbnailReplica rows for the local node for data on disk.
+        Runs in its own session (see _build_backend_state)."""
+        from sqlalchemy.orm import Session as _FreshSession
+        with _FreshSession(db.engine) as session:
+            self._seed_local_replicas_in(session)
+
+    def _seed_local_replicas_in(self, session):
         nid = self._local_node_id
         now = datetime.now(timezone.utc)
 
@@ -479,15 +503,15 @@ class _StorageManagerInit:
             # inserts a row mid-seed does not cause a batch IntegrityError
             # that rolls back all seeded rows.
             existing_file_ids = set()
-            for r in FileReplica.query.filter_by(node_id=nid).with_entities(FileReplica.file_id).all():
+            for r in session.query(FileReplica).filter_by(node_id=nid).with_entities(FileReplica.file_id).all():
                 existing_file_ids.add(r[0])
             existing_note_ids = set()
-            for r in NoteReplica.query.filter_by(node_id=nid).with_entities(NoteReplica.note_id).all():
+            for r in session.query(NoteReplica).filter_by(node_id=nid).with_entities(NoteReplica.note_id).all():
                 existing_note_ids.add(r[0])
             # The membership sets keep refreshes cheap while still repairing a
             # partially seeded index after an interrupted migration or repair.
             seeded = 0
-            all_files = File.query.with_entities(File.id).all()
+            all_files = session.query(File).with_entities(File.id).all()
             for (fid,) in all_files:
                 if fid in existing_file_ids:
                     continue
@@ -495,31 +519,31 @@ class _StorageManagerInit:
                 if self._local_backend.exists('files', filename):
                     file_size = self._local_backend.size('files', filename)
                     if file_size and file_size > 0:
-                        db.session.add(FileReplica(
+                        session.add(FileReplica(
                             file_id=fid, node_id=nid, status='synced',
                             verified_at=now, size_bytes=file_size,
                         ))
                         seeded += 1
                     else:
-                        db.session.add(FileReplica(
+                        session.add(FileReplica(
                             file_id=fid, node_id=nid, status='error',
                         ))
                         print(f'[STORAGE] Seed: skipped zero-byte/unreadable file {filename}')
                     existing_file_ids.add(fid)
-            db.session.commit()
+            session.commit()
             if seeded > 0:
                 print(f'[STORAGE] Seeded {seeded} local file replicas')
 
             seeded_notes = 0
-            all_notes = Note.query.with_entities(Note.id).all()
+            all_notes = session.query(Note).with_entities(Note.id).all()
             for (note_id,) in all_notes:
                 if note_id in existing_note_ids:
                     continue
                 if self._local_backend.exists('notes', note_id):
-                    note_obj = db.session.get(Note, note_id)
+                    note_obj = session.get(Note, note_id)
                     note_version = int(note_obj.content_version or 1) if note_obj else 1
                     note_checksum = note_obj.content_checksum if note_obj else None
-                    db.session.add(NoteReplica(
+                    session.add(NoteReplica(
                         note_id=note_id,
                         node_id=nid,
                         status='synced',
@@ -530,11 +554,11 @@ class _StorageManagerInit:
                     ))
                     existing_note_ids.add(note_id)
                     seeded_notes += 1
-            db.session.commit()
+            session.commit()
             if seeded_notes > 0:
                 print(f'[STORAGE] Seeded {seeded_notes} local note replicas')
         except Exception as e:
-            db.session.rollback()
+            session.rollback()
             print(f'[STORAGE] Failed to seed local file/note replicas: {e}')
 
         # --- Seed thumbnails (independent — only creates rows that don't already exist) ---
@@ -546,7 +570,7 @@ class _StorageManagerInit:
         # have rows for both thumb_type variants.
         try:
             existing_thumbs = set()
-            for r in ThumbnailReplica.query.filter_by(node_id=nid).with_entities(ThumbnailReplica.file_id, ThumbnailReplica.thumb_type).all():
+            for r in session.query(ThumbnailReplica).filter_by(node_id=nid).with_entities(ThumbnailReplica.file_id, ThumbnailReplica.thumb_type).all():
                 existing_thumbs.add((r.file_id, r.thumb_type))
             seeded_thumbs = 0
             # Only consider files that currently HAVE a thumbnail. The
@@ -558,7 +582,7 @@ class _StorageManagerInit:
             # still has a stale thumbnail blob on disk. Gating the seed on
             # has_thumbnail=True keeps it consistent with that authoritative
             # filter and stops the churn.
-            thumb_file_ids = [fid for (fid,) in File.query.with_entities(File.id).filter_by(has_thumbnail=True).all()]
+            thumb_file_ids = [fid for (fid,) in session.query(File).with_entities(File.id).filter_by(has_thumbnail=True).all()]
             # Early skip: if every (file_id, thumb_type) pair this node could
             # ever care about already has a row, there's nothing to seed.
             # Otherwise, restrict the disk-stat loop to files that are still
@@ -586,16 +610,16 @@ class _StorageManagerInit:
                     )
                     if on_disk:
                         thumb_size = self._local_backend.size('thumbnails', thumb_id)
-                        db.session.add(ThumbnailReplica(
+                        session.add(ThumbnailReplica(
                             file_id=fid, thumb_type=thumb_type, node_id=nid,
                             status='synced', verified_at=now, size_bytes=thumb_size,
                         ))
                         seeded_thumbs += 1
             if seeded_thumbs > 0:
-                db.session.commit()
+                session.commit()
                 print(f'[STORAGE] Seeded {seeded_thumbs} local thumbnail replicas')
         except Exception as e:
-            db.session.rollback()
+            session.rollback()
             print(f'[STORAGE] Failed to seed local thumbnail replicas: {e}')
 
     def _create_backend(self, node):
@@ -627,7 +651,9 @@ class _StorageManagerInit:
         # Recheck both before and inside the short publication critical section;
         # a stale/out-of-order builder is discarded rather than labelled with a
         # newer version it never observed.
-        while True:
+        for attempt in range(1, self.REFRESH_BACKENDS_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                print(f'[STORAGE] Backends version moved during the build; rebuilding (attempt {attempt})')
             build_version = self._read_backends_version()
             new_local_backend, new_backends, new_local_node_id = self._build_backend_state()
             try:
@@ -661,6 +687,10 @@ class _StorageManagerInit:
                 continue
             self._close_backend_set(old_backends, keep=new_backends.values())
             break
+        else:
+            print(f'[ERROR] [STORAGE] Backends version kept changing across '
+                  f'{self.REFRESH_BACKENDS_MAX_ATTEMPTS} builds; keeping the current backend set')
+            raise RuntimeError('storage backends version did not settle during refresh')
 
         if new_local_node_id:
             self._seed_local_replicas()

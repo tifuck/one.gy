@@ -590,6 +590,7 @@ def delete_account():
         for file in user_files:
             paths_to_delete.extend(_file_payload_delete_keys(file))
             db.session.delete(file)
+        paths_to_delete.extend(_delete_file_versions_of([file.id for file in user_files]))
 
         # Delete all user's folders
         user_folders = Folder.query.filter_by(user_id=user_id).all()
@@ -639,29 +640,6 @@ def delete_account():
         local_targets = storage.stage_payload_deletes(paths_to_delete)
         local_targets += storage.stage_payload_deletes(note_paths)
         db.session.commit()
-
-        _release_lifecycle_lock(lifecycle_lock)
-        lifecycle_lock = None
-        _release_admin_reduction_lock(admin_reduction_lock)
-        admin_reduction_lock = None
-
-        # DB commit succeeded -- now safe to remove local disk payloads
-        _purge_staged_locals_with_note_locks(local_targets)
-
-        print(f'[AUTH] Account self-deleted: {username} (ID: {user_id}, files: {file_count}, folders: {folder_count}, notes: {note_count})')
-
-        # Clear session (log out)
-        guest_user_id = session.get('user_id')
-        session.clear()
-        if guest_user_id:
-            session['user_id'] = guest_user_id
-
-        if is_ajax:
-            return jsonify({'success': True, 'redirect': url_for('index')})
-
-        flash('YOUR ACCOUNT HAS BEEN PERMANENTLY DELETED', 'success')
-        return redirect(url_for('index'))
-
     except Exception as e:
         db.session.rollback()
         print(f'[ERROR] Account self-delete failed for {username}: {e}')
@@ -672,4 +650,25 @@ def delete_account():
     finally:
         _release_lifecycle_lock(lifecycle_lock)
         _release_admin_reduction_lock(admin_reduction_lock)
+
+    # The account is gone from here on: a failure below must not report otherwise.
+    try:
+        _purge_staged_locals_with_note_locks(local_targets)
+    except Exception as e:
+        print(f'[ERROR] Account {username} (ID: {user_id}) deleted but purging its local payloads failed '
+              f'(orphan cleanup removes them): {e}')
+
+    print(f'[AUTH] Account self-deleted: {username} (ID: {user_id}, files: {file_count}, folders: {folder_count}, notes: {note_count})')
+
+    # Clear session (log out)
+    guest_user_id = session.get('user_id')
+    session.clear()
+    if guest_user_id:
+        session['user_id'] = guest_user_id
+
+    if is_ajax:
+        return jsonify({'success': True, 'redirect': url_for('index')})
+
+    flash('YOUR ACCOUNT HAS BEEN PERMANENTLY DELETED', 'success')
+    return redirect(url_for('index'))
 

@@ -268,6 +268,31 @@ func (s *DB) TakeDebris(ctx context.Context, syncID string, cutoff time.Time) ([
 	return out, err
 }
 
+// OldDebris returns the debris paths of a sync moved there before cutoff
+// (the records stay until DropDebris).
+func (s *DB) OldDebris(ctx context.Context, syncID string, cutoff time.Time) ([]string, error) {
+	rows, err := s.QueryContext(ctx, `SELECT debris_path FROM debris WHERE sync_id = ? AND at < ?`, syncID, cutoff.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// DropDebris forgets a debris path (deleted, or not one to delete).
+func (s *DB) DropDebris(ctx context.Context, syncID, debrisPath string) error {
+	_, err := s.ExecContext(ctx, `DELETE FROM debris WHERE sync_id = ? AND debris_path = ?`, syncID, debrisPath)
+	return err
+}
+
 // RemoteHash returns a plaintext hash verified for this payload ("" = none).
 func (s *DB) RemoteHash(ctx context.Context, fileID, payloadChecksum string) (string, error) {
 	var h string

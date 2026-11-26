@@ -374,7 +374,8 @@ def _plan_s3_version_cleanup(entries, expected_file_ids):
     plans = []
     for file_id in sorted(grouped.keys()):
         versions = grouped[file_id]
-        latest_entry = next((item for item in versions if item.get('is_latest')), versions[0])
+        flagged_latest = next((item for item in versions if item.get('is_latest')), None)
+        latest_entry = flagged_latest or versions[0]
         delete_version_ids = [item.get('version_id') for item in versions if item.get('version_id')]
         plan = {
             'file_id': file_id,
@@ -394,6 +395,12 @@ def _plan_s3_version_cleanup(entries, expected_file_ids):
             plan['action'] = 'purge'
             plan['reason'] = 'orphan_key'
             plan['delete_version_ids'] = delete_version_ids
+        elif flagged_latest is None:
+            # Without IsLatest the current version is unknown, and pruning every
+            # non-latest version would delete it too.
+            print(f'[STORAGE] Skipping version cleanup for {file_id}: no version is flagged IsLatest')
+            plan['action'] = 'skip'
+            plan['reason'] = 'no_latest_version'
         elif latest_entry.get('is_delete_marker'):
             plan['action'] = 'skip'
             plan['reason'] = 'expected_live_delete_marker'

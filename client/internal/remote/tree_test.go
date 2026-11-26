@@ -184,3 +184,28 @@ func TestPollerAppliesAndNudges(t *testing.T) {
 }
 
 func ptr(v int64) *int64 { return &v }
+
+// A server whose page tokens go round in a cycle fails the snapshot instead
+// of paging forever.
+func TestSnapshotPageTokenCycle(t *testing.T) {
+	tree, srv, _ := setup(t)
+	srv.TreePageToken = func(requested string) string {
+		if requested == "a" {
+			return "b"
+		}
+		return "a" // "" -> a -> b -> a ...
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := tree.Sync(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("snapshot with cycling page tokens succeeded")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("snapshot pages forever")
+	}
+}

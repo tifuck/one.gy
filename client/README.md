@@ -14,7 +14,7 @@ cross-checks against it through `../tests/crypto_helper.js`).
 
 ```bash
 go test ./... && go build ./cmd/onegy
-bash build.sh                                   # CLI builds for /static/cli/ (DOMAIN from ../.env)
+bash build.sh                                   # signed CLI builds for /static/cli/ (DOMAIN, CLI_SIGNING_KEY_FILE from ../.env)
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/onegy   # release cross-compile
 go build -tags devtls -o bin/onegy ./cmd/onegy  # allows `daemon --insecure-tls` and `--insecure` (local DEV server only)
 ./bin/onegy daemon --state-dir /tmp/e --socket /tmp/e.sock      # run the engine by hand
@@ -26,7 +26,17 @@ go build -tags devtls -o bin/onegy ./cmd/onegy  # allows `daemon --insecure-tls`
 - `onegy upload <file>` / `onegy download <url>`: anonymous E2EE temp upload and
   share-link download. These self-update from `/cli/version` unless the build is
   `-X main.bundled=1` (the desktop app's copy updates with the app), and only
-  to a strictly newer `version` than their own (never a downgrade).
+  to a strictly newer `version` than their own (never a downgrade), and only
+  from the same origin (no cross-host redirects).
+  Updates must be signed: `build.sh` embeds the Ed25519 public key of
+  `CLI_SIGNING_KEY_FILE` (default `~/.config/onegy/cli-signing.key`, generated
+  on the first build, never inside the repo) as `-X main.updatePublicKey` and
+  adds a `signature` to each manifest entry over
+  `onegy-cli-update-v1\n<domain>\n<version>\n<platform>\n<sha256>\n`
+  (`release_sign.go`; older clients ignore the field). A build without the key
+  (`go build`, the desktop app) never self-updates. `download` refuses the
+  legacy v1 file format (no chunk AAD, so truncation is undetectable) unless
+  given `--allow-legacy-v1`.
 - `onegy daemon [--state-dir --socket --log-level --ipc-stdio --secrets-file --insecure-tls]`:
   the sync engine (flags, single-instance lock, log file, IPC listener). Not on
   macOS yet (`localfs`/`watch` have no darwin port), so macOS builds ship the
@@ -87,7 +97,8 @@ sudo systemctl enable --now onegy
 ## Packages
 
 - `cmd/onegy`: the binary. `main.go` dispatches; `cmd_upload.go`/`cmd_download.go`
-  are the file commands, `daemon.go` the engine, `ipc.go` the RPC tool,
+  are the file commands, `release_sign.go` the update signing (build side and
+  client check), `daemon.go` the engine, `ipc.go` the RPC tool,
   `platform_*.go` the per-OS bits.
 - `e2ee`: AES-256-GCM chunked container, split-key derivation, key wrapping.
 - `internal/config`: state dir, socket path, `engine.json`, lock file, version.

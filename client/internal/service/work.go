@@ -299,13 +299,9 @@ func (s *Service) manualUpload(ctx context.Context, params json.RawMessage) (any
 	if len(errs) > 0 {
 		return nil, validationFailed(errs)
 	}
-	ids := []string{}
-	for _, p := range in.Paths {
-		id, err := exec.ManualUpload(s.root(), s.xenv, s.opts.StateDir, p, folder)
-		if err != nil {
-			return nil, validationFailed([]problem{{Code: "invalid", Field: "paths", Message: err.Error()}})
-		}
-		ids = append(ids, id)
+	ids, err := exec.ManualUpload(s.root(), s.xenv, s.opts.StateDir, in.Paths, folder)
+	if err != nil {
+		return nil, validationFailed([]problem{{Code: "invalid", Field: "paths", Message: err.Error()}})
 	}
 	return map[string]any{"transfer_ids": ids}, nil
 }
@@ -324,13 +320,9 @@ func (s *Service) manualDownload(ctx context.Context, params json.RawMessage) (a
 	if _, err := s.tree.Sync(ctx); err != nil {
 		return nil, err
 	}
-	ids := []string{}
-	for _, id := range in.RemoteIDs {
-		tid, err := exec.ManualDownload(s.root(), s.xenv, id, in.LocalDir)
-		if err != nil {
-			return nil, validationFailed([]problem{{Code: "invalid", Field: "remote_ids", Message: err.Error()}})
-		}
-		ids = append(ids, tid)
+	ids, err := exec.ManualDownload(s.root(), s.xenv, in.RemoteIDs, in.LocalDir)
+	if err != nil {
+		return nil, validationFailed([]problem{{Code: "invalid", Field: "remote_ids", Message: err.Error()}})
 	}
 	return map[string]any{"transfer_ids": ids}, nil
 }

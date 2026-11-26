@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -216,5 +218,50 @@ func TestServeTrusted(t *testing.T) {
 		<-idle
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close waits for a read that never ends")
+	}
+}
+
+// One connection runs at most maxCalls calls at once; further frames wait
+// until a call finishes instead of each starting a goroutine.
+func TestCallsPerConnectionBounded(t *testing.T) {
+	s := NewServer()
+	var running, peak atomic.Int32
+	release := make(chan struct{})
+	s.Handle("block", func(context.Context, json.RawMessage) (any, error) {
+		n := running.Add(1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		<-release
+		running.Add(-1)
+		return nil, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client, server := net.Pipe()
+	defer client.Close()
+	s.ServeTrusted(ctx, server)
+	const n = maxCalls + 10
+	go func() {
+		for i := 0; i < n; i++ {
+			client.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"block"}` + "\n"))
+		}
+	}()
+	for end := time.Now().Add(5 * time.Second); running.Load() < maxCalls; {
+		if time.Now().After(end) {
+			t.Fatalf("only %d calls started", running.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if p := peak.Load(); p != maxCalls {
+		t.Fatalf("%d calls ran at once, want %d", p, maxCalls)
+	}
+	close(release)
+	r := bufio.NewReader(client)
+	for i := 0; i < n; i++ {
+		client.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, err := r.ReadBytes('\n'); err != nil {
+			t.Fatalf("answer %d: %v", i, err)
+		}
 	}
 }

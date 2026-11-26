@@ -33,7 +33,7 @@ test('installs an executable service menu for KF6 and KF5', async () => {
   await kde.install({ exe: '/opt/ONE.GY Desktop/onegy-desktop', dataHome: home });
   for (const f of files(home)) {
     const body = fs.readFileSync(f, 'utf8');
-    assert.equal(fs.statSync(f).mode & 0o777, 0o755);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(f).mode & 0o777, 0o755); // Windows has no exec bit
     assert.match(body, /^Name=Open on one\.gy$/m);
     assert.match(body, /^MimeType=application\/octet-stream;inode\/directory;$/m);
     assert.match(body, /^ServiceTypes=KonqPopupMenu\/Plugin$/m);

@@ -39,6 +39,9 @@ type Server struct {
 	// != 0; -1 drops the connection) or after (lost=true: processed, then
 	// the connection is dropped, as if the answer got lost).
 	Fault func(method, path string) (status int, lost bool)
+	// TreePageToken, when set, picks the next_page_token of each tree page
+	// from the requested one ("" = last page).
+	TreePageToken func(requested string) string
 
 	mu         sync.Mutex
 	authToken  string
@@ -423,6 +426,12 @@ func (s *Server) tree(w http.ResponseWriter, r *http.Request) {
 	}
 	if end < len(nodes) {
 		out["next_page_token"] = strconv.Itoa(end)
+	}
+	if s.TreePageToken != nil {
+		out["next_page_token"] = nil
+		if next := s.TreePageToken(r.URL.Query().Get("page_token")); next != "" {
+			out["next_page_token"] = next
+		}
 	}
 	writeJSON(w, 200, out)
 }

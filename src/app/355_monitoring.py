@@ -173,6 +173,7 @@ def _build_monitor_state():
                             'interval': int(get_numeric_setting('integrity_scrub_interval') or 0)},
     }
     state['backups'] = _collect_backup_state()
+    state['missing_unique_indexes'] = _missing_unique_indexes()
     try:
         disk = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
         state['disk'] = {'total': int(disk.total), 'free': int(disk.free)}
@@ -241,6 +242,9 @@ def _monitor_issues(state):
             add('warning', 'missing_replicas', f'{n["name"]} is missing {_plural(n["missing"], "copy", "copies")} and has no source to re-copy from', n['name'])
         if n['enabled'] and n.get('verify_age', {}).get('older'):
             add('warning', 'scrub_behind', f'{_plural(n["verify_age"]["older"], "copy", "copies")} on {n["name"]} not checked for over 30 days', n['name'])
+    for index_name in state.get('missing_unique_indexes', []):
+        add('warning', 'unique_index_missing', f'UNIQUE index {index_name} is missing: the database does not '
+            'enforce that uniqueness (see the db-upgrade log)', index_name)
     if state['parked']:
         add('warning', 'parked_replicas', f'{_plural(state["parked"], "replica")} stopped retrying and need an admin retry')
     if state['remote_deletes']['stalled']:
@@ -290,6 +294,7 @@ _METRIC_HELP = {
     'onegy_backup_last_run_offsite_ok': '1 offsite copy verified, 0 failed, -1 local only',
     'onegy_backup_last_run_duration_seconds': 'Duration of the most recent backup run',
     'onegy_local_disk_bytes': 'Local upload disk size and free space',
+    'onegy_unique_indexes_missing': 'Integrity UNIQUE indexes absent from the database',
     'onegy_issue': 'Open monitoring issue (always 1)',
     'onegy_issues': 'Open monitoring issues by severity',
     'onegy_metrics_collect_seconds': 'Time spent building the monitoring state',
@@ -363,6 +368,7 @@ def build_metrics_text(state):
     if state['disk']:
         add('onegy_local_disk_bytes', state['disk']['total'], {'kind': 'total'})
         add('onegy_local_disk_bytes', state['disk']['free'], {'kind': 'free'})
+    add('onegy_unique_indexes_missing', len(state.get('missing_unique_indexes', [])))
 
     counts = {'critical': 0, 'warning': 0, 'info': 0}
     for issue in state['issues']:

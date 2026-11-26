@@ -599,8 +599,11 @@ class _StorageManagerReplicationCycle:
             if cycle_local_backend:
                 try:
                     _local_files_set = set(cycle_local_backend.list_files('files') or [])
-                except Exception:
-                    _local_files_set = set()
+                except Exception as e:
+                    # An unknown local listing is not an empty one: skip
+                    # triage this pass rather than mark replicas missing.
+                    print(f'[REPLICATION] [ERROR] Local files listing failed; skipping error-replica triage this pass: {e}')
+                    return missing_marked
             for r in error_file_replicas:
                 filename = f'{r.file_id}.enc'
                 has_source = (filename in _local_files_set) or (r.file_id in _synced_file_ids)
@@ -646,8 +649,9 @@ class _StorageManagerReplicationCycle:
             if cycle_local_backend:
                 try:
                     _local_notes_set = set(cycle_local_backend.list_files('notes') or [])
-                except Exception:
-                    _local_notes_set = set()
+                except Exception as e:
+                    print(f'[REPLICATION] [ERROR] Local notes listing failed; skipping error-replica triage this pass: {e}')
+                    return
             for r in error_note_replicas:
                 # Self-heal (reconcile_note_to_local) already ran, unlocked,
                 # in _reconcile_notes_unlocked() for replicas past cooldown.
@@ -694,8 +698,9 @@ class _StorageManagerReplicationCycle:
             if cycle_local_backend:
                 try:
                     _local_thumbs_set = set(cycle_local_backend.list_files('thumbnails') or [])
-                except Exception:
-                    _local_thumbs_set = set()
+                except Exception as e:
+                    print(f'[REPLICATION] [ERROR] Local thumbnails listing failed; skipping error-replica triage this pass: {e}')
+                    return thumb_missing_marked, thumb_flag_cleared
             # Bulk-load File rows we may need to clear has_thumbnail on
             _thumb_files = {
                 f.id: f for f in File.query.filter(File.id.in_(_error_thumb_ids)).all()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,7 +39,7 @@ type keyInfoResponse struct {
 	NameNonce              string `json:"name_nonce"`
 }
 
-func cmdDownload(rawURL string, insecure bool) error {
+func cmdDownload(rawURL string, insecure, allowLegacyV1 bool) error {
 	parsed, fragmentBytes, err := parseDownloadURL(rawURL)
 	if err != nil {
 		return err
@@ -93,8 +94,12 @@ func cmdDownload(rawURL string, insecure bool) error {
 	// 5. Write decrypted stream to disk (handle filename conflicts)
 	// Security: strip directory components to prevent path traversal attacks
 	// (origName may come from server response, URL path, or decrypted filename)
+	body := bufio.NewReader(encResp.Body)
+	if err := checkContainerVersion(body, allowLegacyV1); err != nil {
+		return err
+	}
 	outputPath := safePath(filepath.Base(origName))
-	written, err := writeDecryptedFile(encResp.Body, fileKey, outputPath)
+	written, err := writeDecryptedFile(body, fileKey, outputPath)
 	if err != nil {
 		return err
 	}
@@ -346,6 +351,23 @@ func unwrapLinkSecretFileKey(keyInfo keyInfoResponse, fragmentBytes []byte) ([]b
 		return nil, fmt.Errorf("decryption failed — share link may be corrupted: %w", lastUnwrap)
 	}
 	return nil, fmt.Errorf("no encrypted file key available for this file")
+}
+
+// checkContainerVersion refuses the legacy v1 container unless the user opted
+// in: its chunks carry no AAD, so a server can drop trailing chunks (and lower
+// the chunk count) without the decryption noticing, and the CLI has no
+// plaintext size or hash to compare against. Current uploads are all v2.
+func checkContainerVersion(r *bufio.Reader, allowLegacyV1 bool) error {
+	first, err := r.Peek(1)
+	if err != nil || first[0] != 1 {
+		return nil // DecryptStream reports short or unknown containers
+	}
+	if !allowLegacyV1 {
+		return fmt.Errorf("this file uses the legacy v1 encryption format, which cannot detect a server cutting off the end of the file.\n" +
+			"Re-run with --allow-legacy-v1 to download it anyway, or ask the owner to upload it again")
+	}
+	fmt.Fprintf(os.Stderr, "\nWarning: legacy v1 file format; a truncated file cannot be detected\nDecrypting... ")
+	return nil
 }
 
 // writeDecryptedFile decrypts src into a private temp file next to outputPath

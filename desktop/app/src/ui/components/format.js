@@ -126,6 +126,7 @@ export const ISSUE_KINDS = {
   too_large: 'File too large',
   watch_limit: 'Too many folders to watch',
   sync_error: 'Sync keeps failing',
+  account_mismatch: 'Synced with another account',
 };
 
 export const ISSUE_ACTIONS = {

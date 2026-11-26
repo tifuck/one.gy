@@ -161,6 +161,11 @@ func TestEngineFlow(t *testing.T) {
 		t.Fatalf("unknown key accepted: %v", e)
 	}
 
+	// Added before sign-in: the snapshot taken after authorize may finish
+	// before remote.list, which then reads only the cache.
+	docs := srv.AddFolder(nil, "Docs")
+	other := srv.AddFolder(nil, "Other")
+
 	// Authorize.
 	if _, e := rc.call("account.authorize", map[string]any{"server": srv.URL, "username": "carol", "password": "bad", "device_name": "PC"}); errCode(e) != "invalid_credentials" {
 		t.Fatalf("bad password: %v", e)
@@ -174,8 +179,6 @@ func TestEngineFlow(t *testing.T) {
 	}
 
 	// Remote browse + create.
-	docs := srv.AddFolder(nil, "Docs")
-	other := srv.AddFolder(nil, "Other")
 	l := rc.ok("remote.list", map[string]any{"folder_id": nil})
 	if len(l["folders"].([]any)) != 2 {
 		t.Fatalf("list %v", l)

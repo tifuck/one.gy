@@ -6,10 +6,12 @@ package logx
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 )
@@ -48,6 +50,19 @@ func Setup(dir string) (*RotatingFile, error) {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: Level})))
 	return f, nil
+}
+
+// ErrPanic wraps the errors Recover makes of panics.
+var ErrPanic = errors.New("internal error")
+
+// Recover, deferred by a goroutine around one unit of work (a sync pass, a
+// poll, a transfer), turns a panic into *err and logs it with its stack, so
+// unexpected data fails that unit instead of the whole engine.
+func Recover(err *error, what string) {
+	if r := recover(); r != nil {
+		slog.Error(what+" panicked", "panic", r, "stack", string(debug.Stack()))
+		*err = fmt.Errorf("%w: %v", ErrPanic, r)
+	}
 }
 
 // Name returns a loggable form of a file name or path: the name itself at

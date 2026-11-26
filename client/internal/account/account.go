@@ -95,7 +95,8 @@ type Status struct {
 	DeviceName      string  `json:"device_name"`
 	StorageUsed     int64   `json:"storage_used"`
 	StorageLimit    int64   `json:"storage_limit"`
-	Versioning      bool    `json:"versioning"` // one.gy keeps previous versions on replace
+	Versioning      bool    `json:"versioning"`      // one.gy keeps previous versions on replace
+	KeyStoreError   string  `json:"key_store_error"` // the last key store write failed: the secrets are in memory only ("" = saved)
 }
 
 // Manager is safe for concurrent use. Network calls run without the lock.
@@ -124,7 +125,8 @@ type Manager struct {
 	sysToken    string // fingerprint unlock token (key store)
 	sysAvail    string // cached Kind() when Available
 	sysAvailAt  time.Time
-	failPending int // failed local unlocks not reported yet (offline)
+	failPending int    // failed local unlocks not reported yet (offline)
+	ksErr       string // why the key store could not be read or written ("" = fine)
 
 	// OnChange runs (in its own goroutine) after sign-in or lock state changes;
 	// OnRevoked after the server reported device_revoked.
@@ -161,6 +163,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		}
 	} else if !errors.Is(err, keystore.ErrNotFound) {
 		slog.Warn("key store unavailable, starting locked", "err", err)
+		m.ksErr = err.Error()
 	}
 	return nil
 }
@@ -333,6 +336,14 @@ func (m *Manager) Authorize(ctx context.Context, p AuthorizeParams) error {
 	}
 	client.SetToken(auth.DeviceToken)
 	client.SetSigner(pop)
+	// Do not leave a half-authorized device behind on the account.
+	abandon := func(err error) error {
+		if derr := client.DeleteDevice(context.WithoutCancel(ctx)); derr != nil {
+			slog.Warn("could not remove the half-authorized device", "err", derr)
+		}
+		devkey.Delete(pop.Ref())
+		return err
+	}
 	masterKey, err := m.fetchMasterKey(ctx, client, wrappingKey)
 	var unlock *api.UnlockResponse
 	if err == nil {
@@ -342,21 +353,18 @@ func (m *Manager) Authorize(ctx context.Context, p AuthorizeParams) error {
 	if err == nil {
 		share, mshare, err = shares(unlock)
 	}
-	if err != nil {
-		// Do not leave a half-authorized device behind on the account.
-		if derr := client.DeleteDevice(context.WithoutCancel(ctx)); derr != nil {
-			slog.Warn("could not remove the half-authorized device", "err", derr)
-		}
-		devkey.Delete(pop.Ref())
-		return err
+	if err == nil && mshare == nil { // a password unlock always carries it (sync-api.md "App lock")
+		err = fmt.Errorf("server sent no master share")
 	}
-	local, err := e2ee.RandomBytes(e2ee.KeySize)
-	if err != nil {
-		return err
+	var local, pool []byte
+	if err == nil {
+		local, err = e2ee.RandomBytes(e2ee.KeySize)
 	}
-	pool, err := e2ee.RandomBytes(e2ee.KeySize)
+	if err == nil {
+		pool, err = e2ee.RandomBytes(e2ee.KeySize)
+	}
 	if err != nil {
-		return err
+		return abandon(err)
 	}
 	a := &state.Account{
 		ServerURL: client.Server(), UserID: auth.User.ID, Username: auth.User.Username, DeviceID: auth.DeviceID,
@@ -369,18 +377,25 @@ func (m *Manager) Authorize(ctx context.Context, p AuthorizeParams) error {
 	m.acct, m.client, m.masterKey, m.keysOpen, m.token, m.me = a, client, masterKey, true, auth.DeviceToken, nil
 	m.localKey, m.popKey, m.share, m.masterShare, m.poolKey, m.treeKeys, m.sec = local, pop, share, mshare, pool, map[int64][]byte{}, unlock.Security
 	m.mu.Unlock()
-	if err := m.db.PutAccount(ctx, a); err != nil {
-		return err
+	err = m.db.PutAccount(ctx, a)
+	if err == nil {
+		err = m.sealPassword(ctx, wrappingKey)
 	}
-	if err := m.sealPassword(ctx, wrappingKey); err != nil {
-		return err
+	if err == nil {
+		err = m.sealScope(ctx)
 	}
-	if err := m.sealScope(ctx); err != nil {
-		return err
+	if err == nil {
+		err = m.sealMaster(ctx)
 	}
-	if err := m.sealMaster(ctx); err != nil {
-		return err
+	if err != nil {
+		if werr := m.wipe(context.WithoutCancel(ctx)); werr != nil {
+			slog.Warn("could not clear the unfinished sign-in", "err", werr)
+		}
+		return abandon(err)
 	}
+	// A key store that cannot be written does not fail the sign-in: the
+	// password-sealed copy just written opens the keys after a restart, and
+	// persist reports the failure in account.status (key_store_error).
 	m.persist()
 	client.SetGrant(unlock.Grant)
 	slog.Info("device authorized", "device_id", a.DeviceID, "hardware_key", pop.Hardware())
@@ -443,13 +458,25 @@ func (m *Manager) fetchMasterKey(ctx context.Context, client *api.Client, wrappi
 }
 
 // persist writes the key store entry: token, local key, signing key, and the
-// master key only while there is no sealed copy of it (not migrated yet).
-func (m *Manager) persist() bool {
+// master key only while there is no sealed copy of it (not migrated yet). A
+// failure leaves them in memory only (after a restart only the password opens
+// them): it is logged and shown in account.status until a write succeeds.
+func (m *Manager) persist() error {
 	sealed := m.hasMasterAtRest(context.Background())
 	m.mu.Lock()
 	b, _ := json.Marshal(m.secretsLocked(!sealed))
 	m.mu.Unlock()
-	return m.ks.Set(secretsName, string(b))
+	err := m.ks.Set(secretsName, string(b))
+	m.mu.Lock()
+	m.ksErr = ""
+	if err != nil {
+		m.ksErr = err.Error()
+	}
+	m.mu.Unlock()
+	if err != nil {
+		slog.Error("device secrets not saved in the key store; after a restart only the password unlocks this computer", "err", err)
+	}
+	return err
 }
 
 // AutoUnlock opens the scope set with the server's share (no PIN unless
@@ -1133,7 +1160,7 @@ func (m *Manager) wipe(ctx context.Context) error {
 	if m.acct != nil && m.sys != nil {
 		m.sys.Remove(sysName(m.acct.DeviceID))
 	}
-	m.sysToken, m.failPending = "", 0
+	m.sysToken, m.failPending, m.ksErr = "", 0, ""
 	if m.popKey != nil {
 		devkey.Delete(m.popKey.Ref())
 	}
@@ -1211,7 +1238,7 @@ func (m *Manager) Status(ctx context.Context) Status {
 		m.mu.Unlock()
 	}
 	m.mu.Lock()
-	sec, hardware, full := m.sec, m.popKey != nil && m.popKey.Hardware(), m.masterKey != nil
+	sec, hardware, full, ksErr := m.sec, m.popKey != nil && m.popKey.Hardware(), m.masterKey != nil, m.ksErr
 	m.mu.Unlock()
 	avail := m.systemAvailable(ctx)
 	st := Status{SignedIn: true, Locked: !open, FullKeys: full, AppLocked: client.Grant() == "", Server: a.ServerURL, Username: a.Username,
@@ -1219,7 +1246,8 @@ func (m *Manager) Status(ctx context.Context) Status {
 		// A device sealed at rest has been through a password unlock, which
 		// turns the lock on server-side; that holds before /me answers too.
 		LockEnabled: sec.LockEnabled || a.AtRestSealed != "", PinSet: sec.PinSet, PinExpiresAt: sec.PinExpiresAt, PinStrict: sec.PinStrict,
-		PinAttemptsLeft: sec.PinAttemptsLeft, PinErasedAt: sec.PinErasedAt, SystemUnlock: sec.SystemUnlock, SystemAvailable: avail, SignedRequests: sec.SignedRequests, HardwareKey: hardware}
+		PinAttemptsLeft: sec.PinAttemptsLeft, PinErasedAt: sec.PinErasedAt, SystemUnlock: sec.SystemUnlock, SystemAvailable: avail, SignedRequests: sec.SignedRequests, HardwareKey: hardware,
+		KeyStoreError: ksErr}
 	if me != nil {
 		st.StorageUsed, st.StorageLimit, st.Versioning = me.StorageUsed, me.StorageLimit, me.Versioning
 	}
@@ -1268,13 +1296,16 @@ func (m *Manager) Account() *state.Account {
 
 // PersistSecrets copies the secrets back into the key store (after
 // memory-only mode is turned off).
-func (m *Manager) PersistSecrets() {
+func (m *Manager) PersistSecrets() error {
 	m.mu.Lock()
 	has := m.token != ""
 	m.mu.Unlock()
-	if has {
-		m.persist()
+	if !has {
+		return nil
 	}
+	err := m.persist()
+	m.changed()
+	return err
 }
 
 // SetOptions applies new client options (proxy) to the current and future clients.

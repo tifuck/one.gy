@@ -23,6 +23,7 @@ import (
 const (
 	maxFrame   = 16 << 20
 	eventQueue = 256
+	maxCalls   = 64 // calls running at once per connection; further frames wait to be read
 
 	CodeParse          = -32700
 	CodeInvalidRequest = -32600
@@ -215,6 +216,7 @@ func (s *Server) serveConn(ctx context.Context, c *conn) {
 		}
 	}()
 	var calls sync.WaitGroup
+	slots := make(chan struct{}, maxCalls)
 	sc := bufio.NewScanner(c.nc)
 	sc.Buffer(make([]byte, 64<<10), maxFrame)
 	for sc.Scan() {
@@ -222,9 +224,13 @@ func (s *Server) serveConn(ctx context.Context, c *conn) {
 		if len(line) == 0 {
 			continue
 		}
+		slots <- struct{}{}
 		calls.Add(1)
 		go func() {
-			defer calls.Done()
+			defer func() {
+				<-slots
+				calls.Done()
+			}()
 			b, after := s.dispatch(ctx, c, line)
 			for _, f := range [][]byte{b, after} {
 				if f == nil {

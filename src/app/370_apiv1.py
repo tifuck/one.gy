@@ -433,6 +433,8 @@ def apiv1_upload():
             return jsonify({'error': 'Folder not found'}), 404
         if commit_outcome == 'db_error':
             return jsonify({'error': 'Upload failed'}), 500
+        if commit_outcome == 'lock_lost':
+            return _api_upload_busy()
         if commit_outcome == 'reused':
             return jsonify(_api_upload_payload(committed_row)), 200
 
@@ -444,24 +446,18 @@ def apiv1_upload():
         print(f'[API] Upload: {orig_name} ({format_bytes_for_filesize(total_zip_size)}) by user: {user.username}')
         return jsonify(_api_upload_payload(file_record)), 201
 
+    # Nothing below deletes encrypted_filename: _commit_new_upload() removes its
+    # own payload unless it committed, and a committed row owns it.
     except RequestEntityTooLarge:
         # AUDIT FIX S2: the per-request quota/parser cap fired.
         try:
             db.session.rollback()
         except Exception:
             pass
-        try:
-            storage.delete_file(encrypted_filename)
-        except Exception:
-            pass
         return jsonify({'error': f'Storage limit exceeded. You have {user.get_storage_remaining_gb():.2f}GB remaining.'}), 413
     except MemoryError:
         try:
             db.session.rollback()
-        except Exception:
-            pass
-        try:
-            storage.delete_file(encrypted_filename)
         except Exception:
             pass
         return jsonify({'error': 'Server ran out of memory'}), 413
@@ -474,10 +470,6 @@ def apiv1_upload():
             db.session.rollback()
         except Exception:
             pass
-        try:
-            storage.delete_file(encrypted_filename)
-        except Exception:
-            pass
         if getattr(e, 'errno', None) in (_errno.ENOSPC, getattr(_errno, 'EDQUOT', None)):
             print(f'[API] Upload failed -- disk full / quota: {e}')
             return jsonify({'error': 'Storage error. The disk may be full.'}), 507
@@ -487,10 +479,6 @@ def apiv1_upload():
         import traceback; traceback.print_exc()
         try:
             db.session.rollback()
-        except Exception:
-            pass
-        try:
-            storage.delete_file(encrypted_filename)
         except Exception:
             pass
         return jsonify({'error': 'Upload failed'}), 500

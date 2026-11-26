@@ -142,11 +142,56 @@ func (x *Executor) place(ctx context.Context, j *job) error {
 			return err
 		}
 	}
-	err = localfs.RenameNoReplace(plain, x.abs(o.Path))
+	err = renamed(plain, localfs.RenameNoReplace(plain, x.abs(o.Path)))
+	if err != nil && j.rec.Debris != "" {
+		if rerr := x.undoDebris(ctx, j); rerr != nil {
+			return rerr
+		}
+	}
 	if errors.Is(err, os.ErrExist) {
 		return ErrSuperseded
 	}
 	return permIssue(err, o.Path)
+}
+
+// renamed: when the rename itself went through (no *os.LinkError, src
+// gone) and only the fsync after it failed, it counts as done.
+func renamed(src string, err error) error {
+	var le *os.LinkError
+	if err == nil || errors.As(err, &le) {
+		return err
+	}
+	if _, serr := os.Lstat(src); errors.Is(serr, os.ErrNotExist) {
+		slog.Warn("rename done, but not flushed to disk", "err", err)
+		return nil
+	}
+	return err
+}
+
+// undoDebris puts the old target back after the download could not take its
+// place. When that fails too (its path is taken by now), the debris entry is
+// recorded so the old version stays listed and restorable, and an issue says
+// where it is.
+func (x *Executor) undoDebris(ctx context.Context, j *job) error {
+	o := j.rec.Op
+	d := j.rec.Debris
+	rerr := renamed(x.abs(d), localfs.RenameNoReplace(x.abs(d), x.abs(o.Path)))
+	if rerr != nil {
+		if err := x.env.DB.Tx(ctx, func(tx *sql.Tx) error {
+			return state.AddDebris(tx, x.s.ID, o.Path, d, "replaced by a download that could not be applied")
+		}); err != nil {
+			return err
+		}
+	}
+	j.rec.Debris = ""
+	if err := j.set(ctx, state.OpStaged); err != nil {
+		return err
+	}
+	if rerr != nil {
+		return issuef("sync_error", o.Path, "The download could not be put in place and the previous version could not be moved back ("+
+			rerr.Error()+"); it is kept in "+d+".", "retry")
+	}
+	return nil
 }
 
 // verifyLink records the remote hash and links when it equals the local one.
@@ -231,7 +276,7 @@ func (x *Executor) fetch(ctx context.Context, n *state.RemoteNode, encPath, plai
 		}
 	} else {
 		w := &meter{ctx: ctx, w: out, t: t}
-		got, err := c.Content(ctx, n.ID, w, 0, n.PayloadChecksum)
+		got, err := c.Content(ctx, n.ID, w, 0, n.CipherSize, n.PayloadChecksum)
 		if api.IsCode(err, "precondition_failed") {
 			return nil, ErrSuperseded
 		}
@@ -283,11 +328,13 @@ func (x *Executor) fetchCipher(ctx context.Context, c *api.Client, n *state.Remo
 		if err := f.Truncate(0); err != nil {
 			return err
 		}
-		off, _ = f.Seek(0, io.SeekStart)
+		if off, err = f.Seek(0, io.SeekStart); err != nil { // else the next write leaves a hole
+			return err
+		}
 	}
 	t.SetDone(off)
 	for stalls := 0; off < n.CipherSize; {
-		got, err := c.Content(ctx, n.ID, &meter{ctx: ctx, w: f, t: t}, off, n.PayloadChecksum)
+		got, err := c.Content(ctx, n.ID, &meter{ctx: ctx, w: f, t: t}, off, n.CipherSize, n.PayloadChecksum)
 		off += got
 		switch {
 		case api.IsCode(err, "precondition_failed"):
@@ -343,10 +390,14 @@ func (x *Executor) finishPlain(p string, m *e2ee.Meta) {
 	if m != nil && x.s.KeepExecBit && m.Mode&0o100 != 0 {
 		mode = 0o755
 	}
-	os.Chmod(p, mode)
+	if err := os.Chmod(p, mode); err != nil {
+		slog.Warn("could not set the downloaded file's mode", "err", errors.Unwrap(err)) // the path error's cause: no file names in logs
+	}
 	if m != nil && m.MtimeNs > 0 {
 		mt := time.Unix(0, m.MtimeNs)
-		os.Chtimes(p, mt, mt)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			slog.Warn("could not set the downloaded file's modification time", "err", errors.Unwrap(err))
+		}
 	}
 }
 

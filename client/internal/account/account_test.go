@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -208,5 +209,50 @@ func TestDropGrant(t *testing.T) {
 	}
 	if _, err := m.WebSession(ctx); !api.IsCode(err, "grant_required") {
 		t.Fatalf("web session after the grant was dropped: %v", err)
+	}
+}
+
+// A sign-in that fails after the server created the device removes that
+// device again and leaves this computer signed out.
+func TestAuthorizeFailureAfterDeviceCreated(t *testing.T) {
+	ctx := context.Background()
+	m, srv, db, _ := setup(t, false)
+	db.Close() // the account row cannot be saved
+	if err := m.Authorize(ctx, AuthorizeParams{Server: srv.URL, Username: "alice", Password: password, DeviceName: "LAPTOP"}); err == nil {
+		t.Fatal("sign-in succeeded without its account row")
+	}
+	if srv.Requests["DELETE /apiv1/devices/self"] != 1 {
+		t.Fatal("half-authorized device left on the server")
+	}
+	if _, err := m.Client(); !errors.Is(err, ErrNotSignedIn) {
+		t.Fatalf("after a failed sign-in: %v", err)
+	}
+	if _, err := m.MasterKey(); !errors.Is(err, ErrNotSignedIn) {
+		t.Fatalf("master key kept after a failed sign-in: %v", err)
+	}
+}
+
+// A key store that cannot be written does not fail the sign-in (the
+// password-sealed copy opens the keys after a restart) but shows in status.
+func TestKeyStoreErrorInStatus(t *testing.T) {
+	ctx := context.Background()
+	_, srv, db, dir := setup(t, false)
+	path := filepath.Join(dir, "secrets.json")
+	os.WriteFile(path, []byte(`{"secrets":`), 0o600) // corrupt
+	ks := keystore.New(dir, false)
+	ks.UseFile(path)
+	m := New(db, ks, api.Options{Version: "0.1.0", Transport: srv.Client().Transport})
+	if err := m.Authorize(ctx, AuthorizeParams{Server: srv.URL, Username: "alice", Password: password, DeviceName: "LAPTOP"}); err != nil {
+		t.Fatal(err)
+	}
+	if st := m.Status(ctx); !st.SignedIn || st.KeyStoreError == "" {
+		t.Fatalf("key store failure not shown: %+v", st)
+	}
+	os.Remove(path)
+	if err := m.PersistSecrets(); err != nil {
+		t.Fatal(err)
+	}
+	if st := m.Status(ctx); st.KeyStoreError != "" {
+		t.Fatalf("key store error kept after a good write: %q", st.KeyStoreError)
 	}
 }

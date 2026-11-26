@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -474,7 +475,10 @@ func (x *Executor) send(ctx context.Context, opID int64, uploadID string, up *up
 	}
 	var thumb []byte
 	if up.ThumbNonce != "" {
-		thumb, _ = os.ReadFile(filepath.Join(dir, "thumb"))
+		if thumb, err = os.ReadFile(filepath.Join(dir, "thumb")); err != nil {
+			slog.Warn("thumbnail unreadable; uploading without it", "err", errors.Unwrap(err))
+			thumb = nil
+		}
 	}
 	if up.CipherSize <= caps.SmallUploadMax {
 		var buf bytes.Buffer
@@ -609,7 +613,12 @@ func (x *Executor) checkSpace(need int64) error {
 		return nil
 	}
 	free, err := x.env.FreeSpace(x.s.Root)
-	if err != nil || free >= need+256<<20 {
+	if err != nil {
+		// Advisory: a really full drive still fails the write itself.
+		slog.Warn("free space unknown; going ahead", "err", err)
+		return nil
+	}
+	if free >= need+256<<20 {
 		return nil
 	}
 	return issuef("disk_full", "", "The drive is full; syncing waits until space is freed.", "retry")

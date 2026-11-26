@@ -343,9 +343,10 @@ A `file` part larger than `small_upload_max` → `400` (use a session).
   `encrypted_thumbnail_b64`, `thumbnail_nonce`) → assembles, validates the
   container, checks `cipher_sha256`, checks quota under the quota lock, commits.
   → `201`/`200 <node>`. Missing parts → `400` with `missing: [i, …]`. A size /
-  `cipher_sha256` mismatch or an invalid container → `400` and the session is
-  aborted (nothing committed; start over). Completing an already committed
-  session → `200 {"existing": true, "node"}`.
+  `cipher_sha256` mismatch, an invalid container or a stored part the server
+  can no longer read → `400` and the session is aborted (nothing committed;
+  start over). Completing an already committed session →
+  `200 {"existing": true, "node"}`.
 - `DELETE /apiv1/sync/uploads/<sid>` → `204`.
 - Sessions idle longer than `sync_upload_session_ttl` (default 86400 s) are deleted.
 

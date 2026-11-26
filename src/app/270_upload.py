@@ -413,6 +413,10 @@ def upload():
             return jsonify({'error': 'Upload failed due to a database error. Please try again.'}), 500
         if commit_outcome == 'folder_missing':
             return jsonify({'error': 'FOLDER NOT FOUND'}), 404
+        if commit_outcome == 'lock_lost':
+            _resp = jsonify({'error': 'UPLOAD BUSY. PLEASE RETRY SHORTLY.'})
+            _resp.headers['Retry-After'] = '30'
+            return _resp, 503
         if commit_outcome == 'reused':
             if (committed_row.folder_id != folder_id
                     or bool(committed_row.is_temp_upload) != bool(is_temp)
@@ -618,7 +622,10 @@ def _upload_admit_before_body():
                 _remaining = _guest_temp_remaining_bytes(_temp_total_bytes) + _reserve
                 _stream_cap_bytes = max(min(temp_limit_bytes, _remaining), 0)
         except Exception as _guest_err:
-            print(f'[UPLOAD] Guest storage cap check failed (non-fatal): {_guest_err}')
+            print(f'[ERROR] [UPLOAD] Guest storage cap check failed; refusing the upload with 503: {_guest_err}')
+            _resp = jsonify({'error': 'UPLOAD BUSY. PLEASE RETRY SHORTLY.'})
+            _resp.headers['Retry-After'] = '30'
+            return (_resp, 503), registered_user, guest_temp_reserved, None
         upload_cap_bytes = _stream_cap_bytes
     return None, registered_user, guest_temp_reserved, upload_cap_bytes
 

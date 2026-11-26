@@ -14,8 +14,8 @@ func TestFileStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.json")
 	a := New("/state/f", false)
 	a.UseFile(path)
-	if !a.Set("secrets", "v1") {
-		t.Fatal("not persisted")
+	if err := a.Set("secrets", "v1"); err != nil {
+		t.Fatal(err)
 	}
 	if fi, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("secrets file mode: %v %v", fi, err)
@@ -43,8 +43,8 @@ func TestFileStore(t *testing.T) {
 func TestStore(t *testing.T) {
 	keyring.MockInit()
 	a := New("/state/a", false)
-	if !a.Set("secrets", "v1") {
-		t.Fatal("not persisted")
+	if err := a.Set("secrets", "v1"); err != nil {
+		t.Fatal(err)
 	}
 	if v, err := New("/state/a", false).Get("secrets"); err != nil || v != "v1" {
 		t.Fatalf("restart: %q %v", v, err)
@@ -56,7 +56,10 @@ func TestStore(t *testing.T) {
 		t.Fatal("memory-only store read the key store")
 	}
 	m := New("/state/c", true)
-	if m.Set("secrets", "v2") {
+	if err := m.Set("secrets", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New("/state/c", false).Get("secrets"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("memory-only store persisted")
 	}
 	if v, _ := m.Get("secrets"); v != "v2" {
@@ -69,6 +72,25 @@ func TestStore(t *testing.T) {
 	m.Delete("secrets")
 	if _, err := m.Get("secrets"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("delete")
+	}
+}
+
+// A corrupt secrets file makes Set fail (reported, not swallowed) and is
+// left as it is rather than overwritten.
+func TestSetCorruptFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	corrupt := []byte(`{"secrets":"token-and-key"`)
+	os.WriteFile(path, corrupt, 0o600)
+	s := New("/state/y", false)
+	s.UseFile(path)
+	if err := s.Set("secrets", "v"); err == nil {
+		t.Fatal("save into a corrupt secrets file not reported")
+	}
+	if b, _ := os.ReadFile(path); string(b) != string(corrupt) {
+		t.Fatalf("corrupt secrets file overwritten: %q", b)
+	}
+	if v, err := s.Get("secrets"); err != nil || v != "v" {
+		t.Fatalf("memory copy: %q %v", v, err)
 	}
 }
 

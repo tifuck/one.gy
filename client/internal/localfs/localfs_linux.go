@@ -70,8 +70,9 @@ func IsLocked(error) bool { return false }
 
 // RenameNoReplace renames src to dst, failing with fs.ErrExist when dst
 // exists, then fsyncs the parent directories. Uses renameat2(RENAME_NOREPLACE)
-// and falls back to link+unlink (files) or a checked rename (directories) on
-// file systems without it.
+// and falls back to link+unlink (files) or a checked rename (directories, and
+// files where hard links fail too) on file systems without it. A rename
+// failure is an *os.LinkError; any other error comes from the fsync after it.
 func RenameNoReplace(src, dst string) error {
 	err := unix.Renameat2(unix.AT_FDCWD, src, unix.AT_FDCWD, dst, unix.RENAME_NOREPLACE)
 	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP) {
@@ -89,10 +90,18 @@ func renameNoReplaceFallback(src, dst string) error {
 		return err
 	}
 	if !fi.IsDir() {
-		if err := unix.Link(src, dst); err != nil {
+		err := unix.Link(src, dst)
+		if err == nil {
+			if err := unix.Unlink(src); err != nil {
+				unix.Unlink(dst) // one name only: src stays as it was
+				return err
+			}
+			return nil
+		}
+		if errors.Is(err, unix.EEXIST) {
 			return err
 		}
-		return unix.Unlink(src)
+		// No hard links here (FAT, exFAT, NTFS or SMB mounts): checked rename.
 	}
 	// ponytail: check-then-rename races with a concurrent creator of dst;
 	// only reached on file systems without RENAME_NOREPLACE.

@@ -75,7 +75,7 @@ func newDevice(t testing.TB, srv *fakeserver.Server, name string, rootID int64, 
 	t.Cleanup(func() { db.Close() })
 	d.db = db
 	ctx := context.Background()
-	db.PutAccount(ctx, &state.Account{ServerURL: srv.URL, Username: "u", SignedIn: true, DeviceID: name, DeviceName: name})
+	db.PutAccount(ctx, &state.Account{ServerURL: srv.URL, UserID: 1, Username: "u", SignedIn: true, DeviceID: name, DeviceName: name})
 	c := map[string]any{"conflict_policy": "keep_both", "issue_mode": "smart", "propagate_deletes": true, "debris_days": 30,
 		"keep_exec_bit": true, "thumbnails": false, "initial": "merge", "schedule": map[string]any{"mode": "live"}}
 	for k, v := range cfg {
@@ -90,7 +90,7 @@ func newDevice(t testing.TB, srv *fakeserver.Server, name string, rootID int64, 
 	}
 	db.PutSync(ctx, &state.SyncRow{ID: d.syncID, Name: name, LocalRoot: d.root, RemoteRootID: &rootID, Type: "two_way", Encryption: enc,
 		Config: string(cj), FSKind: "ext4", CaseSensitive: true, State: "scanning", CreatedAt: time.Now().UTC().Format(time.RFC3339)})
-	b, _ := json.Marshal(map[string]any{"sync_id": d.syncID})
+	b, _ := json.Marshal(map[string]any{"sync_id": d.syncID, "account_id": 1, "server": srv.URL})
 	os.WriteFile(filepath.Join(d.root, ".onegy", "sync.json"), b, 0o600)
 	d.restart()
 	return d

@@ -339,6 +339,7 @@ def file_create_blank():
     # Lock order note: this route never takes the per-file rewrite lock.
     quota_lock = _acquire_user_quota_lock(user.id)
     lifecycle_lock = None
+    committed = False
     _refresh_quota_snapshot()
     try:
         # Storage quota check (blank files are tiny but still check)
@@ -467,12 +468,16 @@ def file_create_blank():
             lifecycle_lock = None
             storage.delete_file(encrypted_filename)
             return jsonify({'error': 'FOLDER NOT FOUND'}), 404
+        # Read before the commit: once the row is committed it owns the payload,
+        # and nothing after it may fail into the cleanup below.
+        ancestor_info = get_shared_ancestor_info(folder_id) if is_e2e and folder_id else None
         db.session.add(file_record)
         # AUDIT FIX H4: drop any stale tombstone for this key before the row can
         # replicate (belt and braces; Phase B also checks).
         _clear_pending_remote_deletes_for('files', [file_record.filename, file_record.id])
         touch_folder(folder_id)
         db.session.commit()
+        committed = True
 
         print(f'[FILE] Created blank file: {file_id} -> {orig_name}, E2E: {is_e2e}, folder: {folder_id}')
 
@@ -482,12 +487,10 @@ def file_create_blank():
             'filename': orig_name,
             'management_token': management_token
         }
-        if is_e2e and folder_id:
-            ancestor_info = get_shared_ancestor_info(folder_id)
-            if ancestor_info:
-                result['needs_link_key'] = True
-                result['ancestor_share_token'] = ancestor_info['share_token']
-                result['ancestor_folder_id'] = ancestor_info['folder_id']
+        if ancestor_info:
+            result['needs_link_key'] = True
+            result['ancestor_share_token'] = ancestor_info['share_token']
+            result['ancestor_folder_id'] = ancestor_info['folder_id']
         return jsonify(result)
 
     except RequestEntityTooLarge:
@@ -502,8 +505,11 @@ def file_create_blank():
             pass
         return jsonify({'error': 'BLANK FILE PAYLOAD TOO LARGE'}), 413
     except Exception as e:
-        print(f'[ERROR] Failed to create blank file: {e}')
         db.session.rollback()
+        if committed:
+            print(f'[ERROR] Blank file {file_id} was created but building the response failed: {e}')
+            return jsonify({'error': 'FILE CREATED BUT THE RESPONSE FAILED. RELOAD TO SEE IT.'}), 500
+        print(f'[ERROR] Failed to create blank file: {e}')
         try:
             storage.delete_file(encrypted_filename)
         except Exception:
@@ -881,13 +887,7 @@ def _save_content_e2e(file, file_id, registered_owner, _m4_staged_name, work_dir
     if not has_thumb:
         delete_thumbnail_from_disk(file.id)
 
-    # Write marker so crash recovery knows this was committed,
-    # then atomically replace the original file
-    storage.mark_staged_file_committed(file.filename)
-    storage.finalize_staged_file(file.filename)
-
-    _commit_file_post_finalize_state(file.id, 'E2E SAVE-CONTENT')
-    _file_version_committed(version)
+    _finish_committed_rewrite(file.filename, file.id, version, 'E2E SAVE-CONTENT')
 
     print(f'[FILE] Saved edited E2E content for {file.orig_name} (plain {original_size}, encrypted {encrypted_size} bytes)')
     return jsonify({'success': True, 'new_size': encrypted_size, 'new_size_formatted': format_bytes_for_filesize(encrypted_size), 'has_thumbnail': has_thumb})
@@ -964,13 +964,7 @@ def _save_content_fernet(file, file_id, registered_owner, _m4_staged_name, work_
     # DB commit succeeded — safe to delete old thumbnail from disk
     delete_thumbnail_from_disk(file.id)
 
-    # Write marker so crash recovery knows this was committed,
-    # then atomically replace the original file
-    storage.mark_staged_file_committed(file.filename)
-    storage.finalize_staged_file(file.filename)
-
-    _commit_file_post_finalize_state(file.id, 'FERNET SAVE-CONTENT')
-    _file_version_committed(version)
+    _finish_committed_rewrite(file.filename, file.id, version, 'FERNET SAVE-CONTENT')
 
     # Regenerate thumbnail in the bounded background queue.
     _schedule_thumbnail_bg(file_id, log_prefix='FILE')
