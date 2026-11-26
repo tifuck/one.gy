@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,9 @@ func TestRunnerSurvivesPanickingPass(t *testing.T) {
 
 // Debris whose delete fails keeps its record, so the next pass tries again.
 func TestDebrisRetriedAfterFailedDelete(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports a path through a file as missing, so RemoveAll succeeds")
+	}
 	ctx := context.Background()
 	db, row := resilienceDB(t)
 	r := NewRunner(&Env{Exec: &exec.Env{DB: db}}, "s1")
