@@ -74,8 +74,9 @@ func TestWatcherSmoke(t *testing.T) {
 }
 
 func TestOverflowAndWatchLimitBecomeRescan(t *testing.T) {
-	// The flood below must land in one debounce window (slow under -race).
-	w, err := New(t.TempDir(), Options{Debounce: 500 * time.Millisecond})
+	// The flood below must land in one debounce window (slow under -race or
+	// on a busy CI runner).
+	w, err := New(t.TempDir(), Options{Debounce: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +94,13 @@ func TestOverflowAndWatchLimitBecomeRescan(t *testing.T) {
 	for i := 0; i < maxPaths+5; i++ {
 		w.emitRel(fmt.Sprint("f", i))
 	}
-	got := Hints{}
-	for !got.Rescan {
-		got = <-w.C
-	}
-	if len(got.Paths) != 0 {
-		t.Fatal("a flood must collapse into a Rescan")
+	select {
+	case got := <-w.C:
+		if !got.Rescan || len(got.Paths) != 0 {
+			t.Fatalf("a flood must collapse into a Rescan, got %d paths", len(got.Paths))
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("no batch after the flood")
 	}
 }
 
