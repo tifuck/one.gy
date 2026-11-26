@@ -15,6 +15,8 @@ from app import fernet, MusicProxy
 
 # Longest any rate-limit pause may last, whatever a server's Retry-After says.
 MAX_PAUSE_S = 6 * 3600
+# Slowest a back-off may make a source: a quarter of its normal rate.
+MAX_SLOW = 4.0
 
 
 class SourcePaused(Exception):
@@ -34,7 +36,7 @@ class Source:
 
     Calls are spaced `interval * slow` seconds apart. A rate-limit answer
     pauses the source (Retry-After, else 60 s doubling up to 6 h) and halves
-    its rate; after an hour without errors the rate recovers 10% per hour."""
+    its rate, down to 1/MAX_SLOW; each hour without errors doubles it back."""
 
     def __init__(self, name, per_second, jitter=0.0, daily_setting=None):
         self.name = name
@@ -86,7 +88,7 @@ class Source:
         with self.lock:
             t = time.time()
             if self.slow > 1.0 and t - self.clean_since >= 3600:
-                self.slow = max(1.0, self.slow / 1.1)
+                self.slow = max(1.0, self.slow / 2)
                 self.clean_since = t
             if self.slow == 1.0:
                 self.strikes = 0
@@ -97,7 +99,7 @@ class Source:
             self.strikes += 1
             pause = min(retry_after, MAX_PAUSE_S) if retry_after else min(60 * 2 ** (self.strikes - 1), MAX_PAUSE_S)
             self.paused_until = max(self.paused_until, t + pause)
-            self.slow = min(self.slow * 2, 16.0)
+            self.slow = min(self.slow * 2, MAX_SLOW)
             self.clean_since = self.paused_until
             self.errors += 1
             self.last_error = str(reason)[:300]
@@ -121,8 +123,8 @@ SOURCE_SPECS = {
     'itunes': (0.25, 0.0, None),
     'lrclib': (1, 0.0, None),
     'ytm': (1 / 3, 0.0, None),
-    # About 150 downloads an hour: half of YouTube's guest limit per IP.
-    'youtube': (1 / 24, 0.3, 'music_dl_daily_cap'),
+    # About 100 downloads an hour: 150 an hour drew bot checks within a day.
+    'youtube': (1 / 36, 0.3, 'music_dl_daily_cap'),
 }
 
 
@@ -239,7 +241,7 @@ def load_budgets(egress):
         if row is None:
             continue
         src.day, src.used, src.errors = row.day, row.used, row.errors
-        src.slow = max(1.0, row.slow or 1.0)
+        src.slow = min(max(1.0, row.slow or 1.0), MAX_SLOW)
         if row.paused_until:
             src.paused_until = min(row.paused_until.replace(tzinfo=timezone.utc).timestamp(),
                                    time.time() + MAX_PAUSE_S)
