@@ -413,10 +413,16 @@
             isAtSuggestedBoundary = mp.playlist[mp.shuffleOrder[nextShuffleIdx]] && mp.playlist[mp.shuffleOrder[nextShuffleIdx]].suggested
                                      && mp.playlist[mp.currentIndex] && !mp.playlist[mp.currentIndex].suggested
           }
-        } else if (mp.repeatMode !== 'all' && !mp.shuffleMode && mp.currentIndex === mp.playlist.length - 1) {
-          // Last track with no suggested tracks yet -- crossfade will happen after auto-queue
-          // Pre-fetch suggestions so crossfade can work: once per loaded track
-          // (timeupdate fires ~4/s; a failed fetch must not be retried at that rate).
+        }
+
+        // The queue ends after this track (in order or shuffled, first auto-queue or
+        // a later one): pre-fetch suggestions so the next track starts without
+        // waiting for them (and the first batch can crossfade). Once per loaded
+        // track (timeupdate fires ~4/s; a failed fetch must not be retried at that rate).
+        var atQueueEnd = mp.repeatMode !== 'all' && (mp.shuffleMode
+          ? mp.shufflePos >= mp.shuffleOrder.length - 1
+          : mp.currentIndex === mp.playlist.length - 1)
+        if (atQueueEnd) {
           var prefetchKey = mp._loadSeq + ':' + mp.currentIndex
           if (timeRemaining <= 10 && !mp._autoQueueLoading && _autoQueuePrefetchKey !== prefetchKey) {
             _autoQueuePrefetchKey = prefetchKey

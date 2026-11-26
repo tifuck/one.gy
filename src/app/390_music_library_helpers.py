@@ -13,6 +13,14 @@ _MUSIC_AVAILABLE_TABLE = 'available_song_ids'
 # library.db (+ -wal) mtime seen by the last scan; a change means the music
 # worker published or removed songs.
 _AVAILABLE_SONGS_DB_MTIME = None
+# Library-wide catalog payloads (the same for every user), rebuilt once per
+# library snapshot instead of on every request: name -> (key, value). The key is
+# the mtime of the last completed scan, set after its set swap, so a payload
+# cached under a key always saw that scan's songs.
+_MUSIC_CATALOG_CACHE = {}
+_MUSIC_CATALOG_KEY = None
+# Part of every catalog ETag: a restart (new code) changes them all.
+_MUSIC_CATALOG_BOOT = int(time.time())
 
 def _music_library_mtime():
     db_path = os.path.join(MUSIC_LIBRARY_PATH, 'library.db')
@@ -42,10 +50,11 @@ def _published_song_ids():
 def _scan_available_songs():
     """Refresh the set of playable songs: the worker's `files` table when present,
     else songs with audio on disk."""
-    global _AVAILABLE_SONG_IDS, _AVAILABLE_SONGS_SCANNED_AT, _AVAILABLE_SONGS_DB_MTIME
+    global _AVAILABLE_SONG_IDS, _AVAILABLE_SONGS_SCANNED_AT, _AVAILABLE_SONGS_DB_MTIME, _MUSIC_CATALOG_KEY
     # Recorded first so a failing scan is retried on the next change or
     # interval, not on every request.
-    _AVAILABLE_SONGS_DB_MTIME = _music_library_mtime()
+    mtime = _music_library_mtime()
+    _AVAILABLE_SONGS_DB_MTIME = mtime
     try:
         available = _published_song_ids()
     except Exception as e:
@@ -66,14 +75,14 @@ def _scan_available_songs():
         except Exception as e:
             print(f'[MUSIC] Error scanning songs directory: {e}')
             return
-    previous = len(_AVAILABLE_SONG_IDS)
-    # Replaced whole (GIL-atomic) so readers never observe a partial set.
-    _AVAILABLE_SONG_IDS = available
+    previous = _AVAILABLE_SONG_IDS
     _AVAILABLE_SONGS_SCANNED_AT = time.monotonic()
-    if previous != len(available):
-        print(f'[MUSIC] Found {len(available)} songs with audio on disk (was {previous})')
-    else:
-        print(f'[MUSIC] Found {len(available)} songs with audio on disk')
+    if available != previous:
+        # Replaced whole (GIL-atomic) so readers never observe a partial set.
+        _AVAILABLE_SONG_IDS = available
+        print(f'[MUSIC] Found {len(available)} songs with audio on disk (was {len(previous)})')
+    # Metadata may have changed even when the set did not.
+    _MUSIC_CATALOG_KEY = mtime
 
 def maybe_rescan_available_songs(force=False):
     """Re-scan the music library at most once per music_rescan_interval_seconds.
@@ -106,11 +115,19 @@ def maybe_rescan_available_songs(force=False):
 
 def _maybe_rescan_on_library_change():
     """Re-scan when library.db changed, so songs the worker publishes are
-    playable at once instead of after the next interval scan."""
+    playable at once instead of after the next interval scan. The scan runs on
+    its own thread: the request goes on with the current set."""
     if _music_library_mtime() == _AVAILABLE_SONGS_DB_MTIME:
         return
     if not _AVAILABLE_SONGS_SCAN_LOCK.acquire(blocking=False):
         return
+    try:
+        threading.Thread(target=_rescan_on_library_change_locked, name='music-rescan', daemon=True).start()
+    except Exception as e:
+        _AVAILABLE_SONGS_SCAN_LOCK.release()
+        print(f'[MUSIC] Library re-scan failed: {e}')
+
+def _rescan_on_library_change_locked():
     try:
         if _music_library_mtime() != _AVAILABLE_SONGS_DB_MTIME:
             _scan_available_songs()
@@ -153,6 +170,35 @@ def _get_music_db(with_available=False):
 
 # SQL fragment every catalog query uses in place of an inlined IN (...) list.
 _MUSIC_AVAILABLE_SUBQUERY = f'(SELECT id FROM {_MUSIC_AVAILABLE_TABLE})'
+
+def _music_catalog(name, build):
+    """(key, build(conn)) for the current library snapshot, built at most once
+    per snapshot. Callers must not mutate the value."""
+    key = _MUSIC_CATALOG_KEY
+    entry = _MUSIC_CATALOG_CACHE.get(name)
+    if entry is not None and entry[0] == key:
+        return entry
+    conn = _get_music_db(with_available=True)
+    try:
+        entry = (key, build(conn))
+    finally:
+        conn.close()
+    _MUSIC_CATALOG_CACHE[name] = entry
+    return entry
+
+def _music_catalog_json(name, build):
+    """A cached catalog payload as JSON. The browser keeps it and revalidates
+    (ETag -> 304) instead of downloading it again while the library is unchanged."""
+    from flask import Response
+    key, value = _music_catalog(name, build)
+    etag = f'mu-{name}-{key}-{_MUSIC_CATALOG_BOOT}'
+    # Flask-Compress sends the tag as "<etag>:<algorithm>"; match either form.
+    sent = {tag.split(':')[0] for tag in request.if_none_match.as_set(include_weak=True)}
+    resp = Response(status=304) if etag in sent else jsonify(value)
+    resp.set_etag(etag)
+    resp.cache_control.private = True
+    resp.cache_control.no_cache = True
+    return resp
 
 # MusicDevice.device_id / MusicSyncState.active_device_id / .transfer_to are all
 # String(36); MusicDevice.device_name is String(100).
@@ -331,13 +377,23 @@ def _music_device_online(device, now):
     return bool(last_seen) and now - last_seen <= _MUSIC_ONLINE_WINDOW
 
 
-def _music_has_pending_command(user_id, target_device_id, now):
-    return db.session.query(MusicSyncCommand.id).filter(
+def _music_poll_mailbox(user_id, device_id, now):
+    """(the oldest result addressed to device_id or None, whether a command
+    waits for it). One round trip unless a result is waiting."""
+    has_command = db.session.query(MusicSyncCommand.id).filter(
         MusicSyncCommand.user_id == user_id,
-        MusicSyncCommand.target_device_id == target_device_id,
+        MusicSyncCommand.target_device_id == device_id,
         MusicSyncCommand.status == 'pending',
         db.or_(MusicSyncCommand.expires_at.is_(None), MusicSyncCommand.expires_at >= now),
-    ).first() is not None
+    ).exists()
+    result_id = db.session.query(db.func.min(MusicSyncCommand.id)).filter(
+        MusicSyncCommand.user_id == user_id,
+        MusicSyncCommand.requester_device_id == device_id,
+        MusicSyncCommand.status == 'completed',
+    ).scalar_subquery()
+    has_command, result_id = db.session.query(has_command, result_id).one()
+    result = _music_pending_result(user_id, device_id, now) if result_id is not None else None
+    return result, bool(has_command)
 
 
 def _music_command_payload(command):
@@ -351,21 +407,28 @@ def _music_command_payload(command):
     return payload_json
 
 
-def _prune_music_sync_commands(user_id=None, now=None):
-    """Expire abandoned work and bound retained result/ack records."""
+def _expire_music_sync_commands(user_id=None, now=None):
+    """Mark pending/claimed commands past their TTL expired (a stale claim blocks
+    its target's mailbox). Sync requests run only this; deletes are left to the
+    cleanup job."""
     now = now or datetime.now(timezone.utc)
     query = MusicSyncCommand.query
     if user_id is not None:
         query = query.filter(MusicSyncCommand.user_id == user_id)
-
-    expired = query.filter(
+    return int(query.filter(
         MusicSyncCommand.status.in_(('pending', 'claimed')),
         MusicSyncCommand.expires_at.isnot(None),
         MusicSyncCommand.expires_at < now,
     ).update({
         MusicSyncCommand.status: 'expired',
         MusicSyncCommand.consumed_at: now,
-    }, synchronize_session=False)
+    }, synchronize_session=False) or 0)
+
+
+def _prune_music_sync_commands(user_id=None, now=None):
+    """Expire abandoned work and bound retained result/ack records."""
+    now = now or datetime.now(timezone.utc)
+    expired = _expire_music_sync_commands(user_id=user_id, now=now)
 
     delete_query = MusicSyncCommand.query
     if user_id is not None:
@@ -382,7 +445,7 @@ def _prune_music_sync_commands(user_id=None, now=None):
             ),
         )
     ).delete(synchronize_session=False)
-    return int(expired or 0) + int(deleted or 0)
+    return expired + int(deleted or 0)
 
 
 def _music_claim_next_command(user_id, target_device_id, now):

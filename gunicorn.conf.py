@@ -43,6 +43,12 @@ control_socket_disable = True
 # being killed. Must cover: upload transfer + encryption + zip + disk I/O.
 timeout = 7200  # 2 hours - covers worst case 10GB upload on slow connection + encryption
 graceful_timeout = 300  # 5 minutes for worker to finish after SIGTERM
+# Idle keep-alive connections are held open longer than the reverse proxy's
+# upstream keepalive_timeout (60 s), so the proxy reuses them (no TCP + TLS
+# handshake per request) and is the side that closes them: a request sent on a
+# connection gunicorn had just closed would fail. Idle connections wait in the
+# poller, not on a worker thread.
+keepalive = 75
 
 # --- Request limits ---
 # No limit on request line or header size beyond defaults

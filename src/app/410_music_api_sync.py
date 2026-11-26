@@ -350,7 +350,7 @@ def music_api_sync_push():
         mailbox_lock = _music_mailbox_lock(user_id)
         try:
             db.session.flush()
-            _prune_music_sync_commands(user_id=user_id, now=now)
+            _expire_music_sync_commands(user_id=user_id, now=now)
             acknowledged = _music_store_command_result(user_id, device_id, data.get('command_result'), now)
             pending_command = _music_claim_next_command(user_id, device_id, now)
             db.session.commit()
@@ -393,7 +393,7 @@ def music_api_sync_push():
             db.session.add(sync)
             db.session.flush()
             is_accepted_active = True
-        _prune_music_sync_commands(user_id=user_id, now=now)
+        _expire_music_sync_commands(user_id=user_id, now=now)
         command_result = data.get('command_result')
         if command_result and isinstance(command_result, dict):
             command_result_acknowledged = _music_store_command_result(
@@ -530,8 +530,7 @@ def music_api_sync_poll():
                     break
 
     # Results are requester-addressed and remain durable until an explicit ack.
-    pending_result = _music_pending_result(user_id, device_id, now)
-    has_command = _music_has_pending_command(user_id, device_id, now)
+    pending_result, has_command = _music_poll_mailbox(user_id, device_id, now)
 
     db.session.commit()
 
@@ -676,7 +675,7 @@ def music_api_sync_command():
         if target_device_id == requester_device_id:
             return jsonify({'error': 'COMMAND TARGET MUST BE A REMOTE DEVICE'}), 400
 
-        _prune_music_sync_commands(user_id=user_id, now=now)
+        _expire_music_sync_commands(user_id=user_id, now=now)
         live_count = MusicSyncCommand.query.filter(
             MusicSyncCommand.user_id == user_id,
             MusicSyncCommand.status.in_(('pending', 'claimed', 'completed')),

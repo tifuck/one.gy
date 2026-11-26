@@ -136,6 +136,12 @@ def _is_session_revoked():
     with _revoked_sid_lock:
         if sid_hash in _revoked_sid_cache:
             return True
+    # One authority read per request: the limiter (via _current_session_user)
+    # and the route decorator both ask. A revocation made later in the same
+    # request lands in _revoked_sid_cache, checked above.
+    memo = getattr(g, '_revoked_sid_checked', None) if has_request_context() else None
+    if memo is not None and memo[0] == sid_hash:
+        return memo[1]
     try:
         now = datetime.now(timezone.utc)
         revoked = db.session.query(RevokedSession.id).filter(
@@ -155,6 +161,8 @@ def _is_session_revoked():
     if revoked:
         with _revoked_sid_lock:
             _remember_revoked_sid_locked(sid_hash, time.time())
+    if has_request_context():
+        g._revoked_sid_checked = (sid_hash, revoked)
     return revoked
 
 

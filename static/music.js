@@ -437,20 +437,11 @@
       if (tracks.length) h += playButton(tags); else h += tags
       h += tracks.length ? trackList(tracks, { discs: true }) : empty('This album has no tracks')
       if (a.release_date || a.label) h += '<footer class="mu-credits">' + (a.release_date ? '<div>' + esc(longDate(a.release_date)) + '</div>' : '') + (a.label ? '<div>' + esc(a.label) + '</div>' : '') + '</footer>'
-      h += '<div id="muMoreBy"></div>'
+      // More by the first album artist comes with the album (r.more_by)
+      var first = (a.artists || [])[0], more = r.more_by || []
+      h += '<div id="muMoreBy">' + (first && more.length ? sectionTitle('More by ' + first.name) + '<div class="mu-shelf">' + more.map(albumCardType).join('') + '</div>' : '') + '</div>'
       render(h)
-      var first = (a.artists || [])[0]
-      if (first && first.id) moreBy(first, a.id, epoch)
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load this album', 'Check your connection and try again.') }
-  }
-  async function moreBy (artist, albumId, epoch) {
-    try {
-      var arr = await jget('/music/api/albums?artist_id=' + encodeURIComponent(artist.id))
-      var el = $('muMoreBy')
-      if (!isCurrentView(epoch) || !el) return
-      arr = (Array.isArray(arr) ? arr : []).filter(function (x) { return x.id !== albumId }).slice(0, 12)
-      if (arr.length) { el.innerHTML = sectionTitle('More by ' + artist.name) + '<div class="mu-shelf">' + arr.map(albumCardType).join('') + '</div>' }
-    } catch (e) {}
   }
   async function viewArtist (id, again) {
     if (!again) crumbPush('Artist', function () { viewArtist(id, true) })

@@ -82,7 +82,8 @@ app = Flask(__name__)
 # HTTP response compression (gzip/brotli) -- reduces transfer sizes by 70-80%
 app.config['COMPRESS_MIMETYPES'] = [
     'text/html', 'text/css', 'text/xml', 'text/plain',
-    'application/javascript', 'application/json',
+    # Python serves .js as text/javascript (application/javascript is legacy).
+    'text/javascript', 'application/javascript', 'application/json',
     'application/xml', 'image/svg+xml',
 ]
 app.config['COMPRESS_MIN_SIZE'] = 256       # Don't compress tiny responses
