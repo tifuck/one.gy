@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -95,6 +96,9 @@ func TestVerifyUpdateSignature(t *testing.T) {
 }
 
 func TestReleaseSigningKeyFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no POSIX file modes on Windows")
+	}
 	path := filepath.Join(t.TempDir(), "sub", "cli-signing.key")
 	key, err := loadOrCreateSigningKey(path)
 	if err != nil {
