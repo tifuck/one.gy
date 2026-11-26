@@ -116,7 +116,7 @@ func New(ctx context.Context, opts Options) (*Service, error) {
 	s.mgr = syncer.NewManager(s.senv)
 	s.poller.OnApplied = func() {
 		s.mgr.Wake("")
-		go s.maintainKeys(context.Background())
+		go s.maintainKeys(s.root())
 	}
 	s.applySettings(s.cfg, Settings{RequirePasswordOnStart: s.cfg.RequirePasswordOnStart})
 	s.rpc.OnSubscribe = func() (string, any) { return "status", s.status(context.Background()) }
@@ -133,13 +133,23 @@ func (s *Service) Serve(ctx context.Context, ln net.Listener) error {
 	s.mu.Lock()
 	s.stop, s.ctx = cancel, ctx
 	s.mu.Unlock()
-	go s.poller.Run(ctx)
+	// The loops use the state DB, so it closes only after they end: a query
+	// still running would keep the file open (Windows cannot delete it).
+	var loops sync.WaitGroup
+	run := func(loop func(context.Context)) {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			loop(ctx)
+		}()
+	}
+	run(s.poller.Run)
 	if err := s.mgr.Start(ctx); err != nil {
 		return err
 	}
-	go s.statusLoop(ctx)
-	go s.grantLoop(ctx)
-	go s.maintainKeys(ctx)
+	run(s.statusLoop)
+	run(s.grantLoop)
+	run(s.maintainKeys)
 	if s.app != nil {
 		gone := s.rpc.ServeTrusted(ctx, s.app)
 		go func() {
@@ -158,6 +168,8 @@ func (s *Service) Serve(ctx context.Context, ln net.Listener) error {
 	s.mgr.Wait()
 	s.explorer.Close()
 	s.rpc.Close()
+	loops.Wait()
+	s.keysMu.Lock() // a maintainKeys started by the poller; later ones skip
 	s.db.Close()
 	return err
 }

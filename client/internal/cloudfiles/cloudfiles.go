@@ -70,7 +70,8 @@ type Manager struct {
 	roots  map[string]*root
 	logged map[string]bool
 
-	opMu sync.Mutex // registrations and reverts run one at a time
+	opMu    sync.Mutex     // registrations and reverts run one at a time
+	reverts sync.WaitGroup // SetEnabled(false) passes, awaited by Close
 }
 
 type root struct {
@@ -117,7 +118,9 @@ func (m *Manager) SetEnabled(on bool) {
 		}
 		return
 	}
+	m.reverts.Add(1)
 	go func() {
+		defer m.reverts.Done()
 		for _, row := range rows {
 			m.stop(row.ID)
 			m.opMu.Lock()
@@ -188,6 +191,7 @@ func (m *Manager) Remove(row *state.SyncRow) {
 
 // Close stops every worker (engine shutdown); registrations stay.
 func (m *Manager) Close() {
+	m.reverts.Wait()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.roots))
 	for id := range m.roots {

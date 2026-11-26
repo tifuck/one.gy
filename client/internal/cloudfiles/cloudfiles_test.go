@@ -161,6 +161,7 @@ func TestManager(t *testing.T) {
 
 	f := &fake{state: map[string]string{}, registered: map[string]bool{}}
 	m := newManager(db, f)
+	defer m.Close()
 	abs := func(rel string) string { return filepath.Join(root, filepath.FromSlash(rel)) }
 	m.SetEnabled(true)
 	want := map[string]string{root: "in", abs("a.txt"): "in", abs("d"): "in", abs("d/c.txt"): "in"}
