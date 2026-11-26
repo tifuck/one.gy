@@ -22,6 +22,7 @@ const {
   UI_URL, OFFLINE_URL, TITLEBAR_URL, UPDATE_URL, handleScheme,
 } = require('./protocol');
 const { shortcutFor, nextZoom } = require('./shortcuts');
+const { isLockFreePath, LOCKED_PATH } = require('./site-nav');
 
 const SITE_PARTITION = 'persist:onegy';
 const START_PATH = '/files';
@@ -258,6 +259,26 @@ class MainWindow {
     this.siteLocked = true;
     this.recreateSite(false);
     await this.clearSiteSession();
+  }
+
+  // App lock with the site signed in: its session stays, but the server lets
+  // it reach only the pages that need no keys (music keeps playing). The tab's
+  // keys go now; any other page makes way for LOCKED_PATH (it clears them too),
+  // under the lock screen (main.js onSiteNavigate).
+  softLockSite() {
+    const wc = this.site.webContents;
+    wc.executeJavaScript('window.OneGyCrypto && OneGyCrypto.clearSessionKeys && OneGyCrypto.clearSessionKeys()').catch(() => {});
+    const at = this.sitePlace();
+    if (at && isLockFreePath(at.pathname)) return;
+    const next = at && at.pathname !== LOCKED_PATH ? at.pathname + at.search : START_PATH;
+    wc.loadURL(`${this.opts.serverOrigin()}${LOCKED_PATH}?${new URLSearchParams({ next })}`);
+  }
+
+  // The site view's URL when it shows a page of the server, else null.
+  sitePlace() {
+    let at = null;
+    try { at = new URL(this.site.webContents.getURL()); } catch { return null; }
+    return at.origin === this.opts.serverOrigin() ? at : null;
   }
 
   // Ends the website session in this app (its cookies).

@@ -698,6 +698,7 @@ def _music_required(f):
         session.permanent = True
         _maybe_rescan_on_library_change()
         return f(*args, **kwargs)
+    decorated_function._desktop_lock_free = True
     return decorated_function
 
 

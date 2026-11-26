@@ -184,7 +184,16 @@ Version 3 adds `openSettings` and `onSyncs`; feature-test them
 - Device mode: when the site lands on `/login` (session expired or ended
   elsewhere) the app signs it in again with a fresh ticket, at most every
   30 s, and goes on to the page that was asked for.
-- App lock: while the app is locked there is no site page at all (the view is
+- App lock: a site that is signed in when the app locks stays, so the rail
+  and the music bar keep working and music keeps playing. The server keeps
+  its session only for the lock-free routes (`/music` and the music API;
+  `desktop_lock_free`): every other page redirects to `/desktop/locked?next=`
+  and other XHRs get `403 APP_LOCKED`. The app clears the tab's keys
+  (`OneGyCrypto.clearSessionKeys()`), moves any page but `/music` to
+  `/desktop/locked` (which clears them too), and the panel shows the lock
+  screen over every page but `/music`. On unlock `/music` goes on as is;
+  the lock page signs in with a ticket and opens its `next`. Locked at the
+  start (no signed-in site) there is no site page at all (the view is
   dropped, its sessionStorage keys with it, and the site's cookies are
   cleared); the panel shows the lock screen. On unlock the app signs the view
   in with a ticket, so a set-up computer never shows the website's login.

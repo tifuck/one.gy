@@ -1,0 +1,17 @@
+{% extends '_app_base.html' %}
+{% block title %}Locked{% endblock %}
+{% set nav_active = 'locked' %}
+{% set ui_v2 = true %}
+
+{% block content %}
+<div class="rd-empty">
+  <span class="rd-empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>
+  <h3 class="rd-empty-title">ONE.GY is locked</h3>
+  <p class="rd-empty-text">Unlock the app to open your files and notes. Music keeps playing.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
+<script nonce="{{ csp_nonce }}">document.addEventListener('DOMContentLoaded', function () { if (window.OneGyCrypto && OneGyCrypto.clearSessionKeys) OneGyCrypto.clearSessionKeys() })</script>
+{% endblock %}

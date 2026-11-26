@@ -304,7 +304,7 @@ def apiv1_device_grant_refresh():
 @csrf.exempt
 @device_auth_required
 def apiv1_device_grant_drop():
-    """App locked: the grant and every website session it signed in stop working."""
+    """App locked: the grant ends, and the website sessions it signed in keep only the lock-free routes (music)."""
     g.device.grant_hash = None
     g.device.grant_expires_at = None
     g.device.web_ticket_hash = None
@@ -607,7 +607,8 @@ def desktop_session():
     """Sign the desktop app's website view in with a ticket from
     /apiv1/devices/self/web-session, sent in X-Onegy-Desktop-Ticket (a header, so
     a link or a cross-site form can never log anyone in). The session is bound
-    to the device: it ends when the device is removed or its app locks."""
+    to the device: it ends when the device is removed, and while its app is
+    locked it reaches only the lock-free routes (desktop_lock_free)."""
     raw = request.headers.get('X-Onegy-Desktop-Ticket', '')
     ticket_hash = _sha256_hex(raw) if raw else None
     device = Device.query.filter_by(web_ticket_hash=ticket_hash).first() if raw else None
@@ -638,10 +639,4 @@ def desktop_session():
     _mint_session_sid()
     session.permanent = True
     print(f'[AUTH] User signed in through desktop device {device.id}: {user.username}')
-    target = request.args.get('next') or ''
-    parts = urllib.parse.urlsplit(target)
-    if (not target.startswith('/') or target.startswith('//') or '\\' in target
-            or any(ch.isspace() or not ch.isprintable() for ch in target)
-            or parts.scheme or parts.netloc):
-        target = url_for('files')
-    return redirect(target)
+    return redirect(_safe_next_path(request.args.get('next')))

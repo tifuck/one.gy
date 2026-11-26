@@ -29,6 +29,8 @@ def login_required(f):
                 return jsonify({'error': 'SESSION_EXPIRED', 'redirect': url_for('login')}), 401
             flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
             return redirect(url_for('login'))
+        if _session_device_locked():
+            return _device_locked_response(is_ajax)
         if int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0) or not _session_device_ok():
             session.clear()
             if is_ajax:
@@ -261,6 +263,14 @@ def _drop_dead_session():
         return None
     if _current_session_user() is not None:
         return None
+    if _session_device_locked():
+        # A desktop session whose app is locked, on a route that needs it
+        # unlocked: the decorators answer APP_LOCKED and it stays for music,
+        # unless it is dead anyway.
+        user = db.session.get(User, session['logged_in_user_id'])
+        if (user and _is_session_revoked() is False
+                and int(session.get('session_epoch', 0) or 0) == int(user.session_epoch or 0)):
+            return None
     # Only a memoized None is definitive; a failed revocation check is not memoized.
     cached = getattr(g, '_current_session_user_cache', None)
     if cached is not None and cached[1] is None:
@@ -364,6 +374,8 @@ def admin_required(f):
             session.clear()
             flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
             return redirect(url_for('login'))
+        if _session_device_locked():
+            return _device_locked_response(False)
         if int(session.get('session_epoch', 0) or 0) != int(user.session_epoch or 0) or not _session_device_ok():
             session.clear()
             flash('SESSION EXPIRED. PLEASE LOGIN AGAIN.', 'error')
@@ -625,14 +637,49 @@ def _request_has_device_grant(device):
     return hmac.compare_digest(hashlib.sha256(raw.encode('utf-8')).hexdigest(), device.grant_hash)
 
 
-def _session_device_ok():
-    """A website session minted by a desktop device (/desktop/session) lives only
-    while that device is active and its app is unlocked."""
+def desktop_lock_free(f):
+    """Marks a route a desktop session keeps while its app is locked: music only
+    (no keys, no file data), so it keeps playing. Goes under @login_required;
+    @_music_required routes are lock-free already."""
+    f._desktop_lock_free = True
+    return f
+
+
+def _endpoint_lock_free():
+    view = app.view_functions.get(request.endpoint) if request.endpoint else None
+    return bool(getattr(view, '_desktop_lock_free', False))
+
+
+def _session_device_state():
+    """None for a session no desktop device minted (/desktop/session), else
+    'unlocked', 'locked' (its app is locked: no live grant) or 'gone' (removed)."""
     device_id = session.get('device_id')
     if not device_id:
-        return True
+        return None
     device = db.session.get(Device, device_id)
-    return bool(device and device.is_active and _device_grant_live(device))
+    if not device or not device.is_active:
+        return 'gone'
+    return 'unlocked' if _device_grant_live(device) else 'locked'
+
+
+def _session_device_ok():
+    """A website session minted by a desktop device lives while that device is
+    active. While its app is locked it reaches only the lock-free routes; the
+    decorators answer the rest with _device_locked_response() and keep it."""
+    state = _session_device_state()
+    return state in (None, 'unlocked') or (state == 'locked' and _endpoint_lock_free())
+
+
+def _session_device_locked():
+    """A locked desktop session asking for a route that needs the app unlocked."""
+    return _session_device_state() == 'locked' and not _endpoint_lock_free()
+
+
+def _device_locked_response(is_ajax):
+    """403 APP_LOCKED, or the app's lock page; the session (and the music) stays."""
+    if is_ajax:
+        return jsonify({'error': 'APP_LOCKED'}), 403
+    return redirect(url_for('desktop_locked', next=request.full_path.rstrip('?')))
 
 
 def _scope_folder_value(value):

@@ -1,6 +1,7 @@
 @app.route('/music')
 @limiter.limit(music_api_rate_limit)
 @login_required
+@desktop_lock_free
 def music_page():
     # Intentionally NOT gated by _music_required: when the allow_music setting
     # is off, the page must still load but render an empty shell (no library,

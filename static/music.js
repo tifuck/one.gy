@@ -9,6 +9,9 @@
 
   var S = { view: 'home', likes: new Set(), playlists: [], lastCtx: null }
   var viewEpoch = 0, likeMutations = Object.create(null), likesReady = Promise.resolve()
+  // The view (S.at) and its scroll for this tab, so coming back from another
+  // page opens where the user left off.
+  var SS_AT = 'onegy_music_at', SS_SCROLL = 'onegy_music_scroll', restoreScroll = 0
   var $ = function (id) { return document.getElementById(id) }
   var view, railEl
 
@@ -198,9 +201,16 @@
   // ---- Rendering: shared bits ---------------------------------------------
   function loading () { view.innerHTML = '<div class="mu-skel" aria-hidden="true">' + new Array(13).join('<span class="rd-skel"></span>') + '</div>' }
   // at: [view, id] of the view being opened, so a UI update reload (core.js) comes back to it.
-  function startView (at) { S.at = at; current = { tracks: [], albumName: '' }; loading(); view.scrollTop = 0; return ++viewEpoch }
+  function startView (at) {
+    S.at = at; current = { tracks: [], albumName: '' }; loading(); view.scrollTop = 0
+    try { if (at) sessionStorage.setItem(SS_AT, JSON.stringify(at)) } catch (e) {}
+    return ++viewEpoch
+  }
   function isCurrentView (epoch) { return epoch === viewEpoch }
-  function render (h) { view.innerHTML = h; paintTiles() }
+  function render (h) {
+    view.innerHTML = h; paintTiles()
+    if (restoreScroll) { view.scrollTop = restoreScroll; restoreScroll = 0 }
+  }
 
   // ---- Breadcrumb (toolbar) -------------------------------------------------
   // trail: [{ label, open }]. Rail views start a new trail, album / artist
@@ -634,9 +644,17 @@
     loadPlaylists()
     window.MusicBrowse = { navigate: navigate }
     window.addEventListener('onegy:update', function (e) { e.detail.music = S.at })
+    window.addEventListener('pagehide', function () { try { sessionStorage.setItem(SS_SCROLL, String(view.scrollTop)) } catch (e) {} })
     var at = window.OneGyUpdate && OneGyUpdate.resume && OneGyUpdate.resume.music
-    var open = at && { home: viewHome, albums: viewAlbums, artists: viewArtists, genres: viewGenres, genre: viewGenre, album: viewAlbum, artist: viewArtist, liked: viewLiked, playlist: viewPlaylist }[at[0]]
-    if (open) open(at[1]); else if (!navigateFromHash()) viewHome()
+    var views = { home: viewHome, albums: viewAlbums, artists: viewArtists, genres: viewGenres, genre: viewGenre, album: viewAlbum, artist: viewArtist, liked: viewLiked, playlist: viewPlaylist }
+    var open = at && views[at[0]]
+    if (open) { open(at[1]); return }
+    if (navigateFromHash()) return
+    try { at = JSON.parse(sessionStorage.getItem(SS_AT) || 'null') } catch (e) { at = null }
+    open = Array.isArray(at) && views[at[0]]
+    if (!open) { viewHome(); return }
+    restoreScroll = +sessionStorage.getItem(SS_SCROLL) || 0
+    open(at[1])
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot()
 })()

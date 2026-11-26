@@ -20,7 +20,7 @@ const { createNotifier } = require('./notify');
 const { startUpdater } = require('./updater');
 const { watchEnvironment } = require('./environment');
 const { SyncStatus, appLocked, throttle } = require('./sync-status');
-const { isSitePath } = require('./site-nav');
+const { isSitePath, isLockFreePath, LOCKED_PATH } = require('./site-nav');
 const { applyShellIntegration } = require('./shell-integration');
 
 const SITE_STATUS_EVERY_MS = 500; // site-bridge.md: at most 2 updates per second
@@ -229,10 +229,16 @@ function start() {
     // computer that then turns out locked gets the lock screen.
     if (want === 'locked' && siteMode === 'plain' && !blindPlain) return;
     const wasLocked = siteMode === 'locked';
+    const signedInSite = siteMode === 'device';
     console.log(`[APP] site mode ${siteMode} -> ${want}`);
     siteMode = want;
     blindPlain = want === 'plain' && !sync.account;
     if (want === 'locked') {
+      // A signed-in site stays for music; the lock screen covers the rest.
+      if (signedInSite) {
+        window.softLockSite();
+        return;
+      }
       await window.lockSite();
       // In place: a lock never brings a hidden window up or takes the focus.
       window.openPanel({ username: sync.account.username, screen: 'lock', show: false });
@@ -240,7 +246,13 @@ function start() {
     }
     if (want === 'device') {
       try {
-        window.unlockSite(await engine.call('account.webSession'));
+        // Locked with the site still there: a lock-free page (music) simply
+        // goes on; the lock page opens the page it stood in for.
+        const at = wasLocked && !window.siteLocked ? window.sitePlace() : null;
+        if (!at || !isLockFreePath(at.pathname)) {
+          const next = at && at.pathname === LOCKED_PATH ? at.searchParams.get('next') : null;
+          window.unlockSite(await engine.call('account.webSession'), isSitePath(next) ? next : undefined);
+        }
         if (wasLocked) window.closePanel(); // else the setup wizard goes on
         if (resumePanel) openPanel(resumePanel);
         resumePanel = null;
@@ -262,6 +274,13 @@ function start() {
   // to the page that was asked for.
   const onSiteNavigate = (url, wanted) => {
     const at = parseUrl(url);
+    // Locked with the site signed in: the lock screen covers every page but
+    // the lock-free ones (music), and the rail stays usable.
+    if (siteMode === 'locked' && !window.siteLocked) {
+      if (at && at.origin === settings.get().server_url && isLockFreePath(at.pathname)) window.closePanel();
+      else window.openPanel({ username: sync.account.username, screen: 'lock', show: false });
+      return;
+    }
     if (!at || at.pathname !== '/login' || siteMode !== 'device' || signingOut || Date.now() - lastResign < RESIGN_EVERY_MS) return;
     lastResign = Date.now();
     const w = parseUrl(wanted);

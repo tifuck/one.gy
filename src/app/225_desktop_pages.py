@@ -39,6 +39,30 @@ def _inject_desktop_app():
     return {'desktop_app': _is_desktop_app_request()}
 
 
+def _safe_next_path(target):
+    """target when it is a plain path on this site, else the files page."""
+    target = target or ''
+    parts = urllib.parse.urlsplit(target)
+    if (not target.startswith('/') or target.startswith('//') or '\\' in target
+            or any(ch.isspace() or not ch.isprintable() for ch in target)
+            or parts.scheme or parts.netloc):
+        return url_for('files')
+    return target
+
+
+@app.route('/desktop/locked')
+@login_required
+@desktop_lock_free
+def desktop_locked():
+    """Where a desktop session lands for a page that needs its locked app
+    unlocked: the app shell (rail, music bar) under the app's lock screen.
+    Any other session goes on to next."""
+    target = _safe_next_path(request.args.get('next'))
+    if _session_device_state() != 'locked':
+        return redirect(url_for('files') if target.startswith(url_for('desktop_locked')) else target)
+    return render_template('desktop_locked.html', user=_current_session_user())
+
+
 def _desktop_platform_from_ua(user_agent):
     """'windows', 'linux' or None (macOS, mobile, unknown) from a User-Agent."""
     ua = (user_agent or '').lower()

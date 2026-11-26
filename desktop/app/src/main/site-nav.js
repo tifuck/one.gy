@@ -4,6 +4,12 @@
 'use strict';
 
 const MAX_RAIL_PX = 400;
+// While the app is locked the server keeps the site's session for the pages
+// that need no keys (music, so it keeps playing) and sends every other page
+// to LOCKED_PATH, which the lock screen covers.
+const LOCKED_PATH = '/desktop/locked';
+const LOCK_FREE_PATHS = new Set(['/music']);
+const isLockFreePath = (p) => LOCK_FREE_PATHS.has(p);
 
 // A path on the configured server: "/x...", never "//host" or with spaces/backslashes.
 const isSitePath = (v) => typeof v === 'string' && v.length <= 2048 && /^\/(?!\/)[^\s\\]*$/.test(v);
@@ -14,4 +20,6 @@ function cleanInset(v) {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_RAIL_PX ? Math.round(v) : null;
 }
 
-module.exports = { isSitePath, cleanInset };
+module.exports = {
+  isSitePath, cleanInset, isLockFreePath, LOCKED_PATH,
+};

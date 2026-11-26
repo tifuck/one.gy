@@ -156,7 +156,7 @@ unlock turns `lock_enabled` on for good.
 | same | `{"system_proof", "system_ts"}` | like `pin_proof`: Windows Hello = base64 RSA PKCS#1 v1.5 SHA-256 signature of `onegy-system-unlock-v1\n<device id>\n<system_ts>` (unix seconds, ±300 s, larger than the last one used); fingerprint = the token (no `system_ts`); a wrong one `401 system_unlock_failed` (`attempts_left`) and counts with wrong PINs; `409 system_unlock_not_set` |
 | same | `{"auth_token"}` (password, split-key) | `+ "grant"`; resets the PIN's lifetime and failures; login lockout applies |
 | `POST /apiv1/devices/self/grant` | — | grant: slide its expiry → `{"grant_expires_at"}` |
-| `DELETE /apiv1/devices/self/grant` | — | `204`; the grant and its website sessions end |
+| `DELETE /apiv1/devices/self/grant` | — | `204`; the grant ends; its website sessions keep only the lock-free routes (music) |
 | `PUT /apiv1/devices/self/pin` | `{"pin_proof", "strict", "current_pin_proof"?, "auth_token"?}` | grant; `409 password_required` before any password unlock; the current PIN or the password unless the password unlocked this device in the last 10 minutes, else `401 credential_required`; wrong ones answer as in unlock (a wrong PIN counts toward the five) |
 | `DELETE /apiv1/devices/self/pin` | `{"current_pin_proof"?, "auth_token"?}` | grant + the same credential rule; back to password unlock |
 | `PUT /apiv1/devices/self/system-unlock` | `{"kind": "hello", "public_key"}` or `{"kind": "fingerprint", "token"}` + the credential rule of the PIN | grant; `public_key` = base64 SPKI of the Windows Hello RSA key (≥2048 bits); `token` ≥32 chars, the server keeps `SHA-256(token)` |
@@ -178,8 +178,11 @@ never extends that.
 **Website sign-in.** `GET /desktop/session?next=<path>` with header
 `X-Onegy-Desktop-Ticket: <ticket>` (one use, 60 s, needs a live grant) signs
 the browser in and redirects to `next` (same-site path) or `/files`. The
-session carries `device_id` and ends when the device is removed or its grant
-ends (app locked). A header, so a link or cross-site form cannot log anyone
+session carries `device_id` and ends when the device is removed. Without a
+live grant (app locked) it reaches only the lock-free routes (`/music`, the
+music API, `/desktop/locked`); other pages redirect to
+`/desktop/locked?next=<path>`, other XHRs get `403 {"error": "APP_LOCKED"}`,
+and the session stays. A header, so a link or cross-site form cannot log anyone
 in. `GET /desktop/whoami` (website session) → `{"user_id", "device_id"}`.
 
 ## Key tree

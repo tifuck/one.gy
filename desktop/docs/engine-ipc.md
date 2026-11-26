@@ -322,7 +322,8 @@ Key states (sync-api.md "Device security", "Key tree"):
 `lock_enabled` is on for every device that has been unlocked with the
 password once by this version.
 
-The app shows a lock screen (no site page) while `lock_enabled && app_locked`:
+The app shows a lock screen while `lock_enabled && app_locked` (over every
+site page but music, site-bridge.md "App lock"):
 at start, when the OS locks the screen or sleeps, after the idle time in the
 app setting `lock_after_minutes` (system idle time; on Wayland, which has
 none, the time since the last input in the app's windows), when minimized or
