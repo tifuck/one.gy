@@ -1,7 +1,7 @@
 /* ============================================================================
    admin-music.js — Music tab of the admin console.
-   A six-view dashboard (Overview, Discovery, Rules, Downloads, Connections,
-   Limits) built from /admin/api/music, laid out like the Monitoring tab
+   A seven-view dashboard (Overview, Discovery, Rules, Priorities, Downloads,
+   Connections, Limits) built from /admin/api/music, laid out like the Monitoring tab
    (.mon-* panels). admin.js (tabMusic) loads the data, polls it and wires the
    controls (data-music-* attributes); this file owns the markup and the view
    tabs.
@@ -10,8 +10,10 @@
   'use strict'
   var H
 
-  var BUCKETS = [[0, 'Requests'], [1, 'New releases and charts'], [2, 'Top hits'], [3, 'Full discographies'],
-    [4, 'Essentials'], [5, 'Top tracks'], [6, 'Re-checks']]
+  var BUCKETS = [[0, 'Requests'], [1, 'New releases and charts'], [2, 'Top 10s'], [3, 'Full discographies'],
+    [4, 'Essentials'], [5, 'Other'], [6, 'Re-checks']]
+  // Why a song is queued (MusicJob payload reason), for Up next.
+  var REASONS = { 0: 'Request', 2: 'Top 10', 3: 'Discography', 4: 'Essentials', 5: 'Other' }
   var PROBLEMS = {
     no_ytm_track: 'Not found on YouTube Music',
     fp_mismatch: 'Audio did not match the song',
@@ -29,14 +31,28 @@
     rate_limited: 'Waiting for a rate limit',
     lease_expired: 'Interrupted'
   }
-  var VIEWS = [['overview', 'Overview'], ['discovery', 'Discovery'], ['rules', 'Rules'], ['downloads', 'Downloads'],
-    ['connections', 'Connections'], ['limits', 'Limits']]
+  var VIEWS = [['overview', 'Overview'], ['discovery', 'Discovery'], ['rules', 'Rules'], ['priorities', 'Priorities'],
+    ['downloads', 'Downloads'], ['connections', 'Connections'], ['limits', 'Limits']]
   // Follow modes, widest first: [value, label, colour in the roster bar]
   var MODES = [['everything', 'Everything', 'var(--kind-code)'], ['discography', 'Full discography', 'var(--accent)'],
     ['essentials', 'Essentials', 'var(--kind-media)'], ['top_tracks', 'Top tracks', 'var(--kind-image)'],
     ['new_only', 'New releases only', 'var(--kind-doc)'], ['off', 'Not followed', 'var(--line-strong)'],
     ['blocked', 'Blocked', 'var(--bad)']]
-  var WEIGHTS = [[0.5, 'Low ×0.5'], [1, 'Normal'], [1.5, 'High ×1.5'], [2, 'Max ×2']]
+  var WEIGHTS = [[0.5, 'Low ×0.5'], [1, 'Normal'], [1.5, 'High ×1.5'], [2, 'Higher ×2'], [3, 'Very high ×3'], [5, 'Max ×5']]
+  // Lowest follow mode whose new releases are queued whole (music_fresh_full_mode).
+  var FRESH_MODES = [['top_tracks', 'Every followed artist'], ['essentials', 'Essentials and up'], ['discography', 'Full discography only']]
+  // Download-order presets, sent as is to /admin/api/music/priorities. Balanced
+  // matches the defaults in _SETTING_DEFAULTS.
+  var PRESETS = [
+    ['balanced', 'Balanced', 'Chart songs and big new releases first, then every artist\'s hits, then full catalogues.',
+      { music_boost_chart: 3, music_boost_fresh: 2, music_weight_top10: 1.5, music_weight_essentials: 1, music_weight_discography: 0.6, music_fresh_days: 14, music_fresh_full_mode: 'essentials' }],
+    ['new', 'New music first', 'New releases from every followed artist jump the queue and count as new for three weeks.',
+      { music_boost_chart: 4, music_boost_fresh: 4, music_weight_top10: 1.2, music_weight_essentials: 0.8, music_weight_discography: 0.4, music_fresh_days: 21, music_fresh_full_mode: 'top_tracks' }],
+    ['hits', 'Hits first', 'The most played songs of every era first; new releases get a small lift for a week.',
+      { music_boost_chart: 2, music_boost_fresh: 1.3, music_weight_top10: 2.5, music_weight_essentials: 1.2, music_weight_discography: 0.4, music_fresh_days: 7, music_fresh_full_mode: 'discography' }],
+    ['complete', 'Complete catalogues', 'Deep cuts weigh as much as hits, so whole discographies fill in sooner.',
+      { music_boost_chart: 2, music_boost_fresh: 1.5, music_weight_top10: 1.2, music_weight_essentials: 1, music_weight_discography: 1, music_fresh_days: 14, music_fresh_full_mode: 'essentials' }]
+  ]
   var view = (function () { try { return sessionStorage.getItem('adm-mu-view') || 'overview' } catch (e) { return 'overview' } })()
 
   function modeLabel (m) { var x = MODES.filter(function (r) { return r[0] === m })[0]; return x ? x[1] : (m || 'Not followed') }
@@ -214,7 +230,7 @@
       return '<div class="mon-block">' + row(H.esc(r[0]), H.num(r[1])) +
         '<div class="adm-meter"><div class="adm-meter-fill" style="width:' + Math.max(2, Math.round(r[1] / max * 100)) + '%"></div></div></div>'
     }).join('') : '<p class="mon-sub">' + (d.switches.discovery ? 'Nothing queued. Discovery adds songs as it finds them.' : 'Nothing queued. Turn on discovery to find songs.') + '</p>'
-    return panel('Queue', body, { meta: H.num(d.queue.total) + ' songs', tip: 'Downloaded in this order, most popular first within each group.' })
+    return panel('Queue', body, { meta: H.num(d.queue.total) + ' songs', tip: 'Why songs are queued. Downloads go by score across all groups: set the order under Priorities.' })
   }
 
   // ---- Discovery -------------------------------------------------------------------
@@ -227,17 +243,22 @@
     return panel('Roster', body, { meta: H.num(d.roster.artists) + ' artists', tip: 'Every artist discovery knows, by how much of their music it follows.' })
   }
 
-  function howItWorks () {
-    // Mirrors ROSTER_TIERS, ROSTER_EVERY, CHARTS_EVERY and the floors in src/music_worker/080_discovery.py.
-    var steps = [
-      ['Weekly ranking', 'Top 1,000 artists on ListenBrainz (all time and this year), the Deezer chart and boosted genres, scored by listens and Deezer fans, times your weights.'],
-      ['Ranks 1–500', 'Full discography.'],
-      ['Ranks 501–2,500', 'Essentials: top 25 songs and their albums.'],
-      ['Ranks 2,501–7,500', 'Top 10 songs.'],
-      ['Floors', 'Artists of liked or playlisted songs get at least Essentials; chart artists at least Top tracks.'],
-      ['Every 6 h', 'Chart songs (Deezer and Apple, US, GB, CA, AU) are queued first.'],
-      ['Rules', 'An artist rule replaces the mode discovery picked. Weights reorder downloads within each queue group.']
-    ]
+  function howItWorks (d) {
+    // Mirrors roster_tiers(), ROSTER_EVERY, CHARTS_EVERY, CHART_FLOOR_DAYS and the floors in src/music_worker/080_discovery.py.
+    var p = d.priorities
+    var tiers = [[p.music_tier_discography, 'Full discography.'], [p.music_tier_essentials, 'Essentials: top 25 songs and their albums.'],
+      [p.music_tier_top_tracks, 'Top 10 songs.']]
+    var from = 1, steps = [['Weekly ranking', 'Top 1,000 artists on ListenBrainz (all time and this year), the Deezer chart and boosted genres, scored by listens and Deezer fans, times your weights.']]
+    tiers.forEach(function (t) {
+      if (t[0] >= from) steps.push(['Ranks ' + H.num(from) + '–' + H.num(t[0]), t[1]])
+      from = Math.max(from, t[0] + 1)
+    })
+    var full = FRESH_MODES.filter(function (m) { return m[0] === p.music_fresh_full_mode })[0]
+    steps.push(['Floors', 'Artists of liked or playlisted songs get at least Essentials; artists with a chart song in the last 90 days at least Top tracks.'],
+      ['Every 6 h', 'Chart songs (Deezer and Apple, US, GB, CA, AU) are queued and boosted.'],
+      ['New releases', 'Checked daily for active artists. Whole releases: ' + (full ? full[1].toLowerCase() : 'essentials and up') + '; other artists once a new song reaches their top tracks.'],
+      ['Download order', 'One score per song: popularity × why it is wanted × artist and genre weight × boosts. Set it under Priorities.'],
+      ['Rules', 'An artist rule replaces the mode discovery picked. A weight multiplies the score of all their songs.'])
     return panel('How discovery picks songs', '<dl class="mu-adm-steps">' + steps.map(function (s) {
       return '<div><dt>' + H.esc(s[0]) + '</dt><dd>' + H.esc(s[1]) + '</dd></div>'
     }).join('') + '</dl>')
@@ -300,7 +321,7 @@
       ? '<h4 class="mu-adm-sub">Artists with a rule</h4>' + table(RULE_HEAD, r.artists.map(ruleRow))
       : '<p class="mon-sub mon-foot">No artist rules yet. Search for an artist to boost, limit or block them.</p>'
     return panel('Artist rules', '<div class="mu-adm-pad">' + search + '</div>' + found + list,
-      { flush: true, meta: H.num(r.artists.length) + ' rules', tip: 'A mode replaces what discovery picked for the artist. The weight multiplies their score and their songs\' download priority. Applies on the artist\'s next scan, which starts at once.' })
+      { flush: true, meta: H.num(r.artists.length) + ' rules', tip: 'A mode replaces what discovery picked for the artist. The weight multiplies their ranking score and the download score of all their songs. Any rule lifts the per-artist song limit. Applies on the artist\'s next scan, which starts at once.' })
   }
 
   function genreRules (d) {
@@ -320,6 +341,72 @@
       : '<p class="mon-sub mon-foot">No genre rules. High and Max also add the genre\'s top Deezer artists to the ranking.</p>')
     return panel('Genre rules', body, { flush: true, meta: H.num(r.genres.length) + ' rules',
       tip: 'Deezer genre names. Blocked stops discovery of artists in the genre (an artist rule still wins). Applies at the next weekly ranking.' })
+  }
+
+  // ---- Priorities ----------------------------------------------------------------------
+  function presetOf (p) {
+    var hit = PRESETS.filter(function (x) {
+      return Object.keys(x[3]).every(function (k) { return String(p[k]) === String(x[3][k]) })
+    })[0]
+    return hit || null
+  }
+  function fieldRow (key, label, hint, control) {
+    return '<div class="rd-field-row"><div class="rd-field-text"><label class="rd-field-label" for="muPrio_' + key + '">' + H.esc(label) + '</label>' +
+      '<p class="rd-field-hint">' + H.esc(hint) + '</p></div><div class="adm-inline">' + control + '</div></div>'
+  }
+  function prioField (p, key, label, hint, min, max, step, unit) {
+    var input = '<input class="form-input adm-num-input" type="number" id="muPrio_' + key + '" min="' + min + '" max="' + max + '" step="' + step + '"' +
+      ' data-music-prio="' + key + '" value="' + H.esc(p[key]) + '">'
+    return fieldRow(key, label, hint, unit === '×' ? '<span class="adm-unit">×</span>' + input : input + '<span class="adm-unit">' + H.esc(unit) + '</span>')
+  }
+
+  function presets (d) {
+    var active = presetOf(d.priorities)
+    var buttons = PRESETS.map(function (x) {
+      var on = active && active[0] === x[0]
+      return '<button type="button" class="rd-btn rd-btn-sm ' + (on ? 'rd-btn-primary' : 'rd-btn-ghost') + '" data-music-preset="' + x[0] + '" aria-pressed="' + !!on + '">' + H.esc(x[1]) + '</button>'
+    }).join('')
+    var body = '<div class="mu-adm-pad mu-adm-stack"><div class="mu-adm-presets" role="group" aria-label="Presets">' + buttons + '</div>' +
+      '<p class="mon-sub">' + H.esc(active ? active[2] : 'Custom: your own mix of the values below.') + '</p>' +
+      '<p class="mon-sub">Every queued song gets one score: how popular it is on Deezer × why it is wanted × the artist and genre weights × any boost. ' +
+      'The highest score downloads first, so a hit from any artist beats a deep cut, and a new single from a big artist beats one from an unknown.</p></div>'
+    return panel('Download order', body, { meta: active ? active[1] : 'Custom', tip: 'Changes apply to the whole queue within a minute.' })
+  }
+
+  function upNext (d) {
+    var rows = d.up_next.map(function (s, i) {
+      var tags = (s.chart ? H.pill('Chart', 'accent') : '') + (s.fresh ? H.pill('New', 'accent') : '') + H.pill(REASONS[s.reason] || 'Other')
+      return '<li class="mu-adm-song"><span class="mu-adm-rank">' + (i + 1) + '</span>' +
+        '<span class="mu-adm-song-text"><b>' + H.esc(s.title || '') + '</b><span>' + H.esc(s.artist || '') + (s.album ? ' · ' + H.esc(s.album) : '') + '</span></span>' +
+        '<span class="mu-adm-tags">' + tags + '</span><span class="mu-adm-faint" title="Score">' + H.num(s.score) + '</span></li>'
+    }).join('')
+    return panel('Up next', rows ? '<ol class="mu-adm-songs">' + rows + '</ol>'
+      : '<p class="mon-sub mon-foot">Nothing is waiting. Songs waiting for a retry or a rate limit are not listed.</p>',
+    { flush: true, meta: 'Next ' + d.up_next.length, tip: 'The songs downloaded next, highest score first. New and Chart mark a running boost.' })
+  }
+
+  function priorities (d) {
+    var p = d.priorities
+    var modes = FRESH_MODES.map(function (m) {
+      return '<option value="' + m[0] + '"' + (m[0] === p.music_fresh_full_mode ? ' selected' : '') + '>' + H.esc(m[1]) + '</option>'
+    }).join('')
+    var boosts = prioField(p, 'music_boost_chart', 'Chart songs', 'Songs on the Deezer or Apple charts, until the day after they leave.', 1, 10, 0.1, '×') +
+      prioField(p, 'music_boost_fresh', 'New releases', 'Until Deezer has play counts, a new song also counts as popular as the artist\'s usual hit.', 1, 10, 0.1, '×') +
+      prioField(p, 'music_fresh_days', 'Counts as new for', 'Days after the release date.', 1, 90, 1, 'days') +
+      fieldRow('music_fresh_full_mode', 'Whole new releases from', 'Below this, a new song is queued once it reaches the artist\'s top tracks.',
+        '<select class="form-input mu-adm-select" id="muPrio_music_fresh_full_mode" data-music-prio="music_fresh_full_mode">' + modes + '</select>')
+    var reasons = prioField(p, 'music_weight_top10', 'Top 10 songs', 'Each followed artist\'s ten most played songs.', 0.1, 10, 0.1, '×') +
+      prioField(p, 'music_weight_essentials', 'Essentials', 'Songs 11 to 25 and the albums behind an artist\'s hits.', 0.1, 10, 0.1, '×') +
+      prioField(p, 'music_weight_discography', 'Full discographies', 'Every other album, EP and single of the top-ranked artists.', 0.1, 10, 0.1, '×')
+    var follow = prioField(p, 'music_tier_discography', 'Full discography', 'Artists ranked up to here follow their whole catalogue.', 0, 100000, 1, 'artists') +
+      prioField(p, 'music_tier_essentials', 'Essentials', 'Ranked up to here: essentials.', 0, 100000, 1, 'artists') +
+      prioField(p, 'music_tier_top_tracks', 'Top tracks', 'Ranked up to here: top 10 songs.', 0, 100000, 1, 'artists') +
+      prioField(p, 'music_artist_song_cap', 'Songs per artist', 'Held plus queued; 0 means no limit. An artist rule lifts it.', 0, 100000, 1, 'songs')
+    return presets(d) +
+      '<div class="mon-cols is-2">' + panel('Boosts', boosts, { meta: 'Saved as you change a value' }) +
+      panel('Why a song is wanted', reasons, { meta: 'Saved as you change a value', tip: 'Each multiplies the popularity of songs queued for that reason.' }) + '</div>' +
+      '<div class="mon-cols is-2">' + upNext(d) +
+      panel('Who is followed', follow, { meta: H.num(d.roster.artists) + ' ranked', tip: 'Follow modes by rank in the weekly ranking. Applies at the next ranking, which starts within a minute.' }) + '</div>'
   }
 
   // ---- Downloads -----------------------------------------------------------------------
@@ -447,8 +534,9 @@
       '<header class="mon-bar"><h1 class="rd-page-title">Music</h1>' + tabs + '<span class="mon-bar-end"><span class="mon-live"><i aria-hidden="true"></i>Live</span></span></header>' +
       pane('overview', statusStrip(d, rows) + stats(d) + '<div class="mon-cols is-split">' + activity(d) + queue(d) + '</div>') +
       pane('discovery', '<section class="rd-panel mon-p mu-adm-solo">' + discoveryControl(d, '_v') + '</section>' +
-        '<div class="mon-cols is-2">' + roster(d) + howItWorks() + '</div>' + topArtists(d)) +
+        '<div class="mon-cols is-2">' + roster(d) + howItWorks(d) + '</div>' + topArtists(d)) +
       pane('rules', '<div class="mon-cols is-split">' + artistRules(d) + genreRules(d) + '</div>') +
+      pane('priorities', priorities(d)) +
       pane('downloads', '<section class="rd-panel mon-p mu-adm-solo">' + downloadControl(d, '_v') + '</section>' +
         '<div class="mon-cols is-2">' + queue(d) + problems(d) + '</div>' +
         '<div class="mon-cols is-2">' + recent(d) + sources(d) + '</div>') +
@@ -468,5 +556,10 @@
     panelEl.querySelectorAll('.mu-adm > .mon-view').forEach(function (x) { x.hidden = x.id !== 'mu-view-' + v })
   }
 
-  window.AdmMusic = { render: render, setView: setView }
+  function preset (name) {
+    var hit = PRESETS.filter(function (x) { return x[0] === name })[0]
+    return hit ? hit[3] : null
+  }
+
+  window.AdmMusic = { render: render, setView: setView, preset: preset }
 })()

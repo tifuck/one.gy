@@ -12,14 +12,14 @@
    transition) or the invisible modal stays over the page and eats all clicks. */
 .modal.manage-modal.manage-modal-hiding{opacity:0;animation:mmHide .2s var(--ease) forwards}
 @keyframes mmHide{from{opacity:1}to{opacity:0}}
-.manage-modal-panel{position:relative;width:100%;max-width:34rem;max-height:88vh;background:var(--bg);
+.manage-modal-panel{position:relative;width:100%;max-width:34rem;max-height:88vh;max-height:88dvh;background:var(--bg);
   border:2px solid var(--border);box-shadow:var(--shadow-2);display:flex;flex-direction:column;
   transform:translateY(10px) scale(.98);transition:transform .2s var(--ease)}
 .manage-modal-visible .manage-modal-panel{transform:none}
 .manage-modal-close{position:absolute;top:.7rem;right:.7rem;z-index:2;width:34px;height:34px;display:grid;
   place-items:center;border:2px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer}
 .manage-modal-close:hover{background:var(--accent);color:var(--accent-contrast);border-color:var(--accent)}
-.manage-modal-scroll{overflow-y:auto;padding:clamp(1.4rem,3vw,2rem)}
+.manage-modal-scroll{overflow-y:auto;overscroll-behavior:contain;padding:clamp(1.4rem,3vw,2rem)}
 .manage-modal-loading{font-family:var(--font-mono);font-size:.8rem;color:var(--text-dim);text-align:center;padding:3rem 0}
 
 /* Header */
@@ -123,7 +123,7 @@
 .manage-modal-btn-delete:hover{background:#d8231b;color:#fff}
 
 /* Re-encrypt progress toast */
-.upload-progress-toast{position:fixed;bottom:1.2rem;right:1.2rem;z-index:210;width:min(92vw,22rem);
+.upload-progress-toast{position:fixed;bottom:calc(1.2rem + var(--mp-h,0px));right:1.2rem;z-index:210;width:min(92vw,22rem);
   background:var(--bg);border:2px solid var(--border);box-shadow:var(--shadow-2)}
 .upload-toast-header{display:flex;align-items:center;justify-content:space-between;padding:.7rem .9rem;border-bottom:2px solid var(--border)}
 .upload-toast-title{font-family:var(--font-mono);font-size:.74rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase}

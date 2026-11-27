@@ -63,7 +63,7 @@
   /* ---- which panes exist on this page ----------------------------------- */
 
   function shell () {
-    return document.querySelector('.fx-shell, .nt-shell, .mu-shell')
+    return document.querySelector('.fx-shell, .nt-shell, .mu-shell, .bw-shell')
   }
   function hasPane () {
     return !!shell()
@@ -91,8 +91,9 @@
   }
 
   function maxFor (key) {
-    var p = PANES[key]
-    return Math.max(p.min, Math.min(p.max, window.innerWidth - MIN_CONTENT))
+    var p = PANES[key], s = shell()
+    // The shell, not the window: ONE.GY Desktop's rail sits outside it
+    return Math.max(p.min, Math.min(p.max, (s ? s.clientWidth : window.innerWidth) - MIN_CONTENT))
   }
 
   function clamp (key, w) {

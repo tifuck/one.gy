@@ -20,7 +20,7 @@
 
 /* ---- Table of contents (desktop rail) ----------------------------------- */
 .docs-sidebar{ position:sticky; top:calc(var(--nav-h) + 28px); align-self:start; display:flex; flex-direction:column;
-  max-height:calc(100vh - var(--nav-real) - 52px); }
+  max-height:calc(100vh - var(--nav-real) - 52px); max-height:calc(100dvh - var(--nav-real) - 52px); }
 .docs-toc-toggle{ display:none; }
 .docs-nav{ position:relative; display:flex; flex-direction:column; gap:1px; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
 .docs-sidebar-heading{ margin:18px 0 4px; padding:0 10px; font-size:.72rem; font-weight:600; line-height:1.4; color:var(--text-faint); }

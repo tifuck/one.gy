@@ -7,14 +7,20 @@
    (.mega-browser, .folder-tree-link, .view-toggle-btn, .file-row ...) are
    testsv2 selectors. Prefix: .bw-*. Token-only, no hex colours.
    ========================================================================== */
+/* --mp-h: the fixed music bar (music.css), so it never covers the rail foot */
 .bw-shell{
   display:grid; grid-template-columns:var(--rd-side-eff) minmax(0,1fr);
-  height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h));
+  height:calc(100vh - var(--nav-h) - var(--mp-h,0px)); height:calc(100dvh - var(--nav-h) - var(--mp-h,0px));
   min-height:0; overflow:hidden; position:relative; background:var(--bg);
   transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1);
 }
-.bw-main{ min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; position:relative; }
+/* A size container: the toolbar and list compact by the room the main column
+   has, not by the window. Fixed layers stay outside it (containment would
+   pin them to it). */
+.bw-main{ min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; position:relative; container-type:inline-size; }
 .bw-scrim{ display:none; }
+/* ONE.GY Desktop's rail, for the fixed layers centred on the main column */
+.is-desktop-app body:has(.dk-rail){ --bw-dk:var(--dk-rail-w); }
 
 /* ---- Rail: tree + share facts ---------------------------------------------- */
 .bw-side .rd-side-inner{ padding-top:12px; }
@@ -22,7 +28,7 @@
 .bw-tree-skel{ flex:none; height:24px; margin:3px 6px; }
 .bw-tree-kids{ display:flex; flex-direction:column; gap:1px; margin-top:1px; }
 .bw-tree-link{
-  display:flex; align-items:center; gap:6px; width:100%; height:30px; padding:0 8px 0 calc(4px + var(--d,0) * 14px);
+  display:flex; align-items:center; gap:6px; width:100%; height:30px; padding:0 8px 0 calc(4px + min(var(--d,0) * 14px, 45%));
   border:0; border-radius:7px; background:none; color:var(--text); font:inherit; font-size:.84rem; text-align:left; cursor:pointer;
   transition:background .12s;
 }
@@ -37,7 +43,8 @@
 .bw-tree-link.is-active .bw-tree-ico{ color:var(--accent); }
 .bw-tree-name{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-.bw-side-foot{ gap:8px; }
+/* A stack, not ui-v2.css's grid (built for the Files trash + storage pair) */
+.ui-v2 .bw-side-foot{ display:flex; flex-direction:column; align-items:stretch; gap:8px; }
 .bw-side-e2e{ display:flex; align-items:center; gap:6px; padding:0 8px; font-size:.78rem; font-weight:500; color:var(--good); }
 .bw-side-e2e[hidden]{ display:none; }
 .bw-side-e2e svg{ width:13px; height:13px; flex:none; }
@@ -257,7 +264,10 @@
 
 /* ---- Selection bar (same as .fx-selbar) ---------------------------------------- */
 .bw-selbar{
-  position:fixed; left:calc(50% + var(--rd-side-eff) / 2); bottom:22px; z-index:60;
+  position:fixed; left:calc(50% + (var(--bw-dk,0px) + var(--rd-side-eff)) / 2); bottom:calc(22px + var(--mp-h,0px)); z-index:60;
+  /* max-content: shrink-to-fit counts only the room right of the centre, which
+     squeezed the icons to nothing beside a wide rail */
+  width:max-content; max-width:calc(100% - var(--bw-dk,0px) - var(--rd-side-eff) - 24px);
   transform:translateX(-50%) translateY(calc(100% + 40px)); visibility:hidden;
   display:flex; align-items:center; gap:2px; height:44px; padding:0 6px 0 14px; box-sizing:border-box;
   border-radius:12px; background:var(--raise); color:var(--text); box-shadow:var(--shadow-pop);
@@ -273,11 +283,11 @@
 .bw-selbar-btn svg{ width:15px; height:15px; color:var(--text-dim); }
 
 /* ---- E2EE decrypt progress (same as .fx-uptray) -------------------------------- */
-.bw-prog{ position:fixed; right:20px; bottom:20px; z-index:58; display:none; width:320px; max-width:calc(100vw - 24px); overflow:hidden;
+.bw-prog{ position:fixed; right:20px; bottom:calc(20px + var(--mp-h,0px)); z-index:58; display:none; width:320px; max-width:calc(100vw - 24px); overflow:hidden;
   border-radius:12px; background:var(--raise); box-shadow:var(--shadow-pop); }
 .bw-prog.is-open{ display:block; animation:bwRise .24s cubic-bezier(.2,.85,.25,1) both; }
 @keyframes bwRise{ from{ opacity:0; transform:translateY(10px); } }
-.ui-v2:has(.bw-selbar.is-open) .bw-prog{ bottom:78px; }
+.ui-v2:has(.bw-selbar.is-open) .bw-prog{ bottom:calc(78px + var(--mp-h,0px)); }
 .bw-prog-head{ display:flex; align-items:center; gap:8px; height:40px; padding:0 6px 0 14px; border-bottom:1px solid var(--line); font-size:.84rem; }
 .bw-prog-head b{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
 .bw-prog-close{ flex:none; display:grid; place-items:center; width:28px; height:28px; padding:0; border:0; border-radius:7px;
@@ -300,6 +310,7 @@
     position:fixed; top:var(--nav-h); left:0; bottom:0; width:min(300px,86vw); z-index:50;
     transform:translateX(-102%); visibility:hidden; transition:transform .28s cubic-bezier(.2,.85,.25,1), visibility 0s .28s;
     box-shadow:24px 0 48px -16px rgba(0,0,0,.5);
+    padding-bottom:var(--mp-h,0px); /* the foot stays above the music bar */
   }
   .bw-side.is-open{ transform:none; visibility:visible; transition-delay:0s; }
   .bw-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; z-index:49; background:var(--scrim); opacity:0; pointer-events:none; transition:opacity .2s; }
@@ -308,12 +319,13 @@
   .bw-view{ padding:12px 12px 96px; }
   .bw-view[data-view="list"]{ padding:0 4px 96px; }
   .bw-search{ width:180px; }
-  .bw-selbar{ left:12px; right:12px; bottom:12px; transform:translateY(calc(100% + 40px)); }
+  .bw-selbar{ left:calc(12px + var(--bw-dk,0px)); right:12px; width:auto; max-width:none; bottom:calc(12px + var(--mp-h,0px)); transform:translateY(calc(100% + 40px)); }
   .bw-selbar.is-open{ transform:none; }
   .bw-selbar-count{ margin-right:auto; }
 }
-@media (max-width:620px){
-  .bw-toolbar{ --bw-ctl-h:36px; gap:4px; padding:0 10px; }
+/* Toolbar and list in a narrow main column (phones, or a wide rail) */
+@container (max-width:620px){
+  .bw-toolbar{ gap:4px; padding:0 10px; }
   .bw-bcrumb{ flex:1 1 auto; }
   /* Too narrow for a path: a back arrow and the current folder, ellipsized */
   .bw-bcrumb-item:not(.is-current), .bw-bcrumb-sep, .bw-bcrumb-more{ display:none; }
@@ -331,25 +343,33 @@
   .bw-search:is(:focus-within, :has(input:not(:placeholder-shown))){ position:absolute; left:10px; right:10px; width:auto; z-index:3; background:var(--surface); }
   .bw-search:is(:focus-within, :has(input:not(:placeholder-shown))) input{ flex:1 1 auto; opacity:1; }
   .bw-seg{ padding:0; background:none; }
-  .bw-seg-btn{ width:36px; }
   .bw-seg-btn.is-active{ background:var(--press); box-shadow:none; }
-  .bw-view[data-view="grid"] .bw-items{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
-  .bw-view[data-view="grid"] .bw-items.has-folders{ grid-template-columns:minmax(0,1fr); gap:4px; }
   .bw-list-head{ display:none; }
   .bw-view[data-view="list"] .bw-sec:first-child{ margin-top:12px; }
-  .bw-view[data-view="list"] .bw-item{ grid-template-columns:20px minmax(0,1fr) auto auto; gap:10px; height:44px; }
+  .bw-view[data-view="list"] .bw-item{ grid-template-columns:20px minmax(0,1fr) auto auto; gap:10px; }
   .bw-view[data-view="list"] :is(.bw-item-meta, .bw-item-date){ display:none; }
-  .bw-selbar-sep{ display:none; }
-  .bw-prog{ right:12px; bottom:max(12px,env(safe-area-inset-bottom)); }
-  .ui-v2:has(.bw-selbar.is-open) .bw-prog{ bottom:68px; }
 }
-/* Touch: no hover, so actions stay visible and file tiles always show a tick */
+@media (max-width:620px){
+  .bw-toolbar{ --bw-ctl-h:36px; }
+  .bw-seg-btn{ width:36px; }
+  .bw-view[data-view="grid"] .bw-items{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+  .bw-view[data-view="grid"] .bw-items.has-folders{ grid-template-columns:minmax(0,1fr); gap:4px; }
+  .bw-view[data-view="list"] .bw-item{ height:44px; }
+  .bw-selbar-sep{ display:none; }
+  .bw-prog{ right:12px; bottom:calc(max(12px,env(safe-area-inset-bottom)) + var(--mp-h,0px)); }
+  .ui-v2:has(.bw-selbar.is-open) .bw-prog{ bottom:calc(68px + var(--mp-h,0px)); }
+}
+/* Touch: no hover and no long-press, so actions stay visible and every item
+   always shows its tick (on rows and folder tiles in place of the icon) */
 @media (pointer:coarse){
   .bw-act{ opacity:1; width:32px; height:32px; }
   .bw-act svg{ width:17px; height:17px; }
   .bw-tree-link{ height:38px; }
-  .bw-view[data-view="grid"] .is-file .bw-check{ opacity:1; pointer-events:auto; }
+  .bw-check{ opacity:1; pointer-events:auto; }
+  .bw-view[data-view="list"] .bw-item:has(> .bw-check) .bw-item-thumb, .bw-item.is-folder:has(> .bw-check) .bw-item-thumb{ opacity:0; }
   .bw-selbar-btn{ height:38px; }
+  /* iOS zooms into inputs under 16px on focus */
+  .bw-search input{ font-size:16px; }
 }
 @media (prefers-reduced-motion:reduce){
   .bw-shell, .bw-side, .bw-selbar, .bw-item, .bw-act, .bw-check, .bw-prog-fill, .bw-scrim, .bw-search, .bw-tree-twist svg{ transition:none !important; }

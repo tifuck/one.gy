@@ -1,8 +1,9 @@
 # library.db: what the site plays. The worker is its only writer; the app opens
 # it read-only. Schema v7 keeps every v6 table and column the app reads and adds
-# identity (song_isrcs, song_aliases) and inventory (files) tables.
+# identity (song_isrcs, song_aliases) and inventory (files) tables. v8 re-keys
+# songs.norm_key with the tags that name another track (song_norm_key).
 
-LIB_SCHEMA_VERSION = '7'
+LIB_SCHEMA_VERSION = '8'
 LIB_LOCK = threading.Lock()
 
 _LIB_TABLES = '''
@@ -83,10 +84,24 @@ def lib_init():
                     if column not in have:
                         conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {kind}')
             conn.executescript(_LIB_INDEXES)
+            old = conn.execute("SELECT value FROM _meta WHERE key = 'schema_version'").fetchone()
+            if old and old['value'] == '7':
+                _lib_rekey(conn)
             conn.execute("INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)", [LIB_SCHEMA_VERSION])
             conn.commit()
         finally:
             conn.close()
+
+
+def _lib_rekey(conn):
+    """v7 -> v8: recompute every identity key; the artist part is kept."""
+    changed = 0
+    for row in conn.execute('SELECT id, title, version_type, norm_key FROM songs WHERE norm_key IS NOT NULL').fetchall():
+        key = song_norm_key(int(row['norm_key'].split(':', 1)[0]), row['title'], row['version_type'] or 'original')
+        if key != row['norm_key']:
+            conn.execute('UPDATE songs SET norm_key = ? WHERE id = ?', [key, row['id']])
+            changed += 1
+    log(f'library: re-keyed {changed} songs')
 
 
 def meta_get(key, default=None):
@@ -142,13 +157,17 @@ def lib_songs_by_norm(norm_key):
 
 
 def lib_norm_keys(artist_dz):
-    """Identity keys of every song held for one artist."""
+    """{identity key: [duration s]} of every song held for one artist."""
+    if not os.path.isfile(LIB_DB):
+        return {}
     conn = lib_connect()
     try:
         prefix = f'{int(artist_dz)}:'
-        rows = conn.execute("SELECT norm_key FROM songs WHERE norm_key >= ? AND norm_key < ?",
-                            [prefix, prefix + '\uffff']).fetchall()
-        return {r['norm_key'] for r in rows}
+        held = {}
+        for r in conn.execute("SELECT norm_key, duration_ms FROM songs WHERE norm_key >= ? AND norm_key < ?",
+                              [prefix, prefix + '\uffff']):
+            held.setdefault(r['norm_key'], []).append((r['duration_ms'] or 0) / 1000)
+        return held
     finally:
         conn.close()
 

@@ -12,7 +12,9 @@
 .is-desktop-app body:has(.dk-rail){ padding-left:var(--dk-rail-w); }
 
 /* ---- Rail ------------------------------------------------------------------ */
-.dk-rail{ position:fixed; inset:0 auto 0 0; z-index:60; display:flex; flex-direction:column; align-items:center; gap:2px;
+/* z-index above the music bar (90): the rail itself never overlaps the bar (which starts at the
+   rail's edge), but its menus open to the right, bottom-aligned, over it. Below .rd-modal (100). */
+.dk-rail{ position:fixed; inset:0 auto 0 0; z-index:91; display:flex; flex-direction:column; align-items:center; gap:2px;
   width:var(--dk-rail-w); padding:8px 0 10px; background:var(--pane); border-right:1px solid var(--line);
   user-select:none; view-transition-name:rd-nav; }
 .dk-rail .dk-rail-link{ position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;

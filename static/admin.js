@@ -1104,6 +1104,12 @@
         jsend('DELETE', '/admin/api/music/genres/' + mgr.getAttribute('data-music-genre-remove')).then(function () { refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'REMOVE FAILED') })
         return
       }
+      var mps = t.closest('[data-music-preset]')
+      if (mps) {
+        var values = window.AdmMusic.preset(mps.getAttribute('data-music-preset'))
+        if (values) musicSave(mps, '/admin/api/music/priorities', values, 'PRESET APPLIED')
+        return
+      }
       if (t.closest('[data-music-retry]')) {
         jsend('POST', '/admin/api/music/retry').then(function (d) { toast(plural(d.count, 'song') + ' will retry now', 'success'); refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'RETRY FAILED') })
         return
@@ -1311,6 +1317,13 @@
       }
       if (mt.matches('[data-music-genre]')) {
         musicSave(mt, '/admin/api/music/genres', { genre: mt.getAttribute('data-music-genre'), weight: parseFloat(mt.value) }, 'SAVED')
+        return
+      }
+      if (mt.matches('[data-music-prio]')) {
+        var pv = mt.tagName === 'SELECT' ? mt.value : parseFloat(mt.value)
+        if (pv === '' || (typeof pv === 'number' && isNaN(pv))) { refreshTab('music', S.renderEpoch); return }
+        var pbody = {}; pbody[mt.getAttribute('data-music-prio')] = pv
+        musicSave(mt, '/admin/api/music/priorities', pbody, 'SAVED')
         return
       }
       if (mt.matches('[data-music-limit]')) {

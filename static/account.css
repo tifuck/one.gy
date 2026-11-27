@@ -138,6 +138,7 @@
 }
 @media (max-width:480px){
   .acc-form-foot .rd-btn{flex:1 1 0}
+  .acc-nav{flex-wrap:wrap}
   .acc-nav-link{flex:1 1 auto;justify-content:center;padding:0 8px}
   .acc-stat{padding:8px 10px}
   .acc-theme-desc{display:none}

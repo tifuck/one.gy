@@ -292,7 +292,7 @@
   .adm-nav-link svg{ display:none; }
   .adm-nav-link:hover{ background:none; color:var(--text); }
   .adm-nav-link.is-active{ background:var(--raise); color:var(--text); box-shadow:0 1px 2px rgba(0,0,0,.18), 0 0 0 1px var(--line); }
-  .adm-main{ overflow-y:visible; padding:20px 16px 56px; }
+  .adm-main{ overflow-y:visible; padding:20px 16px calc(56px + var(--mp-h,0px)); }
   .adm-st-fields{ grid-template-columns:repeat(2,minmax(0,1fr)); }
   .adm-st-primary{ grid-column:1 / -1; min-height:0; }
 }
@@ -339,7 +339,7 @@
   .adm-table.is-stack td:first-child{ padding-right:var(--adm-act-w); }
   .adm-table.is-stack td.is-trunc{ white-space:normal; }
   .adm-table.is-stack td.is-actions{ position:absolute; top:8px; right:12px; width:auto; min-height:0; padding:0; }
-  .adm-table.is-stack td[data-label]{ white-space:normal; overflow-wrap:anywhere; }
+  .adm-table.is-stack td[data-label], .mon-table.is-stack td[data-label]{ white-space:normal; overflow-wrap:anywhere; }
   .adm-table.is-stack .adm-quota.is-compact{ width:auto; max-width:200px; margin-left:auto; }
   .adm-table.is-stack .adm-pills{ justify-content:flex-end; }
   .adm-table.is-stack .adm-fb-msg{ min-width:0; max-width:none; padding-top:2px; }
@@ -349,9 +349,9 @@
   .adm-foot > .adm-meta{ flex:1 1 100%; text-align:center; }
   .adm-pager{ flex-wrap:wrap; justify-content:center; }
   /* Settings: once Save is armed it floats at the bottom of the screen */
-  .adm-narrow .rd-page-actions:has(#admSaveSettings:not(:disabled)){ position:fixed; left:12px; right:12px; bottom:max(12px,env(safe-area-inset-bottom)); z-index:40;
+  .adm-narrow .rd-page-actions:has(#admSaveSettings:not(:disabled)){ position:fixed; left:12px; right:12px; bottom:calc(max(12px,env(safe-area-inset-bottom)) + var(--mp-h,0px)); z-index:40;
     justify-content:space-between; margin:0; padding:8px 8px 8px 14px; border-radius:12px; background:var(--raise); box-shadow:var(--shadow-pop); }
-  .adm-narrow:has(#admSaveSettings:not(:disabled)){ padding-bottom:64px; }
+  .adm-narrow:has(#admSaveSettings:not(:disabled)){ padding-bottom:calc(64px + var(--mp-h,0px)); }
   /* Drawer becomes a bottom sheet */
   .adm-drawer{ top:auto; left:0; width:auto; max-height:92dvh; border-radius:16px 16px 0 0; }
   .adm-drawer-body{ padding:14px 16px max(24px,env(safe-area-inset-bottom)); }
@@ -428,7 +428,6 @@
 .mon-checks{ display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:1px; background:var(--line); border-top:1px solid var(--line); }
 .mon-check{ display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; padding:10px 12px 11px; border:0; background:var(--panel);
   font:inherit; text-align:left; color:var(--text); cursor:pointer; transition:background .1s; }
-.mon-check:last-child{ grid-column-end:-1; }
 .mon-check:hover{ background:color-mix(in srgb,var(--text) 5%,var(--panel)); }
 .mon-check:focus-visible, .mon-stat:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
 .mon-check-label{ display:flex; align-items:center; gap:7px; font-size:.76rem; color:var(--text-dim); white-space:nowrap; }
@@ -450,7 +449,7 @@
 .mon-stat-top{ display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:6px; }
 .mon-stat-label{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.76rem; font-weight:600; color:var(--text-dim); }
 .mon-stat-delta{ flex:none; font-size:.72rem; color:var(--text-faint); font-variant-numeric:tabular-nums; }
-.mon-stat-val{ font-size:1.45rem; font-weight:600; letter-spacing:-.025em; line-height:1.15; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.mon-stat-val{ font-size:1.45rem; font-weight:600; letter-spacing:-.025em; line-height:1.15; font-variant-numeric:tabular-nums; }
 .mon-stat.is-warn .mon-stat-val{ color:var(--warn); }
 .mon-stat.is-bad .mon-stat-val{ color:var(--bad); }
 .mon-stat-sub{ min-height:2.8em; margin-top:3px; font-size:.72rem; line-height:1.4; color:var(--text-faint); font-variant-numeric:tabular-nums; }
@@ -602,6 +601,9 @@
 .mu-adm-song-text b, .mu-adm-song-text span{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .mu-adm-song-text b{ font-size:.86rem; font-weight:600; color:var(--text); }
 .mu-adm-song-text span{ font-size:.78rem; color:var(--text-dim); }
+.mu-adm-rank{ flex:none; min-width:20px; text-align:right; font-size:.78rem; font-variant-numeric:tabular-nums; color:var(--text-faint); }
+.mu-adm-tags{ display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; flex:none; max-width:45%; }
+.mu-adm-presets{ display:flex; flex-wrap:wrap; gap:8px; }
 .mu-adm-proxies{ display:flex; flex-direction:column; border:1px solid var(--line); border-radius:10px; }
 .mu-adm-proxy{ display:flex; align-items:center; gap:12px; min-height:52px; padding:8px 8px 8px 12px; }
 .mu-adm-proxy + .mu-adm-proxy{ border-top:1px solid var(--line); }

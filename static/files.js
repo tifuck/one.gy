@@ -389,6 +389,7 @@
     var home = document.createElement('button')
     home.className = 'fx-bc-item' + ((S.folderId == null && !S.trashMode) ? ' is-current' : '') + (isNew(0) ? ' fx-bc-in' : '')
     home.textContent = S.rootName
+    home.title = S.rootName
     home.setAttribute('data-fid', '')
     home.onclick = function () { loadFolder(null) }
     bc.appendChild(home)
@@ -403,6 +404,7 @@
       var btn = document.createElement('button')
       btn.className = 'fx-bc-item' + (isLast ? ' is-current' : '') + (anim ? ' fx-bc-in' : '')
       btn.textContent = displayName(b, true)
+      btn.title = btn.textContent
       btn.setAttribute('data-fid', b.id)
       if (!isLast) btn.onclick = function () { loadFolder(b.id) }
       bc.appendChild(btn)
@@ -538,7 +540,8 @@
     row.className = 'fx-tree-row rd-side-row' + (open ? ' is-open' : '') + (f.id === S.folderId && !S.trashMode ? ' is-active' : '')
     row.setAttribute('data-fid', f.id == null ? '' : f.id)
     row.setAttribute('data-depth', depth)
-    row.style.paddingLeft = (depth * 0.85) + 'rem'
+    // Capped, so a deep branch never squeezes the name to nothing
+    row.style.paddingLeft = 'min(' + (depth * 0.85) + 'rem, 45%)'
     var name = f.id == null ? f.name : displayName(f, true)
     row.innerHTML =
       (hasKids ? '<button type="button" class="fx-tree-toggle" title="TOGGLE FOLDER" aria-label="TOGGLE ' + esc(name) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></button>' : '<span class="fx-tree-spacer"></span>') +
@@ -996,6 +999,14 @@
     $('fxSelCount').textContent = n
     bar.classList.toggle('is-open', !!(S.multi && n > 0))
     if (el.view) el.view.classList.toggle('is-selecting', !!(S.multi && n > 0))
+    fitSelbar()
+  }
+  // A main column too narrow for the selection bar (wide rail, open details
+  // drawer): its buttons drop their labels, as on phones.
+  function fitSelbar () {
+    var bar = $('fxSelbar'); if (!bar) return
+    bar.classList.remove('is-tight')
+    if (bar.scrollWidth > bar.clientWidth + 1) bar.classList.add('is-tight')
   }
   function selectOnly (k) {
     if (!k) return
@@ -1159,7 +1170,7 @@
     ;(function walk (parent, depth) {
       sortItems(byParent[parent] || [], true).forEach(function (folder) {
         var disabled = blocked.has(String(folder.id))
-        rows += '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="' + folder.id + '" role="option" style="padding-left:' + (10 + depth * 18) + 'px"' + (disabled ? ' disabled' : '') + '>' + ICON.folderFill + '<span>' + esc(displayName(folder, true)) + '</span></button>'
+        rows += '<button type="button" class="fx-move-row folder-tree-item" data-folder-id="' + folder.id + '" role="option" style="padding-left:min(' + (10 + depth * 18) + 'px, 45%)"' + (disabled ? ' disabled' : '') + '>' + ICON.folderFill + '<span>' + esc(displayName(folder, true)) + '</span></button>'
         walk(String(folder.id), depth + 1)
       })
     })('root', 1)
@@ -1837,7 +1848,7 @@
   function wire () {
     el.view = $('fxView')
     $('fxUp').addEventListener('click', function () { if (canGoUp()) loadFolder(parentFolderId()) })
-    new ResizeObserver(fitCrumbs).observe(document.querySelector('.fx-toolbar'))
+    new ResizeObserver(function () { fitCrumbs(); fitSelbar() }).observe(document.querySelector('.fx-toolbar'))
 
     // View region — click selects, double-click opens (folder / preview).
     // Checkbox, Ctrl/Cmd+click and Shift+click build a multi-selection.
@@ -1947,6 +1958,9 @@
     // Keep the input from blurring first when the icon is used to collapse it
     sToggle.addEventListener('mousedown', function (e) { if (sBox.classList.contains('is-open')) e.preventDefault() })
     sToggle.onclick = function () { sBox.classList.contains('is-open') ? closeSearch() : openSearch() }
+    // The toolbar keeps its size while the search widens or narrows, so its
+    // ResizeObserver misses it: refit the path once the width has settled.
+    sBox.addEventListener('transitionend', function (e) { if (e.target === sBox && e.propertyName === 'width') fitCrumbs() })
     sClear.onclick = function () { sInput.value = ''; sClear.hidden = true; endSearch(); sInput.focus() }
     sInput.addEventListener('input', function () {
       var q = this.value.trim(); clearTimeout(searchTimer)

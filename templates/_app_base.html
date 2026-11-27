@@ -24,7 +24,8 @@ if(ver!=='3'){
   localStorage.setItem('onegy_rd_v','3');
 }
 var v=parseInt(localStorage.getItem('onegy_rd_side_w'),10);
-r.style.setProperty('--rd-side-w',Math.max(150,Math.min(560,isFinite(v)&&v>0?v:dS,W-C))+'px');
+/* The cap is the shell's width, as in panel-resize.js maxFor(): the desktop app's 68px rail (--dk-rail-w) sits outside it. */
+r.style.setProperty('--rd-side-w',Math.max(150,Math.min(560,isFinite(v)&&v>0?v:dS,W-C-(r.classList.contains('is-desktop-app')?68:0)))+'px');
 /* Files starts with its folders panel hidden; a stored choice wins. Notes keeps
    its list open unless a note will be reopened (notes.js: onegy_notes_open). */
 var pg=r.getAttribute('data-rd-page'),c=localStorage.getItem('onegy_rd_side_collapsed_'+pg);

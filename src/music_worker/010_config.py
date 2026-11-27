@@ -21,7 +21,8 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
-from app import (app, db, get_setting, get_numeric_setting, _invalidate_settings_cache, MUSIC_LIBRARY_PATH,
+from app import (app, db, get_setting, get_numeric_setting, get_float_setting, get_setting_value,
+                 _invalidate_settings_cache, MUSIC_LIBRARY_PATH,
                  MusicJob, MusicArtist, MusicGenreRule, MusicSourceBudget, MusicAlbumMatch,
                  MusicWorker, MusicLike, MusicPlaylistSong)
 
@@ -50,8 +51,6 @@ FP_REJECT_BER = 0.30
 # Skipped outside the Everything mode: interludes and side-long pieces.
 MIN_TRACK_S = 30
 MAX_TRACK_S = 20 * 60
-# Per-artist ceiling on songs one scan may queue; the rest wait for an admin rule.
-ARTIST_SONG_CAP = 400
 
 STOP = threading.Event()
 # Status line per thread, shown in the admin Music tab by the heartbeat.

@@ -140,18 +140,18 @@
 /* Live drag: kill transitions so panes track the pointer 1:1, and stop the
    pointer from selecting text or hovering things underneath. */
 :root.rd-resizing,:root.rd-resizing *{ cursor:col-resize !important; user-select:none !important }
-:root.rd-resizing .fx-shell,:root.rd-resizing .mu-shell,:root.rd-resizing .nt-shell,
+:root.rd-resizing .fx-shell,:root.rd-resizing .mu-shell,:root.rd-resizing .nt-shell,:root.rd-resizing .bw-shell,
 :root.rd-resizing .rd-resizer,:root.rd-resizing .nt-pane-toggle,
 :root.rd-resizing .music-player{ transition:none !important }
-:root.rd-resizing .fx-main,:root.rd-resizing .mu-main,:root.rd-resizing .nt-panes{ pointer-events:none }
+:root.rd-resizing .fx-main,:root.rd-resizing .mu-main,:root.rd-resizing .nt-panes,:root.rd-resizing .bw-main{ pointer-events:none }
 
 @media (prefers-reduced-motion:reduce){
-  .fx-shell,.mu-shell,.nt-shell,.rd-resizer,.nt-pane-toggle{ transition:none !important }
+  .fx-shell,.mu-shell,.nt-shell,.bw-shell,.rd-resizer,.nt-pane-toggle{ transition:none !important }
 }
 
 /* ---- Content frame ------------------------------------------------------ */
 .rd-app-main{padding-top:var(--nav-h);min-width:0}
 /* Full-height app shells never scroll the page (their panes scroll inside),
    so core.css's stable gutter would only leave a dead strip down the right. */
-:root:has(.fx-shell,.nt-shell,.mu-shell){scrollbar-gutter:auto}
+:root:has(.fx-shell,.nt-shell,.mu-shell,.bw-shell){scrollbar-gutter:auto}
 .rd-app-wrap{max-width:var(--maxw);margin-inline:auto;padding:clamp(1.4rem,3.5vw,2.5rem) clamp(1.1rem,4vw,2.2rem) 4rem}

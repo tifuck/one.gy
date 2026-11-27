@@ -31,6 +31,7 @@ def _load_parts():
         '050_library.py',
         '060_identity.py',
         '070_jobs.py',
+        '075_priority.py',
         '080_discovery.py',
         '090_acquire.py',
         '100_runner.py',

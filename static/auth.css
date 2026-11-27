@@ -52,7 +52,7 @@ main:has(.auth-container){ display:flex; flex-direction:column; }
   border-top:1px solid var(--line); font-size:.84rem; line-height:1.5; color:var(--text-dim); text-align:center; }
 
 /* ---- Captcha (login after failed attempts · register second step) --------- */
-.captcha-container{ display:flex; align-items:center; gap:8px; min-width:0; }
+.captcha-container{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
 .captcha-image{ height:42px; width:auto; flex:none; border-radius:8px; box-shadow:0 0 0 1px var(--line-strong); }
 .captcha-refresh{ width:42px; height:42px; flex:none; display:grid; place-items:center; border:0; border-radius:8px;
   background:var(--hover); color:var(--text-dim); cursor:pointer; transition:background .14s, color .14s; }
@@ -95,6 +95,7 @@ main:has(.auth-container){ display:flex; flex-direction:column; }
   .auth-text-link, .auth-quiet-link{ display:inline-block; padding-block:8px; }
   .auth-label-row:has(.auth-quiet-link){ margin-block:-8px; }
   .auth-foot{ gap:0; }
+  .ui-v2 .auth-mono-input{ font-size:16px; } /* iOS zooms into fields under 16px */
 }
 @media (prefers-reduced-motion:reduce){
   .auth-dialog-panel{ animation:none; }

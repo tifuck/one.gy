@@ -186,13 +186,30 @@ def acquire_loop(index):
             STOP.wait(30)
 
 
+def rescore_due(state):
+    """Re-score the queue: all of it when a download-order setting or rule
+    changed, the boosted songs hourly (boosts run out by the day)."""
+    signature = priority_signature(priority_config())
+    if signature != meta_get('prio_sig'):
+        log(f'queue: settings changed; re-scored {jobs_rescore():,} songs')
+        meta_set('prio_sig', signature)
+        state['hot'] = time.time()
+    elif time.time() - state['hot'] >= 3600:
+        changed = jobs_rescore(hot_only=True)
+        if changed:
+            log(f'queue: {changed} songs changed boost')
+        state['hot'] = time.time()
+
+
 def housekeeping_loop():
     last_report = 0.0
+    rescore_state = {'hot': 0.0}
     while not STOP.wait(60):
         try:
             reaped = jobs_reap()
             if reaped:
                 log(f'returned {reaped} expired leases to the queue')
+            rescore_due(rescore_state)
             flush_budgets()
             if setting_on('music_downloads_enabled'):
                 ytdlp_maybe_update()
@@ -233,6 +250,8 @@ def run():
     jobs_release_mine()
     heartbeat()
     log(f'worker {WORKER_NAME} ({WORKER_ID}) started; library {LIB_DIR}')
+    # Before the download threads start, so no job's payload changes under them.
+    jobs_migrate()
     threads = [threading.Thread(target=discovery_loop, name='discovery', daemon=True),
                threading.Thread(target=housekeeping_loop, name='housekeeping', daemon=True),
                threading.Thread(target=heartbeat_loop, name='heartbeat', daemon=True)]

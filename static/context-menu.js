@@ -86,6 +86,8 @@
     })
     // Show off-screen to measure, then place with edge-flip.
     m.style.left = '-9999px'; m.style.top = '-9999px'
+    // innerHeight, not the CSS vh: on mobile vh is the viewport without the browser bars
+    m.style.maxHeight = (window.innerHeight - 16) + 'px'
     m.classList.add('is-open')
     var mw = m.offsetWidth, mh = m.offsetHeight
     var px = (x + mw + 8 > window.innerWidth) ? Math.max(8, x - mw) : x

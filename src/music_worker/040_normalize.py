@@ -28,6 +28,11 @@ _FEAT_RE = re.compile(r'\b(feat|ft|featuring|with|prod)\b\.?', re.I)
 _BARE_FEAT_RE = re.compile(r'\s(feat|ft|featuring)\b\.?', re.I)
 _BRACKET_RE = re.compile(r'[\(\[\{]([^\)\]\}]*)[\)\]\}]')
 _LIVE_ALBUM_RE = re.compile(r'^(live (at|in|from|on)\b)|\b(live (at|in|from)|in concert|unplugged|mtv live)\b', re.I)
+# Tags that name a different track rather than a version ("Part 2", "Reprise",
+# "10 Minute Version"). They stay in the identity key; matched on fold()ed tags.
+_IDENTITY_TAG_RE = re.compile(r'^(part|pt|chapter|vol|volume) (\d+|[ivx]+)$|\b(reprise|interlude)\b|^(intro|outro|prelude|skit)$'
+                              r'|^\d+ minutes? version$')
+_ROMAN = {'i': '1', 'ii': '2', 'iii': '3', 'iv': '4', 'v': '5', 'vi': '6', 'vii': '7', 'viii': '8', 'ix': '9', 'x': '10'}
 
 
 def fold(text):
@@ -82,9 +87,30 @@ def norm_title(title):
     return fold(base) or fold(title)
 
 
+def identity_tags(title):
+    """Folded tags of a title that make it a different track: 'part 2', 'reprise'."""
+    found = []
+    for tag in split_title(title)[1]:
+        tag = fold(tag)
+        match = _IDENTITY_TAG_RE.search(tag)
+        if match and match.group(1):
+            tag = f'part {_ROMAN.get(match.group(2), match.group(2))}'
+        if match:
+            found.append(tag)
+    return found
+
+
 def song_norm_key(artist_dz, title, version):
-    """Identity candidate key: same artist, same base title, same version."""
-    return f'{int(artist_dz)}:{norm_title(title)[:150]}:{version}'
+    """Identity candidate key: same artist, same base title (plus tags such as
+    'Part 2' that name another track), same version."""
+    base = ' '.join([norm_title(title)] + identity_tags(title))
+    return f'{int(artist_dz)}:{base[:150]}:{version}'
+
+
+def same_length(a, b):
+    """Durations (s) close enough for one song under one identity key: album and
+    single edits differ a little, two different 'Intro' tracks usually a lot."""
+    return abs((a or 0) - (b or 0)) <= max(10, 0.1 * max(a or 0, b or 0))
 
 
 def similarity(a, b):

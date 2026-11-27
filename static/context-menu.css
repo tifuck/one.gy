@@ -6,7 +6,7 @@
   position:fixed; z-index:300; min-width:196px; max-width:280px;
   background:var(--surface); border:2px solid var(--border); box-shadow:6px 6px 0 var(--accent);
   padding:.25rem; display:none; flex-direction:column;
-  max-height:calc(100vh - 16px); overflow-y:auto;
+  max-height:calc(100vh - 16px); max-height:calc(100dvh - 16px); overflow-y:auto;
 }
 .rd-cmenu > *{ flex:none; }
 .rd-cmenu.is-open{ display:flex; animation:rdcmenu .12s cubic-bezier(.2,.8,.2,1) both; }

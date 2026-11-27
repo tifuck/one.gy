@@ -70,7 +70,7 @@
 .pr-seed-text span{font-size:.8rem;color:var(--text-dim)}
 .pr-form-foot{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
 
-.pr-preview{position:sticky;top:calc(var(--nav-h) + 20px);display:flex;flex-direction:column;min-height:18rem;max-height:calc(100vh - var(--nav-real) - 40px)}
+.pr-preview{position:sticky;top:calc(var(--nav-h) + 20px);display:flex;flex-direction:column;min-height:18rem;max-height:calc(100vh - var(--nav-real) - 40px);max-height:calc(100dvh - var(--nav-real) - 40px - var(--mp-h,0px))}
 .pr-preview-actions{display:flex;gap:6px}
 .ui-v2 .pr-preview .pr-status:empty{display:none}
 .pr-fb-foot .pr-status{font-size:.78rem;color:var(--text-dim)}
@@ -111,12 +111,11 @@
   /* The preview lands under a long form, so Copy / Download float at the
      bottom of the screen while the builder is open */
   .pr-build{padding-bottom:64px}
-  .pr-preview-actions{position:fixed;z-index:20;left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));
+  .pr-preview-actions{position:fixed;z-index:20;left:12px;right:12px;bottom:calc(max(12px,env(safe-area-inset-bottom)) + var(--mp-h,0px));
     padding:8px;border-radius:12px;background:var(--raise);box-shadow:var(--shadow-pop)}
   .pr-preview-actions .rd-btn{flex:1 1 0}
 }
 @media (max-width:620px){
-  .pr-head .rd-page-actions{flex-wrap:nowrap}
   .pr-head .rd-page-actions > .rd-btn{margin-left:auto}
   .pr-search{flex:1 1 100%}
   /* Tag filters become one sideways strip that runs edge to edge */
@@ -132,7 +131,7 @@
   .pr-grid-2{grid-template-columns:minmax(0,1fr)}
   /* Content-heavy detail becomes a bottom sheet */
   .ui-v2 .pr-detail{place-items:end stretch;padding:0}
-  .ui-v2 .pr-detail .rd-modal-panel{max-width:none;max-height:92vh;border-radius:16px 16px 0 0;padding-bottom:max(18px,env(safe-area-inset-bottom));transform:translateY(40px)}
+  .ui-v2 .pr-detail .rd-modal-panel{max-width:none;max-height:92vh;max-height:92dvh;border-radius:16px 16px 0 0;padding-bottom:max(18px,env(safe-area-inset-bottom));transform:translateY(40px)}
   .ui-v2 .pr-detail.rd-open .rd-modal-panel{transform:none}
   .pr-body{max-height:44vh}
   .pr-detail-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}

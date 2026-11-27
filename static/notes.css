@@ -38,7 +38,7 @@
 
 /* ---- Lock overlay (E2EE unlock) ------------------------------------------ */
 .nt-lock{
-  position:fixed; top:var(--nav-h); left:0; right:0; bottom:0; z-index:120; display:flex;
+  position:fixed; top:var(--nav-h); left:0; right:0; bottom:0; z-index:59; display:flex; /* under the nav (z 60), so its drawer and menus still open over it */
   align-items:center; justify-content:center; padding:1.5rem;
   background:var(--scrim); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); animation:rdFade .2s ease both;
 }
@@ -243,10 +243,14 @@
 .nt-tb-color input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
 /* Font and size pickers: native selects, so a phone shows its own wheel */
 .nt-tb-select{
-  flex:none; height:30px; padding:0 2px 0 6px; border:0; border-radius:7px; background:none; color:var(--text-dim); cursor:pointer;
+  flex:none; height:30px; padding:0 18px 0 6px; border:0; border-radius:7px; background:none; color:var(--text-dim); cursor:pointer;
   font:inherit; font-size:.82rem; font-weight:500; text-overflow:ellipsis; transition:background .12s, color .12s;
+  /* Own chevron (as ui-v2.css select.form-input): Safari's native pop-up button ignores height and background */
+  -webkit-appearance:none; appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 11px) 52%,calc(100% - 7px) 52%; background-size:4px 4px; background-repeat:no-repeat;
 }
-.nt-tb-select:hover{ background:var(--hover); color:var(--text); }
+.nt-tb-select:hover{ background-color:var(--hover); color:var(--text); }
 .nt-tb-select option{ background:var(--raise); color:var(--text); }
 .nt-tb-font{ width:108px; }
 .nt-tb-size{ width:52px; font-variant-numeric:tabular-nums; }
@@ -423,7 +427,7 @@
 @media (pointer:coarse){
   .nt-switch{ height:36px; }
   .nt-tb-btn, .nt-tb-color{ min-width:36px; height:36px; }
-  .nt-tb-select{ height:36px; }
+  .nt-tb-select{ height:36px; font-size:16px; } /* iOS zooms into fields under 16px */
   .nt-ed-body input[type="checkbox"]{ width:20px; height:20px; vertical-align:-4px; }
   .nt-img-handle{ width:26px; height:26px; }
   .nt-img-more{ width:34px; height:34px; }

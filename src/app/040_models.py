@@ -794,7 +794,11 @@ class MusicJob(db.Model):
     dedupe_key = db.Column(db.String(191), nullable=False, unique=True)
     norm_key = db.Column(db.String(191), nullable=True, index=True)
     artist_dz = db.Column(db.BigInteger, nullable=True, index=True)
+    # Artist whose scan queued the song and whose weight applies (None = artist_dz).
+    src_dz = db.Column(db.BigInteger, nullable=True, index=True)
     payload = db.Column(db.Text, nullable=False)
+    # Why it is queued (shown in the admin): 1 new release or chart, 2 top 10,
+    # 3 discography, 4 essentials, 5 other. Downloads go by priority alone.
     bucket = db.Column(db.SmallInteger, nullable=False, default=5)
     priority = db.Column(db.Float, nullable=False, default=0.0)
     # ready | leased | done | duplicate | skipped
@@ -810,6 +814,7 @@ class MusicJob(db.Model):
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     __table_args__ = (
         db.Index('ix_music_job_queue', 'state', 'kind', 'bucket', 'priority'),
+        db.Index('ix_music_job_lease', 'state', 'kind', 'priority'),
     )
 
 class MusicArtist(db.Model):
@@ -834,6 +839,8 @@ class MusicArtist(db.Model):
     # Weight the artist's open jobs were prioritized with (None = 1.0, as before weights).
     weight_synced = db.Column(db.Float, nullable=True)
     monitored_since = db.Column(db.DateTime, nullable=True)
+    # Last time a song of theirs was on a chart (the chart floor lasts 90 days).
+    charted_at = db.Column(db.DateTime, nullable=True)
     last_release = db.Column(db.String(10), nullable=True)
     next_scan_at = db.Column(db.DateTime, nullable=True, index=True)
     scanned_at = db.Column(db.DateTime, nullable=True)
@@ -949,6 +956,23 @@ _SETTING_DEFAULTS = {
     'music_downloads_enabled': False,
     'music_dl_daily_cap': '3000',
     'music_library_cap_gb': '1000',
+    # Download order (src/music_worker/075_priority.py): boosts and weights that
+    # multiply each queued song's popularity. Admin Music tab → Priorities.
+    'music_boost_chart': '3.0',
+    'music_boost_fresh': '2.0',
+    'music_weight_top10': '1.5',
+    'music_weight_essentials': '1.0',
+    'music_weight_discography': '0.6',
+    'music_fresh_days': '14',
+    # Lowest follow mode whose new releases are queued in full; below it only
+    # new songs that reach the artist's top tracks.
+    'music_fresh_full_mode': 'essentials',
+    # Songs one artist may hold plus queue (0 = no cap); an artist rule lifts it.
+    'music_artist_song_cap': '400',
+    # Follow modes by roster rank: ranks below each count get that mode.
+    'music_tier_discography': '500',
+    'music_tier_essentials': '2500',
+    'music_tier_top_tracks': '7500',
     # Use this server's own connection alongside the admin's proxies.
     'music_proxy_direct': True,
     # Desktop sync (375_apiv1_sync.py / 376_apiv1_sync_uploads.py).

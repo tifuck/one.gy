@@ -135,10 +135,12 @@
   height:24px; border:0; border-radius:5px; background:transparent; color:var(--code-fg); opacity:.7;
   font:500 .72rem var(--font-body); cursor:pointer; transition:opacity .12s, background .12s;
 }
-.fxc-code-head select{ padding:0 .4rem; }
+.fxc-code-head select{ padding:0 1.2rem 0 .4rem; -webkit-appearance:none; appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 10px) 52%,calc(100% - 6px) 52%; background-size:4px 4px; background-repeat:no-repeat; }
 .fxc-code-head select option{ background:var(--raise); color:var(--text); }
 .fxc-code-copy{ padding:0 .55rem; }
-.fxc-code-head select:hover, .fxc-code-copy:hover{ opacity:1; background:rgba(255,255,255,.08); }
+.fxc-code-head select:hover, .fxc-code-copy:hover{ opacity:1; background-color:rgba(255,255,255,.08); }
 .fxc-code textarea{
   flex:none; display:block; width:100%; min-height:90px; resize:none; border:0; border-radius:0 0 10px 10px; outline:0;
   padding:.7rem .8rem; background:var(--code-bg); color:var(--code-fg); font:13px/1.55 var(--font-mono);
@@ -179,7 +181,7 @@
 .fxc-live{ position:absolute; top:0; left:0; overflow:visible; pointer-events:none; }
 
 /* ---- Canvas-owned contextual controls (popovers are .rd-cmenu, ui-v2.css) */
-.fxc-popover{ z-index:420; max-height:calc(100vh - 16px); overflow:auto; }
+.fxc-popover{ z-index:420; max-height:calc(100vh - 16px); max-height:calc(100dvh - 16px); overflow:auto; }
 /* A column flex box with a max-height shrinks its children: keep rows and separators full size and scroll instead. */
 .fxc-popover > *{ flex-shrink:0; }
 /* Block-type headers and the panel chips keep their uppercase DOM text
@@ -227,8 +229,10 @@
 .fxc-text-tools .fxc-mini{ flex:none; min-width:28px; height:28px; padding:0 7px; background:none; line-height:28px; text-align:center; color:var(--text); }
 .fxc-text-tools .fxc-mini:hover{ background:var(--press); }
 .fxc-text-tools .fxc-mini svg{ width:15px; height:15px; vertical-align:-3px; }
-.fxc-tt-select{ flex:none; height:28px; max-width:76px; padding:0 2px 0 4px; border:0; border-radius:6px; background:none; color:var(--text); font:500 .78rem var(--font-body); cursor:pointer; }
-.fxc-tt-select:hover{ background:var(--press); }
+.fxc-tt-select{ flex:none; height:28px; max-width:76px; padding:0 16px 0 4px; border:0; border-radius:6px; background:none; color:var(--text); font:500 .78rem var(--font-body); cursor:pointer;
+  -webkit-appearance:none; appearance:none; background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 9px) 52%,calc(100% - 5px) 52%; background-size:4px 4px; background-repeat:no-repeat; }
+.fxc-tt-select:hover{ background-color:var(--press); }
 .fxc-tt-select option{ background:var(--raise); color:var(--text); }
 .fxc-tt-sep{ flex:none; width:1px; height:18px; background:var(--line-strong); margin:0 4px; }
 .fxc-tt-color{ flex:none; display:inline-flex; align-items:center; gap:4px; height:28px; padding:0 6px; border-radius:6px; cursor:pointer; transition:background .12s; }
@@ -295,7 +299,9 @@
   .fxc-h-nw, .fxc-h-n, .fxc-h-ne{ top:-10px; } .fxc-h-sw, .fxc-h-s, .fxc-h-se{ bottom:-10px; }
   .fxc-h-nw, .fxc-h-w, .fxc-h-sw{ left:-10px; } .fxc-h-ne, .fxc-h-e, .fxc-h-se{ right:-10px; }
   .fxc-text-tools .fxc-mini{ min-width:36px; height:36px; line-height:36px; }
-  .fxc-tt-select{ height:36px; }
+  /* iOS zooms into fields under 16px */
+  .fxc-tt-select{ height:36px; font-size:16px; }
+  .fxc-code-head select, .fxc-code textarea, .fxc-code-hl{ font-size:16px; } /* the highlight layer matches the textarea */
   .fxc-opts .fxc-mini{ min-height:36px; line-height:36px; }
   .fxc-rot{ top:-38px; width:22px; height:22px; margin-left:-11px; }
   .fxc-popover .rd-cmenu-item{ min-height:40px; }

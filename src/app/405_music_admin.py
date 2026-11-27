@@ -17,6 +17,24 @@ _MUSIC_SEARCH_LIMIT = 20
 _MUSIC_GENRE_HINTS = 80
 _MUSIC_PROXY_SCHEMES = ('socks5h', 'socks5', 'socks4a', 'socks4', 'http', 'https')
 _MUSIC_PROXY_MAX_LINES = 500
+_MUSIC_UP_NEXT = 15
+# Download-order settings (src/music_worker/075_priority.py), saved from the
+# Priorities view: key -> (low, high). Floats are boosts and weights.
+_MUSIC_PRIORITY_FLOATS = {
+    'music_boost_chart': (1.0, 10.0),
+    'music_boost_fresh': (1.0, 10.0),
+    'music_weight_top10': (0.1, 10.0),
+    'music_weight_essentials': (0.1, 10.0),
+    'music_weight_discography': (0.1, 10.0),
+}
+_MUSIC_PRIORITY_INTS = {
+    'music_fresh_days': (1, 90),
+    'music_artist_song_cap': (0, 100000),
+    'music_tier_discography': (0, 100000),
+    'music_tier_essentials': (0, 100000),
+    'music_tier_top_tracks': (0, 100000),
+}
+_MUSIC_FRESH_FULL_MODES = ('top_tracks', 'essentials', 'discography')
 
 
 def _music_parse_proxy(line):
@@ -106,6 +124,32 @@ def _music_iso(value):
     return value.replace(tzinfo=timezone.utc).isoformat() if value else None
 
 
+def _music_priorities():
+    values = {key: get_float_setting(key) for key in _MUSIC_PRIORITY_FLOATS}
+    values.update({key: get_numeric_setting(key) for key in _MUSIC_PRIORITY_INTS})
+    values['music_fresh_full_mode'] = get_setting_value('music_fresh_full_mode')
+    return values
+
+
+def _music_up_next(now):
+    """The songs the workers download next, in order, with why they rank there."""
+    today = now.strftime('%Y-%m-%d')
+    jobs = MusicJob.query.filter(MusicJob.state == 'ready', MusicJob.kind == 'acquire',
+                                 db.or_(MusicJob.run_after.is_(None), MusicJob.run_after <= now)) \
+        .order_by(MusicJob.priority.desc(), MusicJob.id.desc()).limit(_MUSIC_UP_NEXT).all()
+    songs = []
+    for job in jobs:
+        try:
+            payload = json.loads(job.payload)
+        except ValueError:
+            payload = {}
+        songs.append({'artist': payload.get('artist'), 'title': payload.get('title'), 'album': payload.get('album_title'),
+                      'reason': payload.get('reason') or job.bucket, 'rank': payload.get('rank'),
+                      'fresh': (payload.get('fresh_until') or '') >= today,
+                      'chart': (payload.get('chart_until') or '') >= today, 'score': round(job.priority)})
+    return songs
+
+
 def _music_artist_json(artist):
     return {'id': artist.id, 'name': artist.name, 'score': round(artist.score or 0, 3),
             'mode': _music_effective_mode(artist), 'rule_mode': artist.rule_mode,
@@ -176,6 +220,8 @@ def admin_api_music():
                      'downloads': bool(get_setting('music_downloads_enabled'))},
         'limits': {'daily': get_numeric_setting('music_dl_daily_cap'),
                    'size_gb': get_numeric_setting('music_library_cap_gb')},
+        'priorities': _music_priorities(),
+        'up_next': _music_up_next(now),
         'workers': workers,
         'library': {k: library[k] for k in ('songs', 'artists', 'albums', 'bytes', 'added_today', 'recent')},
         'queue': {'buckets': by_bucket, 'total': sum(by_bucket.values()), 'retrying': retrying, 'working': working},
@@ -191,6 +237,53 @@ def admin_api_music():
         'direct': bool(get_setting('music_proxy_direct')),
         'proxies': [_music_proxy_json(p, now) for p in MusicProxy.query.order_by(MusicProxy.id.asc()).all()],
     })
+
+
+@app.route('/admin/api/music/priorities', methods=['POST'])
+@limiter.limit(admin_rate_limit)
+@admin_required
+def admin_api_music_priorities():
+    """Save download-order settings (one or all, e.g. a preset). All or nothing.
+    The worker re-scores the queue within a minute."""
+    import math
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
+        return jsonify({'error': 'NOTHING TO CHANGE'}), 400
+    prepared = {}
+    for key, value in data.items():
+        if key in _MUSIC_PRIORITY_FLOATS:
+            low, high = _MUSIC_PRIORITY_FLOATS[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+                    or not low <= value <= high:
+                return jsonify({'error': f'{key.upper()} MUST BE A NUMBER FROM {low:g} TO {high:g}'}), 400
+            prepared[key] = round(float(value), 2)
+        elif key in _MUSIC_PRIORITY_INTS:
+            low, high = _MUSIC_PRIORITY_INTS[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+                    or value != int(value) or not low <= value <= high:
+                return jsonify({'error': f'{key.upper()} MUST BE A WHOLE NUMBER FROM {low} TO {high}'}), 400
+            prepared[key] = int(value)
+        elif key == 'music_fresh_full_mode':
+            if value not in _MUSIC_FRESH_FULL_MODES:
+                return jsonify({'error': 'UNKNOWN MODE'}), 400
+            prepared[key] = value
+        else:
+            return jsonify({'error': f'UNKNOWN SETTING {str(key)[:64].upper()}'}), 400
+    merged = {**_music_priorities(), **prepared}
+    if not merged['music_tier_discography'] <= merged['music_tier_essentials'] <= merged['music_tier_top_tracks']:
+        return jsonify({'error': 'TIERS MUST GROW: FULL DISCOGRAPHY ≤ ESSENTIALS ≤ TOP TRACKS'}), 400
+    try:
+        for key, value in prepared.items():
+            _stage_setting(key, value)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f'[ADMIN] Music priorities not saved: {e}')
+        return jsonify({'error': 'FAILED TO SAVE'}), 500
+    for key in prepared:
+        _invalidate_settings_cache(key)
+    print(f'[ADMIN] Music priorities: {prepared}')
+    return jsonify({'success': True, 'priorities': _music_priorities()})
 
 
 @app.route('/admin/api/music/workers/<int:worker_id>', methods=['POST'])

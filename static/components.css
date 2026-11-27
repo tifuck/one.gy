@@ -27,7 +27,7 @@
   opacity:0;visibility:hidden;transition:opacity .18s var(--ease),visibility .18s}
 .ucm-overlay.ucm-visible{opacity:1;visibility:visible}
 .ucm-overlay.ucm-hiding{opacity:0}
-.ucm-dialog{width:100%;max-width:26rem;background:var(--bg);border:2px solid var(--border);
+.ucm-dialog{width:100%;max-width:26rem;max-height:calc(100vh - 2.4rem);max-height:calc(100dvh - 2.4rem);overflow-y:auto;background:var(--bg);border:2px solid var(--border);
   border-radius:var(--radius);box-shadow:var(--shadow-2);padding:clamp(1.4rem,3vw,2rem);text-align:center;
   transform:translateY(10px) scale(.98);transition:transform .18s var(--ease)}
 .ucm-overlay.ucm-visible .ucm-dialog{transform:none}

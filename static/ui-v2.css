@@ -49,7 +49,7 @@
    over a scrim (body::after, below the bar so it stays crisp; a tap on it
    lands outside the drawer and closes it). Icon rows; a row-wrap flow lets
    logged-out Sign in + Get started share the last row as buttons. */
-.ui-v2 .rd-nav-drawer{ inset:calc(var(--nav-h) + 6px) 8px auto; max-height:calc(100dvh - var(--nav-h) - 14px); overflow-y:auto;
+.ui-v2 .rd-nav-drawer{ inset:calc(var(--nav-h) + 6px) 8px auto; max-height:calc(100dvh - var(--nav-h) - 14px - var(--mp-h,0px)); overflow-y:auto;
   flex-flow:row wrap; gap:2px 8px; padding:6px; background:var(--raise); border:0; border-radius:14px; box-shadow:var(--shadow-pop); }
 .rd-nav-open .ui-v2 .rd-nav-drawer{ animation:v2drawer .18s cubic-bezier(.2,.9,.3,1); }
 @keyframes v2drawer{ from{ opacity:0; transform:translateY(-6px); } }
@@ -236,7 +236,7 @@
 .ui-v2:has(.fx-selbar.is-open):has(.music-player.mp-visible:not(.mp-fs-open)) .toast-container{ bottom:144px; }
 .ui-v2 .toast-message{ display:flex; align-items:center; gap:.6rem; padding:.55rem .95rem .55rem .8rem; border:0; border-radius:10px;
   background:var(--raise); color:var(--text); box-shadow:var(--shadow-pop); font-family:var(--font-body);
-  font-size:.78rem; font-weight:500; letter-spacing:.02em; animation:v2toast .22s cubic-bezier(.2,.9,.3,1); }
+  font-size:.78rem; font-weight:500; letter-spacing:.02em; overflow-wrap:anywhere; animation:v2toast .22s cubic-bezier(.2,.9,.3,1); }
 .ui-v2 .toast-message::before{ content:""; width:7px; height:7px; flex:none; border-radius:50%; background:var(--accent); }
 .ui-v2 .toast-success::before{ background:var(--good); }
 .ui-v2 .toast-error::before{ background:var(--bad); }
@@ -530,7 +530,8 @@
 .ui-v2 .rd-table tbody td{ transition:background .1s; }
 .ui-v2 .rd-table tbody tr:hover td{ background:var(--hover); }
 .ui-v2 .rd-table :is(th,td).is-num{ text-align:right; white-space:nowrap; }
-.ui-v2 .rd-table :is(th,td).is-trunc{ width:100%; max-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* min-width: the other columns' nowrap content must not squeeze the name to nothing (.rd-table-wrap scrolls instead) */
+.ui-v2 .rd-table :is(th,td).is-trunc{ width:100%; max-width:0; min-width:9rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ui-v2 .rd-table :is(th,td).is-actions{ width:1%; white-space:nowrap; text-align:right; }
 
 .ui-v2 .rd-pill{ display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 8px; border-radius:999px; background:var(--press);
@@ -592,6 +593,7 @@
   .ui-v2 .rd-avatar-btn{ width:36px; height:36px; }
   .ui-v2 .rd-tab{ height:34px; }
   .ui-v2 .rd-check{ min-height:36px; }
+  .ui-v2 .rd-cmenu-item{ height:40px; }
   .ui-v2 .rd-footer-col a{ padding-block:4px; }
 }
 
@@ -603,7 +605,7 @@
   .ui-v2 .toast-container, .ui-v2:has(.fx-selbar.is-open) .toast-container{ top:calc(var(--nav-h) + 8px); bottom:auto; }
   /* Content-heavy dialogs become bottom sheets */
   .ui-v2 .modal.manage-modal{ place-items:end stretch; padding:0; }
-  .ui-v2 .manage-modal-panel{ max-width:none; max-height:90vh; border-radius:16px 16px 0 0; transform:translateY(40px); }
+  .ui-v2 .manage-modal-panel{ max-width:none; max-height:90vh; max-height:90dvh; border-radius:16px 16px 0 0; transform:translateY(40px); }
   .ui-v2 .manage-modal-scroll{ padding-bottom:max(20px,env(safe-area-inset-bottom)); }
 }
 @media (prefers-reduced-motion:reduce){

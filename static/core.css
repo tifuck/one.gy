@@ -53,7 +53,12 @@ div.rd-scroll{display:flex;flex-direction:column;flex:1 0 auto}
   :root:has(.rd-scroll):not(:has(.fx-shell,.nt-shell,.mu-shell,.bw-shell,.adm-layout)){overflow:hidden;scrollbar-gutter:auto}
   :root:not(:has(.fx-shell,.nt-shell,.mu-shell,.bw-shell,.adm-layout)) .rd-scroll{--nav-h:0px;flex:none;
     height:calc(100dvh - var(--nav-real));margin-top:var(--nav-real);overflow-y:auto}
+  /* A modal locks the page under it: here the page scrolls in .rd-scroll, not <html>.
+     The gutter stays so the content does not shift. */
+  :root:is(.preview-scroll-lock,:has(.rd-modal.rd-open)):not(:has(.fx-shell,.nt-shell,.mu-shell,.bw-shell,.adm-layout)) .rd-scroll{overflow-y:hidden;scrollbar-gutter:stable}
 }
+/* manage-modal.js / temp-preview.js: touch devices scroll the document */
+html.preview-scroll-lock{overflow:hidden}
 .rd-scroll:focus{outline:none}
 img,picture,svg,canvas{display:block;max-width:100%}
 input,button,textarea,select{font:inherit;color:inherit}
@@ -218,7 +223,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
 .rd-avatar-btn .rd-avatar{width:100%;height:100%}
 .rd-avatar{display:block;width:30px;height:30px;object-fit:cover}
 .rd-menu{position:relative}
-.rd-menu-pop{position:absolute;top:calc(100% + 8px);right:0;min-width:210px;z-index:70;
+.rd-menu-pop{position:absolute;top:calc(100% + 8px);right:0;min-width:210px;max-width:calc(100vw - 16px);z-index:70;
   background:var(--bg);border:2px solid var(--border);box-shadow:var(--shadow-2);padding:.35rem;
   opacity:0;visibility:hidden;transform:translateY(-6px);transition:opacity .16s var(--ease),transform .16s var(--ease),visibility .16s}
 .rd-menu.is-open .rd-menu-pop{opacity:1;visibility:visible;transform:none}
@@ -233,7 +238,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
 .rd-menu-note{font-size:.7rem;color:var(--text-dim);padding:.3rem .6rem .35rem;white-space:nowrap;font-variant-numeric:tabular-nums}
 .rd-nav-drawer .rd-menu-note{padding:.5rem 12px .2rem}
 .rd-menu-user{display:flex;align-items:center;gap:.6rem;padding:.55rem .6rem .7rem}
-.rd-menu-user b{display:block;font-size:.9rem;line-height:1.2}
+/* contain: a long username ellipsizes instead of widening the menu off screen */
+.rd-menu-user > div{flex:1 1 auto;min-width:0;contain:inline-size}
+.rd-menu-user b{display:block;font-size:.9rem;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rd-menu-user span{font-family:var(--font-mono);font-size:.64rem;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)}
 .rd-menu-check{margin-left:auto;color:var(--accent);opacity:0}
 .rd-theme-opt[aria-pressed="true"] .rd-menu-check{opacity:1}
@@ -258,12 +265,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
   animation:rdNotifIn .2s var(--ease) backwards}
 .rd-notif-inner{width:100%;height:var(--nav-h);
   display:flex;align-items:center;justify-content:center;
-  padding:0 3.6rem;overflow:hidden}
+  padding:0 calc(clamp(1.15rem,4vw,2.5rem) + 32px + .5rem);overflow:hidden} /* clears .rd-notif-x on both sides */
+/* A message too long for one line wraps (a centred nowrap line would be clipped at
+   both ends); core.js fitCopy shrinks the font until it fits the bar's height. */
 .rd-notif-copy{display:flex;align-items:center;justify-content:center;flex-wrap:nowrap;
-  white-space:nowrap;max-width:100%;
+  width:100%;max-width:100%;text-align:center;line-height:1.2;
   font-size:var(--rd-notif-fs,.92rem)}
 .rd-notif-msg{margin:0;font-family:var(--font-mono);font-size:1em;font-weight:700;
-  letter-spacing:.02em;line-height:1;flex:none}
+  letter-spacing:.02em;line-height:inherit;flex:1 1 auto;min-width:0}
 .rd-notif-x{position:absolute;right:clamp(1.15rem,4vw,2.5rem);top:50%;transform:translateY(-50%);
   width:32px;height:32px;display:grid;place-items:center;
   border:2px solid currentColor;background:transparent;color:inherit;cursor:pointer;
@@ -273,8 +282,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
 .rd-notif-x:focus-visible{outline:2px solid currentColor;outline-offset:2px;opacity:1}
 @media (max-width:620px){
   .rd-notif-inner{padding:0 2.8rem 0 1rem}
-  .rd-notif-copy{width:100%;white-space:normal;text-align:center;line-height:1.2}
-  .rd-notif-msg{flex:1 1 auto;min-width:0;line-height:inherit}
   .rd-notif-x{right:.7rem}
 }
 @media (prefers-reduced-motion:reduce){ .rd-notif{animation:none} }
@@ -388,7 +395,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
   visibility:hidden;opacity:0;transition:opacity var(--dur-fast) var(--ease),visibility var(--dur-fast)}
 .rd-modal.rd-open{visibility:visible;opacity:1}
 .rd-modal-overlay{position:absolute;inset:0;background:var(--scrim,rgba(8,10,14,.55));-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
-.rd-modal-panel{position:relative;width:100%;max-width:34rem;max-height:88vh;overflow-y:auto;
+.rd-modal-panel{position:relative;width:100%;max-width:34rem;max-height:88vh;max-height:88dvh;overflow-y:auto;
   background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);
   box-shadow:var(--shadow-2);padding:clamp(1.5rem,3vw,2.2rem);transform:translateY(14px) scale(.98);
   transition:transform var(--dur) var(--ease)}
