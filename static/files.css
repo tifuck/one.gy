@@ -334,6 +334,8 @@
 }
 .fx-thumb::after{ content:""; position:absolute; inset:0; border-radius:inherit; box-shadow:inset 0 0 0 1px var(--line); pointer-events:none; }
 .fx-thumb img{ width:100%; height:100%; object-fit:cover; animation:fxFade .25s ease both; }
+/* Already loaded once (files.js keeps them): no fade on every re-render */
+.fx-view img.is-cached, .fx-dpreview img.is-cached{ animation:none; }
 /* Text/code previews are rendered dark at upload (crypto.js). In the light
    theme flip them to a light page; hue-rotate keeps the syntax colours. */
 :root:not([data-theme="frost-dark"]) .ui-v2 img.is-text{ filter:invert(1) hue-rotate(180deg) brightness(1.04); }
@@ -354,6 +356,12 @@
 .fx-item.is-folder .fx-item-body{ flex:1 1 auto; padding:0; }
 .fx-item.is-folder .fx-item-top{ position:static; }
 .fx-item.is-folder .fx-item-kebab{ position:absolute; right:6px; top:0; bottom:0; margin:auto 0; }
+/* Off-screen tiles and rows skip layout and paint. The sizes are their usual
+   content heights (auto keeps the real one once seen); the width comes from
+   the grid / list, so none adds nothing to min-content. Not the gallery: its
+   columns would rebalance as estimated heights turn real. */
+.fx-item{ content-visibility:auto; contain-intrinsic-size:none auto 160px; }
+.fx-item.is-folder{ contain-intrinsic-size:none auto 38px; }
 
 /* ---- LIST ------------------------------------------------------------------ */
 .fx-view[data-view="list"]{ padding-top:0; padding-left:12px; padding-right:12px; }
@@ -389,6 +397,7 @@
 .fx-row .fx-meta{ overflow:hidden; text-overflow:ellipsis; }
 .fx-row .fx-list-size{ text-align:right; }
 .fx-row-kebab{ justify-self:end; }
+.fx-row{ content-visibility:auto; contain-intrinsic-size:none auto 34px; }
 /* A narrow main column (wide rail, open drawer): name, size and menu; under
    680px the fixed columns would leave the name less than ~170px */
 @container (max-width:680px){
@@ -430,6 +439,7 @@
 .fx-col-ico{ width:18px; height:18px; flex:none; }
 .fx-col-name{ flex:1 1 auto; min-width:0; font-size:.84rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .fx-col-chev{ display:inline-flex; flex:none; color:var(--text-faint); }
+.fx-col-row{ content-visibility:auto; contain-intrinsic-size:none auto 30px; }
 .fx-col-chev svg{ width:12px; height:12px; }
 .fx-col-preview{ flex:1 1 auto; align-items:center; justify-content:center; gap:10px; padding:32px 24px; text-align:center; }
 .fx-col-preview > svg{ width:40px; height:40px; color:var(--text-faint); }
@@ -445,6 +455,7 @@
 .fx-empty h3{ font-size:1rem; font-weight:600; letter-spacing:-.01em; color:var(--text); }
 .fx-empty p{ max-width:40ch; font-size:.86rem; line-height:1.5; text-wrap:balance; }
 .fx-empty .rd-btn{ margin-top:10px; }
+.fx-more{ display:flex; justify-content:center; padding:16px 0 8px; }
 .fx-skel{ display:grid; grid-template-columns:repeat(auto-fill,minmax(164px,1fr)); gap:8px; padding-top:30px; animation:fxFade .2s .15s backwards; }
 .fx-skel-card{ aspect-ratio:1/1.02; border-radius:10px; background:linear-gradient(100deg,var(--surface) 30%,var(--surface-2) 50%,var(--surface) 70%); background-size:220% 100%; animation:fxShimmer 1.4s linear infinite; }
 @keyframes fxShimmer{ from{ background-position:220% 0; } to{ background-position:-40% 0; } }

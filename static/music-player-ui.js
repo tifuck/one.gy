@@ -4,13 +4,19 @@
 
   const { _stripAudioExtension, _coverUrl } = mp
 
+  // The bar shows a small cover; fullscreen and chaos mode draw it large.
+  function _playerArtSize() {
+    return mp._isFullscreen || mp._chaosMode ? 0 : 96
+  }
+
   function _updatePlayerArt(track) {
     var artEl = mp.playerEl ? mp.playerEl.querySelector('.music-player-art') : null
     if (!artEl) return
-    var src = track ? _coverUrl(track.coverPath) : ''
+    var src = track ? _coverUrl(track.coverPath, _playerArtSize()) : ''
     if (src) {
       var img = document.createElement('img')
       img.src = src
+      img.dataset.cover = track.coverPath
       img.alt = ''
       img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:8px'
       artEl.textContent = ''
@@ -20,20 +26,34 @@
     }
   }
 
+  // Swap the bar's small cover for the original once the art shows large
+  function _upgradePlayerArt() {
+    if (_playerArtSize()) return
+    var img = mp.playerEl ? mp.playerEl.querySelector('.music-player-art img') : null
+    var src = img ? _coverUrl(img.dataset.cover, _playerArtSize()) : ''
+    if (src && img.getAttribute('src') !== src) img.src = src
+  }
+
   function _renderModeButtons() {
     if (mp.shuffleBtn) mp.shuffleBtn.classList.toggle('mp-btn-active', mp.shuffleMode)
     _updateRepeatButton()
   }
 
   // ─── Progress bar fill ──────────────────────────────────────────
+  var _fillKey = null, _fillColor = '', _trackColor = ''
   function _updateProgressFill() {
     if (!mp.progressEl) return
     var pct = (mp.progressEl.value / mp.progressEl.max) * 100
-    // Colours come from --mp-fill / --mp-track (music.css sets them per state)
-    var cs = getComputedStyle(mp.progressEl)
-    var fillColor = cs.getPropertyValue('--mp-fill').trim() || 'rgba(222,24,51,0.85)'
-    var trackColor = cs.getPropertyValue('--mp-track').trim() || 'rgba(255,255,255,0.08)'
-    mp.progressEl.style.background = 'linear-gradient(to right, ' + fillColor + ' ' + pct + '%, ' + trackColor + ' ' + pct + '%)'
+    // Colours come from --mp-fill / --mp-track (music.css sets them per state):
+    // read again only when the theme or the player's state classes change.
+    var key = document.documentElement.getAttribute('data-theme') + ' ' + (mp.playerEl ? mp.playerEl.className : '')
+    if (key !== _fillKey) {
+      var cs = getComputedStyle(mp.progressEl)
+      _fillColor = cs.getPropertyValue('--mp-fill').trim() || 'rgba(222,24,51,0.85)'
+      _trackColor = cs.getPropertyValue('--mp-track').trim() || 'rgba(255,255,255,0.08)'
+      _fillKey = key
+    }
+    mp.progressEl.style.background = 'linear-gradient(to right, ' + _fillColor + ' ' + pct + '%, ' + _trackColor + ' ' + pct + '%)'
   }
 
   // ─── UI Helpers ─────────────────────────────────────────────────
@@ -193,8 +213,9 @@
   }
 
   // ─── Playlist Panel ─────────────────────────────────────────────
+  // Built only while the panel is open; opening it renders the current queue.
   function _renderPlaylist() {
-    if (!mp.playlistPanel) return
+    if (!mp.playlistPanel || !mp.playlistPanel.classList.contains('mp-playlist-visible')) return
     const list = mp.playlistPanel.querySelector('.mp-playlist-list')
     if (!list) return
 
@@ -292,6 +313,7 @@
 
   Object.assign(mp, {
     _updatePlayerArt,
+    _upgradePlayerArt,
     _renderModeButtons,
     _updateProgressFill,
     _updateOwnLibraryState,

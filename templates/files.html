@@ -9,6 +9,14 @@
 {% endblock %}
 
 {% block content %}
+{# The first listing starts now instead of after every deferred script;
+   files.js takes this response for its first load (fetchListing). #}
+<script nonce="{{ csp_nonce }}">(function () {
+  var url = {{ ('/trash/list' if is_trash_view else ('/files/list/' ~ current_folder.id if current_folder else '/files/list'))|tojson }};
+  var p = fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  p.catch(function () {});
+  window.__FX_PREFETCH__ = { url: url, p: p };
+})();</script>
 <div class="fx-shell">
 
   <!-- Sidebar -->

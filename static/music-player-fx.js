@@ -10,6 +10,13 @@
   let _fxRafId = null
   let _fxSmoothed = null  // smoothed band levels for silky animation
   let _fxRgb = [55, 182, 255]  // line colour, refreshed from --accent-rgb on resize
+  // Kept between frames (set on resize): no per-frame allocation or layout read
+  let _fxData = null      // analyser bins
+  let _fxYs = null        // horizon points
+  let _fxW = 0, _fxH = 0  // canvas size in CSS px
+  let _fxFill = null      // horizon fill gradient
+  let _fxStroke = ''
+  let _fxResizeObs = null
 
   // ─── Chaos Mode State ──────────────────────────────────────────
   let _chaosClickTimes = []
@@ -113,13 +120,25 @@
     _connectSource()
     if (!mp._fxCanvas || !mp._fxCtx || !_analyser) return
     if (mp.playerEl) mp.playerEl.classList.add('mp-fx-active')
+    // The canvas follows the bar's width and chaos mode's height
+    if (!_fxResizeObs && typeof ResizeObserver === 'function') {
+      _fxResizeObs = new ResizeObserver(function() { if (mp._fxEnabled) _resizeFxCanvas() })
+      _fxResizeObs.observe(mp._fxCanvas)
+    }
 
     // Wait a frame for CSS to apply (canvas needs height from .mp-fx-active)
     requestAnimationFrame(() => {
       _resizeFxCanvas()
       _fxSmoothed = null
-      if (!_fxRafId) _fxLoop()
+      _fxRun()
     })
+  }
+
+  // Draw a frame; _fxLoop goes on only while audio plays (and until the line
+  // has settled after a pause), never on phantom mode's silent keepalive.
+  function _fxRun() {
+    if (_fxRafId || !mp._fxEnabled || !mp.isVisible || !_analyser || !mp._fxCtx || !mp._fxCanvas) return
+    _fxRafId = requestAnimationFrame(_fxLoop)
   }
 
   function _stopFx() {
@@ -146,12 +165,21 @@
     if (!mp._fxCanvas) return
     const rect = mp._fxCanvas.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
+    _fxW = rect.width
+    _fxH = rect.height
     mp._fxCanvas.width = rect.width * dpr
     mp._fxCanvas.height = rect.height * dpr
     mp._fxCtx.scale(dpr, dpr)
     // Bars use the theme accent (--accent-rgb, e.g. "55,182,255")
     var rgb = getComputedStyle(mp._fxCanvas).getPropertyValue('--accent-rgb').split(',').map(Number)
     if (rgb.length === 3 && rgb.every(function(n) { return n >= 0 && n <= 255 })) _fxRgb = rgb
+    const r = _fxRgb[0], g = _fxRgb[1], b = _fxRgb[2]
+    const base = _fxH - 0.75
+    _fxFill = mp._fxCtx.createLinearGradient(0, base - Math.min(26, _fxH - 2), 0, base)
+    _fxFill.addColorStop(0, 'rgba(' + r + ',' + g + ',' + b + ',0)')
+    _fxFill.addColorStop(1, 'rgba(' + r + ',' + g + ',' + b + ',0.22)')
+    _fxStroke = 'rgba(' + r + ',' + g + ',' + b + ',0.9)'
+    _fxRun()  // resizing cleared the canvas: a paused bar gets its resting line back
   }
 
   // Frequency-dependent gain to balance the visualizer so all bars contribute
@@ -168,17 +196,19 @@
   }
 
   function _fxLoop() {
-    if (!mp._fxEnabled || !_analyser || !mp._fxCtx || !mp._fxCanvas) return
-    _fxRafId = requestAnimationFrame(_fxLoop)
+    _fxRafId = null
+    if (!mp._fxEnabled || !mp.isVisible || !_analyser || !mp._fxCtx || !mp._fxCanvas) return
+    if (!_fxFill) _resizeFxCanvas()
 
     const bufLen = _analyser.frequencyBinCount   // 1024 bins (fftSize 2048)
-    const data = new Uint8Array(bufLen)
+    if (!_fxData || _fxData.length !== bufLen) _fxData = new Uint8Array(bufLen)
+    const data = _fxData
     _analyser.getByteFrequencyData(data)
 
-    const rect = mp._fxCanvas.getBoundingClientRect()
-    const W = rect.width
-    const H = rect.height
+    const W = _fxW
+    const H = _fxH
     mp._fxCtx.clearRect(0, 0, W, H)
+    let peak = 0
 
     const barCount = 48
     if (!_fxSmoothed || _fxSmoothed.length !== barCount) {
@@ -245,10 +275,15 @@
       _fxSmoothed[i] = clamped > prev
         ? prev + (clamped - prev) * attack
         : prev + (clamped - prev) * decay
+      if (_fxSmoothed[i] > peak) peak = _fxSmoothed[i]
     }
 
     _drawHorizon(mp._fxCtx, W, H)
     if (mp._chaosMode) _renderChaos(W, H, data, bufLen)
+    // Paused (or mirroring): run on until the line has settled flat, then stop
+    if ((!audio.paused && !mp._syncPhantomMode) || peak > 0.01) {
+      if (!_fxRafId) _fxRafId = requestAnimationFrame(_fxLoop)
+    }
   }
 
   // Band level at position 0..1 (0 = bass), interpolated between bands
@@ -265,27 +300,24 @@
     const base = H - 0.75
     const amp = Math.min(26, H - 2)
     const n = Math.max(48, Math.floor(W / 6))
-    const pts = []
+    if (!_fxYs || _fxYs.length !== n + 1) _fxYs = new Float64Array(n + 1)
     for (let j = 0; j <= n; j++) {
       const x = j / n
       const v = _bandAt(Math.abs(x - 0.5) * 2)
       const taper = 0.35 + 0.65 * Math.sin(Math.PI * x)
-      pts.push([x * W, base - v * v * amp * taper])
+      _fxYs[j] = base - v * v * amp * taper
     }
     ctx.beginPath()
     ctx.moveTo(0, base)
-    for (let k = 0; k < pts.length - 1; k++) {
-      ctx.quadraticCurveTo(pts[k][0], pts[k][1], (pts[k][0] + pts[k + 1][0]) / 2, (pts[k][1] + pts[k + 1][1]) / 2)
+    for (let k = 0; k < n; k++) {
+      const x0 = k / n * W, x1 = (k + 1) / n * W
+      ctx.quadraticCurveTo(x0, _fxYs[k], (x0 + x1) / 2, (_fxYs[k] + _fxYs[k + 1]) / 2)
     }
     ctx.lineTo(W, base)
-    const r = _fxRgb[0], g = _fxRgb[1], b = _fxRgb[2]
-    const fill = ctx.createLinearGradient(0, base - amp, 0, base)
-    fill.addColorStop(0, 'rgba(' + r + ',' + g + ',' + b + ',0)')
-    fill.addColorStop(1, 'rgba(' + r + ',' + g + ',' + b + ',0.22)')
-    ctx.fillStyle = fill
+    ctx.fillStyle = _fxFill   // built in _resizeFxCanvas (height + accent)
     ctx.fill()
     ctx.lineWidth = 1.5
-    ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.9)'
+    ctx.strokeStyle = _fxStroke
     ctx.stroke()
   }
 
@@ -307,6 +339,7 @@
         if (mp.isVisible) _startFx()
       }
       if (mp.playerEl) mp.playerEl.classList.add('mp-fx-chaos')
+      mp._upgradePlayerArt()  // the ring draws the cover large
       _chaosWaves = [{ r: 0, a: 0.8 }, { r: -40, a: 0.8 }, { r: -80, a: 0.8 }]  // activation burst
       // Resize canvas after CSS transition for new height
       setTimeout(() => { _resizeFxCanvas() }, 350)
@@ -551,6 +584,8 @@
   window.addEventListener('resize', () => {
     if (mp._fxEnabled && mp._fxCanvas) _resizeFxCanvas()
   })
+  // The loop stops while paused: playback picks it up again
+  audio.addEventListener('playing', _fxRun)
 
   Object.assign(mp, {
     _toggleFx,

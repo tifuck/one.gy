@@ -93,21 +93,78 @@ def music_stream(song_id):
     return resp
 
 
+# Small art (rows, tiles, cards, the player bar) asks for ?s=<size>: a WebP
+# that fits in size x size. The library belongs to the music worker (and PROD
+# is sandboxed), so resized covers are kept in memory only, newest use last.
+_MUSIC_COVER_SIZES = (96, 160, 320)
+_MUSIC_COVER_CACHE_MAX_BYTES = 32 * 1024 * 1024
+_MUSIC_COVER_CACHE = {}
+_MUSIC_COVER_CACHE_BYTES = 0
+_MUSIC_COVER_CACHE_LOCK = threading.Lock()
+
+
+def _music_cover_variant(path, mtime_ns, size):
+    """WebP bytes of the cover at path scaled to fit size x size (cached)."""
+    global _MUSIC_COVER_CACHE_BYTES
+    key = (path, mtime_ns, size)
+    with _MUSIC_COVER_CACHE_LOCK:
+        data = _MUSIC_COVER_CACHE.pop(key, None)
+        if data is not None:
+            _MUSIC_COVER_CACHE[key] = data
+            return data
+    from PIL import Image
+    with Image.open(path) as img:
+        img.draft('RGB', (size, size))  # JPEG: decode at 1/2, 1/4 or 1/8 scale
+        img = img.convert('RGB')
+        img.thumbnail((size, size), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        img.save(out, 'WEBP', quality=80, method=4)
+    data = out.getvalue()
+    with _MUSIC_COVER_CACHE_LOCK:
+        if key not in _MUSIC_COVER_CACHE:
+            _MUSIC_COVER_CACHE[key] = data
+            _MUSIC_COVER_CACHE_BYTES += len(data)
+            while _MUSIC_COVER_CACHE_BYTES > _MUSIC_COVER_CACHE_MAX_BYTES and _MUSIC_COVER_CACHE:
+                _MUSIC_COVER_CACHE_BYTES -= len(_MUSIC_COVER_CACHE.pop(next(iter(_MUSIC_COVER_CACHE))))
+    return data
+
+
 @app.route('/music/cover/<cover_id>')
 @limiter.limit(music_cover_rate_limit)
 @_music_required
 def music_cover(cover_id):
     """Serve album or per-song cover JPEG.
-    Checks album covers first, then falls back to per-song cover.jpg."""
+    Checks album covers first, then falls back to per-song cover.jpg.
+    ?s=96|160|320 serves a WebP resized to fit (other sizes: the original)."""
+    from flask import Response
     from werkzeug.utils import secure_filename as _sf
     safe_id = _sf(cover_id)
+    size = request.args.get('s', type=int)
+    if size not in _MUSIC_COVER_SIZES:
+        size = None
     # Album cover, then per-song cover (songs/<id>/cover.jpg), then artist
     # profile image (artists/<id>.jpg).
     for path in (os.path.join(MUSIC_LIBRARY_PATH, 'covers', f'{safe_id}.jpg'),
                  os.path.join(MUSIC_LIBRARY_PATH, 'songs', safe_id, 'cover.jpg'),
                  os.path.join(MUSIC_LIBRARY_PATH, 'artists', f'{safe_id}.jpg')):
         if os.path.isfile(path):
-            resp = send_file(path, mimetype='image/jpeg', max_age=604800)  # 7 day cache
+            resp = None
+            if size:
+                try:
+                    st = os.stat(path)
+                    etag = f'mc{size}-{st.st_mtime_ns:x}-{st.st_size:x}'
+                    if etag in request.if_none_match:
+                        resp = Response(status=304)
+                    else:
+                        resp = Response(_music_cover_variant(path, st.st_mtime_ns, size), mimetype='image/webp')
+                    resp.set_etag(etag)
+                    resp.cache_control.max_age = 604800
+                except Exception as e:
+                    # An unreadable or odd image still shows: the original goes out.
+                    print(f'[MUSIC] Cover resize failed for {safe_id} ({size}px): {e}')
+                    resp = None
+            if resp is None:
+                resp = send_file(path, mimetype='image/jpeg', max_age=604800)  # 7 day cache
             # Auth-gated: shared caches must not store it.
             resp.cache_control.public = False
             resp.cache_control.private = True

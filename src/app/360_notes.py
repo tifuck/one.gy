@@ -299,6 +299,8 @@ def notes_list_notebooks():
         'notebooks': result,
         'total_notes': total_notes,
         'trash_count': trash_notes + trash_notebooks,
+        # The notes alone, as the Trash view lists them (trash_count also counts trashed notebooks).
+        'trash_notes_count': trash_notes,
         'storage_used_gb': round(storage_used / (1024 ** 3), 2) if user else None,
         'storage_used_bytes': storage_used,
         'storage_limit_gb': storage_limit_gb,

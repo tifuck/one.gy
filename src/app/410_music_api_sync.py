@@ -511,6 +511,8 @@ def music_api_sync_poll():
     active_device_name = None
     state_updated_at = None
     state_age_ms = None
+    state_key = None
+    state_unchanged = False
     is_stale = True
     if sync and sync.state_json and sync.updated_at:
         staleness = (now - _aware(sync.updated_at)).total_seconds()
@@ -519,10 +521,18 @@ def music_api_sync_poll():
         # Server-measured, so mirrors place the playhead without trusting their clock.
         state_age_ms = max(0, int(staleness * 1000))
         if not is_stale:
-            try:
-                state_data = _json.loads(sync.state_json)
-            except Exception:
-                state_data = None
+            # Opt-in: a poll that sends the state_key it already holds gets
+            # state_unchanged instead of the same state (up to a 201-track queue)
+            # again. A content hash, not updated_at: that column has 1 s precision.
+            state_key = hashlib.sha256(sync.state_json.encode('utf-8')).hexdigest()[:32]
+            if request.args.get('state_key') == state_key:
+                state_unchanged = True
+            else:
+                try:
+                    state_data = _json.loads(sync.state_json)
+                except Exception:
+                    state_data = None
+                    state_key = None
             # Find active device name
             for d in all_devices:
                 if d.device_id == sync.active_device_id:
@@ -535,10 +545,12 @@ def music_api_sync_poll():
     db.session.commit()
 
     return jsonify({
-        'active': not is_stale and state_data is not None,
+        'active': not is_stale and (state_unchanged or state_data is not None),
         'active_device_id': sync.active_device_id if sync and not is_stale else None,
         'active_device_name': active_device_name,
         'state': state_data,
+        'state_key': state_key,
+        'state_unchanged': state_unchanged,
         'state_updated_at': state_updated_at,
         'state_age_ms': state_age_ms,
         'devices': device_list,

@@ -170,19 +170,29 @@
       })
     }
 
-    function fitCopy (copy) {
-      if (!copy) return
-      var max = 15, min = 10, fs = max
-      copy.style.setProperty('--rd-notif-fs', fs + 'px')
-      while (fs > min && (copy.scrollWidth > copy.parentNode.clientWidth || copy.scrollHeight > copy.parentNode.clientHeight)) {
+    var FIT_MAX = 15, FIT_MIN = 10
+    // Steps the font down from FIT_MAX (already set) until the copy fits.
+    function shrinkCopy (copy) {
+      for (var fs = FIT_MAX; fs > FIT_MIN && (copy.scrollWidth > copy.parentNode.clientWidth || copy.scrollHeight > copy.parentNode.clientHeight);) {
         fs -= 0.5
         copy.style.setProperty('--rd-notif-fs', fs + 'px')
       }
     }
-    function fitAll () {
-      host.querySelectorAll('.rd-notif-copy').forEach(fitCopy)
+    function fitCopy (copy) {
+      if (!copy) return
+      copy.style.setProperty('--rd-notif-fs', FIT_MAX + 'px')
+      shrinkCopy(copy)
     }
-    window.addEventListener('resize', fitAll)
+    // Once per frame while resizing; every bar is reset before any is
+    // measured, so one layout serves all the first reads.
+    var fitFrame = 0
+    function fitAll () {
+      fitFrame = 0
+      var copies = host.querySelectorAll('.rd-notif-copy')
+      copies.forEach(function (copy) { copy.style.setProperty('--rd-notif-fs', FIT_MAX + 'px') })
+      copies.forEach(shrinkCopy)
+    }
+    window.addEventListener('resize', function () { if (!fitFrame) fitFrame = requestAnimationFrame(fitAll) })
 
     fetch('/api/notifications/active', { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.ok ? r.json() : [] })

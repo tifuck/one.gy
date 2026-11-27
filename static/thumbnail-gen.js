@@ -72,13 +72,19 @@
     return baseName === '.env' || baseName.indexOf('.env.') === 0 || ext === 'env'
   }
 
-  // Draws `source` (an <img> or <video>) scaled to fit maxDim and resolves a JPEG.
-  function _drawScaledJpeg(source, w, h, maxDim, done) {
+  // Size of a w x h source scaled to fit maxDim (never enlarged).
+  function _fitSize(w, h, maxDim) {
     if (w > maxDim || h > maxDim) {
       const ratio = Math.min(maxDim / w, maxDim / h)
       w = Math.round(w * ratio)
       h = Math.round(h * ratio)
     }
+    return { w, h }
+  }
+
+  // Draws `source` (an <img>, <video> or ImageBitmap) scaled to fit maxDim and resolves a JPEG.
+  function _drawScaledJpeg(source, w, h, maxDim, done) {
+    ({ w, h } = _fitSize(w, h, maxDim))
     const canvas = document.createElement('canvas')
     canvas.width = w
     canvas.height = h
@@ -93,6 +99,22 @@
       resolve(null)
       return
     }
+    if (typeof createImageBitmap !== 'function') { _imageThumbnailViaImg(file, maxDim, resolve); return }
+    // Decode and downscale off the main thread; the canvas then only copies
+    // the small bitmap. Same size and JPEG settings as the <img> path, which
+    // stays the fallback (SVG, browsers without these options: an unknown
+    // imageOrientation value rejects instead of ignoring EXIF rotation).
+    createImageBitmap(file, { imageOrientation: 'from-image' }).then((full) => {
+      const { w, h } = _fitSize(full.width, full.height, maxDim)
+      return createImageBitmap(full, { resizeWidth: w, resizeHeight: h, resizeQuality: 'medium' })
+        .finally(() => full.close())
+        .then((small) => {
+          _drawScaledJpeg(small, w, h, maxDim, (blob) => { small.close(); resolve(blob) })
+        })
+    }).catch(() => _imageThumbnailViaImg(file, maxDim, resolve))
+  }
+
+  function _imageThumbnailViaImg(file, maxDim, resolve) {
     const img = new Image()
     const url = URL.createObjectURL(file)
     img.onload = () => {

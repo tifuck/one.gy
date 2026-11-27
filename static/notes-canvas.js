@@ -14,6 +14,8 @@
   ]
   var COLORS = ['#0f1720', '#0e8fd6', '#1f9d57', '#e5940a', '#d8231b', '#8a63d2', '#ffffff']
   var CANVAS_MAX_Y = 100000
+  // Code up to this many characters is re-coloured on every keystroke; longer code waits for a pause in the typing.
+  var CODE_HL_INSTANT_MAX = 5000
   var PAGE_WIDTH = 960
   /* Each preset must read clearly different at a glance:
      default = full grid | slim = horizontal rules only | rounded = card with shaded header
@@ -51,9 +53,11 @@
   }
   // Highlights carry their own ink (a yellow highlight under the dark theme's light text was unreadable). Only text still
   // showing its container's colour is inked, so a text colour the user picked wins; innermost first for nested highlights.
+  // notes.js keeps a copy of inkOn/inkHighlights for documents (no canvas engine there): change both together.
   function inkHighlights (root) {
+    var marks = root.querySelectorAll('[style*="background"]'); if (!marks.length) return
     var base = getComputedStyle(root).color
-    Array.prototype.slice.call(root.querySelectorAll('[style*="background"]')).reverse().forEach(function (node) { var ink = getComputedStyle(node).color === base && inkOn(getComputedStyle(node).backgroundColor); if (ink) node.style.color = ink })
+    Array.prototype.slice.call(marks).reverse().forEach(function (node) { var ink = getComputedStyle(node).color === base && inkOn(getComputedStyle(node).backgroundColor); if (ink) node.style.color = ink })
   }
   function sanitizeCanvasTree (root) {
     function clean (node) {
@@ -139,8 +143,10 @@
     var ac = new AbortController(), signal = ac.signal
     var penMode = 'pen', lineMode = 'arrow', inkId = null // inkId: the block the pen's strokes are joining
 
+    // Changes the block in place: every caller hands over its own copy (mount clones opts.data; undo, paste and
+    // duplicate clone first; addBlock gets a fresh spec), so a second deep copy per block was wasted work.
     function normalize (block) {
-      var b = block && typeof block === 'object' ? clone(block) : {}
+      var b = block && typeof block === 'object' ? block : {}
       b.id = String(b.id == null ? id() : b.id)
       b.type = b.type || 'text'
       b.x = isFinite(+b.x) ? Math.max(0, +b.x) : 0
@@ -249,9 +255,12 @@
     // The 40px margin is only for content that already reaches past the window: it made a block that still fit scroll the page sideways.
     function pageWidth () { var avail = Math.max(320, Math.floor((vp.clientWidth || PAGE_WIDTH) / zoom)), right = Math.ceil(contentExtents().x); return right > avail ? right + 40 : avail }
     function pageHeight () { var minH = Math.max(480, Math.ceil((vp.clientHeight || 600) / zoom)); return Math.min(CANVAS_MAX_Y, Math.max(minH, Math.ceil(contentExtents().y + 300))) }
+    var pageSize = ''
     function updatePageSize () {
       if (gesture || draw) return // page stays fixed during drags so pointer math is stable; grows on release
-      var pw = pageWidth(), ph = pageHeight()
+      var pw = pageWidth(), ph = pageHeight(), size = pw + ' ' + ph + ' ' + zoom
+      if (size === pageSize) return
+      pageSize = size
       world.style.width = pw + 'px'; world.style.height = ph + 'px'
       page.style.width = (pw * zoom) + 'px'; page.style.height = (ph * zoom) + 'px'
     }
@@ -261,14 +270,24 @@
       vp.dataset.tool = next; vp.dataset.mode = next === 'pen' ? penMode : next === 'line' ? lineMode : ''; inkId = null; renderOpts()
       if (next !== 'select') selectBlock(null)
     }
+    // Zoom goes through the gesture frame like a pinch (scale the world, resize the page, move the overlay): a
+    // Ctrl+wheel or trackpad pinch sends dozens of events a second, and each one used to rebuild every block.
+    var zoomAnchor = null // keep this world point under this client point when the frame paints
     function zoomBy (factor, clientX, clientY) {
-      var rect = vp.getBoundingClientRect(), cx = clientX == null ? rect.left + rect.width / 2 : clientX, cy = clientY == null ? rect.top + rect.height / 2 : clientY
-      var anchor = toWorld(cx, cy), previous = zoom
-      zoom = Math.max(.2, Math.min(4, zoom * factor)); if (zoom === previous) return
-      render()
+      var next = Math.max(.2, Math.min(4, zoom * factor)); if (next === zoom) return
+      if (!zoomAnchor) { // several events can land in one frame: the first one's anchor holds
+        var rect = vp.getBoundingClientRect(), cx = clientX == null ? rect.left + rect.width / 2 : clientX, cy = clientY == null ? rect.top + rect.height / 2 : clientY, anchor = toWorld(cx, cy)
+        zoomAnchor = { x: cx, y: cy, wx: anchor.x, wy: anchor.y }
+      }
+      zoom = next
+      scheduleGesturePaint()
+    }
+    function applyZoomAnchor () {
+      var a = zoomAnchor; if (!a) return
+      zoomAnchor = null
       var pageRect = page.getBoundingClientRect()
-      vp.scrollLeft += (pageRect.left + anchor.x * zoom) - cx
-      vp.scrollTop += (pageRect.top + anchor.y * zoom) - cy
+      vp.scrollLeft += (pageRect.left + a.wx * zoom) - a.x
+      vp.scrollTop += (pageRect.top + a.wy * zoom) - a.y
     }
     function snapshotTyping () { if (!editSnapshotTimer) snapshot(); clearTimeout(editSnapshotTimer); editSnapshotTimer = setTimeout(function () { editSnapshotTimer = null }, 800) }
 
@@ -278,10 +297,11 @@
       world.style.transform = 'scale(' + zoom + ')'
       world.dataset.bg = /^(ruled|grid|dots)$/.test(source.background) ? source.background : ''
       world.innerHTML = ''
-      blocks.slice().sort(function (a, b) { return a.zIndex - b.zIndex }).forEach(function (block) { world.appendChild(renderBlock(block)) })
+      var nodes = {}
+      blocks.slice().sort(function (a, b) { return a.zIndex - b.zIndex }).forEach(function (block) { world.appendChild(nodes[block.id] = renderBlock(block)) })
       world.querySelectorAll('.fxc-text-content, .fxc-table-card td').forEach(function (node) { inkHighlights(node) })
-      syncAutoHeights(); renderOverlay(); hint.hidden = readonly || blocks.length > 0
-      syncZoomLabel()
+      syncAutoHeights(nodes); renderOverlay(); hint.hidden = readonly || blocks.length > 0
+      syncZoomLabel(); applyZoomAnchor()
     }
     function syncZoomLabel () { var level = document.getElementById('fxcZoom'); if (level) level.textContent = Math.round(zoom * 100) + '%'; if (opts.onZoom) opts.onZoom(zoom) }
     // OneNote: a container made by clicking widens as you type until it reaches the window edge, then wraps at that width.
@@ -304,7 +324,10 @@
       if (g && (g.type === 'move' || g.type === 'resize' || g.type === 'colresize')) {
         (g.type === 'move' ? g.originals.map(function (original) { return byId(original.id) }) : [byId(g.id)]).forEach(function (block) {
           var node = block && blockNode(block.id); if (!node) return
-          if (g.type === 'colresize') { var fresh = renderBlock(block); node.replaceWith(fresh); fresh.querySelectorAll('td').forEach(function (cell) { inkHighlights(cell) }); node = fresh }
+          if (g.type === 'colresize') { // only the column widths and their grips move; the table is rebuilt on release
+            var widths = colWidthsPct(block), group = node.querySelector(':scope > table > colgroup'), grips = node.querySelectorAll(':scope > .fxc-colgrip'), edge = 0
+            widths.forEach(function (width, index) { if (group && group.children[index]) group.children[index].style.width = width + '%'; edge += width; if (grips[index]) grips[index].style.left = 'calc(' + edge + '% - 4px)' })
+          }
           node.style.left = block.x + 'px'; node.style.top = block.y + 'px'
           if (g.type === 'move') return
           node.style.width = block.w + 'px'
@@ -315,6 +338,7 @@
       // OneNote: a pinch zooms about the spot between the fingers, and moving both fingers pans. The page used to grow from
       // its top-left corner instead, so whatever was being pinched slid off the screen.
       if (pinch && pinch.x != null) { var rect = page.getBoundingClientRect(); vp.scrollLeft += rect.left + pinch.wx * zoom - pinch.x; vp.scrollTop += rect.top + pinch.wy * zoom - pinch.y }
+      applyZoomAnchor()
     }
     function isAutoHeight (block) { return block && (block.type === 'text' || block.type === 'todo' || block.type === 'table' || block.type === 'code') }
     function syncBlockHeight (block, node) {
@@ -323,7 +347,33 @@
       if (area) { area.style.height = 'auto'; area.style.height = area.scrollHeight + 'px' } // code grows with its content instead of scrolling in a fixed box
       node.style.height = 'auto'; block.h = Math.max(block.type === 'text' ? 40 : 36, Math.ceil(node.offsetHeight)); clampBlockY(block)
     }
-    function syncAutoHeights () { blocks.forEach(function (block) { if (isAutoHeight(block)) syncBlockHeight(block, blockNode(block.id)) }) }
+    // syncBlockHeight for a whole render: every write first, then the reads, so the page lays out twice instead of once
+    // or twice per block. nodes: the rendered node of each block id.
+    function syncAutoHeights (nodes) {
+      var auto = blocks.filter(function (block) { return isAutoHeight(block) && nodes[block.id] }).map(function (block) { var node = nodes[block.id]; return { block: block, node: node, area: block.type === 'code' && node.querySelector('textarea') } })
+      auto.forEach(function (item) { if (item.area) item.area.style.height = 'auto'; item.node.style.height = 'auto' })
+      auto.forEach(function (item) { if (item.area) item.areaHeight = item.area.scrollHeight })
+      auto.forEach(function (item) { if (item.area) item.area.style.height = item.areaHeight + 'px' })
+      auto.forEach(function (item) { item.block.h = Math.max(item.block.type === 'text' ? 40 : 36, Math.ceil(item.node.offsetHeight)); clampBlockY(item.block) })
+    }
+    // Typing re-fits its block once per frame (widen, then the height), not with two forced layouts per keystroke.
+    var fitQueue = [], fitFrame = 0
+    function queueFit (block, grow) {
+      var queued = fitQueue.filter(function (item) { return item.block === block })[0]
+      if (queued) queued.grow = queued.grow || grow; else fitQueue.push({ block: block, grow: grow })
+      if (!fitFrame) fitFrame = requestAnimationFrame(runFit)
+    }
+    function runFit () {
+      if (fitFrame) cancelAnimationFrame(fitFrame)
+      var queue = fitQueue; fitFrame = 0; fitQueue = []
+      if (destroyed) return
+      queue.forEach(function (item) {
+        var node = byId(item.block.id) === item.block && blockNode(item.block.id); if (!node) return // undone or removed meanwhile
+        if (item.grow) growTextWidth(item.block, node)
+        syncBlockHeight(item.block, node)
+      })
+      refreshOverlay()
+    }
     function renderBlock (block) {
       var node
       if (block.type === 'draw' || block.type === 'line') node = renderSvg(block)
@@ -368,7 +418,7 @@
       if (block.style && block.style.bgColor && block.style.bgColor !== 'transparent') node.style.background = block.style.bgColor
       content.addEventListener('pointerdown', function (event) { if (readonly) return; if (event.ctrlKey || event.metaKey) { event.preventDefault(); event.stopPropagation(); selectBlock(block.id, true); vp.focus() } else selectBlock(block.id) })
       content.addEventListener('beforeinput', snapshotTyping)
-      content.addEventListener('input', function () { block.content = content.innerHTML; var empty = !content.textContent.replace(/\u00a0/g, ' ').trim(); provisionalText[block.id] = empty; node.classList.toggle('is-empty', empty); growTextWidth(block, node); syncBlockHeight(block, node); renderOverlay(); scheduleCommit() })
+      content.addEventListener('input', function () { block.content = content.innerHTML; var empty = !content.textContent.replace(/\u00a0/g, ' ').trim(); provisionalText[block.id] = empty; node.classList.toggle('is-empty', empty); queueFit(block, true); scheduleCommit() })
       content.addEventListener('paste', pasteEditable)
       bindRichDrop(content)
       content.addEventListener('keydown', function (event) {
@@ -390,7 +440,7 @@
         input.addEventListener('beforeinput', snapshotTyping)
         input.addEventListener('paste', pasteEditable)
         bindRichDrop(input)
-        input.oninput = function () { item.text = input.innerText.replace(/\n$/, ''); syncBlockHeight(block, node); renderOverlay(); scheduleCommit() }
+        input.oninput = function () { item.text = input.innerText.replace(/\n$/, ''); queueFit(block); scheduleCommit() }
         input.onkeydown = function (event) {
           if (!readonly && event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) { // OneNote: Alt+Up/Down moves the item
             var to = index + (event.key === 'ArrowUp' ? -1 : 1); event.preventDefault(); if (to < 0 || to >= block.items.length) return
@@ -430,12 +480,21 @@
       language.disabled = readonly; language.onchange = function () { snapshot(); block.lang = language.value; highlight(); commit() }; copy.type = 'button'; copy.onclick = function () { navigator.clipboard.writeText(block.code || '').then(function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy' }, 1200) }) }
       header.appendChild(language); header.appendChild(copy); node.appendChild(header)
       var area = document.createElement('textarea'); area.value = block.code || block.content || ''; area.readOnly = readonly; area.spellcheck = false
-      area.addEventListener('beforeinput', snapshotTyping); area.oninput = function () { block.code = area.value; highlight(); syncBlockHeight(block, node); renderOverlay(); scheduleCommit() }; area.onkeydown = function (event) { if (event.key === 'Tab' && !readonly) { event.preventDefault(); snapshotTyping(); var start = area.selectionStart; area.setRangeText('  ', start, area.selectionEnd, 'end'); area.oninput() } }
+      area.addEventListener('beforeinput', snapshotTyping); area.oninput = function () { block.code = area.value; highlightSoon(); queueFit(block); scheduleCommit() }; area.onkeydown = function (event) { if (event.key === 'Tab' && !readonly) { event.preventDefault(); snapshotTyping(); var start = area.selectionStart; area.setRangeText('  ', start, area.selectionEnd, 'end'); area.oninput() } }
       // Colours come from a <pre> painted under the (then transparent) textarea; without highlight.js the textarea shows its own text.
-      var edit = el('div', 'fxc-code-edit'), paint = el('pre', 'fxc-code-hl'); paint.setAttribute('aria-hidden', 'true')
+      var edit = el('div', 'fxc-code-edit'), paint = el('pre', 'fxc-code-hl'), hlTimer = null; paint.setAttribute('aria-hidden', 'true')
       function highlight () {
+        clearTimeout(hlTimer)
+        // highlight.js loads on first need (crypto.js keeps the versioned URL); this block paints again once it is in.
+        if (!window.hljs && block.lang && window.OneGyCrypto && OneGyCrypto.loadHighlighter) OneGyCrypto.loadHighlighter().then(function (hl) { if (hl && window.hljs && edit.isConnected) highlight() })
         var lang = window.hljs && block.lang && window.hljs.getLanguage(block.lang) ? block.lang : ''
         edit.classList.toggle('has-hl', !!lang); paint.innerHTML = lang ? window.hljs.highlight(area.value, { language: lang, ignoreIllegals: true }).value + '\n' : ''
+      }
+      // Typing: short code is coloured at once; long code shows its plain text under the caret until typing pauses.
+      function highlightSoon () {
+        if (!edit.classList.contains('has-hl') || area.value.length <= CODE_HL_INSTANT_MAX) { highlight(); return }
+        paint.textContent = area.value + '\n'
+        clearTimeout(hlTimer); hlTimer = setTimeout(function () { if (edit.isConnected) highlight() }, 100)
       }
       edit.appendChild(paint); edit.appendChild(area); node.appendChild(edit); highlight(); return node
     }
@@ -505,7 +564,7 @@
       }
       var widths = colWidthsPct(block)
       var colgroup = document.createElement('colgroup'); widths.forEach(function (width) { var col = document.createElement('col'); col.style.width = width + '%'; colgroup.appendChild(col) }); table.appendChild(colgroup)
-      for (var r = 0; r < block.rows; r++) { var tr = document.createElement('tr'); block.cells[r] = block.cells[r] || []; for (var c = 0; c < block.cols; c++) { var td = document.createElement('td');         td.contentEditable = readonly ? 'false' : 'true'; td.dataset.row = r; td.dataset.col = c; td.appendChild(sanitizeToFragment(block.cells[r][c])); styleTableCell(td, preset, r, block.rows); (function (rr, cc, cell) { cell.addEventListener('beforeinput', snapshotTyping); cell.addEventListener('paste', pasteEditable); bindRichDrop(cell); cell.oninput = function () { block.cells[rr][cc] = cell.innerHTML; syncBlockHeight(block, node); renderOverlay(); scheduleCommit() }; cell.onkeydown = function (event) { tableCellKeydown(event, block, rr, cc) } })(r, c, td); tr.appendChild(td) } table.appendChild(tr) }
+      for (var r = 0; r < block.rows; r++) { var tr = document.createElement('tr'); block.cells[r] = block.cells[r] || []; for (var c = 0; c < block.cols; c++) { var td = document.createElement('td');         td.contentEditable = readonly ? 'false' : 'true'; td.dataset.row = r; td.dataset.col = c; td.appendChild(sanitizeToFragment(block.cells[r][c])); styleTableCell(td, preset, r, block.rows); (function (rr, cc, cell) { cell.addEventListener('beforeinput', snapshotTyping); cell.addEventListener('paste', pasteEditable); bindRichDrop(cell); cell.oninput = function () { block.cells[rr][cc] = cell.innerHTML; queueFit(block); scheduleCommit() }; cell.onkeydown = function (event) { tableCellKeydown(event, block, rr, cc) } })(r, c, td); tr.appendChild(td) } table.appendChild(tr) }
       node.appendChild(table)
       if (!readonly) {
         // OneNote-style draggable column borders (last grip resizes the final column / table width).
@@ -616,9 +675,7 @@
       if (!selectedIds.length || readonly) return
       selectedBlocks().forEach(function (block) {
         if (provisionalText[block.id]) return // untyped text containers get no selection box or handles
-        var v = visibleRect(block), box = el('div', 'fxc-selbox' + (selectedIds.length > 1 ? ' is-multi' : '')); box.dataset.selectionId = block.id; box.style.left = (v.x * zoom) + 'px'; box.style.top = (v.y * zoom) + 'px'; box.style.width = (v.w * zoom) + 'px'; box.style.height = (v.h * zoom) + 'px'
-        // Rotate about the block's own centre, which sits off-centre in a cropped picture's box.
-        box.style.transform = 'rotate(' + (block.rotation || 0) + 'deg)'; box.style.transformOrigin = ((block.x + block.w / 2 - v.x) * zoom) + 'px ' + ((block.y + block.h / 2 - v.y) * zoom) + 'px'
+        var box = el('div', 'fxc-selbox' + (selectedIds.length > 1 ? ' is-multi' : '')); box.dataset.selectionId = block.id; placeSelBox(box, block)
         if (selectedIds.length === 1 && ((block.type !== 'draw' && block.type !== 'line') || block.shape)) {
           var handles = isAutoHeight(block) || block.type === 'attachment' ? ['e'] : ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
           handles.forEach(function (name) { var handle = el('div', 'fxc-handle fxc-h-' + name); handle.dataset.handle = name; handle.setAttribute('role', 'button'); handle.setAttribute('aria-label', 'Resize ' + name); handle.addEventListener('pointerdown', function (event) { event.stopPropagation(); event.preventDefault(); startResize(event, block, name) }); box.appendChild(handle) })
@@ -630,6 +687,18 @@
         }
         overlay.appendChild(box)
       })
+    }
+    function placeSelBox (box, block) {
+      var v = visibleRect(block); box.style.left = (v.x * zoom) + 'px'; box.style.top = (v.y * zoom) + 'px'; box.style.width = (v.w * zoom) + 'px'; box.style.height = (v.h * zoom) + 'px'
+      // Rotate about the block's own centre, which sits off-centre in a cropped picture's box.
+      box.style.transform = 'rotate(' + (block.rotation || 0) + 'deg)'; box.style.transformOrigin = ((block.x + block.w / 2 - v.x) * zoom) + 'px ' + ((block.y + block.h / 2 - v.y) * zoom) + 'px'
+    }
+    // Typing and nudges only move or resize the selection boxes: update them in place while the same boxes are shown.
+    function refreshOverlay () {
+      var shown = readonly ? [] : selectedBlocks().filter(function (block) { return !provisionalText[block.id] }), boxes = overlay.children
+      if (gesture || boxes.length !== shown.length || shown.some(function (block, index) { return boxes[index].dataset.selectionId !== block.id })) { renderOverlay(); return }
+      updatePageSize()
+      shown.forEach(function (block, index) { placeSelBox(boxes[index], block) })
     }
 
     // Same limits a save enforces (opts.validate from notes.js): refuse here rather
@@ -1023,7 +1092,7 @@
     function startDraw (event, point) {
       vp.setPointerCapture(event.pointerId); snapshot()
       var marker = tool === 'pen' && penMode === 'marker'
-      draw = { pointerId: event.pointerId, type: tool === 'pen' ? 'draw' : 'line', mode: tool === 'pen' ? penMode : lineMode, points: [[point.x, point.y], [point.x, point.y]], strokeColor: color, strokeWidth: marker ? Math.max(12, stroke * 4) : stroke, strokeOpacity: marker ? 0.4 : 0 }
+      draw = { pointerId: event.pointerId, type: tool === 'pen' ? 'draw' : 'line', mode: tool === 'pen' ? penMode : lineMode, points: [[point.x, point.y], [point.x, point.y]], drawn: 0, d: '', strokeColor: color, strokeWidth: marker ? Math.max(12, stroke * 4) : stroke, strokeOpacity: marker ? 0.4 : 0 }
     }
 
     function beginLongPress (event) {
@@ -1075,7 +1144,7 @@
       if (draw && draw.pointerId === event.pointerId) { var drawPoint = toWorld(event.clientX, event.clientY); if (draw.type === 'draw') draw.points.push([drawPoint.x, drawPoint.y]); else draw.points[1] = [drawPoint.x, drawPoint.y]; drawLive(); return }
       if (!gesture || gesture.pointerId !== event.pointerId) return
       if (gesture.type === 'tap') return
-      if (gesture.type === 'erase') { eraseAt(event); return }
+      if (gesture.type === 'erase') { gesture.at = { clientX: event.clientX, clientY: event.clientY }; if (!eraseFrame) eraseFrame = requestAnimationFrame(eraseQueued); return }
       if (gesture.type === 'scrollpan') { vp.scrollLeft = gesture.scrollLeft - (event.clientX - gesture.clientX); vp.scrollTop = gesture.scrollTop - (event.clientY - gesture.clientY); return }
       if (gesture.type === 'marquee') { var marqueePoint = toWorld(event.clientX, event.clientY); gesture.x = marqueePoint.x; gesture.y = marqueePoint.y; gesture.moved = gesture.moved || Math.hypot(gesture.x - gesture.sx, gesture.y - gesture.sy) >= 4; if (gesture.moved) { var area = marqueeArea(gesture), hits = blocks.filter(function (item) { return item.x < area.x + area.w && item.x + item.w > area.x && item.y < area.y + area.h && item.y + item.h > area.y }).map(function (item) { return item.id }); selectedIds = gesture.additive ? gesture.originalSelection.concat(hits.filter(function (item) { return gesture.originalSelection.indexOf(item) < 0 })) : hits; selected = selectedIds[selectedIds.length - 1] || null; scheduleGesturePaint() }; return }
       var point = toWorld(event.clientX, event.clientY), block = byId(gesture.id); if (!block) return
@@ -1106,6 +1175,7 @@
       delete pointers[event.pointerId]; if (pinch && Object.keys(pointers).length < 2) pinch = null
       if (draw && draw.pointerId === event.pointerId) { finishDraw(); return }
       if (!gesture || gesture.pointerId !== event.pointerId) return
+      if (gesture.type === 'erase') eraseQueued() // the last spot the eraser passed, before it lifts
       var finished = gesture; gesture = null
       if (finished.type === 'tap') { if (finished.create && !readonly && Math.hypot(event.clientX - finished.clientX, event.clientY - finished.clientY) < 8) createAt('text', toWorld(event.clientX, event.clientY), true); return }
       if (finished.type === 'marquee') {
@@ -1157,16 +1227,25 @@
       if (!fitsLimits(blocks.concat([spec]))) return
       snapshot(); var pasted = addBlock(spec); render(); selectBlock(pasted.id); commit()
     })
+    // The eraser looks under the pointer once per frame (up to five hit tests each), at the latest spot it reached.
+    var eraseFrame = 0
+    function eraseQueued () {
+      if (eraseFrame) cancelAnimationFrame(eraseFrame)
+      eraseFrame = 0
+      var at = !destroyed && gesture && gesture.type === 'erase' && gesture.at; if (!at) return
+      gesture.at = null; eraseAt(at)
+    }
     // Stroke eraser: whatever stroke is under (or right beside) the pointer goes; a block's last stroke takes the block with it.
+    // Only the stroke's own block changes on screen; the page is rebuilt once, when the eraser lifts.
     function eraseAt (event) {
       var hit = null
       ;[[0, 0], [5, 0], [-5, 0], [0, 5], [0, -5]].some(function (offset) { var at = document.elementFromPoint(event.clientX + offset[0], event.clientY + offset[1]), holder = at && at.closest && at.closest('.fxc-svg'); if (holder && at !== holder && world.contains(holder)) hit = at; return !!hit })
       var block = hit && byId(hit.closest('.fxc-svg').dataset.id); if (!block) return
       if (!gesture.before) { snapshot(); gesture.before = true }
-      var part = hit.getAttribute('data-part')
-      if (part != null && Array.isArray(block.paths) && block.paths.length > 1) block.paths.splice(+part, 1)
-      else blocks = blocks.filter(function (item) { return item !== block })
-      render()
+      var part = hit.getAttribute('data-part'), node = blockNode(block.id)
+      if (part != null && Array.isArray(block.paths) && block.paths.length > 1) { block.paths.splice(+part, 1); if (node) node.replaceWith(renderBlock(block)) }
+      else { blocks = blocks.filter(function (item) { return item !== block }); if (node) node.remove() }
+      renderOverlay(); hint.hidden = readonly || blocks.length > 0
     }
     // Edges and centres of the dragged block catch those of the blocks it passes (hold Alt to move freely).
     function snapMove (block, state, free) {
@@ -1219,16 +1298,29 @@
       clampBlockY(block)
     }
     function distance (a, b) { return Math.hypot(a.x - b.x, a.y - b.y) }
-    function drawLive () {
-      overlay.innerHTML = ''; var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('class', 'fxc-live'); svg.style.left = '0px'; svg.style.top = '0px'
-      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), a = [draw.points[0][0] * zoom, draw.points[0][1] * zoom], b = [draw.points[1][0] * zoom, draw.points[1][1] * zoom], rx = Math.abs(b[0] - a[0]) / 2, ry = Math.abs(b[1] - a[1]) / 2, d
+    // The stroke in progress, painted once per frame in world units under a scale(zoom): a pen stroke's path only
+    // grows by its new points (it used to be rebuilt, with its SVG, from every point on every move).
+    var drawFrame = 0
+    function drawLive () { if (!drawFrame) drawFrame = requestAnimationFrame(paintDraw) }
+    function paintDraw () {
+      drawFrame = 0
+      if (!draw || destroyed) return
+      if (!draw.path || !draw.path.isConnected) { // first frame, or the overlay was rebuilt under the stroke
+        overlay.innerHTML = ''; var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('class', 'fxc-live'); svg.style.left = '0px'; svg.style.top = '0px'
+        var path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+        if (draw.strokeOpacity) path.setAttribute('stroke-opacity', draw.strokeOpacity)
+        path.setAttribute('fill', 'none'); path.setAttribute('stroke', draw.strokeColor); path.setAttribute('stroke-width', draw.strokeWidth); path.setAttribute('stroke-linecap', 'round'); svg.appendChild(path); overlay.appendChild(svg)
+        draw.path = path
+      }
+      var a = draw.points[0], b = draw.points[1], rx = Math.abs(b[0] - a[0]) / 2, ry = Math.abs(b[1] - a[1]) / 2, d
       if (draw.mode === 'rect') d = 'M' + a[0] + ' ' + a[1] + ' H' + b[0] + ' V' + b[1] + ' H' + a[0] + ' Z'
       else if (draw.mode === 'ellipse') d = 'M' + Math.min(a[0], b[0]) + ' ' + (a[1] + b[1]) / 2 + ' a' + rx + ' ' + ry + ' 0 1 0 ' + rx * 2 + ' 0 a' + rx + ' ' + ry + ' 0 1 0 ' + -rx * 2 + ' 0'
-      else d = draw.points.map(function (p, index) { return (index ? 'L' : 'M') + p[0] * zoom + ' ' + p[1] * zoom }).join(' ')
-      if (draw.strokeOpacity) path.setAttribute('stroke-opacity', draw.strokeOpacity)
-      path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', draw.strokeColor); path.setAttribute('stroke-width', draw.strokeWidth * zoom); path.setAttribute('stroke-linecap', 'round'); svg.appendChild(path); overlay.appendChild(svg)
+      else if (draw.type === 'draw') { for (; draw.drawn < draw.points.length; draw.drawn++) draw.d += (draw.drawn ? ' L' : 'M') + draw.points[draw.drawn][0] + ' ' + draw.points[draw.drawn][1]; d = draw.d }
+      else d = 'M' + a[0] + ' ' + a[1] + ' L' + b[0] + ' ' + b[1]
+      draw.path.setAttribute('d', d); draw.path.setAttribute('transform', 'scale(' + zoom + ')')
     }
     function finishDraw () {
+      if (drawFrame) { cancelAnimationFrame(drawFrame); drawFrame = 0 }
       var current = draw; draw = null; overlay.innerHTML = ''; if (!current || current.points.length < 2) { render(); return }
       var xs = current.points.map(function (p) { return p[0] }), ys = current.points.map(function (p) { return p[1] }), minX = Math.min.apply(null, xs), minY = Math.min.apply(null, ys), maxX = Math.max.apply(null, xs), maxY = Math.max.apply(null, ys)
       var spec
@@ -1287,7 +1379,13 @@
     function scheduleCommit () { if (!dirtyPending) { dirtyPending = true; onDirty() }; clearTimeout(changeTimer); changeTimer = setTimeout(commit, 350) }
     function commit () { clearTimeout(changeTimer); changeTimer = null; if (destroyed) { dirtyPending = false; return }; if (!dirtyPending) onDirty(); dirtyPending = false; if (opts.onChange) onChange(getData()) }
     function flush (notify) { if (!changeTimer && !dirtyPending) return; clearTimeout(changeTimer); changeTimer = null; dirtyPending = false; if (notify !== false && !destroyed && opts.onChange) onChange(getData()) }
-    function getData () { var result = clone(source); result.blocks = clone(blocks.filter(function (block) { return !provisionalText[block.id] })); result.nextId = nextId; result.maxZ = maxZ; result.zoom = zoom; result.panX = 0; result.panY = 0; return result }
+    // The model as a save sees it, without a copy: peekData is for a caller that serialises it at once and never
+    // changes it (notes.js); getData hands out a deep copy.
+    function liveData () {
+      if (fitFrame) runFit() // a height still waiting for its frame
+      var result = Object.assign({}, source); result.blocks = blocks.filter(function (block) { return !provisionalText[block.id] }); result.nextId = nextId; result.maxZ = maxZ; result.zoom = zoom; result.panX = 0; result.panY = 0; return result
+    }
+    function getData () { return clone(liveData()) }
 
     function onKeyDown (event) {
       if (readonly) return
@@ -1318,7 +1416,8 @@
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'x' && selectedIds.length) { event.preventDefault(); cutBlocks(selectedBlocks()) }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && blockClipboard) { event.preventDefault(); pasteBlock() }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && selectedIds.length) { event.preventDefault(); duplicateBlocks(selectedBlocks()) }
-      if (selectedIds.length && /^Arrow(Left|Right|Up|Down)$/.test(event.key)) { event.preventDefault(); if (!event.repeat) snapshot(); var amount = event.shiftKey ? 10 : 1, dx = event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0, dy = event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0; selectedBlocks().forEach(function (block) { block.x += dx; block.y += dy; clampBlockY(block) }); render(); commit(); return }
+      // A nudge (and its key repeat) only moves the selected blocks' nodes and boxes; the save follows the last one.
+      if (selectedIds.length && /^Arrow(Left|Right|Up|Down)$/.test(event.key)) { event.preventDefault(); if (!event.repeat) snapshot(); var amount = event.shiftKey ? 10 : 1, dx = event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0, dy = event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0; selectedBlocks().forEach(function (block) { block.x += dx; block.y += dy; clampBlockY(block); var node = blockNode(block.id); if (node) { node.style.left = block.x + 'px'; node.style.top = block.y + 'px' } }); refreshOverlay(); scheduleCommit(); return }
       var keys = { v: 'select', t: 'text', i: 'image', o: 'todo', b: 'table', c: 'code', p: 'pen', l: 'line' }; if (keys[event.key] && !event.ctrlKey && !event.metaKey) setTool(keys[event.key])
     }
     function onKeyUp (event) { if (event.code === 'Space') { spaceHeld = false; vp.classList.remove('is-pan-ready') } }
@@ -1339,7 +1438,7 @@
     }
 
     setTool('select'); render()
-    return { getData: getData, flush: flush, focusStart: focusStart, destroy: function () { flush(false); destroyed = true; closePopover(); if (longPress) clearTimeout(longPress.timer); ac.abort(); clearTimeout(changeTimer); clearTimeout(editSnapshotTimer); clearTimeout(selectionTimer); container.innerHTML = '' } }
+    return { getData: getData, peekData: liveData, flush: flush, focusStart: focusStart, destroy: function () { flush(false); destroyed = true; closePopover(); if (longPress) clearTimeout(longPress.timer); ac.abort(); clearTimeout(changeTimer); clearTimeout(editSnapshotTimer); clearTimeout(selectionTimer); [gestureFrame, fitFrame, drawFrame, eraseFrame].forEach(function (frame) { if (frame) cancelAnimationFrame(frame) }); container.innerHTML = '' } }
   }
 
   window.FxCanvas = { mount: mount, inkHighlights: inkHighlights, shrinkImage: shrinkImage }

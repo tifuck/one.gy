@@ -76,6 +76,9 @@
 /* ---- Code blocks -------------------------------------------------------- */
 .code-block, .code-tabs.is-tabbed{ min-width:0; border:1px solid var(--line); border-radius:10px; background:var(--pane); overflow:hidden; }
 .code-tabs:not(.is-tabbed) > .code-block + .code-block{ margin-top:10px; }
+/* With JS (the pre-paint script sets data-theme) only the first example shows
+   until the tabs are built, so the page does not collapse after first paint. */
+html[data-theme] .code-tabs:not(.is-tabbed) > .code-block + .code-block{ display:none; }
 .code-tabs.is-tabbed > .code-block{ border:0; border-radius:0; background:none; }
 .code-tabs.is-tabbed > .code-block > .code-header{ display:none; }
 .code-header, .code-tabbar{ display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:40px;

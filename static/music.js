@@ -26,9 +26,10 @@
   var ICON_CHEV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>'
   var ICON_HEART = '<svg viewBox="0 0 24 24"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.2a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z"/></svg>'
 
-  function coverUrl (p) { if (!p) return ''; var id = String(p).replace('covers/', '').replace('artists/', '').replace('.jpg', ''); return '/music/cover/' + encodeURIComponent(id) }
-  function cover (p, cls) {
-    if (p) return '<img class="' + (cls || '') + '" src="' + esc(coverUrl(p)) + '" alt="" loading="lazy">'
+  // size: 96 | 160 | 320 serves a small WebP (rows, tiles, cards); none: the original (hero art)
+  function coverUrl (p, size) { if (!p) return ''; var id = String(p).replace('covers/', '').replace('artists/', '').replace('.jpg', ''); return '/music/cover/' + encodeURIComponent(id) + (size ? '?s=' + size : '') }
+  function cover (p, cls, size) {
+    if (p) return '<img class="' + (cls || '') + '" src="' + esc(coverUrl(p, size)) + '" alt="" loading="lazy">'
     return '<span class="mu-art-ph ' + (cls || '') + '">' + ICON_NOTE + '</span>'
   }
   function artistNames (arts, feat) {
@@ -168,7 +169,7 @@
   }
   function tintOf (p) {
     if (!p) return Promise.resolve(null)
-    var url = coverUrl(p)
+    var url = coverUrl(p, 96)   // sampled at 24 x 24: the smallest variant does
     if (!tintCache.has(url)) {
       tintCache.set(url, new Promise(function (res) {
         var img = new Image()
@@ -187,15 +188,68 @@
   }
   // Page wash follows the open view; null falls back to the theme accent.
   function wash (p) {
-    var main = view && view.parentNode, token = ++washToken
-    if (!main) return
-    if (!p) { main.style.removeProperty('--mu-tint'); return }
-    tintOf(p).then(function (c) { if (token !== washToken) return; if (c) main.style.setProperty('--mu-tint', c); else main.style.removeProperty('--mu-tint') })
+    var el = $('muWash'), token = ++washToken
+    if (!el) return
+    if (!p) { el.style.removeProperty('--mu-tint'); return }
+    tintOf(p).then(function (c) { if (token !== washToken) return; if (c) el.style.setProperty('--mu-tint', c); else el.style.removeProperty('--mu-tint') })
   }
+  var tileObserver = null
+  function paintTile (el) {
+    tintOf(el.getAttribute('data-tint')).then(function (c) { if (c) el.style.setProperty('--mu-tile', c) })
+  }
+  // Only tiles near the viewport fetch a cover to sample. A sideways shelf
+  // clips its tiles, so it is tinted as a whole once it comes near.
   function paintTiles () {
-    view.querySelectorAll('[data-tint]').forEach(function (el) {
-      tintOf(el.getAttribute('data-tint')).then(function (c) { if (c) el.style.setProperty('--mu-tile', c) })
+    if (tileObserver) { tileObserver.disconnect(); tileObserver = null }
+    var tiles = view.querySelectorAll('[data-tint]')
+    if (!tiles.length) return
+    if (typeof IntersectionObserver !== 'function') { tiles.forEach(paintTile); return }
+    var groups = new Map()
+    tiles.forEach(function (el) {
+      var box = el.closest('.mu-shelf') || el
+      if (!groups.has(box)) groups.set(box, [])
+      groups.get(box).push(el)
     })
+    tileObserver = new IntersectionObserver(function (entries, obs) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return
+        obs.unobserve(en.target)
+        groups.get(en.target).forEach(paintTile)
+      })
+    }, { root: view, rootMargin: '300px 0px' })
+    groups.forEach(function (_, box) { tileObserver.observe(box) })
+  }
+
+  // ---- Long lists ----------------------------------------------------------
+  // A view goes in with the first CHUNK rows / cards of a long list; the rest
+  // follow a chunk per idle slot, built then (likes and the current track are
+  // up to date). Handlers are delegated and rows keep data-track-index, so
+  // clicks, the "Show all" collapse (CSS) and sorting work as before.
+  var CHUNK = 200, restJobs = [], restSeq = 0, restToken = 0
+  var idle = window.requestIdleCallback ? function (f) { requestIdleCallback(f, { timeout: 300 }) } : function (f) { setTimeout(f, 30) }
+  // build(item, index) -> HTML; the remainder is marked by an empty <template>
+  function chunked (items, build) {
+    if (items.length <= CHUNK) return items.map(build).join('')
+    var id = ++restSeq
+    restJobs.push({ id: id, items: items, build: build, at: CHUNK })
+    return items.slice(0, CHUNK).map(build).join('') + '<template data-rest="' + id + '"></template>'
+  }
+  // all: insert everything now (a scroll position is about to be restored)
+  function fillRest (all) {
+    var token = ++restToken
+    var jobs = restJobs.filter(function (job) { return (job.el = view.querySelector('template[data-rest="' + job.id + '"]')) })
+    restJobs = []
+    function step () {
+      var job = jobs[0]
+      if (token !== restToken || !job || !job.el.isConnected) return
+      var end = all ? job.items.length : Math.min(job.items.length, job.at + CHUNK)
+      job.el.insertAdjacentHTML('beforebegin', job.items.slice(job.at, end).map(function (t, k) { return job.build(t, job.at + k) }).join(''))
+      job.at = end
+      if (end >= job.items.length) { job.el.remove(); jobs.shift() }
+      if (!jobs.length) return
+      if (all) step(); else idle(step)
+    }
+    if (jobs.length) { if (all) step(); else idle(step) }
   }
 
   // ---- Rendering: shared bits ---------------------------------------------
@@ -209,6 +263,7 @@
   function isCurrentView (epoch) { return epoch === viewEpoch }
   function render (h) {
     view.innerHTML = h; paintTiles()
+    fillRest(!!restoreScroll)
     if (restoreScroll) { view.scrollTop = restoreScroll; restoreScroll = 0 }
   }
 
@@ -249,21 +304,21 @@
   function albumCard (a, sub) {
     var line = sub === 'type' ? [year(a), typeLabel(a.album_type)] : [year(a), (a.artists || []).map(function (x) { return x.name }).join(', ')]
     return '<button type="button" class="mu-card" data-album="' + esc(a.id) + '" title="' + esc(a.name) + '">' +
-      '<span class="mu-card-art">' + cover(a.cover_path) + '<span class="mu-card-play" data-play-album="' + esc(a.id) + '" aria-hidden="true">' + ICON_PLAY + '</span></span>' +
+      '<span class="mu-card-art">' + cover(a.cover_path, '', 320) + '<span class="mu-card-play" data-play-album="' + esc(a.id) + '" aria-hidden="true">' + ICON_PLAY + '</span></span>' +
       '<span class="mu-card-name">' + esc(a.name) + '</span>' +
       '<span class="mu-card-sub">' + esc(line.filter(Boolean).join(' · ')) + '</span></button>'
   }
   function albumCardType (a) { return albumCard(a, 'type') }
   function artistCard (a) {
     return '<button type="button" class="mu-card mu-card-artist" data-artist="' + esc(a.id) + '" title="' + esc(a.name) + '">' +
-      '<span class="mu-card-art mu-round">' + cover(a.cover_path) + '</span>' +
+      '<span class="mu-card-art mu-round">' + cover(a.cover_path, '', 320) + '</span>' +
       '<span class="mu-card-name">' + esc(a.name) + '</span>' +
       '<span class="mu-card-sub">' + plural(a.song_count || 0, 'song') + '</span></button>'
   }
   function genreTile (g) {
     return '<button type="button" class="mu-genre" data-genre="' + esc(g.name) + '"' + (g.cover_path ? ' data-tint="' + esc(g.cover_path) + '"' : '') + '>' +
       '<span class="mu-genre-name">' + esc(g.name).replace(/\//g, '/<wbr>') + '</span><span class="mu-genre-sub">' + plural(g.song_count, 'song') + '</span>' +
-      (g.cover_path ? '<span class="mu-genre-art">' + cover(g.cover_path) + '</span>' : '') + '</button>'
+      (g.cover_path ? '<span class="mu-genre-art">' + cover(g.cover_path, '', 160) + '</span>' : '') + '</button>'
   }
   // opts.art: cover column (lists of mixed albums); opts.album: album column
   function trackRow (t, i, opts) {
@@ -273,7 +328,7 @@
     var artists = artistLinks((t.artists || []).concat(t.featured_artists || []))
     return '<div class="mu-track' + (unavailable ? ' is-unavail' : '') + (t.id && t.id === currentTrackId() ? ' is-current' : '') + '" data-track-index="' + i + '" data-song-id="' + esc(t.id) + '"' + (unavailable ? '' : ' tabindex="0"') + '>' +
       '<span class="mu-track-num">' + esc(opts.art ? i + 1 : (t.track_number || (i + 1))) + '<svg class="mu-track-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4a.8.8 0 0 0 1.2.7l11.4-7.2a.8.8 0 0 0 0-1.4L8.2 4.1A.8.8 0 0 0 7 4.8z"/></svg></span>' +
-      (opts.art ? '<span class="mu-track-art">' + cover(t.cover_path) + '</span>' : '') +
+      (opts.art ? '<span class="mu-track-art">' + cover(t.cover_path, '', 96) + '</span>' : '') +
       '<span class="mu-track-main"><span class="mu-track-title" title="' + esc(title) + '">' + esc(title) + '</span><span class="mu-track-artist">' + artists + '</span></span>' +
       (opts.album ? '<span class="mu-track-album">' + (t.album_id ? '<button type="button" class="mu-link" data-album="' + esc(t.album_id) + '">' + esc(t.album_name || '') + '</button>' : '') + '</span>' : '') +
       '<button type="button" class="mu-track-like' + (liked ? ' is-liked' : '') + '" data-like="' + esc(t.id) + '" aria-label="' + (liked ? 'Unlike' : 'Like') + '">' + ICON_HEART + '</button>' +
@@ -287,11 +342,11 @@
       (opts.album ? '<span class="mu-track-album">Album</span>' : '') + '<span></span><span class="mu-track-dur">' + ICON_CLOCK + '</span></div>'
     var multiDisc = opts.discs && tracks.some(function (t) { return (t.disc_number || 1) > 1 })
     var lastDisc = null
-    return '<div class="mu-tracks' + (opts.art ? ' has-art' : '') + (opts.album ? ' has-album' : '') + '">' + head + tracks.map(function (t, i) {
+    return '<div class="mu-tracks' + (opts.art ? ' has-art' : '') + (opts.album ? ' has-album' : '') + '">' + head + chunked(tracks, function (t, i) {
       var h = ''
       if (multiDisc && (t.disc_number || 1) !== lastDisc) { lastDisc = t.disc_number || 1; h = '<div class="mu-disc">Disc ' + lastDisc + '</div>' }
       return h + trackRow(t, i, opts)
-    }).join('') + '</div>'
+    }) + '</div>'
   }
   // extra: HTML after the button (album genre chips)
   function playButton (extra) {
@@ -337,8 +392,8 @@
       var recent = d.recently_added || [], h = ''
       // Quick picks: liked songs, playlists, then the newest additions (8 tiles)
       var quick = [quickTile('data-go="liked"', '<span class="mu-liked-art">' + ICON_HEART + '</span>', 'Liked songs')]
-      S.playlists.slice(0, 3).forEach(function (p) { quick.push(quickTile('data-playlist="' + esc(p.id) + '"', p.cover_path ? cover(p.cover_path) : '<span class="mu-art-ph">' + ICON_LIST + '</span>', p.name, p.cover_path)) })
-      recent.slice(0, 8 - quick.length).forEach(function (a) { quick.push(quickTile('data-album="' + esc(a.id) + '"', cover(a.cover_path), a.name, a.cover_path)) })
+      S.playlists.slice(0, 3).forEach(function (p) { quick.push(quickTile('data-playlist="' + esc(p.id) + '"', p.cover_path ? cover(p.cover_path, '', 160) : '<span class="mu-art-ph">' + ICON_LIST + '</span>', p.name, p.cover_path)) })
+      recent.slice(0, 8 - quick.length).forEach(function (a) { quick.push(quickTile('data-album="' + esc(a.id) + '"', cover(a.cover_path, '', 160), a.name, a.cover_path)) })
       if (recent.length) h += '<div class="mu-quick-grid">' + quick.join('') + '</div>'
       if (recent.length) h += sectionTitle('Recently added', '', 'albums') + '<div class="mu-shelf">' + recent.map(albumCard).join('') + '</div>'
       if ((d.new_releases || []).length) h += sectionTitle('New releases') + '<div class="mu-shelf">' + d.new_releases.map(albumCard).join('') + '</div>'
@@ -376,7 +431,7 @@
       ALBUM_SORTS.map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === albumPrefs.sort ? ' selected' : '') + '>' + o[1] + '</option>' }).join('') + '</select></label>'
     render('<div class="mu-filterbar"><div class="mu-chips" role="group" aria-label="Release type">' + chips + '</div>' + sort + '</div>' +
       sectionTitle('', plural(arr.length, albumPrefs.type ? typeLabel(albumPrefs.type).toLowerCase().replace(/s?$/, '') : 'release')) +
-      '<div class="mu-grid">' + arr.map(albumCard).join('') + '</div>')
+      '<div class="mu-grid">' + chunked(arr, albumCard) + '</div>')
   }
   async function viewAlbums () {
     setActive('albums'); crumbRoot('Albums', viewAlbums); var epoch = startView(['albums']); wash(null)
@@ -390,7 +445,7 @@
     setActive('artists'); crumbRoot('Artists', viewArtists); var epoch = startView(['artists']); wash(null)
     try { var d = await jget('/music/api/artists'); var arr = Array.isArray(d) ? d : (d.artists || [])
       if (!isCurrentView(epoch)) return
-      render(arr.length ? sectionTitle('', plural(arr.length, 'artist')) + '<div class="mu-grid mu-grid-artists">' + arr.map(artistCard).join('') + '</div>' : empty('No artists yet'))
+      render(arr.length ? sectionTitle('', plural(arr.length, 'artist')) + '<div class="mu-grid mu-grid-artists">' + chunked(arr, artistCard) + '</div>' : empty('No artists yet'))
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load artists', 'Check your connection and try again.') }
   }
   async function viewGenres () {
@@ -414,7 +469,7 @@
       var h = hero({ html: '<span class="mu-genre-hero"' + (art ? ' data-tint="' + esc(art) + '"' : '') + '>' + esc(name.charAt(0)) + '</span>' }, 'Genre', name,
         facts([plural(r.genre.song_count, 'song'), plural(albums.length, 'release'), plural(artists.length, 'artist')]))
       if (songs.length) h += playButton() + '<div class="mu-collapsed">' + trackList(songs, { art: true, album: true }) + '</div>' + moreToggle(songs.length)
-      if (albums.length) h += sectionTitle('Releases', String(albums.length)) + '<div class="mu-grid">' + albums.map(albumCard).join('') + '</div>'
+      if (albums.length) h += sectionTitle('Releases', String(albums.length)) + '<div class="mu-grid">' + chunked(albums, albumCard) + '</div>'
       if (artists.length) h += sectionTitle('Artists', String(artists.length)) + '<div class="mu-shelf mu-shelf-artists">' + artists.map(artistCard).join('') + '</div>'
       render(h)
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load this genre', 'It may no longer have any songs.') }
@@ -515,7 +570,7 @@
       var d = await jget('/music/api/playlists'); S.playlists = Array.isArray(d) ? d : (d.playlists || [])
       var list = $('muRailPlaylists'); if (!list) return
       list.innerHTML = S.playlists.map(function (p) {
-        return '<button type="button" class="mu-rail-pl rd-side-row' + (S.playlistId === String(p.id) ? ' is-active' : '') + '" data-playlist="' + esc(p.id) + '" title="' + esc(p.name) + '">' + (p.cover_path ? cover(p.cover_path, 'mu-rail-pl-art') : '<span class="mu-rail-pl-art mu-art-ph">' + ICON_LIST + '</span>') + '<span class="mu-rail-pl-name">' + esc(p.name) + '</span></button>'
+        return '<button type="button" class="mu-rail-pl rd-side-row' + (S.playlistId === String(p.id) ? ' is-active' : '') + '" data-playlist="' + esc(p.id) + '" title="' + esc(p.name) + '">' + (p.cover_path ? cover(p.cover_path, 'mu-rail-pl-art', 96) : '<span class="mu-rail-pl-art mu-art-ph">' + ICON_LIST + '</span>') + '<span class="mu-rail-pl-name">' + esc(p.name) + '</span></button>'
       }).join('') || '<div class="mu-rail-hint">No playlists yet</div>'
     } catch (e) {}
   }

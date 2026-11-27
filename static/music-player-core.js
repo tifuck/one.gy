@@ -10,13 +10,15 @@
 //   music-player-fullscreen.js  mobile fullscreen view, swipe gestures
 //   music-player-fx.js          Web Audio graph, visualizer, chaos mode
 //   music-player-session.js     Media Session, iOS background, persistence
-//   music-player-e2e.js         E2E encrypted track loading
 //   music-player-playback.js    track loading, transport, <audio> events
 //   music-player-queue.js       playlists, shuffle, autoplay, crossfade
 //   music-player-sync.js        cross-device sync engine
 //   music-player-phantom.js     phantom mode (mirroring a remote device)
-//   music-player-devices.js     devices panel
+//   music-player-devices.js     devices buttons, panel toggle
 //   music-player.js             window.MusicPlayer and init (load last)
+// Loaded on first use (mp._loadPart, URLs on the player element):
+//   music-player-e2e.js           E2E encrypted track loading
+//   music-player-devices-panel.js devices panel list
 // Every file is an IIFE over the shared namespace `mp` (window._mpCore).
 // State used by more than one file lives on `mp` (mp.playlist, ...);
 // functions another file calls are exported with Object.assign(mp, ...) at
@@ -107,7 +109,7 @@
   mp._syncPhantomPlaying = false   // whether remote is playing (for interpolation)
   mp._syncPhantomPollTs = 0        // Date.now() when last phantom state was received
   mp._syncPhantomTrackId = null    // track ID to detect track changes
-  mp._syncPhantomRAF = null        // requestAnimationFrame handle for interpolation
+  mp._syncPhantomTimer = null      // setInterval handle for progress interpolation (while the remote plays)
   mp._syncPhantomStateTs = null    // ISO timestamp of last state update from active device
   mp._syncPhantomStale = false     // true = remote device stopped updating (>10s)
   mp._syncPhantomKeepaliveActive = false  // true = silent WAV is looping on audio element for Media Session
@@ -161,8 +163,12 @@
   // an <audio> element is actively playing.  In phantom (remote-control)
   // mode we have no real audio to play, so we loop a tiny silent WAV to
   // keep the Media Session alive and the notification controls visible.
+  // Built on first use (phantom entry, autoplay primer), not on every page.
   var _silentBlobUrl = null
-  ;(function _createSilentBlob() {
+  var _silentBlobTried = false
+  function _silentUrl() {
+    if (_silentBlobTried) return _silentBlobUrl
+    _silentBlobTried = true
     try {
       // 10 seconds of near-silence, mono, 44100 Hz, 16-bit PCM WAV.
       // Chrome Android classifies audio <= 5s as "Transient" and will NEVER
@@ -193,14 +199,15 @@
       // completely inaudible but registers as non-zero energy.
       writeStr(36, 'data')
       view.setUint32(40, dataSize, true)
-      for (var s = 0; s < numSamples; s++) {
-        view.setInt16(44 + s * 2, 1, true)
-      }
+      // Samples are little-endian 16-bit: 1 is bytes 01 00 (256 read big-endian)
+      var littleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1
+      new Uint16Array(buffer, 44, numSamples).fill(littleEndian ? 1 : 256)
       _silentBlobUrl = URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }))
     } catch(e) {
       console.warn('[MUSIC PLAYER] Could not create silent audio blob:', e)
     }
-  })()
+    return _silentBlobUrl
+  }
 
   // Perceptual volume curve: slider position (0-1 linear) -> actual volume.
   // Quadratic curve with a 15% linear baseline so low slider positions are
@@ -267,9 +274,31 @@
 
   // Cover paths also arrive in remote sync state: only a library cover path
   // ("covers/<id>.jpg" or "artists/<id>.jpg") ever becomes an image URL.
-  function _coverUrl(coverPath) {
+  // size (96 | 160 | 320): a small WebP for small art; none: the original.
+  function _coverUrl(coverPath, size) {
     var m = typeof coverPath === 'string' ? /^(covers|artists)\/([\w-]+)\.jpg$/.exec(coverPath) : null
-    return m ? '/music/cover/' + encodeURIComponent(m[2]) : ''
+    return m ? '/music/cover/' + encodeURIComponent(m[2]) + (size ? '?s=' + size : '') : ''
+  }
+
+  // Player parts loaded on first use; their versioned URLs ride on the
+  // player element (data-part-<name>, _music_player.html).
+  var _parts = {}
+  function _loadPart(name) {
+    if (!_parts[name]) {
+      _parts[name] = new Promise(function(resolve, reject) {
+        var el = document.getElementById('musicPlayer')
+        var src = el && el.getAttribute('data-part-' + name)
+        if (!src) { reject(new Error('unknown player part: ' + name)); return }
+        var s = document.createElement('script')
+        s.src = src
+        s.onload = function() { resolve() }
+        s.onerror = function() { s.remove(); reject(new Error('could not load player part: ' + name)) }
+        document.head.appendChild(s)
+      })
+      // A failed load is tried again on the next use
+      _parts[name].catch(function() { delete _parts[name] })
+    }
+    return _parts[name]
   }
 
   // Detach the media resource without an error event. `audio.src = ''` loads
@@ -291,13 +320,14 @@
     _ssRemove,
     _isIOS,
     audio,
-    _silentBlobUrl,
+    _silentUrl,
     _volCurve,
     _applyOutputVolume,
     _applyCrossfadeVolumes,
     _setVolume,
     _stripAudioExtension,
     _coverUrl,
+    _loadPart,
     _clearAudioSrc,
   })
 })()

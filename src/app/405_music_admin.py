@@ -75,35 +75,40 @@ def _music_proxy_json(row, now):
             'downloads_today': row.downloads_today if today else 0}
 
 
-def _music_library_snapshot():
+def _music_library_snapshot(live=True, totals=True):
     """Counts, songs added today per worker, recent additions and the last
-    roster build, read from library.db."""
+    roster build, read from library.db. live: added today and recent songs;
+    totals: counts, bytes and the roster/charts times."""
     snap = {'songs': 0, 'artists': 0, 'albums': 0, 'bytes': 0, 'added_today': 0,
             'added_by_worker': {}, 'recent': [], 'roster_at': None, 'charts_at': None}
     if not _music_library_available():
         return snap
     conn = _get_music_db()
     try:
-        snap['artists'] = conn.execute('SELECT COUNT(*) FROM artists').fetchone()[0]
-        snap['albums'] = conn.execute('SELECT COUNT(*) FROM albums').fetchone()[0]
+        if totals:
+            snap['artists'] = conn.execute('SELECT COUNT(*) FROM artists').fetchone()[0]
+            snap['albums'] = conn.execute('SELECT COUNT(*) FROM albums').fetchone()[0]
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files'").fetchone():
-            snap['songs'] = conn.execute('SELECT COUNT(*) FROM songs').fetchone()[0]
+            if totals:
+                snap['songs'] = conn.execute('SELECT COUNT(*) FROM songs').fetchone()[0]
             return snap
-        count, size = conn.execute('SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files').fetchone()
-        snap['songs'], snap['bytes'] = count, size
-        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-        snap['added_by_worker'] = {row[0]: row[1] for row in conn.execute(
-            'SELECT worker, COUNT(*) FROM files WHERE created_at >= ? GROUP BY worker', [today])}
-        snap['added_today'] = sum(snap['added_by_worker'].values())
-        snap['recent'] = [dict(row) for row in conn.execute('''
-            SELECT s.id, s.title, f.created_at AS added, a.cover_path,
-                   (SELECT ar.name FROM song_artists sa JOIN artists ar ON ar.id = sa.artist_id
-                    WHERE sa.song_id = s.id AND sa.role = 'primary' LIMIT 1) AS artist
-            FROM files f JOIN songs s ON s.id = f.song_id LEFT JOIN albums a ON a.id = s.album_id
-            ORDER BY f.created_at DESC LIMIT 8''')]
-        for key in ('roster_at', 'charts_at'):
-            meta = conn.execute('SELECT value FROM _meta WHERE key = ?', [key]).fetchone()
-            snap[key] = meta[0] if meta else None
+        if totals:
+            count, size = conn.execute('SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files').fetchone()
+            snap['songs'], snap['bytes'] = count, size
+            for key in ('roster_at', 'charts_at'):
+                meta = conn.execute('SELECT value FROM _meta WHERE key = ?', [key]).fetchone()
+                snap[key] = meta[0] if meta else None
+        if live:
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            snap['added_by_worker'] = {row[0]: row[1] for row in conn.execute(
+                'SELECT worker, COUNT(*) FROM files WHERE created_at >= ? GROUP BY worker', [today])}
+            snap['added_today'] = sum(snap['added_by_worker'].values())
+            snap['recent'] = [dict(row) for row in conn.execute('''
+                SELECT s.id, s.title, f.created_at AS added, a.cover_path,
+                       (SELECT ar.name FROM song_artists sa JOIN artists ar ON ar.id = sa.artist_id
+                        WHERE sa.song_id = s.id AND sa.role = 'primary' LIMIT 1) AS artist
+                FROM files f JOIN songs s ON s.id = f.song_id LEFT JOIN albums a ON a.id = s.album_id
+                ORDER BY f.created_at DESC LIMIT 8''')]
         return snap
     finally:
         conn.close()
@@ -158,13 +163,23 @@ def _music_artist_json(artist):
             'scanned_at': _music_iso(artist.scanned_at)}
 
 
-@app.route('/admin/api/music')
-@limiter.limit(admin_rate_limit)
-@admin_required
-def admin_api_music():
-    now = datetime.now(timezone.utc)
+# The Music tab polls ?part=live and loads ?part=heavy on open, after an
+# action (fresh=1) and about once a minute. The heavy part reads every
+# MusicArtist row and sums the whole files table, so it is cached per process.
+_MUSIC_HEAVY_TTL_S = 60
+_music_heavy_cache = {'at': 0.0, 'data': None}
+_music_heavy_lock = threading.Lock()
+
+
+def _music_invalidate_heavy():
+    _music_heavy_cache['data'] = None
+
+
+def _music_live(now):
+    """The fast-changing part: switches, limits, workers, queue, up next and
+    songs added today."""
     cutoff = now - timedelta(seconds=_MUSIC_WORKER_ONLINE_S)
-    library = _music_library_snapshot()
+    library = _music_library_snapshot(totals=False)
     workers = []
     discovery_worker = None
     for row in MusicWorker.query.order_by(MusicWorker.id.asc()).all():
@@ -191,6 +206,29 @@ def admin_api_music():
     problems = [{'code': code, 'count': count} for code, count in db.session.query(MusicJob.error_code, db.func.count())
                 .filter(MusicJob.state.in_(open_states), MusicJob.attempts > 0, MusicJob.error_code.isnot(None))
                 .group_by(MusicJob.error_code).order_by(db.func.count().desc()).all()]
+    sources = [{'source': b.source, 'used': b.used, 'errors': b.errors, 'slow': b.slow,
+                'paused_until': b.paused_until.replace(tzinfo=timezone.utc).isoformat()
+                if b.paused_until and b.paused_until.replace(tzinfo=timezone.utc) > now else None}
+               for b in MusicSourceBudget.query.filter_by(day=now.date()).order_by(MusicSourceBudget.source).all()]
+    return {
+        'switches': {'discovery': bool(get_setting('music_discovery_enabled')),
+                     'downloads': bool(get_setting('music_downloads_enabled'))},
+        'limits': {'daily': get_numeric_setting('music_dl_daily_cap'),
+                   'size_gb': get_numeric_setting('music_library_cap_gb')},
+        'priorities': _music_priorities(),
+        'up_next': _music_up_next(now),
+        'workers': workers,
+        'library': {k: library[k] for k in ('added_today', 'recent')},
+        'queue': {'buckets': by_bucket, 'total': sum(by_bucket.values()), 'retrying': retrying, 'working': working},
+        'problems': problems,
+        'sources': sources,
+        'direct': bool(get_setting('music_proxy_direct')),
+    }
+
+
+def _build_music_heavy(now):
+    """The slow-changing part: library totals, roster, rules and proxies."""
+    library = _music_library_snapshot(live=False)
     artists = MusicArtist.query.with_entities(MusicArtist.rule_mode, MusicArtist.auto_mode, MusicArtist.floor_mode,
                                               MusicArtist.genres).all()
     modes, genre_counts = {}, {}
@@ -204,39 +242,57 @@ def admin_api_music():
     top = MusicArtist.query.filter(MusicArtist.score > 0).order_by(MusicArtist.score.desc()).limit(_MUSIC_TOP_ARTISTS).all()
     ruled = MusicArtist.query.filter(db.or_(MusicArtist.rule_mode.isnot(None), MusicArtist.rule_weight != 1.0)) \
         .order_by(MusicArtist.name).all()
-    q = (request.args.get('q') or '').strip()[:100]
-    found = None
-    if q:
-        pattern = '%' + q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
-        found = [_music_artist_json(a) for a in MusicArtist.query.filter(MusicArtist.name.ilike(pattern, escape='\\'))
-                 .order_by(MusicArtist.score.desc()).limit(_MUSIC_SEARCH_LIMIT).all()]
     genre_rules = MusicGenreRule.query.order_by(MusicGenreRule.weight.desc(), MusicGenreRule.genre).all()
-    sources = [{'source': b.source, 'used': b.used, 'errors': b.errors, 'slow': b.slow,
-                'paused_until': b.paused_until.replace(tzinfo=timezone.utc).isoformat()
-                if b.paused_until and b.paused_until.replace(tzinfo=timezone.utc) > now else None}
-               for b in MusicSourceBudget.query.filter_by(day=now.date()).order_by(MusicSourceBudget.source).all()]
-    return jsonify({
-        'switches': {'discovery': bool(get_setting('music_discovery_enabled')),
-                     'downloads': bool(get_setting('music_downloads_enabled'))},
-        'limits': {'daily': get_numeric_setting('music_dl_daily_cap'),
-                   'size_gb': get_numeric_setting('music_library_cap_gb')},
-        'priorities': _music_priorities(),
-        'up_next': _music_up_next(now),
-        'workers': workers,
-        'library': {k: library[k] for k in ('songs', 'artists', 'albums', 'bytes', 'added_today', 'recent')},
-        'queue': {'buckets': by_bucket, 'total': sum(by_bucket.values()), 'retrying': retrying, 'working': working},
-        'problems': problems,
+    return {
+        'library': {k: library[k] for k in ('songs', 'artists', 'albums', 'bytes')},
         'roster': {'artists': len(artists), 'monitored': sum(n for m, n in modes.items() if m in _MUSIC_MONITORED_MODES),
                    'modes': modes, 'due': due, 'built_at': library['roster_at'], 'charts_at': library['charts_at'],
                    'top': [_music_artist_json(a) for a in top]},
         'rules': {'artists': [_music_artist_json(a) for a in ruled],
                   'genres': [{'id': r.id, 'genre': r.genre, 'weight': r.weight} for r in genre_rules],
-                  'genre_hints': sorted(genre_counts, key=genre_counts.get, reverse=True)[:_MUSIC_GENRE_HINTS],
-                  'search': found},
-        'sources': sources,
-        'direct': bool(get_setting('music_proxy_direct')),
+                  'genre_hints': sorted(genre_counts, key=genre_counts.get, reverse=True)[:_MUSIC_GENRE_HINTS]},
         'proxies': [_music_proxy_json(p, now) for p in MusicProxy.query.order_by(MusicProxy.id.asc()).all()],
-    })
+    }
+
+
+def _music_heavy(now, fresh=False):
+    """The heavy part, cached for _MUSIC_HEAVY_TTL_S; fresh rebuilds it. One
+    rebuild at a time per process (others wait briefly)."""
+    with _music_heavy_lock:
+        cached = _music_heavy_cache['data']
+        if not fresh and cached is not None and time.monotonic() - _music_heavy_cache['at'] < _MUSIC_HEAVY_TTL_S:
+            return cached
+        data = _build_music_heavy(now)
+        _music_heavy_cache['data'] = data
+        _music_heavy_cache['at'] = time.monotonic()
+        return data
+
+
+def _music_artist_search(q):
+    if not q:
+        return None
+    pattern = '%' + q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+    return [_music_artist_json(a) for a in MusicArtist.query.filter(MusicArtist.name.ilike(pattern, escape='\\'))
+            .order_by(MusicArtist.score.desc()).limit(_MUSIC_SEARCH_LIMIT).all()]
+
+
+@app.route('/admin/api/music')
+@limiter.limit(admin_rate_limit)
+@admin_required
+def admin_api_music():
+    """?part=live: the polled part only. ?part=heavy: the slow part only, from
+    the cache unless fresh=1. No part: both, built fresh (pages before the split)."""
+    now = datetime.now(timezone.utc)
+    part = request.args.get('part')
+    if part == 'live':
+        return jsonify(_music_live(now))
+    heavy = _music_heavy(now, fresh=part != 'heavy' or request.args.get('fresh') == '1')
+    q = (request.args.get('q') or '').strip()[:100]
+    heavy = dict(heavy, rules=dict(heavy['rules'], search=_music_artist_search(q)))
+    if part == 'heavy':
+        return jsonify(heavy)
+    live = _music_live(now)
+    return jsonify({**live, **heavy, 'library': {**heavy['library'], **live['library']}})
 
 
 @app.route('/admin/api/music/priorities', methods=['POST'])
@@ -369,6 +425,7 @@ def admin_api_music_proxies_add():
         db.session.add(MusicProxy(url_enc=fernet.encrypt(url.encode()).decode(), label=label[:300]))
         added += 1
     db.session.commit()
+    _music_invalidate_heavy()
     print(f'[ADMIN] Music proxies: {added} added, {duplicates} already listed, {len(rejected)} rejected')
     return jsonify({'success': True, 'added': added, 'duplicates': duplicates, 'rejected': rejected})
 
@@ -385,6 +442,7 @@ def admin_api_music_proxy_update(proxy_id):
         return jsonify({'error': 'PROXY NOT FOUND'}), 404
     proxy.enabled = data['enabled']
     db.session.commit()
+    _music_invalidate_heavy()
     print(f'[ADMIN] Music proxy {proxy.label} {"enabled" if proxy.enabled else "disabled"}')
     return jsonify({'success': True})
 
@@ -398,6 +456,7 @@ def admin_api_music_proxy_remove(proxy_id):
         return jsonify({'error': 'PROXY NOT FOUND'}), 404
     db.session.delete(proxy)
     db.session.commit()
+    _music_invalidate_heavy()
     print(f'[ADMIN] Music proxy {proxy.label} removed')
     return jsonify({'success': True})
 
@@ -436,6 +495,7 @@ def admin_api_music_artist_rule(artist_id):
     if artist.monitored_since is None and _music_effective_mode(artist) in _MUSIC_MONITORED_MODES:
         artist.monitored_since = now
     db.session.commit()
+    _music_invalidate_heavy()
     print(f'[ADMIN] Music artist {artist.name}: mode {artist.rule_mode or "auto"}, weight {artist.rule_weight:g}')
     return jsonify({'success': True, 'artist': _music_artist_json(artist)})
 
@@ -463,6 +523,7 @@ def admin_api_music_genre_rule():
     else:
         rule.weight = weight
     db.session.commit()
+    _music_invalidate_heavy()
     print(f'[ADMIN] Music genre {genre}: weight {weight:g}')
     return jsonify({'success': True})
 
@@ -476,5 +537,6 @@ def admin_api_music_genre_remove(rule_id):
         return jsonify({'error': 'GENRE RULE NOT FOUND'}), 404
     db.session.delete(rule)
     db.session.commit()
+    _music_invalidate_heavy()
     print(f'[ADMIN] Music genre rule {rule.genre} removed')
     return jsonify({'success': True})

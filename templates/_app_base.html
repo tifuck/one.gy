@@ -37,8 +37,9 @@ if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===nul
   <link rel="apple-touch-icon" sizes="180x180" href="{{ versioned_static('logos/apple-touch-icon.png') }}">
   <link rel="manifest" href="{{ versioned_static('manifest.webmanifest') }}">
   <meta name="theme-color" content="#161616">
-  <link rel="preload" href="{{ versioned_static('vendor/fonts/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="{{ versioned_static('vendor/fonts/inter-latin-600-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  {# Same unversioned URL as the @font-face rules in core.css, or the preload is a second download #}
+  <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/inter-latin-600-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{{ versioned_static('core.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('components.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('themes.css') }}">
@@ -79,7 +80,6 @@ if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===nul
 <script src="{{ versioned_static('music-player-fullscreen.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-fx.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-session.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-e2e.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-playback.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-queue.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-sync.js') }}" defer></script>

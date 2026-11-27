@@ -23,14 +23,12 @@
   </aside>
 
   <div class="adm-main">
-    <div id="admPanel" role="tabpanel" aria-labelledby="admTabOverview" tabindex="-1"><div class="adm-loading" role="status" aria-label="Loading"><span class="rd-skel adm-skel-title"></span><span class="rd-skel adm-skel-sub"></span><span class="rd-skel adm-skel-block"></span><span class="rd-skel adm-skel-block is-short"></span></div></div>
+    <div id="admPanel" role="tabpanel" aria-labelledby="admTabOverview" tabindex="-1" data-music-src="{{ versioned_static('admin-music.js') }}" data-monitor-src="{{ versioned_static('admin-monitor.js') }}"><div class="adm-loading" role="status" aria-label="Loading"><span class="rd-skel adm-skel-title"></span><span class="rd-skel adm-skel-sub"></span><span class="rd-skel adm-skel-block"></span><span class="rd-skel adm-skel-block is-short"></span></div></div>
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
-<script src="{{ versioned_static('admin-monitor.js') }}" defer></script>
-<script src="{{ versioned_static('admin-music.js') }}" defer></script>
 <script src="{{ versioned_static('admin.js') }}" defer></script>
 {% endblock %}

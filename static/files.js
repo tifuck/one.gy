@@ -9,6 +9,7 @@
   'use strict'
 
   // ---- State ---------------------------------------------------------------
+  var SEARCH_PAGE = 200      // search hits rendered per "Show more"
   var S = {
     folderId: null,          // current folder (null = root)
     rootName: rootLabel(window.__FX_ROOT_NAME__),
@@ -22,6 +23,7 @@
     lastFocus: null,         // keyboard + range endpoint
     anchor: null,            // shift-range anchor (set on non-shift select)
     trashMode: false,
+    searchLimit: SEARCH_PAGE,
     loadFailed: false,       // last listing load errored (empty !== "nothing there")
     treeOpen: new Set(['root']) // expanded sidebar folder ids
   }
@@ -129,6 +131,22 @@
   }
 
   // ---- Crypto: decrypt listing names (reuse OneGyCrypto) -------------------
+  // Decrypted names (and file keys) by item id + ciphertext, so a reload, the
+  // sidebar and the search index only decrypt items that are new or changed.
+  // An entry is the in-flight promise: an item in several lists decrypts once.
+  var nameCache = new Map()
+  var NAME_CACHE_MAX = 50000
+  function cachedDecrypt (key, job) {
+    var p = nameCache.get(key)
+    if (!p) {
+      p = job().then(null, function () { return null })
+      // Failures are not kept: the next load tries again, as before.
+      p.then(function (v) { if (!v && nameCache.get(key) === p) nameCache.delete(key) })
+      nameCache.set(key, p)
+      if (nameCache.size > NAME_CACHE_MAX) nameCache.delete(nameCache.keys().next().value)
+    }
+    return p
+  }
   async function decryptNames (files, folders) {
     if (!haveKeys()) return
     var masterKey
@@ -136,19 +154,21 @@
     if (!masterKey) return
 
     var fJobs = (files || []).filter(function (f) { return f.encrypted_name && f.name_nonce && f.encrypted_file_key }).map(async function (f) {
-      try {
+      var v = await cachedDecrypt(['f', f.id, f.encrypted_name, f.name_nonce, f.encrypted_file_key, f.file_key_nonce].join('|'), async function () {
         var fk = await OneGyCrypto.unwrapFileKeyWithMasterKey(f.encrypted_file_key, f.file_key_nonce, masterKey)
-        if (!fk) return
+        if (!fk) return null
         var n = await OneGyCrypto.decryptFileName(f.encrypted_name, f.name_nonce, fk)
-        if (n) { f.name = n; f._dec = true; f._fileKey = fk }
-      } catch (e) {}
+        return n ? { name: n, fileKey: fk } : null
+      })
+      if (v) { f.name = v.name; f._dec = true; f._fileKey = v.fileKey }
     })
     var dJobs = (folders || []).filter(function (d) { return d.encrypted_name && d.name_nonce && d.encrypted_name_key && d.name_key_nonce }).map(async function (d) {
-      try {
+      var v = await cachedDecrypt(['d', d.id, d.encrypted_name, d.name_nonce, d.encrypted_name_key, d.name_key_nonce].join('|'), async function () {
         var nk = await OneGyCrypto.unwrapFolderNameKey(d.encrypted_name_key, d.name_key_nonce, masterKey)
         var n = await OneGyCrypto.decryptFolderName(d.encrypted_name, d.name_nonce, nk)
-        if (n) { d.name = n; d._dec = true }
-      } catch (e) {}
+        return n ? { name: n } : null
+      })
+      if (v) { d.name = v.name; d._dec = true }
     })
     await Promise.all(fJobs.concat(dJobs))
   }
@@ -219,12 +239,21 @@
     var nav = key !== shownKey
     clearTimeout(skelTimer)
     if (nav) {
+      stopThumbs()
       el.view.classList.add('is-loading')
       skelTimer = setTimeout(skeleton, shownKey == null ? 0 : 220)
     }
     return nav
   }
   function endLoad (key) { clearTimeout(skelTimer); el.view.classList.remove('is-loading'); shownKey = key }
+  // files.html starts the first listing request inline, before the deferred
+  // scripts: take that response once if it is for this URL, else fetch.
+  async function fetchListing (url) {
+    var pre = window.__FX_PREFETCH__
+    window.__FX_PREFETCH__ = null
+    if (pre && pre.url === url) { try { return await pre.p } catch (e) {} }
+    return fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+  }
   // The session ran out while the page sat open (6 h idle): load the page for
   // real so the server sends it to sign-in. The desktop app signs its view in
   // again there and comes back to this path.
@@ -243,7 +272,6 @@
     // reload() must re-run the folder being opened, not the one still shown:
     // S.folderId only changes once the response lands.
     S.navFolderId = id
-    searchIndex = null
     S.searchQ = ''
     S.trashMode = false
     $('fxTrashBtn').classList.remove('is-active')
@@ -254,7 +282,7 @@
     if (!opts.keepSel) clearSel()
     var url = (id == null) ? '/files/list' : '/files/list/' + id
     try {
-      var r = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      var r = await fetchListing(url)
       if (stale(seq)) return
       if (!r.ok) {
         if (sessionExpired(r, id == null ? '/files' : '/files/folder/' + id)) return
@@ -268,18 +296,13 @@
       S.folders = d.folders || []
       S.files = d.files || []
       S.breadcrumbs = d.breadcrumbs || []
-      S.sidebar = d.sidebar_folders || []
       if (d.root_folder_name) S.rootName = rootLabel(d.root_folder_name)
-      await decryptNames(S.files, S.folders)
-      await decryptNames(null, S.sidebar)
-      await decryptNames(null, S.breadcrumbs)
+      await Promise.all([decryptNames(S.files, S.folders), decryptNames(null, S.breadcrumbs)])
       if (stale(seq)) return
       if (opts.keepSel) pruneSel()
       endLoad('f:' + (S.folderId == null ? 'root' : S.folderId))
-      openActiveTreePath()
       renderStorage(d)
       renderTrashCount(d.trash_count || 0)
-      renderSidebar(!S._sbAnimated); S._sbAnimated = true
       renderBreadcrumb()
       render(nav)
       if (window.MusicPlayer && MusicPlayer.onFolderChanged) MusicPlayer.onFolderChanged()
@@ -288,6 +311,9 @@
       // root keeps S.folderId null but must still get its own history entry.
       var path = S.folderId == null ? '/files' : '/files/folder/' + S.folderId
       if (!opts.noPush && window.location.pathname !== path) history.pushState({ fx: true, folderId: S.folderId }, '', path)
+      // The tree holds every folder in the account, so it comes after the
+      // listing; the previous (decrypted) tree stays until then.
+      await setSidebar(d.sidebar_folders || [], seq)
     } catch (e) {
       if (stale(seq)) return
       endLoad(null)
@@ -306,12 +332,13 @@
     var seq = newLoad()
     var nav = beginLoad('trash')
     if (nav) resetSearchBox()
+    // Trash actions (restore, ...) reload through here: the live index changed.
     searchIndex = null
     S.searchQ = ''
     S.trashMode = true; clearSel()
     $('fxNewFolder').hidden = true; $('fxUploadBtn').hidden = true
     try {
-      var r = await fetch('/trash/list', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      var r = await fetchListing('/trash/list')
       if (stale(seq)) return
       // A JSON error body used to be parsed as an empty listing, which renders
       // "Trash is empty" — telling the user their deleted data is already gone
@@ -324,21 +351,19 @@
       S.folderId = null
       S.folders = d.folders || []
       S.files = d.files || []
-      S.sidebar = d.sidebar_folders || []
       await decryptNames(S.files, S.folders)
-      await decryptNames(null, S.sidebar)
       if (stale(seq)) return
       S.breadcrumbs = []
       endLoad('trash')
       renderStorage(d)
       renderTrashCount(d.trash_count || 0)
-      renderSidebar(!S._sbAnimated); S._sbAnimated = true
       renderBreadcrumb()
       render(nav)
       var restoreAllBtn = $('restoreAllBtn')
       if (restoreAllBtn) restoreAllBtn.hidden = !(S.files.length || S.folders.length)
       updateSelbar()
       if (!opts.noPush && window.location.pathname !== '/trash') history.pushState({ fx: true, trash: true }, '', '/trash')
+      await setSidebar(d.sidebar_folders || [], seq)
     } catch (e) {
       if (stale(seq)) return
       endLoad(null)
@@ -352,11 +377,22 @@
     $('fxTrashBtn').classList.add('is-active')
   }
 
+  // Decrypts and paints a new sidebar tree, unless a newer load has started.
+  async function setSidebar (sidebar, seq) {
+    await decryptNames(null, sidebar)
+    if (stale(seq)) return
+    S.sidebar = sidebar
+    if (!S.trashMode) openActiveTreePath()
+    renderSidebar(!S._sbAnimated); S._sbAnimated = true
+  }
+
   // Re-run whatever is on screen (folder, trash or search results) after a
   // mutation, so a rename or upload does not silently drop the search view.
+  // Every mutation comes through here, so the search index goes too.
   function reload (opts) {
+    searchIndex = null
     if (S.trashMode) return loadTrash()
-    if (S.searchQ) { searchIndex = null; return doSearch(S.searchQ, opts) }
+    if (S.searchQ) return doSearch(S.searchQ, opts)
     return loadFolder(S.navFolderId, opts)
   }
 
@@ -636,6 +672,7 @@
   // ---- Rendering: listing --------------------------------------------------
   function skeleton () {
     el.view.classList.remove('is-enter')
+    keyNodes = null
     el.view.innerHTML = '<div class="fx-skel">' + Array(9).join('<div class="fx-skel-card"></div>') + '</div>'
   }
   function errorState (msg) {
@@ -654,11 +691,24 @@
     el.view.classList.toggle('is-enter', !!enter)
     var folders = sortItems(S.folders, true)
     var files = sortItems(S.files, false)
+    // Search can match the whole account: show it a page at a time.
+    var hidden = folders.length + files.length - S.searchLimit
+    if (S.searchQ && hidden > 0) {
+      folders = folders.slice(0, S.searchLimit)
+      files = files.slice(0, Math.max(0, S.searchLimit - folders.length))
+    }
+    // The content below replaces every node, each rendered with selClass().
+    listed = folders.map(function (f) { return keyOf(f, true) }).concat(files.map(function (f) { return keyOf(f, false) }))
+    keyNodes = null
+    marked = new Set(S.sel); if (S.lastFocus) marked.add(S.lastFocus)
     // Failed loads leave the listing empty, so the error is derived here: a
     // later sort / view change must not repaint it as "Trash is empty".
-    if (!folders.length && !files.length) { el.view.innerHTML = S.loadFailed ? errorState(S.loadError) : emptyState(); paintSyncs(); return }
+    if (!folders.length && !files.length) { el.view.innerHTML = S.loadFailed ? errorState(S.loadError) : emptyState(); stopThumbs(); paintSyncs(); return }
     var fn = { grid: renderGrid, list: renderList, gallery: renderGallery, columns: renderColumns }[S.view] || renderGrid
     fn(folders, files)
+    if (S.searchQ && hidden > 0) {
+      (el.view.querySelector('.fx-col') || el.view).insertAdjacentHTML('beforeend', '<div class="fx-more"><button type="button" class="rd-btn rd-btn-ghost" data-show-more>Show more (' + hidden + ' not shown)</button></div>')
+    }
     observeThumbs()
     columnPreview()
     paintSyncs()
@@ -705,14 +755,16 @@
       '<div class="fx-item-sub"><span class="fx-meta">' + esc(meta) + '</span>' + badges(item, isFolder) + '</div>' +
       '</div></div>'
   }
-  // A decrypted E2EE thumb is a local blob URL, so re-renders paint it straight
-  // away instead of flashing the placeholder while the queue refills it.
-  // Keyed by the thumbnail nonce too: a content save or sync replace mints a
-  // new thumbnail under a new nonce, so the old decrypted blob stops matching.
+  // A loaded thumb is kept as a local blob URL, so re-renders paint it straight
+  // away (no fade, .is-cached) instead of flashing the placeholder while the
+  // queue refills it. E2EE thumbs are keyed by the thumbnail nonce too: a
+  // content save or sync replace mints a new thumbnail under a new nonce, so
+  // the old decrypted blob stops matching. Plain ones by size and date.
   function thumbKey (item) { return item.id + ':' + (item.enc_thumb_nonce || '') }
+  function plainThumbKey (item) { return item.id + ':' + (item.size || 0) + ':' + (item.upload_date_iso || '') }
   function cachedThumb (item) {
-    var u = e2eThumbCache.get(thumbKey(item))
-    return u ? '<img src="' + u + '" alt=""' + (isTextThumb(item) ? ' class="is-text"' : '') + '>' : ''
+    var u = item.is_e2e ? e2eThumbCache.get(thumbKey(item)) : plainThumbCache.get(plainThumbKey(item))
+    return u ? '<img src="' + u + '" alt="" class="is-cached' + (isTextThumb(item) ? ' is-text' : '') + '">' : ''
   }
   function isTextThumb (item) { var k = kindOf(item); return k === 'code' || k === 'doc' || k === 'sheet' }
   function fileThumb (item) {
@@ -830,14 +882,22 @@
   var thumbQueue = []
   var thumbQueued = new Set()
   var thumbInFlight = 0
-  var THUMB_CONCURRENCY = 32
+  var THUMB_CONCURRENCY = 8
+  // Aborts the previous render's queued loads: their tiles are gone.
+  var thumbCtl = null
   var e2eThumbCache = new Map()
-  var E2E_THUMB_CACHE_MAX = 500
+  var plainThumbCache = new Map()
+  var THUMB_CACHE_MAX = 500
   var thumbRetries = new Map()
-  function observeThumbs () {
+  function stopThumbs () {
     if (thumbObs) thumbObs.disconnect()
+    if (thumbCtl) thumbCtl.abort()
+    thumbCtl = new AbortController()
     thumbQueue = []
     thumbQueued = new Set()
+  }
+  function observeThumbs () {
+    stopThumbs()
     var nodes = el.view.querySelectorAll('[data-thumb]')
     if (!nodes.length) return
     if (!('IntersectionObserver' in window)) {
@@ -875,24 +935,33 @@
     while (thumbInFlight < THUMB_CONCURRENCY && thumbQueue.length) {
       var node = thumbQueue.shift()
       thumbInFlight++
-      Promise.resolve(loadThumb(node)).then(function () {}, function () {}).then(function () {
+      Promise.resolve(loadThumb(node, thumbCtl.signal)).then(function () {}, function () {}).then(function () {
         thumbInFlight--
         pumpThumbs()
       })
     }
   }
-  function rememberE2eThumb (id, url) {
-    if (e2eThumbCache.has(id)) {
-      var prev = e2eThumbCache.get(id)
+  function rememberThumb (cache, id, url) {
+    if (cache.has(id)) {
+      var prev = cache.get(id)
       if (prev && prev !== url) { try { URL.revokeObjectURL(prev) } catch (e) {} }
     }
-    e2eThumbCache.set(id, url)
-    while (e2eThumbCache.size > E2E_THUMB_CACHE_MAX) {
-      var oldest = e2eThumbCache.keys().next().value
-      var oldUrl = e2eThumbCache.get(oldest)
-      e2eThumbCache.delete(oldest)
+    cache.set(id, url)
+    while (cache.size > THUMB_CACHE_MAX) {
+      var oldest = cache.keys().next().value
+      var oldUrl = cache.get(oldest)
+      cache.delete(oldest)
       try { URL.revokeObjectURL(oldUrl) } catch (e) {}
     }
+  }
+  // A saved file gets a new thumbnail even when its size stays the same.
+  function forgetPlainThumbs (id) {
+    var prefix = id + ':'
+    Array.from(plainThumbCache.keys()).forEach(function (k) {
+      if (k.indexOf(prefix) !== 0) return
+      try { URL.revokeObjectURL(plainThumbCache.get(k)) } catch (e) {}
+      plainThumbCache.delete(k)
+    })
   }
   function paintThumb (node, blobUrl, file) {
     return new Promise(function (resolve) {
@@ -908,9 +977,10 @@
       img.src = blobUrl
     })
   }
-  async function loadThumb (node) {
+  // signal: set for queued (render) loads; direct ones (drawer, preview) run on.
+  async function loadThumb (node, signal) {
     var id = node.getAttribute('data-thumb')
-    var f = S.files.filter(function (x) { return String(x.id) === String(id) })[0]
+    var f = itemById(id, false)
     if (!f) return
     try {
       var blobUrl
@@ -922,26 +992,29 @@
         } else {
           var fk = f._fileKey || (await OneGyCrypto.unwrapFileKeyWithMasterKey(f.encrypted_file_key, f.file_key_nonce, await OneGyCrypto.getMasterKeyFromSession()))
           if (!fk) return
-          var er = await fetch('/file/' + encodeURIComponent(id) + '/e2e-thumbnail')
+          var er = await fetch('/file/' + encodeURIComponent(id) + '/e2e-thumbnail', { signal: signal })
           if (er.status === 429) { scheduleThumbRetry(node); return }
           if (!er.ok) return
           var enc = await er.arrayBuffer()
           if (!enc || enc.byteLength < 16) return
           var dec = await OneGyCrypto.decryptThumbnail(enc, f.enc_thumb_nonce, fk)
           blobUrl = URL.createObjectURL(new Blob([dec], { type: 'image/jpeg' }))
-          rememberE2eThumb(ck, blobUrl)
+          rememberThumb(e2eThumbCache, ck, blobUrl)
         }
       } else {
-        var tr
-        try { tr = await fetch('/file/' + encodeURIComponent(id) + '/thumbnail') } catch (e) { scheduleThumbRetry(node); return }
-        // 404 is almost always permanent: one retry still picks up the
-        // server's on-demand fill, more only for 429 / transient errors.
-        if (!tr.ok) { if (tr.status !== 404 || !thumbRetries.has(id)) scheduleThumbRetry(node); return }
-        blobUrl = URL.createObjectURL(await tr.blob())
-        await paintThumb(node, blobUrl, f)
-        URL.revokeObjectURL(blobUrl)
-        return
+        var pk = plainThumbKey(f)
+        blobUrl = plainThumbCache.get(pk)
+        if (!blobUrl) {
+          var tr
+          try { tr = await fetch('/file/' + encodeURIComponent(id) + '/thumbnail', { signal: signal }) } catch (e) { if (!(signal && signal.aborted)) scheduleThumbRetry(node); return }
+          // 404 is almost always permanent: one retry still picks up the
+          // server's on-demand fill, more only for 429 / transient errors.
+          if (!tr.ok) { if (tr.status !== 404 || !thumbRetries.has(id)) scheduleThumbRetry(node); return }
+          blobUrl = URL.createObjectURL(await tr.blob())
+          rememberThumb(plainThumbCache, pk, blobUrl)
+        }
       }
+      if (signal && signal.aborted) return
       await paintThumb(node, blobUrl, f)
     } catch (e) {}
   }
@@ -962,6 +1035,29 @@
     S.lastFocus = null
     S.anchor = null
   }
+  // id -> item for the current listing, rebuilt when S.files / S.folders are
+  // replaced (they are only ever reassigned, never changed in place).
+  var itemIdx = { files: null, folders: null }
+  function itemById (id, isFolder) {
+    if (itemIdx.files !== S.files || itemIdx.folders !== S.folders) {
+      itemIdx = { files: S.files, folders: S.folders, f: new Map(), d: new Map() }
+      S.files.forEach(function (x) { var k = String(x.id); if (!itemIdx.f.has(k)) itemIdx.f.set(k, x) })
+      S.folders.forEach(function (x) { var k = String(x.id); if (!itemIdx.d.has(k)) itemIdx.d.set(k, x) })
+    }
+    return (isFolder ? itemIdx.d : itemIdx.f).get(String(id))
+  }
+  // Keys in on-screen order, nodes by key, and the keys that carry a selection
+  // class: all from the last render(), so a click only touches what changes.
+  var listed = []
+  var keyNodes = null
+  var marked = new Set()
+  function nodeFor (k) {
+    if (!keyNodes) {
+      keyNodes = new Map()
+      el.view.querySelectorAll('[data-k]').forEach(function (n) { keyNodes.set(n.getAttribute('data-k'), n) })
+    }
+    return keyNodes.get(k)
+  }
   // Drop selected keys whose item is no longer listed (moved, re-keyed, deleted).
   function pruneSel () {
     S.sel.forEach(function (k) { if (!infoFromKey(k)) S.sel.delete(k) })
@@ -969,28 +1065,27 @@
     if (!infoFromKey(S.lastFocus)) S.lastFocus = null
     if (!infoFromKey(S.anchor)) S.anchor = null
   }
-  function listedKeys () {
-    var keys = []
-    sortItems(S.folders, true).forEach(function (f) { keys.push(keyOf(f, true)) })
-    sortItems(S.files, false).forEach(function (f) { keys.push(keyOf(f, false)) })
-    return keys
-  }
+  function listedKeys () { return listed }
   function infoFromKey (k) {
     if (!k) return null
-    var isFolder = k[0] === 'd', id = k.slice(1)
-    var src = isFolder ? S.folders : S.files
-    var it = src.filter(function (x) { return String(x.id) === String(id) })[0]
+    var isFolder = k[0] === 'd'
+    var it = itemById(k.slice(1), isFolder)
     return it ? { item: it, isFolder: isFolder } : null
   }
   function markSel () {
     if (!el.view) return
-    el.view.querySelectorAll('[data-k]').forEach(function (n) {
-      var k = n.getAttribute('data-k')
+    var now = new Set(S.sel)
+    if (S.lastFocus) now.add(S.lastFocus)
+    var touch = new Set(marked)
+    now.forEach(function (k) { touch.add(k) })
+    touch.forEach(function (k) {
+      var n = nodeFor(k); if (!n) return
       var on = S.sel.has(k)
       n.classList.toggle('is-sel', on)
       n.classList.toggle('is-checked', on && S.multi)
       n.classList.toggle('is-focus', k === S.lastFocus)
     })
+    marked = now
     columnPreview()
   }
   function updateSelbar () {
@@ -1005,6 +1100,8 @@
   // drawer): its buttons drop their labels, as on phones.
   function fitSelbar () {
     var bar = $('fxSelbar'); if (!bar) return
+    // Closed, it has nothing to fit; it is measured again as it opens.
+    if (!bar.classList.contains('is-open')) return
     bar.classList.remove('is-tight')
     if (bar.scrollWidth > bar.clientWidth + 1) bar.classList.add('is-tight')
   }
@@ -1264,21 +1361,68 @@
     confirmThen('Move to trash', msg, 'Move to trash', async function () {
       // Every request is status-checked: reporting "MOVED TO TRASH" for items
       // still sitting in the folder is a lie the user acts on.
-      var failed = 0, firstErr = ''
-      for (var i = 0; i < list.length; i++) {
-        var it = list[i]
-        var url = it.isFolder ? ('/folder/' + it.item.id + '/delete') : ('/file/' + it.item.id + '/delete')
-        try {
-          var r = await fetch(url, { method: 'POST', headers: { 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' } })
-          if (!r.ok) { failed++; if (!firstErr) firstErr = await errText(r) }
-        } catch (e) { failed++; if (!firstErr) firstErr = 'NETWORK ERROR' }
+      var res = { failed: 0, firstErr: '' }
+      for (var i = 0; i < list.length; i += BULK_MAX) {
+        var part = list.length > 1 ? await trashBulk(list.slice(i, i + BULK_MAX), list) : await trashEach(list)
+        res.failed += part.failed
+        if (!res.firstErr) res.firstErr = part.firstErr
       }
+      var failed = res.failed, firstErr = res.firstErr
       closeDrawer()
       if (!failed) toast(list.length > 1 ? ('MOVED ' + list.length + ' ITEMS TO TRASH') : 'MOVED TO TRASH', 'success')
       else if (failed < list.length) toast('MOVED ' + (list.length - failed) + ' OF ' + list.length + ' ITEMS TO TRASH: ' + failed + ' FAILED' + (firstErr ? ': ' + firstErr : ''), 'error')
       else toast((list.length > 1 ? 'COULD NOT MOVE ITEMS TO TRASH' : 'COULD NOT MOVE TO TRASH') + (firstErr ? ': ' + firstErr : ''), 'error')
       reload({ fallbackRoot: true })
     })
+  }
+
+  // One request per item.
+  async function trashEach (list) {
+    var failed = 0, firstErr = ''
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i]
+      var url = it.isFolder ? ('/folder/' + it.item.id + '/delete') : ('/file/' + it.item.id + '/delete')
+      try {
+        var r = await fetch(url, { method: 'POST', headers: { 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' } })
+        if (!r.ok) { failed++; if (!firstErr) firstErr = await errText(r) }
+      } catch (e) { failed++; if (!firstErr) firstErr = 'NETWORK ERROR' }
+    }
+    return { failed: failed, firstErr: firstErr }
+  }
+  // One /bulk/delete for up to BULK_MAX items (its per-list cap). It rejects
+  // the whole request when any item is in a read-only backup, so a 403 falls
+  // back to one request per item: the rest still go, the backup ones fail.
+  // Items inside another selected folder go to the trash with it and are not
+  // counted by the server; any other shortfall was no longer there.
+  var BULK_MAX = 1000
+  async function trashBulk (part, all) {
+    var files = [], folders = []
+    part.forEach(function (it) { (it.isFolder ? folders : files).push(it.item.id) })
+    var r, d = null
+    try {
+      r = await fetch('/bulk/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify({ file_ids: files, folder_ids: folders })
+      })
+      d = await r.json().catch(function () { return null })
+    } catch (e) { return { failed: part.length, firstErr: 'NETWORK ERROR' } }
+    if (r.status === 403) return trashEach(part)
+    if (!r.ok || !d || d.success !== true) return { failed: part.length, firstErr: String((d && d.error) || ('HTTP ' + r.status)).toUpperCase() }
+    var missing = part.length - Number(d.trashed_files || 0) - Number(d.deleted_folders || 0) - countInsideSelected(part, all)
+    return missing > 0 ? { failed: missing, firstErr: 'NOT FOUND' } : { failed: 0, firstErr: '' }
+  }
+  function countInsideSelected (part, all) {
+    var sel = new Set(), up = {}
+    all.forEach(function (it) { if (it.isFolder) sel.add(String(it.item.id)) })
+    if (!sel.size) return 0
+    ;(S.sidebar || []).forEach(function (f) { up[String(f.id)] = f.parent_id == null ? null : String(f.parent_id) })
+    return part.filter(function (it) {
+      var p = it.isFolder ? it.item.parent_id : it.item.folder_id
+      if (p === undefined) p = S.folderId
+      for (var id = p == null ? null : String(p), depth = 0; id != null && depth < 64; id = up[id], depth++) if (sel.has(id)) return true
+      return false
+    }).length
   }
 
   // ---- Trash view actions (mirrors the notes trash menu) -------------------
@@ -1457,6 +1601,7 @@
       if (ok) toast('UPLOADED ' + ok + ' OF ' + files.length + ' FILES: ' + failed + ' FAILED' + (firstErr ? ': ' + firstErr : ''), 'error')
       else toast((files.length > 1 ? 'ALL ' + files.length + ' UPLOADS FAILED' : 'UPLOAD FAILED') + (firstErr ? ': ' + firstErr : ''), 'error')
     }
+    searchIndex = null
     // Only refresh if the user is still looking at the folder we uploaded into
     // (or at its parent, whose tile shows the item count).
     var isChild = S.folders.some(function (f) { return String(f.id) === String(destFolderId) })
@@ -1572,7 +1717,7 @@
     // Images browse their siblings: same order as the view, same thumb loader.
     FxPreview.open(item, IMG_EXT[extension] ? {
       list: sortItems(S.files, false).filter(function (f) { return IMG_EXT[extOf(f.name, f.extension)] }),
-      thumb: function (node) { if (canThumb(S.files.filter(function (f) { return String(f.id) === node.getAttribute('data-thumb') })[0])) loadThumb(node) }
+      thumb: function (node) { if (canThumb(itemById(node.getAttribute('data-thumb'), false))) loadThumb(node) }
     } : null)
   }
 
@@ -1646,22 +1791,26 @@
         { header: n + ' items' },
         { label: 'Restore', icon: CI.restore, action: function () {
           ;(async function () {
-            var restored = 0, failures = []
-            for (var i = 0; i < items.length; i++) {
-              var it = items[i]
-              var url = it.isFolder ? ('/trash/restore-folder/' + it.item.id) : ('/trash/restore/' + it.item.id)
+            // /trash/bulk-restore is all or nothing per request and skips
+            // items no longer in the trash, so a short count means those.
+            var files = [], folders = [], restored = 0, err = ''
+            items.forEach(function (it) { (it.isFolder ? folders : files).push(it.item.id) })
+            for (var i = 0; i < Math.max(files.length, folders.length) && !err; i += BULK_MAX) {
               try {
-                var r = await fetch(url, { method: 'POST', headers: { 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' } })
+                var r = await fetch('/trash/bulk-restore', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' },
+                  body: JSON.stringify({ file_ids: files.slice(i, i + BULK_MAX), folder_ids: folders.slice(i, i + BULK_MAX) })
+                })
                 var d = await r.json().catch(function () { return {} })
-                if (!r.ok || d.success !== true) failures.push(displayName(it.item, it.isFolder) + ': ' + String(d.error || ('HTTP ' + r.status)).toUpperCase())
-                else restored++
-              } catch (e) {
-                failures.push(displayName(it.item, it.isFolder) + ': NETWORK ERROR')
-              }
+                if (!r.ok || d.success !== true) err = String(d.error || ('HTTP ' + r.status)).toUpperCase()
+                else restored += Number(d.restored || 0)
+              } catch (e) { err = 'NETWORK ERROR' }
             }
-            if (!failures.length) toast('RESTORED ' + restored + ' ITEMS', 'success')
-            else if (restored) toast('RESTORED ' + restored + ' OF ' + items.length + '. FAILED: ' + failures.join('; '), 'error')
-            else toast('RESTORE FAILED FOR ALL ' + items.length + ' ITEMS: ' + failures.join('; '), 'error')
+            var why = err ? 'FAILED: ' + err : (items.length - restored) + ' WERE NO LONGER IN THE TRASH'
+            if (!err && restored >= items.length) toast('RESTORED ' + restored + ' ITEMS', 'success')
+            else if (restored) toast('RESTORED ' + restored + ' OF ' + items.length + '. ' + why, 'error')
+            else toast('RESTORE FAILED FOR ALL ' + items.length + ' ITEMS: ' + (err || 'NO LONGER IN THE TRASH'), 'error')
             S.sel.clear()
             loadTrash()
           })()
@@ -1716,9 +1865,15 @@
   async function openManage (item, isFolder, manageTab) {
     if (typeof ManageModal === 'undefined' || !ManageModal.openFile) { openDetails(item, isFolder); return }
     try {
-      if (isFolder) await ManageModal.openFolder(item.id); else await ManageModal.openFile(item.id)
+      if (isFolder) await ManageModal.openFolder(item.id); else await ManageModal.openFile(item.id, manageHint(item))
       if (manageTab) { var t = document.querySelector('.manage-modal-tab[data-tab="settings"]'); if (t) t.click() }
     } catch (e) { openDetails(item, isFolder) }
+  }
+  // What the modal would fetch and decrypt again: the unwrapped file key and
+  // the decrypted thumbnail. It checks both against its own data before use.
+  function manageHint (f) {
+    if (!f.is_e2e) return null
+    return { fileKey: f._fileKey || null, encryptedFileKey: f.encrypted_file_key, thumbUrl: e2eThumbCache.get(thumbKey(f)) || null, thumbNonce: f.enc_thumb_nonce }
   }
   function initManageModal () {
     if (typeof ManageModal === 'undefined' || !ManageModal.init) return
@@ -1747,10 +1902,20 @@
       onDownload: function (type, data) {
         ManageModal.close()
         if (type === 'folder') { toast('FOLDER DOWNLOAD COMING SOON', 'info'); return }
-        var f = S.files.filter(function (x) { return String(x.id) === String(data.id) })[0] || data
+        var f = itemById(data.id, false) || data
         download(f)
       }
     })
+  }
+  // Runs fn(item, index) over items, at most n at a time; fn handles its own
+  // errors. Link keys are one POST per item (no batch endpoint).
+  var LINK_KEY_CONCURRENCY = 6
+  async function runPool (items, n, fn) {
+    var next = 0
+    async function worker () { while (next < items.length) { var i = next++; await fn(items[i], i) } }
+    var workers = []
+    for (var w = 0; w < Math.min(n, items.length); w++) workers.push(worker())
+    await Promise.all(workers)
   }
   // E2E share-link key generation (ported from dashboard.js so sharing E2E
   // content via the manage modal keeps working). Reuses OneGyCrypto only.
@@ -1771,23 +1936,25 @@
           else if (!firstError) firstError = 'BATCH KEY LOAD HTTP ' + br.status
         } catch (e) { if (!firstError) firstError = 'BATCH KEY LOAD FAILED' }
       }
-      for (var i = 0; i < fileIds.length; i++) {
-        var fileId = fileIds[i]
+      // Errors by index: the reported one is the first in list order, as before.
+      var errs = []
+      await runPool(fileIds, LINK_KEY_CONCURRENCY, async function (fileId, i) {
         try {
           var keyInfo = keyMap[fileId]
           if (!keyInfo) {
             var kr = await fetch('/f/' + fileId + '/key-info')
-            if (!kr.ok) { if (!firstError) firstError = 'FILE ' + fileId + ' KEY LOAD HTTP ' + kr.status; continue }
+            if (!kr.ok) { errs[i] = 'FILE ' + fileId + ' KEY LOAD HTTP ' + kr.status; return }
             keyInfo = await kr.json()
           }
-          if (!keyInfo.encrypted_file_key) { if (!firstError) firstError = 'FILE ' + fileId + ' KEY NOT FOUND'; continue }
+          if (!keyInfo.encrypted_file_key) { errs[i] = 'FILE ' + fileId + ' KEY NOT FOUND'; return }
           var fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey)
           var linkData = await OneGyCrypto.wrapFileKeyForLink(fileKey, linkKey)
           var sr = await fetch('/f/' + fileId + '/link-key', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': token }, body: JSON.stringify({ encrypted_file_key: linkData.encryptedFileKey, file_key_nonce: linkData.nonce, scope: resourceType === 'folder' ? 'folder' : 'file' }) })
           if (sr.ok) keyed++
-          else if (!firstError) firstError = 'FILE ' + fileId + ' LINK KEY HTTP ' + sr.status
-        } catch (e) { if (!firstError) firstError = 'FILE ' + fileId + ' LINK KEY FAILED' }
-      }
+          else errs[i] = 'FILE ' + fileId + ' LINK KEY HTTP ' + sr.status
+        } catch (e) { errs[i] = 'FILE ' + fileId + ' LINK KEY FAILED' }
+      })
+      if (!firstError) firstError = errs.filter(Boolean)[0] || ''
       return { success: keyed === fileIds.length, keyed: keyed, total: fileIds.length, error: firstError }
     } catch (e) { return { success: false, keyed: 0, total: fileIds.length, error: 'LINK KEY GENERATION FAILED' } }
   }
@@ -1800,16 +1967,17 @@
       var masterKey = await OneGyCrypto.getMasterKeyFromSession()
       if (!masterKey) return { success: false, keyed: 0, total: folders.length, error: 'E2E KEYS NOT AVAILABLE' }
       var linkKey = (await OneGyCrypto.deriveLinkSecret(masterKey, 'folder', shareToken)).linkKey
-      for (var i = 0; i < folders.length; i++) {
-        var fo = folders[i]
+      var errs = []
+      await runPool(folders, LINK_KEY_CONCURRENCY, async function (fo, i) {
         try {
           var nameKey = await OneGyCrypto.unwrapFolderNameKey(fo.encrypted_name_key, fo.name_key_nonce, masterKey)
           var wrapped = await OneGyCrypto.wrapFolderNameKeyForLink(nameKey, linkKey)
           var r = await fetch('/folder/' + fo.id + '/name-link-key', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': csrf() }, body: JSON.stringify({ encrypted_name_key: wrapped.encryptedNameKey, nonce: wrapped.nonce }) })
           if (r.ok) keyed++
-          else if (!firstError) firstError = 'FOLDER ' + fo.id + ' NAME LINK KEY HTTP ' + r.status
-        } catch (e) { if (!firstError) firstError = 'FOLDER ' + fo.id + ' NAME LINK KEY FAILED' }
-      }
+          else errs[i] = 'FOLDER ' + fo.id + ' NAME LINK KEY HTTP ' + r.status
+        } catch (e) { errs[i] = 'FOLDER ' + fo.id + ' NAME LINK KEY FAILED' }
+      })
+      firstError = errs.filter(Boolean)[0] || ''
     } catch (e) { if (!firstError) firstError = 'FOLDER NAME LINK KEY GENERATION FAILED' }
     return { success: keyed === folders.length, keyed: keyed, total: folders.length, error: firstError }
   }
@@ -1842,8 +2010,7 @@
   function itemFrom (node) {
     // File ids are strings, folder ids are ints — always compare as strings.
     var isFolder = node.getAttribute('data-folder') === 'true', id = node.getAttribute('data-id')
-    var src = isFolder ? S.folders : S.files
-    return { item: src.filter(function (x) { return String(x.id) === String(id) })[0], isFolder: isFolder }
+    return { item: itemById(id, isFolder), isFolder: isFolder }
   }
   function wire () {
     el.view = $('fxView')
@@ -1855,6 +2022,7 @@
     // Right-click / kebab = context menu (selects the target first).
     el.view.addEventListener('click', function (e) {
       if (e.target.closest('[data-empty-upload]')) { $('fxFileInput').click(); return }
+      if (e.target.closest('[data-show-more]')) { S.searchLimit += SEARCH_PAGE; render(); return }
       if (e.target.closest('[data-sortcol]')) { var c = e.target.closest('[data-sortcol]').getAttribute('data-sortcol'); cycleSort(c); return }
       if (e.target.closest('[data-kebab]')) {
         var kb = e.target.closest('[data-kebab]')
@@ -2086,7 +2254,7 @@
   }
   function folderLabel (id) {
     if (id == null) return S.rootName
-    var f = S.folders.concat(S.sidebar, S.breadcrumbs).filter(function (x) { return String(x.id) === String(id) })[0]
+    var f = S.folders.concat(S.breadcrumbs, S.sidebar).filter(function (x) { return String(x.id) === String(id) })[0]
     return f ? displayName(f, true) : 'this folder'
   }
   function spring (t) {
@@ -2239,12 +2407,11 @@
     var node = el.view && el.view.querySelector('[data-k="' + k + '"]')
     if (node && node.scrollIntoView) node.scrollIntoView({ block: 'nearest' })
   }
+  // Everything on screen (a search shows its hits a page at a time).
   function selectAll () {
-    S.sel = new Set()
-    S.folders.forEach(function (f) { S.sel.add('d' + f.id) })
-    S.files.forEach(function (f) { S.sel.add('f' + f.id) })
-    S.multi = S.sel.size > 0
     var keys = listedKeys()
+    S.sel = new Set(keys)
+    S.multi = S.sel.size > 0
     S.lastFocus = keys[0] || null
     S.anchor = S.lastFocus
     markSel(); updateSelbar()
@@ -2258,9 +2425,13 @@
 
   // Search runs in the browser: E2EE names only exist encrypted on the server,
   // so /search could never match them. The index (every live file + folder) is
-  // fetched and decrypted once per search session; loadFolder/loadTrash drop it,
-  // and every mutation reloads through one of those.
+  // fetched once and kept across folder navigation; every mutation drops it
+  // (reload(), loadTrash(), a finished upload), and after SEARCH_INDEX_TTL it is
+  // fetched again so changes made elsewhere show up. The name cache makes a
+  // rebuild decrypt only what changed.
   var searchIndex = null
+  var searchIndexAt = 0
+  var SEARCH_INDEX_TTL = 5 * 60 * 1000
   var searchTimer = null
   // Navigation leaves search: drop the query text and a pending debounce,
   // which would otherwise fire after the click and supersede it.
@@ -2271,7 +2442,8 @@
     if (document.activeElement !== inp) { $('fxSearchBox').classList.remove('is-open'); $('fxSearchToggle').setAttribute('aria-expanded', 'false'); inp.tabIndex = -1 }
   }
   function loadSearchIndex () {
-    if (searchIndex) return searchIndex
+    if (searchIndex && Date.now() - searchIndexAt < SEARCH_INDEX_TTL) return searchIndex
+    searchIndexAt = Date.now()
     var p = searchIndex = (async function () {
       var r = await fetch('/search/index', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       // An unchecked error body would render as "No matches" — a failed search
@@ -2297,6 +2469,7 @@
   async function doSearch (q, opts) {
     opts = opts || {}
     var seq = newLoad()
+    if (q !== S.searchQ) S.searchLimit = SEARCH_PAGE
     S.searchQ = q
     // The index holds live items only, so leave trash mode (as loadFolder does):
     // trash-only actions such as Delete forever must not be offered on them.
@@ -2355,7 +2528,7 @@
     wire()
     initManageModal()
     if (window.MusicPlayer && MusicPlayer.init) MusicPlayer.init('dashboard')
-    if (window.FxPreview) FxPreview._onSaved = function () { reload({ keepSel: true }) }
+    if (window.FxPreview) FxPreview._onSaved = function (item) { if (item) forgetPlainThumbs(item.id); reload({ keepSel: true }) }
     if (desk) desk.onSyncs(onSyncs)
     if (!window.__FX_NO_AUTOLOAD__) {
       // /trash renders this same page and asks for the trash view up front, so
@@ -2366,7 +2539,7 @@
       // After a UI update reload (core.js) the preview that was open comes back.
       var keep = window.OneGyUpdate && OneGyUpdate.resume
       loadFolder(init != null ? init : null, { noPush: true }).then(function () {
-        var f = keep && keep.preview && S.files.filter(function (x) { return String(x.id) === keep.preview })[0]
+        var f = keep && keep.preview && itemById(keep.preview, false)
         if (f) openPreview(f)
       })
     }

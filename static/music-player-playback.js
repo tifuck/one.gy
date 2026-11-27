@@ -90,7 +90,14 @@
       audio.pause()
       _clearAudioSrc()
       if (oldBlobUrl) URL.revokeObjectURL(oldBlobUrl)
-      await mp._loadE2ETrack(track, loadSeq)
+      // music-player-e2e.js loads with the first encrypted track
+      var e2eReady = await mp._loadPart('e2e').then(function() { return true }, function(err) {
+        console.error('[MUSIC PLAYER] E2E decrypt error:', err)
+        return false
+      })
+      if (loadSeq !== mp._loadSeq) return
+      if (e2eReady) await mp._loadE2ETrack(track, loadSeq)
+      else mp._setTitle(track.name + ' (decrypt failed)')
       // A newer _loadTrack started while decrypting: it owns the metadata and
       // trackchange events, so this superseded load must not publish them.
       if (loadSeq !== mp._loadSeq) return
@@ -153,6 +160,7 @@
       mp.isPlaying = play
       mp._syncPhantomPlaying = play
       if (play) mp._syncPhantomPollTs = Date.now()
+      if (play) mp._syncPhantomStartInterpolation()
       mp._updatePlayButton()
       return
     }
@@ -351,7 +359,7 @@
     mp._syncPhantomMode = false
     mp._syncPhantomTrackId = null
     mp._syncPhantomKeepaliveActive = false
-    if (mp._syncPhantomRAF) { cancelAnimationFrame(mp._syncPhantomRAF); mp._syncPhantomRAF = null }
+    mp._syncPhantomStopInterpolation()
     if (mp._syncPhantomPositionTimer) { clearInterval(mp._syncPhantomPositionTimer); mp._syncPhantomPositionTimer = null }
     if (mp.playerEl) mp.playerEl.classList.remove('mp-phantom')
     if (mp.phantomLabel) mp.phantomLabel.textContent = ''

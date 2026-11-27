@@ -1205,14 +1205,26 @@ curl -X DELETE https://{{ domain }}/apiv1/trash/empty \
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ versioned_static('vendor/highlight/highlight.min.js') }}"></script>
-<script src="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}"></script>
+<script src="{{ versioned_static('vendor/highlight/highlight.min.js') }}" defer></script>
+<script src="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">
 (function () {
-  // Syntax colours only wrap text in spans: textContent (what Copy copies) is unchanged
-  if (typeof hljs !== 'undefined') {
-    document.querySelectorAll('.docs-main pre code[class*="language-"]').forEach(function (el) { hljs.highlightElement(el) })
+  // Syntax colours only wrap text in spans: textContent (what Copy copies) is unchanged.
+  // highlight.js is deferred: the shown examples are coloured once it has run,
+  // the hidden tab panels when the browser is idle (or when their tab opens).
+  function highlight (el) {
+    if (el._hl || typeof hljs === 'undefined') return
+    el._hl = true
+    hljs.highlightElement(el)
   }
+  document.addEventListener('DOMContentLoaded', function () {
+    var hidden = []
+    document.querySelectorAll('.docs-main pre code[class*="language-"]').forEach(function (el) {
+      if (el.closest('[hidden]')) hidden.push(el)
+      else highlight(el)
+    })
+    ;(window.requestIdleCallback || function (fn) { setTimeout(fn, 50) })(function () { hidden.forEach(highlight) })
+  })
 
   // Path placeholders ({file_id}) read as variables
   var ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;' }
@@ -1282,6 +1294,8 @@ curl -X DELETE https://{{ domain }}/apiv1/trash/empty \
           t.tabIndex = k === i ? 0 : -1
           blocks[k].hidden = k !== i
         })
+        var code = blocks[i].querySelector('pre code[class*="language-"]')
+        if (code) highlight(code)
       }
     })
   })

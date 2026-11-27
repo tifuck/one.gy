@@ -9,8 +9,13 @@
   const _SYNC_REMOTE_QUEUE_MAX = 200  // tracks sent with a play_tracks command (server cap)
   const _SYNC_HEARTBEAT_MS = 4000   // unchanged state is re-pushed this often (server: stale after 10 s)
   const _SYNC_LEASE_MS = 120000     // a tab holding the browser's device id renews it well within this
+  const _SYNC_ALONE_MS = 15000      // idle heartbeat with no other device online (server online window: 30 s)
+  const _SYNC_TABS_KEY = 'mp_sync_tabs'  // this browser's tabs: {device id: last renewal}
+  const _SYNC_TAB_TTL_MS = 60000    // a tab renews its entry every few ticks, well within this
+  const _SYNC_KICK_KEY = 'mp_sync_kick'  // written after a command / transfer: sibling tabs poll at once
   const _AUTO_NAME_RE = /^(Edge|Opera|Chrome|Firefox|Safari|Browser|ONE\.GY Desktop) on (iPad|iPhone|Android|Mac|Windows|Linux|ChromeOS|Device)$/
   let _syncTimer = null             // setTimeout handle for the next sync tick
+  let _syncDueAt = 0                // when the scheduled tick runs (0: none scheduled)
   let _syncTicker = null            // Worker timer for hidden pages (null: not tried, false: unavailable)
   let _syncLeaseAt = 0              // when this tab last renewed the device id lease
   let _syncClaimInFlight = false
@@ -29,6 +34,9 @@
   let _syncResultAckPending = null  // requester result retained until ack POST succeeds
   let _syncResultAckInFlight = false
   let _syncKeepAliveTimer = null    // setInterval handle for silent audio keepalive
+  let _syncKnownState = null        // {key, state}: the last full state a poll returned (sent back as state_key)
+  let _syncTabAt = 0                // when this tab last renewed its sibling-registry entry
+  let _syncSiblingKicked = false    // a sibling tab sent a command or transfer
 
   // ─── Cross-Device Sync Engine ─────────────────────────────────
 
@@ -70,9 +78,58 @@
   // Release on leave: the next page of this tab keeps the id (sessionStorage),
   // and a later tab may take it.
   window.addEventListener('pagehide', function() {
+    _syncDropTab()
     if (!_syncOwnsStableId()) return
     _syncLeaseAt = 0
     _lsSet('mp_device_lease', '0')
+  })
+
+  // Tabs of this browser are separate devices to the server, but another tab
+  // is no reason to poll fast: each keeps a leased entry in a shared registry
+  // and the poll rate only counts devices outside it. Commands and transfers
+  // between tabs wake the others through a storage event instead.
+  function _syncReadTabs() {
+    try {
+      var tabs = JSON.parse(_lsGet(_SYNC_TABS_KEY) || '{}')
+      return tabs && typeof tabs === 'object' ? tabs : {}
+    } catch (e) { return {} }
+  }
+
+  function _syncRenewTab() {
+    var now = Date.now()
+    if (!mp._syncDeviceId || now - _syncTabAt < _SYNC_TAB_TTL_MS / 6) return
+    _syncTabAt = now
+    var tabs = _syncReadTabs()
+    for (var id in tabs) if (!(now - tabs[id] < _SYNC_TAB_TTL_MS)) delete tabs[id]
+    tabs[mp._syncDeviceId] = now
+    _lsSet(_SYNC_TABS_KEY, JSON.stringify(tabs))
+  }
+
+  function _syncDropTab() {
+    _syncTabAt = 0
+    var tabs = _syncReadTabs()
+    if (!(mp._syncDeviceId in tabs)) return
+    delete tabs[mp._syncDeviceId]
+    _lsSet(_SYNC_TABS_KEY, JSON.stringify(tabs))
+  }
+
+  function _syncSiblingIds() {
+    var tabs = _syncReadTabs(), now = Date.now(), ids = {}
+    for (var id in tabs) if (id !== mp._syncDeviceId && now - tabs[id] < _SYNC_TAB_TTL_MS) ids[id] = true
+    return ids
+  }
+
+  function _syncKickSiblings() {
+    for (var id in _syncSiblingIds()) {
+      _lsSet(_SYNC_KICK_KEY, Date.now() + ':' + Math.random())
+      return
+    }
+  }
+
+  window.addEventListener('storage', function(e) {
+    if (e.key !== _SYNC_KICK_KEY || !_syncRunning) return
+    _syncSiblingKicked = true
+    _syncKick()
   })
 
   function _detectDeviceName() {
@@ -129,6 +186,7 @@
 
   function _syncTick() {
     _syncTimer = null
+    _syncDueAt = 0
     if (!_syncRunning) return
     _syncPoll()
     _syncSchedule(_syncNextDelay())
@@ -138,6 +196,7 @@
   // page's own timers to one wake-up a minute after 5 minutes, which would
   // drop an idle, minimized player off the devices list.
   function _syncSchedule(delay) {
+    _syncDueAt = Date.now() + delay
     if (document.hidden) {
       if (_syncTicker === null) {
         _syncTicker = false
@@ -157,8 +216,25 @@
     _syncTimer = setTimeout(_syncTick, delay)
   }
 
+  // The next tick was timed before this poll's answer arrived (as if alone,
+  // say). When the answer calls for a shorter wait (a mirror to keep fresh,
+  // another device online), bring the tick forward.
+  function _syncTightenSchedule() {
+    if (!_syncRunning || !_syncDueAt) return
+    var delay = _syncNextDelay()
+    if (Date.now() + delay < _syncDueAt) {
+      _syncClearTimers()
+      _syncSchedule(delay)
+    }
+  }
+
   function _syncOthersOnline() {
-    return mp._syncDevices.some(function(d) { return !d.is_self })
+    var siblings = null
+    return mp._syncDevices.some(function(d) {
+      if (d.is_self) return false
+      if (!siblings) siblings = _syncSiblingIds()
+      return !siblings[d.device_id]
+    })
   }
 
   // This device outputs the session's audio and publishes its state.
@@ -168,17 +244,19 @@
   }
 
   // Every signed-in page polls, so each open device is listed and can be
-  // controlled. Fast (1 s) while there is someone to answer: another device is
-  // online, this one mirrors or controls a remote one, or it is the active one.
-  // Alone it only heartbeats under the server's 30 s online window. Failures
-  // back off exponentially.
+  // controlled. Fast (1 s) only while someone waits on this device: it plays
+  // with another device online, it mirrors or controls a remote one, or its
+  // devices panel is open. Another device online with nothing to follow: 3 s
+  // (10 s hidden). Alone it only heartbeats under the server's 30 s online
+  // window. Failures back off exponentially.
   function _syncNextDelay() {
     var others = _syncOthersOnline()
     var delay
     if (_syncPushing()) delay = others ? 1000 : 3000
     else if (mp._syncPhantomMode || mp._syncRemoteTarget) delay = document.hidden ? 5000 : 1000
-    else if (others) delay = document.hidden ? 3000 : 1000
-    else delay = document.hidden ? 10000 : 5000
+    else if (mp.devicesPanel && mp.devicesPanel.classList.contains('mp-devices-visible')) delay = 1000
+    else if (others) delay = document.hidden ? 10000 : 3000
+    else delay = _SYNC_ALONE_MS
     if (_syncErrorCount) delay = Math.max(delay, Math.min(30000, 1000 * Math.pow(2, _syncErrorCount)))
     return delay
   }
@@ -302,7 +380,10 @@
     if (!mp._syncLoggedIn || !mp._syncEnabled || !mp._syncDeviceId) return
 
     _syncRenewLease()
+    _syncRenewTab()
     if (_syncResultAckPending) _syncAcknowledgeCommandResult()
+    var kicked = _syncSiblingKicked
+    _syncSiblingKicked = false
 
     var pushing = _syncPushing()
     if (pushing) {
@@ -313,7 +394,8 @@
       // between a cheap GET watches for commands and transfers (with no other
       // device online none can arrive).
       var built = _syncBuildState()
-      if (_syncPushDue(built)) {
+      // A sibling tab's command is claimed by the push response
+      if (_syncPushDue(built) || kicked) {
         _syncPushState(built)
         return
       }
@@ -329,12 +411,23 @@
     if (_syncPollInFlight) return
     _syncPollInFlight = true
     var epoch = mp._syncEpoch
-    _syncFetch('/music/api/sync?device_id=' + encodeURIComponent(mp._syncDeviceId), {
+    var url = '/music/api/sync?device_id=' + encodeURIComponent(mp._syncDeviceId)
+    // The server leaves out a state this page already holds (state_unchanged)
+    var known = _syncKnownState
+    if (known) url += '&state_key=' + encodeURIComponent(known.key)
+    _syncFetch(url, {
       credentials: 'same-origin',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
     }).then(function(data) {
       _syncPollInFlight = false
       _syncErrorCount = 0
+      if (data.state_unchanged === true) {
+        // Not the state sent as state_key: drop it, the next poll gets it in full
+        if (!known || data.state_key !== known.key) { _syncKnownState = null; return }
+        data.state = known.state
+      } else if (data.state && typeof data.state_key === 'string') {
+        _syncKnownState = { key: data.state_key, state: data.state }
+      }
       if (data.registered === false) _syncRegisterDevice()
       if (epoch !== mp._syncEpoch) return
       _syncLastPollData = data
@@ -396,7 +489,7 @@
       }
 
       mp._syncUpdateDevicesButton()
-    }).catch(function(err) {
+    }).then(_syncTightenSchedule).catch(function(err) {
       _syncPollInFlight = false
       _syncOnError(err)
     })
@@ -668,7 +761,7 @@
     mp._syncPhantomStale = false
     mp._syncPhantomStateTs = null
     mp._syncPhantomKeepaliveActive = false
-    if (mp._syncPhantomRAF) { cancelAnimationFrame(mp._syncPhantomRAF); mp._syncPhantomRAF = null }
+    mp._syncPhantomStopInterpolation()
     if (mp._syncPhantomPositionTimer) { clearInterval(mp._syncPhantomPositionTimer); mp._syncPhantomPositionTimer = null }
     if (mp.playerEl) mp.playerEl.classList.remove('mp-phantom')
     if (mp.phantomLabel) mp.phantomLabel.textContent = ''
@@ -793,6 +886,7 @@
         if (data && data.error && typeof showToast === 'function') showToast(data.error, 'error')
       })
     }).catch(function() {}).then(function() {
+      _syncKickSiblings()  // the target may be another tab of this browser
       _syncKick()  // pick up the result soon
     })
   }
@@ -855,6 +949,7 @@
       body: JSON.stringify({ target_device_id: mp._syncDeviceId }),
     }).then(function() {
       console.log('[MUSIC PLAYER] Requested playback transfer to this device')
+      _syncKickSiblings()
     }).catch(function() {})
   }
 
@@ -868,6 +963,7 @@
       body: JSON.stringify({ target_device_id: targetDeviceId }),
     }).then(function() {
       console.log('[MUSIC PLAYER] Pushed playback to device:', targetDeviceId)
+      _syncKickSiblings()
       // Yield immediately — don't wait for next poll cycle
       _syncYieldToDevice(targetDeviceId)
     }).catch(function() {})

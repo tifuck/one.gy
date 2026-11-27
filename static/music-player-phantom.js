@@ -2,14 +2,16 @@
 ;(function(mp) {
   'use strict'
 
-  const { audio, _silentBlobUrl, _clearAudioSrc } = mp
+  const { audio, _silentUrl, _clearAudioSrc } = mp
 
   let _syncPhantomQueueKey = null   // remote queue ids last rendered in the playlist panel
+  let _syncPhantomShownKey = null   // state_key + device of the remote state last shown
+  let _syncPhantomShownAt = 0       // Date.now() when it was shown
 
   function _syncResetForLocalPlayback() {
     mp._syncRemoteTarget = null
     mp._syncPhantomDeviceId = null
-    if (!mp._syncPhantomMode && !mp._syncPhantomKeepaliveActive && !mp._syncPhantomRAF && !mp._syncPhantomPositionTimer && !audio.loop &&
+    if (!mp._syncPhantomMode && !mp._syncPhantomKeepaliveActive && !mp._syncPhantomTimer && !mp._syncPhantomPositionTimer && !audio.loop &&
         !(mp.playerEl && mp.playerEl.classList.contains('mp-phantom'))) return
 
     mp._syncPhantomMode = false
@@ -18,7 +20,7 @@
     mp._syncPhantomStale = false
     mp._syncPhantomStateTs = null
     mp._syncPhantomKeepaliveActive = false
-    if (mp._syncPhantomRAF) { cancelAnimationFrame(mp._syncPhantomRAF); mp._syncPhantomRAF = null }
+    _syncPhantomStopInterpolation()
     if (mp._syncPhantomPositionTimer) { clearInterval(mp._syncPhantomPositionTimer); mp._syncPhantomPositionTimer = null }
     if (mp.playerEl) mp.playerEl.classList.remove('mp-phantom')
     if (mp.phantomLabel) mp.phantomLabel.textContent = ''
@@ -29,6 +31,12 @@
   }
 
   function _syncEnterPhantom(data) {
+    // Polls repeat an unchanged remote state (same state_key): the mirror shows
+    // it already. Not after a command (its optimistic UI waits for the answer),
+    // when stale, or while the silent keepalive still has to start.
+    var shownKey = data.state_key ? [data.state_key, data.active_device_id, data.active_device_name].join('|') : null
+    if (mp._syncPhantomMode && !mp._syncPhantomStale && shownKey && shownKey === _syncPhantomShownKey &&
+        (mp._syncCommandSentAt || 0) < _syncPhantomShownAt && (mp._syncPhantomKeepaliveActive || !_silentUrl())) return
     var state = data.state
     var remoteTracks = mp._syncTracksFromState(state)
     if (!remoteTracks || !Number.isInteger(state.currentIndex) ||
@@ -57,11 +65,12 @@
     // The play/pause/timeupdate event handlers are guarded to skip in phantom mode.
     // Only set audio.src on the FIRST entry — subsequent poll-driven re-entries
     // skip this to avoid constant load/play cycling that confuses the browser.
-    if (_silentBlobUrl && !mp._syncPhantomKeepaliveActive) {
+    var silentUrl = _silentUrl()
+    if (silentUrl && !mp._syncPhantomKeepaliveActive) {
       mp._syncPhantomKeepaliveActive = true
       audio.loop = true
       audio.muted = false
-      audio.src = _silentBlobUrl
+      audio.src = silentUrl
       // Ensure volume is nonzero — Chrome may suppress notifications for
       // muted/zero-volume audio.  If the GainNode controls volume, audio.volume
       // is already 1; otherwise set a barely-audible floor.
@@ -96,7 +105,7 @@
         console.warn('[MUSIC PLAYER] Phantom silent keepalive play failed:', e.name)
         mp._syncPhantomKeepaliveActive = false
       })
-    } else if (!_silentBlobUrl && !audio.paused) {
+    } else if (!silentUrl && !audio.paused) {
       audio.pause()
     }
 
@@ -131,7 +140,7 @@
     }
     mp.shuffleMode = state.shuffleMode === true
     mp.repeatMode = (state.repeatMode === 'all' || state.repeatMode === 'one') ? state.repeatMode : 'none'
-    mp.shuffleOrder = Array.isArray(state.shuffleOrder) ? state.shuffleOrder : []
+    mp.shuffleOrder = Array.isArray(state.shuffleOrder) ? state.shuffleOrder.slice() : []  // the poll keeps state for reuse
     mp.shufflePos = Number.isInteger(state.shufflePos) ? state.shufflePos : -1
     mp._suggestedStartIndex = Number.isInteger(state.suggestedStartIndex) ? state.suggestedStartIndex : -1
     mp._renderModeButtons()
@@ -153,8 +162,9 @@
     mp.isPlaying = remotePlaying
     mp._updatePlayButton()
 
-    // Start interpolation animation if playing
-    _syncPhantomStartInterpolation()
+    // Interpolate the progress while the remote plays
+    if (remotePlaying) _syncPhantomStartInterpolation()
+    else _syncPhantomStopInterpolation()
 
     mp._syncUpdateDevicesButton()
     // The remote queue can grow (suggestions) without a track change.
@@ -177,6 +187,8 @@
         mp._updateMediaSessionPositionState()
       }, 4000)
     }
+    _syncPhantomShownKey = shownKey
+    _syncPhantomShownAt = Date.now()
   }
 
   // Optimistic phantom track update (called from music-browse.js when sending play_tracks)
@@ -205,6 +217,7 @@
     mp._syncPhantomPollTs = Date.now()
     mp._syncPhantomTrackId = track.id || null
     _syncPhantomRenderProgress(0, 1)
+    _syncPhantomStartInterpolation()
     mp.isPlaying = true
     mp._updatePlayButton()
     // Update lock-screen metadata for the new track
@@ -213,33 +226,36 @@
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'
   }
 
-  // Smooth progress interpolation for phantom mode
+  // Progress interpolation for phantom mode: 4 updates a second while the
+  // remote plays (the bar has 1000 steps, the clock shows seconds), none while
+  // it is paused. Every call site that sets _syncPhantomPlaying starts it.
   function _syncPhantomStartInterpolation() {
-    // Cancel any existing animation
-    if (mp._syncPhantomRAF) { cancelAnimationFrame(mp._syncPhantomRAF); mp._syncPhantomRAF = null }
+    if (mp._syncPhantomTimer || !mp._syncPhantomMode || !mp._syncPhantomPlaying) return
+    mp._syncPhantomTimer = setInterval(_syncPhantomTick, 250)
+  }
 
-    function tick() {
-      if (!mp._syncPhantomMode) return
-      if (mp._syncPhantomPlaying && mp._syncPhantomDuration > 0) {
-        var elapsed = (Date.now() - mp._syncPhantomPollTs) / 1000
-        // Client-side staleness check: if no fresh poll data in 10s, pause phantom
-        if (elapsed > 10 && !mp._syncPhantomStale) {
-          _syncPausePhantom()
-          return  // stop interpolation
-        }
-        var interpolated = mp._syncPhantomTime + elapsed
-        if (interpolated > mp._syncPhantomDuration) interpolated = mp._syncPhantomDuration
-        _syncPhantomRenderProgress(interpolated, mp._syncPhantomDuration)
-        // Update lock-screen position state periodically (every ~5s)
-        var now = Date.now()
-        if (now - mp._lastPositionUpdate > 5000) {
-          mp._lastPositionUpdate = now
-          mp._updateMediaSessionPositionState()
-        }
-      }
-      mp._syncPhantomRAF = requestAnimationFrame(tick)
+  function _syncPhantomStopInterpolation() {
+    if (mp._syncPhantomTimer) { clearInterval(mp._syncPhantomTimer); mp._syncPhantomTimer = null }
+  }
+
+  function _syncPhantomTick() {
+    if (!mp._syncPhantomMode || !mp._syncPhantomPlaying) { _syncPhantomStopInterpolation(); return }
+    if (!(mp._syncPhantomDuration > 0)) return
+    var elapsed = (Date.now() - mp._syncPhantomPollTs) / 1000
+    // Client-side staleness check: if no fresh poll data in 10s, pause phantom
+    if (elapsed > 10 && !mp._syncPhantomStale) {
+      _syncPausePhantom()
+      return  // stops interpolation
     }
-    mp._syncPhantomRAF = requestAnimationFrame(tick)
+    var interpolated = mp._syncPhantomTime + elapsed
+    if (interpolated > mp._syncPhantomDuration) interpolated = mp._syncPhantomDuration
+    if (!document.hidden) _syncPhantomRenderProgress(interpolated, mp._syncPhantomDuration)
+    // Update lock-screen position state periodically (every ~5s)
+    var now = Date.now()
+    if (now - mp._lastPositionUpdate > 5000) {
+      mp._lastPositionUpdate = now
+      mp._updateMediaSessionPositionState()
+    }
   }
 
   function _syncPhantomRenderProgress(time, duration) {
@@ -263,7 +279,7 @@
     mp._syncPhantomStale = false
     mp._syncPhantomStateTs = null
     mp._syncPhantomKeepaliveActive = false
-    if (mp._syncPhantomRAF) { cancelAnimationFrame(mp._syncPhantomRAF); mp._syncPhantomRAF = null }
+    _syncPhantomStopInterpolation()
     if (mp._syncPhantomPositionTimer) { clearInterval(mp._syncPhantomPositionTimer); mp._syncPhantomPositionTimer = null }
     if (mp.playerEl) mp.playerEl.classList.remove('mp-phantom')
     if (mp.phantomLabel) mp.phantomLabel.textContent = ''
@@ -294,8 +310,8 @@
     mp.isPlaying = false
     mp._updatePlayButton()
 
-    // Stop the interpolation animation so the seek bar freezes
-    if (mp._syncPhantomRAF) { cancelAnimationFrame(mp._syncPhantomRAF); mp._syncPhantomRAF = null }
+    // Stop the interpolation so the seek bar freezes
+    _syncPhantomStopInterpolation()
 
     // Update lock-screen to show paused (silent keepalive stays running to
     // keep the notification visible so the user can still tap play)
@@ -320,6 +336,7 @@
     _syncEnterPhantom,
     _syncPhantomUpdateTrack,
     _syncPhantomStartInterpolation,
+    _syncPhantomStopInterpolation,
     _syncPhantomRenderProgress,
     _syncExitPhantom,
     _syncPausePhantom,

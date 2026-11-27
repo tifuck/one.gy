@@ -526,7 +526,7 @@
 .mon-grid{ stroke:var(--line); stroke-width:1; }
 .mon-axis{ font-size:10px; fill:var(--text-faint); font-variant-numeric:tabular-nums; }
 .mon-guide{ stroke:var(--line-strong); stroke-width:1; }
-.mon-tip{ position:absolute; top:0; z-index:2; min-width:150px; padding:8px 10px; background:var(--raise); border:1px solid var(--line-strong); border-radius:8px; font-size:.75rem; line-height:1.5; color:var(--text); pointer-events:none; white-space:nowrap; }
+.mon-tip{ position:absolute; top:0; left:0; z-index:2; min-width:150px; padding:8px 10px; background:var(--raise); border:1px solid var(--line-strong); border-radius:8px; font-size:.75rem; line-height:1.5; color:var(--text); pointer-events:none; white-space:nowrap; }
 .mon-tip b{ display:block; margin-bottom:2px; font-weight:600; }
 .mon-tip div{ display:flex; align-items:center; gap:6px; color:var(--text-dim); }
 .mon-tip i{ width:8px; height:8px; border-radius:2px; flex:none; }

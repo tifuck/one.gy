@@ -154,20 +154,33 @@
     return null
   }
 
+  // Decrypted names by item id + ciphertext. Every navigation lists the whole
+  // tree again; only new or changed names are decrypted. An entry is the
+  // in-flight promise, so the tree, listing and crumbs share one decrypt.
+  // A failure is not kept (the next load tries again).
+  var nameCache = new Map()
+  function cachedName (key, job) {
+    var p = nameCache.get(key)
+    if (!p) {
+      p = job().then(null, function () { return null })
+      p.then(function (n) { if (!n && nameCache.get(key) === p) nameCache.delete(key) })
+      nameCache.set(key, p)
+    }
+    return p
+  }
+
   // Decrypt display names in place. Failures are silent by design: the item
   // keeps its server-side placeholder rather than blocking the whole listing.
   async function decryptFileNames (files, epoch) {
     if (typeof OneGyCrypto === 'undefined') return
     await Promise.all(files.map(async function (f) {
       if (!f.is_e2e || !f.encrypted_name || !f.name_nonce) return
-      try {
+      var n = await cachedName(['f', f.id, f.encrypted_name, f.name_nonce].join('|'), async function () {
         var k = await fileKeyFor(f)
-        if (epoch != null && !hasRequestAuthority(epoch)) return
-        if (!k) return
-        var n = await OneGyCrypto.decryptFileName(f.encrypted_name, f.name_nonce, k)
-        if (epoch != null && !hasRequestAuthority(epoch)) return
-        if (n) { f.name = n; f._dec = true; f.extension = (n.split('.').pop() || '').toLowerCase() }
-      } catch (e) {}
+        return k ? OneGyCrypto.decryptFileName(f.encrypted_name, f.name_nonce, k) : null
+      })
+      if (epoch != null && !hasRequestAuthority(epoch)) return
+      if (n) { f.name = n; f._dec = true; f.extension = (n.split('.').pop() || '').toLowerCase() }
     }))
   }
 
@@ -176,15 +189,26 @@
     await Promise.all(folders.map(async function (fd) {
       // Breadcrumb entries carry the ciphertext but no is_e2e flag.
       if (!fd.encrypted_name || !fd.name_nonce) return
-      try {
+      var n = await cachedName(['d', fd.id, fd.encrypted_name, fd.name_nonce].join('|'), async function () {
         var k = await folderNameKeyFor(fd)
-        if (epoch != null && !hasRequestAuthority(epoch)) return
-        if (!k) return
-        var n = await OneGyCrypto.decryptFolderName(fd.encrypted_name, fd.name_nonce, k)
-        if (epoch != null && !hasRequestAuthority(epoch)) return
-        if (n) { fd.name = n; fd._dec = true }
-      } catch (e) {}
+        return k ? OneGyCrypto.decryptFolderName(fd.encrypted_name, fd.name_nonce, k) : null
+      })
+      if (epoch != null && !hasRequestAuthority(epoch)) return
+      if (n) { fd.name = n; fd._dec = true }
     }))
+  }
+
+  // id -> item for a list (S.files, S.tree, ...), built on first lookup. Lists
+  // are replaced on every load, never changed in place.
+  var idMaps = new WeakMap()
+  function byId (list, id) {
+    var m = idMaps.get(list)
+    if (!m) {
+      m = new Map()
+      list.forEach(function (x) { var k = String(x.id); if (!m.has(k)) m.set(k, x) })
+      idMaps.set(list, m)
+    }
+    return m.get(String(id)) || null
   }
 
   // ═══ DATA ════════════════════════════════════════════════════════════════
@@ -384,11 +408,13 @@
     return false
   }
 
+  // One collator: localeCompare with options builds one per comparison.
+  var NAME_ORDER = new Intl.Collator(undefined, { numeric: true })
   function sortItems (arr, isFile) {
     var s = S.sort
     var by = {
-      name: function (a, b) { return String(a.name).localeCompare(String(b.name), undefined, { numeric: true }) },
-      'name-desc': function (a, b) { return String(b.name).localeCompare(String(a.name), undefined, { numeric: true }) },
+      name: function (a, b) { return NAME_ORDER.compare(String(a.name), String(b.name)) },
+      'name-desc': function (a, b) { return NAME_ORDER.compare(String(b.name), String(a.name)) },
       size: function (a, b) { return (b.size || 0) - (a.size || 0) },
       'size-asc': function (a, b) { return (a.size || 0) - (b.size || 0) },
       date: function (a, b) { return String(b[isFile ? 'upload_date_iso' : 'updated_at_iso'] || '').localeCompare(String(a[isFile ? 'upload_date_iso' : 'updated_at_iso'] || '')) },
@@ -547,7 +573,7 @@
     }
     function load (slot) {
       var id = slot.getAttribute('data-thumb-for')
-      var f = S.files.filter(function (x) { return String(x.id) === String(id) })[0]
+      var f = byId(S.files, id)
       if (!f) return
       if (!f.is_e2e) {
         if (!canThumb(f)) return
@@ -730,9 +756,23 @@
     }
     return t
   })()
-  function crc32 (u8) {
+  // Whole files are hashed on the main thread, so the work is split into
+  // chunks with a yield between them (a message, not a timer: background tabs
+  // throttle timers to one a second). Same result as one pass.
+  var CRC_CHUNK = 4 * 1024 * 1024
+  function yieldToPage () {
+    return new Promise(function (resolve) {
+      var ch = new MessageChannel()
+      ch.port1.onmessage = function () { ch.port1.close(); resolve() }
+      ch.port2.postMessage(0)
+    })
+  }
+  async function crc32 (u8) {
     var c = 0xFFFFFFFF
-    for (var i = 0; i < u8.length; i++) c = _CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8)
+    for (var start = 0; start < u8.length; start += CRC_CHUNK) {
+      if (start) await yieldToPage()
+      for (var i = start, end = Math.min(u8.length, start + CRC_CHUNK); i < end; i++) c = _CRC_TABLE[(c ^ u8[i]) & 0xFF] ^ (c >>> 8)
+    }
     return (c ^ 0xFFFFFFFF) >>> 0
   }
   function u16 (n) { return new Uint8Array([n & 255, (n >>> 8) & 255]) }
@@ -769,7 +809,7 @@
     used[next.toLowerCase()] = true
     return next
   }
-  function storeZip (entries) {
+  async function storeZip (entries) {
     var locals = [], centrals = [], offset = 0
     var enc = new TextEncoder()
     // ZIP32 stores the entry count in 16 bits; more would silently wrap.
@@ -778,7 +818,7 @@
       var name = enc.encode(String(entries[i].name || 'file').replace(/\\/g, '/'))
       var data = entries[i].data instanceof Uint8Array ? entries[i].data : new Uint8Array(entries[i].data)
       if (data.length > ZIP32_MAX || offset > ZIP32_MAX) throw new Error('ARCHIVE TOO LARGE')
-      var crc = crc32(data)
+      var crc = await crc32(data)
       var local = concatBytes([
         new Uint8Array([0x50, 0x4b, 0x03, 0x04]), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
         u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0), name
@@ -880,7 +920,7 @@
         prog.fail('No files could be decrypted'); toast('NO DECRYPTABLE FILES', 'error'); return
       }
       prog.set(95, 'Building archive…')
-      saveBlob(storeZip(entries), (zipName || 'download') + '.zip')
+      saveBlob(await storeZip(entries), (zipName || 'download') + '.zip')
       if (skipped.length) toast('ARCHIVE INCOMPLETE: SEE _DOWNLOAD_ERRORS.TXT', 'error')
       prog.done()
       // One ticket per enumerated folder, each redeemed for its own folder id.
@@ -976,6 +1016,10 @@
   var searchTimer = null
   var searchIndex = null
   var searchResults = []
+  // Hits on screen, shown a page at a time (a share can hold a whole drive).
+  var SEARCH_PAGE = 200
+  var searchLimit = SEARCH_PAGE
+  var searchHits = null
   function loadSearchIndex () {
     if (searchIndex) return searchIndex
     var p = searchIndex = (async function () {
@@ -997,7 +1041,7 @@
     p.catch(function () { if (searchIndex === p) searchIndex = null })
     return p
   }
-  function treeFolder (id) { return S.tree.filter(function (x) { return String(x.id) === String(id) })[0] || null }
+  function treeFolder (id) { return byId(S.tree, id) }
   function searchFolderName (id) {
     var fd = treeFolder(id)
     return fd && (fd._dec || !fd.encrypted_name) ? fd.name : 'Encrypted folder'
@@ -1052,39 +1096,50 @@
       S.sel = Object.create(null)
       syncSelbar()
 
-      // Results are always rows: the location column says where each hit lives.
-      var view = el('bwView')
-      view.dataset.view = 'list'
-      if (!files.length && !folders.length) {
-        view.innerHTML = emptyState(ICO.search, 'No matches', 'Nothing in this share matches \u201c' + q.trim() + '\u201d.')
-        return
-      }
-      var rows = folders.map(function (fd) {
-        return '<div class="bw-item is-folder folder-row" data-folder-id="' + fd.id + '" data-folder-name="' + esc(fd.name) + '">' +
-          '<span class="bw-item-thumb">' + ICO.folder + '</span>' +
-          '<span class="bw-item-name folder-name" title="' + esc(fd.name) + '">' + esc(fd.name) + '</span>' +
-          '<span class="bw-item-meta"></span><span class="bw-item-size"></span>' +
-          '<span class="bw-item-date">' + esc(fd.path != null ? fd.path : searchFolderPath(fd)) + '</span>' +
-          '<span class="bw-item-actions"></span></div>'
-      }).join('') + files.map(function (f) {
-        return '<div class="bw-item is-file file-row" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '" data-search-file="' + esc(f.id) + '">' +
-          '<span class="bw-item-thumb">' + docIcon(f.name) + '</span>' +
-          '<span class="bw-item-name file-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
-          '<span class="bw-item-meta">' + (f.is_e2e ? E2E_BADGE : '') + '</span>' +
-          '<span class="bw-item-size">' + esc(typeof f.size === 'number' ? fmtBytes(f.size) : (f.size || '')) + '</span>' +
-          '<span class="bw-item-date">' + esc(f._dirs ? searchFilePath(f) : (f.folder_path || '')) + '</span>' +
-          '<span class="bw-item-actions"></span></div>'
-      }).join('')
-      view.innerHTML = LIST_HEAD.replace('Modified', 'Location') + section('Results', files.length + folders.length, rows)
+      searchHits = { q: q.trim(), files: files, folders: folders }
+      searchLimit = SEARCH_PAGE
+      paintSearch()
     } catch (e) {
       if (!hasRequestAuthority(epoch)) return
       toast('SEARCH FAILED', 'error')
     }
   }
+  function paintSearch () {
+    var h = searchHits
+    // Results are always rows: the location column says where each hit lives.
+    var view = el('bwView')
+    view.dataset.view = 'list'
+    if (!h.files.length && !h.folders.length) {
+      view.innerHTML = emptyState(ICO.search, 'No matches', 'Nothing in this share matches \u201c' + h.q + '\u201d.')
+      return
+    }
+    var folders = h.folders.slice(0, searchLimit)
+    var files = h.files.slice(0, Math.max(0, searchLimit - folders.length))
+    var hidden = h.folders.length + h.files.length - folders.length - files.length
+    var rows = folders.map(function (fd) {
+      return '<div class="bw-item is-folder folder-row" data-folder-id="' + fd.id + '" data-folder-name="' + esc(fd.name) + '">' +
+        '<span class="bw-item-thumb">' + ICO.folder + '</span>' +
+        '<span class="bw-item-name folder-name" title="' + esc(fd.name) + '">' + esc(fd.name) + '</span>' +
+        '<span class="bw-item-meta"></span><span class="bw-item-size"></span>' +
+        '<span class="bw-item-date">' + esc(fd.path != null ? fd.path : searchFolderPath(fd)) + '</span>' +
+        '<span class="bw-item-actions"></span></div>'
+    }).join('') + files.map(function (f) {
+      return '<div class="bw-item is-file file-row" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '" data-search-file="' + esc(f.id) + '">' +
+        '<span class="bw-item-thumb">' + docIcon(f.name) + '</span>' +
+        '<span class="bw-item-name file-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
+        '<span class="bw-item-meta">' + (f.is_e2e ? E2E_BADGE : '') + '</span>' +
+        '<span class="bw-item-size">' + esc(typeof f.size === 'number' ? fmtBytes(f.size) : (f.size || '')) + '</span>' +
+        '<span class="bw-item-date">' + esc(f._dirs ? searchFilePath(f) : (f.folder_path || '')) + '</span>' +
+        '<span class="bw-item-actions"></span></div>'
+    }).join('')
+    view.innerHTML = LIST_HEAD.replace('Modified', 'Location') + section('Results', h.files.length + h.folders.length, rows) +
+      (hidden > 0 ? '<div class="bw-more"><button type="button" class="rd-btn rd-btn-ghost" data-search-more>Show more (' + hidden + ' not shown)</button></div>' : '')
+  }
 
   // ═══ EVENTS ══════════════════════════════════════════════════════════════
   new ResizeObserver(fitCrumbs).observe(document.querySelector('.bw-toolbar'))
   document.addEventListener('click', function (e) {
+    if (e.target.closest('[data-search-more]')) { searchLimit += SEARCH_PAGE; paintSearch(); return }
     // Tree expand/collapse
     var twist = e.target.closest('[data-twist]')
     if (twist) {

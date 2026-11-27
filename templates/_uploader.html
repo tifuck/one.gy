@@ -2,8 +2,12 @@
    (script.js / crypto.js / manage-modal.js). Include anywhere and pass
    temp_max_gb in the template context. Self-contained (container queries
    size it to its own width); styling: uploader.css, v2 pages only.
-   script.js snapshots #dropZone's markup to restore it after an upload. #}
-<div class="rd-uploader">
+   script.js snapshots #dropZone's markup to restore it after an upload.
+   The manage modal and in-page previews (data-extras, ~200 KB) load up front
+   only where quick-share rows need them; elsewhere on first use, after an
+   upload (loadUploaderExtras). The landing page never needs them: an upload
+   there continues on /share. #}
+<div class="rd-uploader" data-extras="{{ versioned_static('manage-e2e.js') }} {{ versioned_static('manage-modal.js') }} {{ versioned_static('temp-preview.js') }}">
   <input type="hidden" id="csrf_token" name="csrf_token" value="{{ csrf_token() }}">
   <div class="drop-zone" id="dropZone">
     <div class="drop-zone-body">
@@ -24,14 +28,36 @@
 <script nonce="{{ csp_nonce }}">
   const MAX_GB = {{ temp_max_gb|default(1.0) }};
   var _pendingUploadRefresh = false;
+  // Resolves once the manage modal (and previews) are loaded and set up.
+  var _uploaderExtras = null;
+  function loadUploaderExtras() {
+    if (typeof ManageModal !== 'undefined') return Promise.resolve();
+    if (!_uploaderExtras) {
+      var box = document.querySelector('.rd-uploader');
+      var srcs = ((box && box.getAttribute('data-extras')) || '').split(' ').filter(Boolean);
+      _uploaderExtras = Promise.all(srcs.map(function(src) {
+        return new Promise(function(resolve, reject) {
+          var s = document.createElement('script');
+          s.src = src;
+          s.async = false;  // run in list order, like the deferred tags
+          s.onload = resolve;
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      })).then(function() { initUploaderManage(); }, function(err) { _uploaderExtras = null; throw err; });
+    }
+    return _uploaderExtras;
+  }
 </script>
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
 <script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
 <script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script src="{{ versioned_static('temp-keychain.js') }}" defer></script>
+{% if temp_files is defined and temp_files %}
 <script src="{{ versioned_static('manage-e2e.js') }}" defer></script>
 <script src="{{ versioned_static('manage-modal.js') }}" defer></script>
 <script src="{{ versioned_static('temp-preview.js') }}" defer></script>
+{% endif %}
 <script src="{{ versioned_static('script.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">
 document.addEventListener('DOMContentLoaded', function() {
@@ -44,50 +70,55 @@ document.addEventListener('DOMContentLoaded', function() {
     if (e2e) { e2e.checked = false; var row = e2e.closest('.drop-zone-toggle'); if (row) row.style.display = 'none'; }
   }
 
-  if (typeof ManageModal !== 'undefined') {
-    ManageModal.init({
-      showToast: function(msg, cat) { if (typeof showToast === 'function') showToast(msg, cat); },
-      showConfirm: window.showConfirm,
-      domain: {{ domain|tojson }},
-      getCSRFToken: function() { var t = document.getElementById('csrf_token'); return t ? t.value : ''; },
-      onDelete: async function(type, data) {
-        var confirmed = await showConfirm(data.name || 'THIS FILE',
-          'This file will be permanently deleted. This action cannot be undone.', 'DELETE');
-        if (!confirmed) return;
-        _pendingUploadRefresh = false;
-        var fd = new FormData();
-        var t = document.getElementById('csrf_token'); if (t) fd.append('csrf_token', t.value);
-        try {
-          var response = await fetch('/delete/' + data.management_token, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
-          var result = await response.json().catch(function() { return {}; });
-          if (!response.ok || result.success !== true) throw new Error(result.error || ('HTTP ' + response.status));
-          ManageModal.close();
-          if (typeof showToast === 'function') showToast('FILE DELETED', 'success');
-          window.location.reload();
-        } catch (err) {
-          if (typeof showToast === 'function') showToast('FAILED TO DELETE FILE: ' + String(err.message || 'UNKNOWN ERROR'), 'error');
-        }
-      },
-      onDownload: function(type, data) {
-        // E2EE: decrypt in-page with the keychain secret. Navigating to the
-        // #passphrase= link would leave the secret in session history.
-        if (type === 'file' && data && data.is_e2e && window.TempPreview) { TempPreview.downloadE2EE(data.id, data.name); return; }
-        var link = document.getElementById('manageShareLink');
-        var url = link ? link.value : (data && data.download_url) || '';
-        if (url) window.location.replace(url);
-      },
-      // Regenerating a link rotates the file id the listing rows are keyed on.
-      onFileIdChanged: function() { _pendingUploadRefresh = true; },
-      onAfterSave: function() {},
-      onClose: function() {
-        if (_pendingUploadRefresh) {
-          _pendingUploadRefresh = false;
-          // ManageModal removes its pushState entry immediately after onClose.
-          // Refresh after that history navigation so it cannot cancel the load.
-          setTimeout(function() { window.location.replace('/share'); }, 50);
-        }
-      }
-    });
-  }
+  initUploaderManage();
 });
+
+var _uploaderManageReady = false;
+function initUploaderManage() {
+  if (_uploaderManageReady || typeof ManageModal === 'undefined') return;
+  _uploaderManageReady = true;
+  ManageModal.init({
+    showToast: function(msg, cat) { if (typeof showToast === 'function') showToast(msg, cat); },
+    showConfirm: window.showConfirm,
+    domain: {{ domain|tojson }},
+    getCSRFToken: function() { var t = document.getElementById('csrf_token'); return t ? t.value : ''; },
+    onDelete: async function(type, data) {
+      var confirmed = await showConfirm(data.name || 'THIS FILE',
+        'This file will be permanently deleted. This action cannot be undone.', 'DELETE');
+      if (!confirmed) return;
+      _pendingUploadRefresh = false;
+      var fd = new FormData();
+      var t = document.getElementById('csrf_token'); if (t) fd.append('csrf_token', t.value);
+      try {
+        var response = await fetch('/delete/' + data.management_token, { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' }, body: fd });
+        var result = await response.json().catch(function() { return {}; });
+        if (!response.ok || result.success !== true) throw new Error(result.error || ('HTTP ' + response.status));
+        ManageModal.close();
+        if (typeof showToast === 'function') showToast('FILE DELETED', 'success');
+        window.location.reload();
+      } catch (err) {
+        if (typeof showToast === 'function') showToast('FAILED TO DELETE FILE: ' + String(err.message || 'UNKNOWN ERROR'), 'error');
+      }
+    },
+    onDownload: function(type, data) {
+      // E2EE: decrypt in-page with the keychain secret. Navigating to the
+      // #passphrase= link would leave the secret in session history.
+      if (type === 'file' && data && data.is_e2e && window.TempPreview) { TempPreview.downloadE2EE(data.id, data.name); return; }
+      var link = document.getElementById('manageShareLink');
+      var url = link ? link.value : (data && data.download_url) || '';
+      if (url) window.location.replace(url);
+    },
+    // Regenerating a link rotates the file id the listing rows are keyed on.
+    onFileIdChanged: function() { _pendingUploadRefresh = true; },
+    onAfterSave: function() {},
+    onClose: function() {
+      if (_pendingUploadRefresh) {
+        _pendingUploadRefresh = false;
+        // ManageModal removes its pushState entry immediately after onClose.
+        // Refresh after that history navigation so it cannot cancel the load.
+        setTimeout(function() { window.location.replace('/share'); }, 50);
+      }
+    }
+  });
+}
 </script>

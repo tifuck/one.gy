@@ -17,6 +17,21 @@
   }
   var $ = function (id) { return document.getElementById(id) }
   var listEl, editorEl
+  // The canvas engine (notes-canvas.js) loads on first use: its versioned URL comes from this script tag (notes.html).
+  var CANVAS_JS = (document.currentScript && document.currentScript.getAttribute('data-canvas-js')) || '', canvasEngine = null
+  function loadCanvasEngine () {
+    if (window.FxCanvas) return Promise.resolve(window.FxCanvas)
+    if (!canvasEngine) {
+      canvasEngine = new Promise(function (resolve, reject) {
+        if (!CANVAS_JS) { reject(new Error('NO CANVAS ENGINE')); return }
+        var script = document.createElement('script'); script.src = CANVAS_JS
+        script.onload = function () { if (window.FxCanvas) resolve(window.FxCanvas); else reject(new Error('NO CANVAS ENGINE')) }
+        script.onerror = function () { script.remove(); reject(new Error('NO CANVAS ENGINE')) }
+        document.head.appendChild(script)
+      }).catch(function (e) { canvasEngine = null; throw e }) // a failed load is tried again on the next open
+    }
+    return canvasEngine
+  }
   var longPress = null, lpFired = false
   function cancelLongPress () { if (longPress) { clearTimeout(longPress.timer); longPress = null } }
 
@@ -108,6 +123,17 @@
     wrap.appendChild(sanitizeToFragment(html))
     return wrap.innerHTML
   }
+  // The same cleaning, run on a copy of a live element's children instead of a serialise + re-parse of its markup
+  // (a note's inline pictures are MBs of attribute text). The copy lives in the template's inert document, so
+  // nothing in it loads or runs.
+  function sanitizeElementHtml (el) {
+    var template = document.createElement('template'), doc = template.content.ownerDocument
+    Array.prototype.forEach.call(el.childNodes, function (node) { template.content.appendChild(doc.importNode(node, true)) })
+    sanitizeNodeTree(template.content)
+    var wrap = doc.createElement('div')
+    wrap.appendChild(template.content)
+    return wrap.innerHTML
+  }
   function validateCanvasData (data, maxTotal) {
     var types = { text: 1, image: 1, todo: 1, table: 1, code: 1, draw: 1, line: 1, attachment: 1 }
     if (!data || typeof data !== 'object' || !Array.isArray(data.blocks) || data.blocks.length > 1000) return null
@@ -178,26 +204,33 @@
     if (!nb.encrypted_name) return nb.name || 'Notebook'
     try { var k = await OneGyCrypto.unwrapFolderNameKey(nb.encrypted_name_key, nb.name_key_nonce, mk); return (await OneGyCrypto.decryptFolderName(nb.encrypted_name, nb.name_nonce, k)) || 'Notebook' } catch (e) { return 'Notebook' }
   }
+  // A note with inline pictures runs to MBs: build the binary string 32 KB at a time, not one concatenation per byte.
+  function bytesToB64 (bytes) {
+    var parts = []
+    for (var i = 0; i < bytes.length; i += 0x8000) parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)))
+    return btoa(parts.join(''))
+  }
+  function b64ToBytes (b64) {
+    var bin = atob(b64), bytes = new Uint8Array(bin.length)
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    return bytes
+  }
   async function encContent (str, nk) {
     var data = new TextEncoder().encode(str)
     var enc = await OneGyCrypto.encryptFileData(data, nk)
-    var bytes = new Uint8Array(enc), bin = ''
-    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
-    return btoa(bin)
+    return bytesToB64(new Uint8Array(enc))
   }
   async function decContent (b64, nk) {
-    var bin = atob(b64), bytes = new Uint8Array(bin.length)
-    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    var dec = await OneGyCrypto.decryptFileData(bytes.buffer, nk)
+    var dec = await OneGyCrypto.decryptFileData(b64ToBytes(b64).buffer, nk)
     return new TextDecoder().decode(dec)
   }
   // The server requires encrypted_content and content_nonce as a pair (app.py
   // _notes_validate_content_field). The base nonce already lives in the blob
   // header (crypto.js: 1 version byte + 4 chunkCount + 12 baseNonce), so ship
   // a copy from bytes 5..17; the server stores it as metadata and never uses
-  // it to decrypt.
+  // it to decrypt. Only the first 24 characters (18 bytes) are decoded, not the whole note.
   function contentNonceOf (b64) {
-    var bin = atob(b64)
+    var bin = atob(b64.slice(0, 24))
     if (bin.length < 17) throw new Error('BAD ENCRYPTED CONTENT HEADER')
     return btoa(bin.slice(5, 17))
   }
@@ -214,12 +247,11 @@
     showLock(false)
     var mk = await masterKey(); if (!mk) { showLock(true); return }
     try {
-      // trash_count also counts trashed notebooks, which the Trash view never lists.
-      var loaded = await Promise.all([apiGet('/notes/api/notebooks'), apiGet('/notes/api/notes?trash=true').catch(function () { return null })])
-      var nbData = loaded[0]
+      var nbData = await apiGet('/notes/api/notebooks')
       S.notebooks = nbData.notebooks || []
       await Promise.all(S.notebooks.map(async function (nb) { nb._name = await decNotebookName(nb, mk) }))
-      S.trashCount = loaded[1] ? (loaded[1].notes || []).length : (nbData.trash_count || 0)
+      // trash_count also counts trashed notebooks, which the Trash view never lists; trash_notes_count is the notes alone.
+      S.trashCount = nbData.trash_notes_count != null ? nbData.trash_notes_count : (nbData.trash_count || 0)
       var v = !restored && lsGet(LS_VIEW)
       if (v && (['all', 'unfiled', 'trash'].indexOf(v) >= 0 || S.notebooks.some(function (nb) { return String(nb.id) === v }))) S.view = v
       // A link to a note (/notes#n=<id>, made by "Link to a note" or "Copy link to note") opens that note.
@@ -268,7 +300,8 @@
   // The decrypted text of each note, held in memory only (never on disk: see the zero-knowledge note further down) and
   // read the first time a search runs.
   // ponytail: one GET per note per page load; keep an encrypted text digest with each note if libraries get large.
-  var bodyText = {}, indexing = 0
+  // staleBody: a body saved while no search was showing, read into bodyText only when a search needs it.
+  var bodyText = {}, staleBody = {}, indexing = 0
   function plainText (type, body) {
     var text = function (html) { var t = document.createElement('template'); t.innerHTML = String(html || '').replace(/</g, ' <'); return t.content.textContent }
     if (type !== 'canvas') return text(body)
@@ -278,7 +311,10 @@
       }).join(' ')
     } catch (e) { return '' }
   }
-  function setBodyText (id, type, body) { var text = plainText(type, body).replace(/\s+/g, ' ').trim(); bodyText[id] = { text: text, low: text.toLowerCase() } }
+  function setBodyText (id, type, body) { delete staleBody[id]; var text = plainText(type, body).replace(/\s+/g, ' ').trim(); bodyText[id] = { text: text, low: text.toLowerCase() } }
+  // A save re-reads the text at once only while a search shows it; a note never indexed is fetched when a search needs it.
+  function noteSaved (id, type, body) { if (S.query) setBodyText(id, type, body); else if (bodyText[id]) staleBody[id] = { type: type, body: body } }
+  function bodyOf (id) { var stale = staleBody[id]; if (stale) setBodyText(id, stale.type, stale.body); return bodyText[id] }
   async function indexBodies () {
     var mk = await masterKey(), todo = S.notes.filter(function (n) { return !bodyText[n.id] })
     if (!mk || !todo.length || indexing) return
@@ -289,6 +325,8 @@
           var d = await apiGet('/notes/api/notes/' + encodeURIComponent(n.id)), nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(d.encrypted_note_key, d.note_key_nonce, mk)
           setBodyText(n.id, d.note_type, d.encrypted_content ? await decContent(d.encrypted_content, nk) : '')
         } catch (e) { bodyText[n.id] = { text: '', low: '' } }
+        // Each note is decoded and parsed on the main thread: let typing and painting in between.
+        await new Promise(function (resolve) { setTimeout(resolve, 0) })
       }
     }
     await Promise.all([worker(), worker(), worker(), worker()])
@@ -297,7 +335,7 @@
   }
   // Where the search matched in the text (not for title matches, which the row already shows).
   function snippet (n, q) {
-    var body = bodyText[n.id], at = q && body && (n._title || '').toLowerCase().indexOf(q) < 0 ? body.low.indexOf(q) : -1
+    var body = q && bodyOf(n.id), at = q && body && (n._title || '').toLowerCase().indexOf(q) < 0 ? body.low.indexOf(q) : -1
     return at < 0 ? '' : (at > 24 ? '…' : '') + body.text.slice(Math.max(0, at - 24), at + q.length + 48)
   }
 
@@ -344,9 +382,10 @@
     if (query != null) S.query = query
     var notes = S.notes.slice()
     var q = S.query.toLowerCase()
-    if (q) notes = notes.filter(function (n) { return (n._title || '').toLowerCase().indexOf(q) >= 0 || (bodyText[n.id] ? bodyText[n.id].low : '').indexOf(q) >= 0 || (n._tags || []).join(' ').toLowerCase().indexOf(q) >= 0 })
+    if (q) notes = notes.filter(function (n) { var body = bodyOf(n.id); return (n._title || '').toLowerCase().indexOf(q) >= 0 || (body ? body.low : '').indexOf(q) >= 0 || (n._tags || []).join(' ').toLowerCase().indexOf(q) >= 0 })
     notes.sort(function (a, b) { return (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0) || ((b.updated_at || '') < (a.updated_at || '') ? -1 : 1) })
     var pinned = S.view === 'trash' ? 0 : notes.filter(function (n) { return n.is_pinned }).length
+    var nbById = new Map(S.notebooks.map(function (nb) { return [String(nb.id), nb] }))
     var items = notes.map(function (n, i) {
       var col = normColor(n.color), canvas = n.note_type === 'canvas'
       var label = pinned && (i === 0 || i === pinned) ? sectionLabel(i ? 'Notes' : 'Pinned', i ? notes.length - pinned : pinned) : ''
@@ -354,7 +393,7 @@
         (col ? ' style="--nt-color:' + col + '"' : '') + '>' +
         '<span class="nt-item-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (canvas ? NI.canvas : NI.doc) + '</svg></span>' +
         '<span class="nt-item-main"><span class="nt-item-row"><span class="nt-item-title">' + (n.is_pinned && !pinned ? '<svg class="nt-pin" viewBox="0 0 24 24" fill="currentColor"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg>' : '') + '<span class="nt-item-name">' + esc(n._title || 'Untitled') + '</span></span></span>' +
-        '<span class="nt-item-meta"><span>' + esc(snippet(n, q) || fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' + nbTag(n) +
+        '<span class="nt-item-meta"><span>' + esc(snippet(n, q) || fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' + nbTag(n, nbById) +
         (n._tags || []).slice(0, 3).map(function (tag) { return '<span class="nt-badge">#' + esc(tag) + '</span>' }).join('') +
         (canvas ? '<span class="nt-badge">Canvas</span>' : '') + '</span></span></button>'
     }).join('')
@@ -362,11 +401,26 @@
     if (animate) { var its = listEl.querySelectorAll('.nt-item'); for (var ii = 0; ii < its.length; ii++) its[ii].style.setProperty('--i', ii) }
   }
   // All notes mixes notebooks, so each row names its own.
-  function nbTag (n) {
-    var nb = S.view === 'all' && n.notebook_id != null && S.notebooks.filter(function (b) { return String(b.id) === String(n.notebook_id) })[0]
+  function nbTag (n, nbById) {
+    var nb = S.view === 'all' && n.notebook_id != null && nbById.get(String(n.notebook_id))
     if (!nb) return ''
     var col = normColor(nb.color)
     return '<span class="nt-item-nb"' + (col ? ' style="--nb-color:' + col + '"' : '') + '>' + esc(nb._name) + '</span>'
+  }
+  // Opening a note only moves the highlight; rebuilding the whole list for that is wasted work.
+  function markActiveRow () {
+    listEl.classList.remove('is-anim')
+    listEl.querySelectorAll('.nt-item.is-active').forEach(function (row) { row.classList.remove('is-active') })
+    var row = S.noteId && listEl.querySelector('.nt-item[data-note="' + CSS.escape(S.noteId) + '"]'); if (row) row.classList.add('is-active')
+  }
+  // After a save only the open note's row changes. Patched in place while it already sits first in its group, where
+  // the sort puts the newest note; otherwise (or while a search filters the list) the list is rebuilt.
+  function patchSavedRow (n) {
+    var row = !S.query && listEl.querySelector('.nt-item[data-note="' + CSS.escape(n.id) + '"]'), prev = row && row.previousElementSibling
+    var first = row && !(prev && prev.classList.contains('nt-item')) && !S.notes.some(function (x) { return x !== n && !x.is_pinned === !n.is_pinned && (x.updated_at || '') > (n.updated_at || '') })
+    if (!first) { renderList(); return }
+    row.querySelector('.nt-item-name').textContent = n._title || 'Untitled'
+    row.querySelector('.nt-item-meta > span').textContent = (fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + n.received_from : '')
   }
   function sectionLabel (label, count) { return '<div class="nt-section">' + label + '<span>' + count + '</span></div>' }
   function listEmpty (q) {
@@ -429,7 +483,7 @@
     editorEl.querySelectorAll('input, textarea, select, button').forEach(function (n) { n.disabled = true })
     S.noteId = id
     lsSet(LS_OPEN, id)
-    renderList()
+    markActiveRow()
     // Seamless switch: dim the outgoing note and hold the spinner back so
     // fast opens (cache/local) swap directly without a loading flash
     editorEl.classList.add('nt-ed-busy')
@@ -442,6 +496,8 @@
     var n = S.notes.filter(function (x) { return x.id === id })[0]
     if (!n) { fail('That note is no longer in this list.'); return }
     try {
+      // A canvas starts loading its engine while the note itself is fetched and decrypted.
+      var engine = n.note_type === 'canvas' ? loadCanvasEngine().catch(function () {}) : null
       var noteKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
       if (seq !== S.openSeq) return
       var d = await apiGet('/notes/api/notes/' + encodeURIComponent(id))
@@ -460,6 +516,7 @@
       }
       var content = ''
       if (d.encrypted_content) content = await decContent(d.encrypted_content, noteKey)
+      if (d.note_type === 'canvas') await (engine || loadCanvasEngine().catch(function () {})) // renderCanvasNote reports a failed load
       if (seq !== S.openSeq || S.pendingOpenId !== id) return
       S.noteKey = noteKey; S.meta = d; S.ver = d.content_version || 1
       if (d.note_type === 'canvas') {
@@ -685,15 +742,19 @@
     if (node && node.nodeType !== 1) node = node.parentNode
     return node && body && body.contains(node) ? node : null
   }
-  // Toolbar buttons show what applies at the caret, as in Word.
-  function syncToolbar () {
+  // Toolbar buttons show what applies at the caret, as in Word. Input and selectionchange both ask for it (twice or
+  // more per keystroke): it runs once per frame and only writes what changed.
+  var toolbarFrame = 0
+  function syncToolbar () { if (!toolbarFrame) toolbarFrame = requestAnimationFrame(paintToolbar) }
+  function paintToolbar () {
+    toolbarFrame = 0
     var bar = editorEl && editorEl.querySelector('.nt-toolbar'), el = bar && selEl(); if (!el) return
     bar.querySelectorAll('[data-cmd]').forEach(function (b) {
       var cmd = b.getAttribute('data-cmd'), arg = b.getAttribute('data-arg'), on = false
-      if (b.tagName === 'SELECT') { var attr = cmd === 'fontName' ? 'face' : 'size', font = el.closest('font[' + attr + ']'); b.value = font ? font.getAttribute(attr) : attr === 'face' ? 'inherit' : '3'; return }
+      if (b.tagName === 'SELECT') { var attr = cmd === 'fontName' ? 'face' : 'size', font = el.closest('font[' + attr + ']'), value = font ? font.getAttribute(attr) : attr === 'face' ? 'inherit' : '3'; if (b.value !== value) b.value = value; return }
       if (arg) on = !!el.closest(arg.replace(/[<>]/g, ''))
       else if (/^(bold|italic|underline|strikeThrough|insertUnorderedList|insertOrderedList|justify\w+)$/.test(cmd)) { try { on = document.queryCommandState(cmd) } catch (e) {} } else return
-      b.classList.toggle('is-active', on); b.setAttribute('aria-pressed', String(on))
+      if (b.getAttribute('aria-pressed') !== String(on)) { b.classList.toggle('is-active', on); b.setAttribute('aria-pressed', String(on)) }
     })
   }
   // Text of a code block with its line breaks, whichever way the browser stored them.
@@ -1101,7 +1162,7 @@
     if (!file || file.size > NOTES_IMAGE_MAX_BYTES) { toast('IMAGE TOO LARGE (MAX ' + mbLabel(NOTES_IMAGE_MAX_BYTES) + ')', 'error'); return }
     var sourceId = S.noteId, sourceSeq = S.openSeq, sourceBody = $('ntBody'), dataUrl = ''
     // Shrunk first (FxCanvas.shrinkImage): the picture is stored in the note body, which every save uploads whole.
-    try { dataUrl = await FxCanvas.shrinkImage(file) } catch (e) {}
+    try { dataUrl = await (await loadCanvasEngine()).shrinkImage(file) } catch (e) {}
     if (S.noteId !== sourceId || S.openSeq !== sourceSeq || !sourceBody || !sourceBody.isConnected || sourceBody !== $('ntBody')) return
     if (!dataUrl) { toast('COULD NOT READ IMAGE', 'error'); return }
     // A per-image cap with no total budget lets a note grow past the server
@@ -1224,17 +1285,18 @@
   // a canvas note with S.canvas === null used to serialise as an empty string
   // and silently overwrite the note while the UI reported "Saved".
   function readEditorBody (type) {
-    if (type === 'canvas') {
-      if (!S.canvas || typeof S.canvas.getData !== 'function') return null
-      var data
-      try { data = S.canvas.getData() } catch (e) { return null }
-      if (!data || !Array.isArray(data.blocks)) return null
-      return JSON.stringify(data)
-    }
+    if (type === 'canvas') { var data = readCanvasData(); return data ? JSON.stringify(data) : null }
     if (type !== 'document') return null
     var el = $('ntBody')
     if (!el || !el.isConnected) return null
-    return sanitizeHtml(el.innerHTML || '')
+    return sanitizeElementHtml(el)
+  }
+  // The canvas model as it stands (peekData: no deep copy; read it and serialise it at once, never change it).
+  function readCanvasData () {
+    if (!S.canvas || typeof S.canvas.getData !== 'function') return null
+    var data
+    try { data = S.canvas.peekData ? S.canvas.peekData() : S.canvas.getData() } catch (e) { return null }
+    return data && Array.isArray(data.blocks) ? data : null
   }
   // One consistent snapshot of everything a write depends on.
   function saveSnapshot () { return { id: S.noteId, key: S.noteKey, ver: S.ver, type: S.currentType } }
@@ -1264,7 +1326,9 @@
     clearTimeout(S.saveTimer); S.saveTimer = null
     if (S.canvas && S.canvas.flush) S.canvas.flush(false)
     var titleEl = $('ntTitle')
-    var body = readEditorBody(snap.type)
+    // A canvas is checked on the model itself (it used to be parsed back from its own JSON); body stays the JSON.
+    var canvasData = snap.type === 'canvas' ? readCanvasData() : null
+    var body = snap.type === 'canvas' ? (canvasData ? JSON.stringify(canvasData) : null) : readEditorBody(snap.type)
     if (!titleEl || !titleEl.isConnected || body == null) {
       // The editor root for this note type is absent. Abort and KEEP S.dirty
       // so nothing is reported as saved and nothing empty is sent.
@@ -1274,7 +1338,7 @@
       toast('EDITOR IS NOT READY. NOTE NOT SAVED', 'error')
       return
     }
-    if (snap.type === 'canvas' && !validateCanvasData(JSON.parse(body))) {
+    if (snap.type === 'canvas' && !validateCanvasData(canvasData)) {
       // Saving would store a canvas openNote() refuses to load, locking the note.
       // Blocked (not just failed) so openNote/createNote can offer export + discard.
       setSaveState('Save failed')
@@ -1321,11 +1385,11 @@
       S.saveFailures = 0
       S.saveBlocked = false
       S.titles[snap.id] = title
-      setBodyText(snap.id, snap.type, body)
+      noteSaved(snap.id, snap.type, body)
       if (n) { n._title = title; n.updated_at = resp.updated_at || new Date().toISOString() }
       if (S.editRevision === saveRevision) { S.dirty = false; setSaveState('Saved'); setTimeout(function () { if (!S.dirty) setSaveState('') }, 1400) }
       else { S.dirty = true; S.saveAgain = true; setSaveState('Unsaved') }
-      renderList()
+      if (n) patchSavedRow(n)
     } catch (e) {
       var status = e && e.status
       var msg = 'COULD NOT SAVE NOTE'
@@ -2000,7 +2064,7 @@
     document.addEventListener('visibilitychange', function () { if (document.hidden) saveNow() })
     // Phones: the browser/system back button returns from the editor to the list.
     window.addEventListener('popstate', function (e) { $('ntPanes') && $('ntPanes').classList.toggle('nt-show-editor', !!(e.state && e.state.ntEditor)) })
-    listEl.addEventListener('input', function (e) { if (e.target.id !== 'ntSearch') return; renderList(e.target.value); if (S.query.trim().length > 1) indexBodies() })
+    listEl.addEventListener('input', function (e) { if (e.target.id === 'ntSearch') searchInput(e.target.value) })
     // The toolbar's menu buttons, in either note type: more formatting, insert, and the open note's own menu.
     editorEl.addEventListener('click', function (e) {
       var button = e.target.closest('[data-menu]'); if (!button || !hasMenu() || !S.noteId || !S.editorReady) return
@@ -2036,6 +2100,15 @@
     window.addEventListener('beforeunload', function (e) { if (S.dirty) { e.preventDefault(); e.returnValue = '' } })
   }
   var newMenuWasOpen = false, headMenuBtn = null  // the head button whose menu was opened last
+  // The first keystroke filters at once; the rest of a burst waits for a 150 ms pause, so fast typing rebuilds the list
+  // (and starts the body index) once instead of on every key.
+  var searchTimer = null, searchPending = false
+  function searchInput (value) {
+    S.query = value
+    if (searchTimer) { searchPending = true; clearTimeout(searchTimer) } else runSearch()
+    searchTimer = setTimeout(function () { searchTimer = null; if (searchPending) { searchPending = false; runSearch() } }, 150)
+  }
+  function runSearch () { renderList(); if (S.query.trim().length > 1) indexBodies() }
   function saveNow () { if (!S.dirty || S.saveBlocked) return; if (S.canvas && S.canvas.flush) S.canvas.flush(); saveNote() }
   function bindLongPress (root, selector, open) {
     root.addEventListener('pointerdown', function (e) {
@@ -2070,7 +2143,21 @@
   }
   function openNbModal () { var m = $('ntNbModal'); m.classList.add('rd-open'); m.setAttribute('aria-hidden', 'false'); $('ntNbName').value = ''; setTimeout(function () { $('ntNbName').focus() }, 30) }
   function closeNbModal () { var m = $('ntNbModal'); m.classList.remove('rd-open'); m.setAttribute('aria-hidden', 'true') }
-  function inkHighlights (root) { if (root && window.FxCanvas && FxCanvas.inkHighlights) FxCanvas.inkHighlights(root) }
+  // Highlights carry their own ink (a yellow highlight under the dark theme's light text was unreadable). A copy of
+  // inkOn/inkHighlights in notes-canvas.js, so a document needs no canvas engine for it: change both together.
+  function inkOn (fill) {
+    var value = String(fill || '').trim(), hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value), rgb = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/i.exec(value)
+    if (hex) rgb = (hex[1].length === 3 ? hex[1].replace(/./g, '$&$&') : hex[1]).match(/../g).map(function (part) { return parseInt(part, 16) })
+    else if (rgb && !(rgb[4] != null && +rgb[4] === 0)) rgb = rgb.slice(1, 4).map(Number)
+    else return ''
+    var lum = rgb.map(function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) })
+    return 0.2126 * lum[0] + 0.7152 * lum[1] + 0.0722 * lum[2] > 0.179 ? '#0f1720' : '#ffffff'
+  }
+  function inkHighlights (root) {
+    var marks = root ? root.querySelectorAll('[style*="background"]') : []; if (!marks.length) return
+    var base = getComputedStyle(root).color
+    Array.prototype.slice.call(marks).reverse().forEach(function (node) { var ink = getComputedStyle(node).color === base && inkOn(getComputedStyle(node).backgroundColor); if (ink) node.style.color = ink })
+  }
   function destroyCanvas () { if (S.canvas) { try { S.canvas.destroy() } catch (e) {} S.canvas = null } }
 
   // ---- Mock hook (headless screenshots) ------------------------------------

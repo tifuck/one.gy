@@ -14,9 +14,9 @@
   'use strict'
 
   var EDITOR_MAX = 5 * 1024 * 1024
-  // Syntax colouring re-highlights the whole buffer: per keystroke up to
-  // HL_SYNC_MAX chars, debounced up to HL_MAX, plain text above that.
-  var HL_SYNC_MAX = 30000
+  // Syntax colouring re-highlights the whole buffer: once per frame while
+  // typing up to HL_SYNC_MAX chars, debounced up to HL_MAX, plain text above.
+  var HL_SYNC_MAX = 5000
   var HL_MAX = 300000
   // Anything decrypted or read into page memory is refused above this size.
   var PREVIEW_MAX = 512 * 1024 * 1024
@@ -564,7 +564,9 @@
     var saving = false
     var hlOn = false
     var hlTimer = null
+    var hlFrame = 0
     var gutterTimer = null
+    var gutterLines = -1  // line count of a plain-numbered gutter, -1 = rebuild
     var posFrame = 0
     var narrow = !!(window.matchMedia && matchMedia('(max-width: 640px)').matches)
     var wrapOn = pref(LS_WRAP, narrow ? '1' : '0') === '1'
@@ -572,11 +574,17 @@
     function updGutter () {
       gutterTimer = null
       if (!isCurrent(generation)) return
-      var lines = ta.value.split('\n'), n = lines.length, s = '', i
+      var v = ta.value, n = 1, s = '', i = -1
+      while ((i = v.indexOf('\n', i + 1)) !== -1) n++
+      var measured = wrapOn && n <= WRAP_MEASURE_MAX && ta.clientWidth
+      // Plain numbers only change with the line count.
+      if (!measured && n === gutterLines) { syncScroll(); return }
+      gutterLines = measured ? -1 : n
       wrap.style.setProperty('--pv-digits', String(String(n).length))
-      if (wrapOn && n <= WRAP_MEASURE_MAX && ta.clientWidth) {
+      if (measured) {
         // One number per visual row: measure each line wrapped at the
         // textarea's width, pad the gutter with blank rows to match.
+        var lines = v.split('\n')
         measure.style.width = ta.clientWidth + 'px'
         var h = ''
         for (i = 0; i < n; i++) h += '<div>' + esc(lines[i]) + '</div>'
@@ -590,9 +598,11 @@
       gutter.textContent = s
       syncScroll()
     }
+    // While typing, the wrapped-row measure pass (every line laid out and
+    // read back) runs once the typing pauses; plain numbers keep up per key.
     function scheduleGutter () {
       clearTimeout(gutterTimer)
-      if (ta.value.length <= HL_SYNC_MAX) updGutter(); else gutterTimer = setTimeout(updGutter, 150)
+      if (!wrapOn && ta.value.length <= HL_MAX) updGutter(); else gutterTimer = setTimeout(updGutter, 150)
     }
     function syncScroll () { gutter.scrollTop = ta.scrollTop; hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft }
     function updPos () {
@@ -618,7 +628,9 @@
     function repaintHl () {
       if (!hlOn) return
       clearTimeout(hlTimer)
-      if (ta.value.length <= HL_SYNC_MAX) { paintHl(); return }
+      // Before the next paint, so the overlay never lags the textarea.
+      if (ta.value.length <= HL_SYNC_MAX) { if (!hlFrame) hlFrame = requestAnimationFrame(function () { hlFrame = 0; paintHl() }); return }
+      if (hlFrame) { cancelAnimationFrame(hlFrame); hlFrame = 0 }
       hlCode.textContent = hlSource()
       hlTimer = setTimeout(paintHl, 200)
     }
@@ -671,7 +683,8 @@
       wrap.classList.toggle('is-wrap', wrapOn)
       ta.setAttribute('wrap', wrapOn ? 'soft' : 'off')
       wrapBtn.setAttribute('aria-pressed', String(wrapOn))
-      scheduleGutter()
+      clearTimeout(gutterTimer)
+      updGutter()
     }
     function paintLayout () {
       var win = modal.classList.contains('pv-window'), label = win ? 'Full screen' : 'Windowed view'

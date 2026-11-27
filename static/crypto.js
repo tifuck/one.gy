@@ -797,15 +797,27 @@ const OneGyCrypto = (function() {
     }
   }
 
+  // One import per link secret: a share page unwraps every listed item's key
+  // with the same one. Non-extractable; a failed import is not kept.
+  const _linkKeys = new Map()
+  function _linkKeyFromSecret(linkSecretBase64) {
+    let p = _linkKeys.get(linkSecretBase64)
+    if (!p) {
+      p = crypto.subtle.importKey(
+        'raw', fromBase64(linkSecretBase64), { name: 'AES-GCM', length: 256 }, false,
+        ['wrapKey', 'unwrapKey']
+      )
+      _linkKeys.set(linkSecretBase64, p)
+      p.catch(() => { if (_linkKeys.get(linkSecretBase64) === p) _linkKeys.delete(linkSecretBase64) })
+    }
+    return p
+  }
+
   /**
    * Unwrap a file key from a share link.
    */
   async function unwrapFileKeyFromLink(encryptedFileKey, nonce, linkSecretBase64) {
-    const linkSecretBytes = fromBase64(linkSecretBase64)
-    const linkKey = await crypto.subtle.importKey(
-      'raw', linkSecretBytes, { name: 'AES-GCM', length: 256 }, false,
-      ['wrapKey', 'unwrapKey']
-    )
+    const linkKey = await _linkKeyFromSecret(linkSecretBase64)
     return crypto.subtle.unwrapKey(
       'raw',
       fromBase64(encryptedFileKey),
@@ -1614,16 +1626,17 @@ const OneGyCrypto = (function() {
    */
   async function setupUserKeys(password) {
     // 1. Split-key derivation: password → PBKDF2(600K) → HKDF → auth_token + wrapping_key
-    const splitKeys = await deriveAuthAndWrappingKeys(password)
-
     // 2. Generate random master key
-    const masterKey = await generateMasterKey()
+    // 3. Generate RSA-OAEP 4096-bit keypair
+    // None needs another, so the PBKDF2 (worker) and the RSA generation overlap.
+    const [splitKeys, masterKey, rsaKeyPair] = await Promise.all([
+      deriveAuthAndWrappingKeys(password),
+      generateMasterKey(),
+      generateRSAKeyPair()
+    ])
 
-    // 3. Wrap master key with the wrapping key (NOT the password)
+    // 4. Wrap master key with the wrapping key (NOT the password)
     const masterKeyWrapped = await wrapMasterKey(masterKey, splitKeys.wrappingKey, splitKeys.salt)
-
-    // 4. Generate RSA-OAEP 4096-bit keypair
-    const rsaKeyPair = await generateRSAKeyPair()
 
     // 5. Export public key as JWK
     const publicKeyJwk = await exportPublicKey(rsaKeyPair.publicKey)
@@ -1820,11 +1833,7 @@ const OneGyCrypto = (function() {
    * Unwrap a folder name key from a link secret (for share link visitors).
    */
   async function unwrapFolderNameKeyFromLink(encryptedNameKey, nonce, linkSecretBase64) {
-    const linkSecretBytes = fromBase64(linkSecretBase64)
-    const linkKey = await crypto.subtle.importKey(
-      'raw', linkSecretBytes, { name: 'AES-GCM', length: 256 }, false,
-      ['wrapKey', 'unwrapKey']
-    )
+    const linkKey = await _linkKeyFromSecret(linkSecretBase64)
     return crypto.subtle.unwrapKey(
       'raw',
       fromBase64(encryptedNameKey),

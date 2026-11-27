@@ -1,9 +1,14 @@
+# get_tracked_storage_breakdowns(): the entry is replaced whole (GIL-atomic).
+_TRACKED_BREAKDOWN_CACHE = {'entry': None}
+
+
 class _StorageManagerNodeAdmin:
 
     # Both waits are bounded. The state lock serializes this process's storage
     # bookkeeping; the drain lock waits for target puts in every worker.
     REMOVE_NODE_LOCK_TIMEOUT_SECONDS = 120
     REMOVE_NODE_DRAIN_TIMEOUT_SECONDS = 120
+    TRACKED_BREAKDOWN_TTL_SECONDS = 20
 
     def _pending_deletes_targeting(self, node_id):
         """AUDIT FIX (finding 10): deferred remote deletes still NEEDING this
@@ -1388,6 +1393,54 @@ class _StorageManagerNodeAdmin:
             'temp_bytes': temp_bytes,
             'tracked_total_bytes': registered_bytes + temp_bytes,
         }
+
+    def get_tracked_storage_breakdowns(self):
+        """{node_id: get_node_tracked_storage_breakdown(node_id)} for every node
+        with synced data, from five GROUP BY node_id queries whatever the node
+        count. Cached for TRACKED_BREAKDOWN_TTL_SECONDS (admin Storage tab);
+        node changes drop the cache (invalidate_tracked_storage_breakdowns)."""
+        cached = _TRACKED_BREAKDOWN_CACHE.get('entry')
+        if cached and time.monotonic() - cached['at'] < self.TRACKED_BREAKDOWN_TTL_SECONDS:
+            return cached['data']
+        file_bytes = db.func.coalesce(db.func.sum(db.func.coalesce(FileReplica.size_bytes, File.size, 0)), 0)
+        thumb_bytes = db.func.coalesce(db.func.sum(ThumbnailReplica.size_bytes), 0)
+
+        def by_node(query, node_col):
+            return {int(node_id): int(total or 0) for node_id, total in query.group_by(node_col).all()}
+        parts = {
+            'registered_file_bytes': by_node(db.session.query(FileReplica.node_id, file_bytes).select_from(FileReplica)
+                                             .join(File, File.id == FileReplica.file_id)
+                                             .filter(FileReplica.status == 'synced', File.is_temp_upload == False),
+                                             FileReplica.node_id),
+            'temp_file_bytes': by_node(db.session.query(FileReplica.node_id, file_bytes).select_from(FileReplica)
+                                       .join(File, File.id == FileReplica.file_id)
+                                       .filter(FileReplica.status == 'synced', File.is_temp_upload == True),
+                                       FileReplica.node_id),
+            'note_bytes': by_node(db.session.query(NoteReplica.node_id, db.func.coalesce(db.func.sum(Note.size), 0))
+                                  .select_from(NoteReplica).join(Note, Note.id == NoteReplica.note_id)
+                                  .filter(NoteReplica.status == 'synced', NoteReplica.synced_version == Note.content_version),
+                                  NoteReplica.node_id),
+            'registered_thumb_bytes': by_node(db.session.query(ThumbnailReplica.node_id, thumb_bytes).select_from(ThumbnailReplica)
+                                              .join(File, File.id == ThumbnailReplica.file_id)
+                                              .filter(ThumbnailReplica.status == 'synced', File.is_temp_upload == False),
+                                              ThumbnailReplica.node_id),
+            'temp_thumb_bytes': by_node(db.session.query(ThumbnailReplica.node_id, thumb_bytes).select_from(ThumbnailReplica)
+                                        .join(File, File.id == ThumbnailReplica.file_id)
+                                        .filter(ThumbnailReplica.status == 'synced', File.is_temp_upload == True),
+                                        ThumbnailReplica.node_id),
+        }
+        result = {}
+        for node_id in set().union(*parts.values()):
+            row = {key: values.get(node_id, 0) for key, values in parts.items()}
+            row['registered_bytes'] = row['registered_file_bytes'] + row['note_bytes'] + row['registered_thumb_bytes']
+            row['temp_bytes'] = row['temp_file_bytes'] + row['temp_thumb_bytes']
+            row['tracked_total_bytes'] = row['registered_bytes'] + row['temp_bytes']
+            result[node_id] = row
+        _TRACKED_BREAKDOWN_CACHE['entry'] = {'at': time.monotonic(), 'data': result}
+        return result
+
+    def invalidate_tracked_storage_breakdowns(self):
+        _TRACKED_BREAKDOWN_CACHE['entry'] = None
 
     def get_node_disk_usage(self, node_id):
         """Get disk usage for a storage node. Returns cached data if available

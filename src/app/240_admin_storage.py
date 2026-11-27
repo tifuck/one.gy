@@ -3,6 +3,10 @@
 @admin_required
 def admin_api_storage_nodes():
     """List all storage nodes with status"""
+    return jsonify({'nodes': _storage_nodes_json()})
+
+
+def _storage_nodes_json():
     nodes = StorageNode.query.order_by(StorageNode.created_at).all()
     result = []
     for node in nodes:
@@ -44,7 +48,7 @@ def admin_api_storage_nodes():
                           else 'size-only' if node.checksum_capable is False
                           else 'unknown'),
         })
-    return jsonify({'nodes': result})
+    return result
 
 # Config keys the admin API may set, per node type: exactly what _SSHBackend,
 # _S3Backend and the local node read. SSH `key_path` is deliberately absent: it
@@ -236,6 +240,7 @@ def admin_api_storage_nodes_create():
 
     try:
         node = storage.add_node(name, node_type, config, is_primary=is_primary)
+        storage.invalidate_tracked_storage_breakdowns()
         print(f'[ADMIN] Added storage node: {name} ({node_type})')
         return jsonify({'success': True, 'node_id': node.id, 'message': 'NODE ADDED. BACKFILL STARTED.'})
     except ValueError as e:
@@ -356,6 +361,7 @@ def admin_api_storage_nodes_update(node_id):
         node.set_config(existing_config)
 
     db.session.commit()
+    storage.invalidate_tracked_storage_breakdowns()
     storage._bump_backends_version()
     # Refresh backend if config changed
     storage.refresh_backends()
@@ -402,6 +408,7 @@ def admin_api_storage_nodes_delete(node_id):
                 return jsonify({'error': 'FORCE REMOVAL REQUIRES THE EXACT NODE NAME AND THE PHRASE REMOVE EXCLUSIVE DATA RISK'}), 400
         is_local = node and node.node_type == 'local'
         storage.remove_node(node_id, force=force)
+        storage.invalidate_tracked_storage_breakdowns()
         if is_local:
             print(f'[ADMIN] WARNING: Removed local disk storage node {node_id} — new writes will go to remote backends')
         else:
@@ -429,7 +436,21 @@ def admin_api_storage_nodes_disk_usage(node_id):
     node = db.session.get(StorageNode, node_id)
     if not node:
         return jsonify({'error': 'NODE NOT FOUND'}), 404
-    tracked = storage.get_node_tracked_storage_breakdown(node_id) or {}
+    return jsonify(_storage_node_disk_json(node, storage.get_node_tracked_storage_breakdown(node_id) or {}))
+
+
+@app.route('/admin/api/storage/disk-usage')
+@limiter.limit(admin_rate_limit)
+@admin_required
+def admin_api_storage_disk_usage():
+    """What .../nodes/<id>/disk-usage returns, for every node, keyed by node id.
+    Tracked bytes come from grouped queries, cached briefly."""
+    tracked = storage.get_tracked_storage_breakdowns()
+    return jsonify({'nodes': {str(node.id): _storage_node_disk_json(node, tracked.get(node.id) or {})
+                              for node in StorageNode.query.order_by(StorageNode.created_at).all()}})
+
+
+def _storage_node_disk_json(node, tracked):
     payload = {
         'supported': True,
         'node_type': node.node_type,
@@ -443,7 +464,7 @@ def admin_api_storage_nodes_disk_usage(node_id):
         }
     }
     if node.node_type in ('local', 'ssh'):
-        result = storage.get_node_disk_usage(node_id)
+        result = storage.get_node_disk_usage(node.id)
         if result and result.get('data'):
             payload['cached_at'] = result.get('cached_at')
             payload['host_disk'] = {
@@ -452,7 +473,7 @@ def admin_api_storage_nodes_disk_usage(node_id):
                 'free_bytes': result['data']['free_bytes'],
                 'percent': result['data']['percent'],
             }
-    return jsonify(payload)
+    return payload
 
 @app.route('/admin/api/storage/nodes/<int:node_id>/set-primary', methods=['POST'])
 @limiter.limit(admin_rate_limit)
@@ -472,6 +493,23 @@ def admin_api_storage_status():
     """Get replication status overview"""
     status = storage.get_replication_status()
     return jsonify(status)
+
+
+@app.route('/admin/api/storage/dashboard')
+@limiter.limit(admin_rate_limit)
+@admin_required
+def admin_api_storage_dashboard():
+    """The Storage tab in one request: what the nodes, status and the five
+    replication-setting GETs return, one key per route."""
+    return jsonify({
+        'nodes': _storage_nodes_json(),
+        'status': storage.get_replication_status(),
+        'replication_speed': _replication_speed_json(),
+        'replication_source': _replication_source_json(),
+        'replication_workers': _replication_workers_json(),
+        'health_check_interval': _health_check_interval_json(),
+        'verify_checksum': _verify_checksum_json(),
+    })
 
 @app.route('/admin/api/storage/retry-errors', methods=['POST'])
 @limiter.limit(admin_rate_limit)
@@ -498,13 +536,17 @@ def admin_api_storage_retry_errors():
 @admin_required
 def admin_api_replication_speed_get():
     """Get current replication speed preset"""
+    return jsonify(_replication_speed_json())
+
+
+def _replication_speed_json():
     speed = get_setting_value('replication_speed') or 'steady'
     if speed not in StorageManager.REPLICATION_PRESETS:
         speed = 'steady'
     presets = {}
     for name, cfg in StorageManager.REPLICATION_PRESETS.items():
         presets[name] = {'batch': cfg['batch'], 'delay': cfg['delay'], 'approx_per_min': cfg['approx']}
-    return jsonify({'speed': speed, 'presets': presets})
+    return {'speed': speed, 'presets': presets}
 
 @app.route('/admin/api/storage/replication-speed', methods=['POST'])
 @limiter.limit(admin_rate_limit)
@@ -537,13 +579,17 @@ def admin_api_replication_speed_set():
 @admin_required
 def admin_api_replication_source_get():
     """Get current replication source mode"""
+    return jsonify(_replication_source_json())
+
+
+def _replication_source_json():
     mode = get_setting_value('replication_source') or 'primary_fallback'
     if mode not in StorageManager.REPLICATION_SOURCE_MODES:
         mode = 'primary_fallback'
     modes = {}
     for name, desc in StorageManager.REPLICATION_SOURCE_MODES.items():
         modes[name] = {'description': desc}
-    return jsonify({'mode': mode, 'modes': modes})
+    return {'mode': mode, 'modes': modes}
 
 @app.route('/admin/api/storage/replication-source', methods=['POST'])
 @limiter.limit(admin_rate_limit)
@@ -580,6 +626,10 @@ HEALTH_CHECK_PRESETS = {
 @admin_required
 def admin_api_health_check_interval_get():
     """Get current health check interval preset"""
+    return jsonify(_health_check_interval_json())
+
+
+def _health_check_interval_json():
     current_seconds = get_numeric_setting('health_check_interval')
     # Find matching preset name or default to 'normal'
     current_preset = 'normal'
@@ -590,7 +640,7 @@ def admin_api_health_check_interval_get():
     presets = {}
     for name, cfg in HEALTH_CHECK_PRESETS.items():
         presets[name] = {'seconds': cfg['seconds'], 'label': cfg['label'], 'approx_per_day': cfg['approx_per_day']}
-    return jsonify({'preset': current_preset, 'seconds': current_seconds, 'presets': presets})
+    return {'preset': current_preset, 'seconds': current_seconds, 'presets': presets}
 
 @app.route('/admin/api/storage/health-check-interval', methods=['POST'])
 @limiter.limit(admin_rate_limit)
@@ -621,8 +671,12 @@ def admin_api_health_check_interval_set():
 @admin_required
 def admin_api_verify_checksum_get():
     """Get current checksum verification setting"""
+    return jsonify(_verify_checksum_json())
+
+
+def _verify_checksum_json():
     enabled = (get_setting_value('replication_verify_checksum') or 'false').lower() in ('true', '1', 'yes')
-    return jsonify({'enabled': enabled})
+    return {'enabled': enabled}
 
 @app.route('/admin/api/storage/verify-checksum', methods=['POST'])
 @limiter.limit(admin_rate_limit)
@@ -661,12 +715,16 @@ REPLICATION_WORKER_PRESETS = {
 @admin_required
 def admin_api_replication_workers_get():
     """Get current replication worker count"""
+    return jsonify(_replication_workers_json())
+
+
+def _replication_workers_json():
     workers = get_numeric_setting('replication_workers')
     workers = max(1, min(workers, 10))
     presets = {}
     for name, cfg in REPLICATION_WORKER_PRESETS.items():
         presets[name] = {'workers': cfg['workers'], 'label': cfg['label'], 'desc': cfg['desc']}
-    return jsonify({'workers': workers, 'presets': presets})
+    return {'workers': workers, 'presets': presets}
 
 @app.route('/admin/api/storage/replication-workers', methods=['POST'])
 @limiter.limit(admin_rate_limit)
@@ -771,6 +829,7 @@ def admin_api_storage_purge_local():
             return jsonify({'error': 'FAILED TO START PURGE'}), 500
     finally:
         _release_scoped_lock(start_lock)
+    storage.invalidate_tracked_storage_breakdowns()
     print(f'[ADMIN] Started background local purge')
     return jsonify({'success': True, 'status': 'started'})
 

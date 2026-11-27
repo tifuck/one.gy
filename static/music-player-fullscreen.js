@@ -28,6 +28,7 @@
           fsPlaylistBtn.classList.toggle('mp-btn-active')
           // Close devices panel when playlist opens
           if (mp.devicesPanel) mp.devicesPanel.classList.remove('mp-devices-visible')
+          mp._renderPlaylist()
         }
       })
     }
@@ -265,6 +266,7 @@
     history.pushState({ mpFullscreen: true }, '')
     // Repaint progress fill with fullscreen colors
     mp._updateProgressFill()
+    mp._upgradePlayerArt()
   }
 
   function _collapseFullscreen(instant, fromPopstate) {

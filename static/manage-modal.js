@@ -398,6 +398,19 @@ window.ManageModal = (function() {
     }
   }
 
+  // ─── Hints from the opener (Files page) ───────────────────────
+  // openFile(id, hint) may pass the unwrapped file key and the decrypted
+  // thumbnail the page already holds, saving /key-info, /e2e-thumbnail and
+  // the decrypts. Each is used only while it matches this data.
+  function _hintFileKey(data) {
+    const h = data._hint
+    return h && h.fileKey && h.encryptedFileKey && h.encryptedFileKey === data.encrypted_file_key ? h.fileKey : null
+  }
+  function _hintThumbUrl(data) {
+    const h = data._hint
+    return h && h.thumbUrl && h.thumbNonce && h.thumbNonce === data.enc_thumb_nonce ? h.thumbUrl : null
+  }
+
   // ─── Decrypt server-stored encrypted thumbnail (async fallback) ───
   async function _decryptEncryptedThumbnail(data, iconEl, isActive) {
     function _removeModalSpinner() { var s = iconEl.querySelector('.thumb-spinner'); if (s) s.remove() }
@@ -408,37 +421,58 @@ window.ManageModal = (function() {
     // Need OneGyCrypto
     if (typeof OneGyCrypto === 'undefined') { _removeModalSpinner(); return }
 
+    // The opener's decrypted copy. Its blob URL is the page's to revoke, never
+    // ours (_modalThumbBlobUrl); if it is already gone, decrypt as usual.
+    const hintUrl = _hintThumbUrl(data)
+    if (hintUrl) {
+      const img = await new Promise(resolve => {
+        const im = new Image()
+        im.alt = ''
+        im.onload = () => resolve(im)
+        im.onerror = () => resolve(null)
+        im.src = hintUrl
+      })
+      if (isActive && !isActive()) return
+      if (img) {
+        if (currentManageData && currentManageData.id === data.id) { iconEl.innerHTML = ''; iconEl.appendChild(img) }
+        return
+      }
+      data._hint.thumbUrl = null
+    }
+
     try {
-      // Fetch key-info to get encrypted file key + wrapping info
-      const keyResp = await fetch('/f/' + data.id + '/key-info')
-      if (!keyResp.ok) { _removeModalSpinner(); return }
-      const keyInfo = await keyResp.json()
-      if (!keyInfo.encrypted_file_key) { _removeModalSpinner(); return }
+      let fileKey = _hintFileKey(data)
 
-      let fileKey = null
+      if (!fileKey) {
+        // Fetch key-info to get encrypted file key + wrapping info
+        const keyResp = await fetch('/f/' + data.id + '/key-info')
+        if (!keyResp.ok) { _removeModalSpinner(); return }
+        const keyInfo = await keyResp.json()
+        if (!keyInfo.encrypted_file_key) { _removeModalSpinner(); return }
 
-      if (keyInfo.file_key_salt) {
-        // Passphrase-wrapped file — try per-file keychain first, then global sessionStorage
-        let passphrase = null
-        if (typeof TempKeychain !== 'undefined') {
-          try { passphrase = await TempKeychain.get(data.id) } catch (e) {}
+        if (keyInfo.file_key_salt) {
+          // Passphrase-wrapped file — try per-file keychain first, then global sessionStorage
+          let passphrase = null
+          if (typeof TempKeychain !== 'undefined') {
+            try { passphrase = await TempKeychain.get(data.id) } catch (e) {}
+          }
+          if (!passphrase) {
+            try { passphrase = sessionStorage.getItem('e2e_passphrase') } catch (e) {}
+          }
+          if (!passphrase) { _removeModalSpinner(); return }
+          fileKey = await OneGyCrypto.unwrapFileKeyWithPassphrase(
+            keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase
+          )
+        } else if (typeof OneGyCrypto.hasSessionKeys === 'function' && OneGyCrypto.hasSessionKeys()) {
+          // Master-key-wrapped file
+          const masterKey = await OneGyCrypto.getMasterKeyFromSession()
+          if (!masterKey) { _removeModalSpinner(); return }
+          fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(
+            keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
+          )
+        } else {
+          _removeModalSpinner(); return
         }
-        if (!passphrase) {
-          try { passphrase = sessionStorage.getItem('e2e_passphrase') } catch (e) {}
-        }
-        if (!passphrase) { _removeModalSpinner(); return }
-        fileKey = await OneGyCrypto.unwrapFileKeyWithPassphrase(
-          keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase
-        )
-      } else if (typeof OneGyCrypto.hasSessionKeys === 'function' && OneGyCrypto.hasSessionKeys()) {
-        // Master-key-wrapped file
-        const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-        if (!masterKey) { _removeModalSpinner(); return }
-        fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(
-          keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
-        )
-      } else {
-        _removeModalSpinner(); return
       }
 
       // Get encrypted thumbnail data: from inline API response or fetch from endpoint
@@ -653,6 +687,18 @@ window.ManageModal = (function() {
     return data.is_e2e || (data.e2e_count > 0) || data.has_mixed_e2e
   }
 
+  // Link keys are one POST per item (no batch endpoint): run fn(item, index)
+  // at most LINK_KEY_CONCURRENCY at a time. fn handles its own errors; once
+  // stop() is true no further items start.
+  const LINK_KEY_CONCURRENCY = 6
+  async function _runPool(items, fn, stop) {
+    let next = 0
+    async function worker() {
+      while (next < items.length && !(stop && stop())) { const i = next++; await fn(items[i], i) }
+    }
+    await Promise.all(Array.from({ length: Math.min(LINK_KEY_CONCURRENCY, items.length) }, worker))
+  }
+
   // ─── E2E Folder Share Link Generation ───────────────────────
   // Returns true when every E2E file in the folder was keyed for the link,
   // false on a hard failure (caller must NOT present a link), null when N/A.
@@ -706,7 +752,7 @@ window.ManageModal = (function() {
           }
         }
 
-        for (const fileInfo of e2eFiles) {
+        await _runPool(e2eFiles, async (fileInfo) => {
           try {
             const keyInfo = batchKeys[fileInfo.id]
             if (!keyInfo || !keyInfo.encrypted_file_key) throw new Error('FILE KEY NOT FOUND')
@@ -735,7 +781,7 @@ window.ManageModal = (function() {
           } catch (err) {
             console.error(`[MANAGE MODAL] E2E folder link key failed for ${fileInfo.name}:`, err)
           }
-        }
+        })
       }
 
       if (keyed < e2eFileCount) {
@@ -780,9 +826,11 @@ window.ManageModal = (function() {
           const grandchildren = childrenByParent.get(childId) || []
           for (const grandchild of grandchildren) stack.push(grandchild)
         }
-        for (const sf of allFolders) {
-          if (!subtreeIds.has(String(sf.id))) continue
-          if (sf.encrypted_name_key && sf.name_key_nonce) {
+        // The first failure (in list order) fails the share, as before; no
+        // further folders start once one has failed.
+        const subErrors = []
+        await _runPool(allFolders.filter(sf => subtreeIds.has(String(sf.id)) && sf.encrypted_name_key && sf.name_key_nonce), async (sf, i) => {
+          try {
             const sfNameKey = await OneGyCrypto.unwrapFolderNameKey(sf.encrypted_name_key, sf.name_key_nonce, masterKey)
             if (sfNameKey) {
               const sfLinkData = await OneGyCrypto.wrapFolderNameKeyForLink(sfNameKey, linkKey)
@@ -793,8 +841,10 @@ window.ManageModal = (function() {
               })
               if (!sfNameResp.ok) throw new Error(`SUBFOLDER ${sf.id} NAME LINK KEY UPLOAD FAILED (HTTP ${sfNameResp.status})`)
             }
-          }
-        }
+          } catch (err) { subErrors[i] = err }
+        }, () => subErrors.length > 0)
+        const subError = subErrors.find(Boolean)
+        if (subError) throw subError
       } catch (nkErr) {
         throw new Error(nkErr.message || 'FOLDER NAME LINK KEY PROVISIONING FAILED')
       }
@@ -959,10 +1009,10 @@ window.ManageModal = (function() {
   async function _tryDecryptFileName(data) {
     if (!data.encrypted_name || !data.name_nonce || !data.encrypted_file_key) return null
     try {
-      let fileKey = null
+      let fileKey = _hintFileKey(data)
 
       // Try master key first (registered users)
-      if (typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys()) {
+      if (!fileKey && typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys()) {
         const masterKey = await OneGyCrypto.getMasterKeyFromSession()
         if (masterKey) {
           try {
@@ -1951,7 +2001,9 @@ window.ManageModal = (function() {
   }
 
   // ─── Public: open manage for file by ID ─────────────────────
-  async function openFile(fileId) {
+  // hint (optional): { fileKey, encryptedFileKey, thumbUrl, thumbNonce } the
+  // opener already has (see _hintFileKey / _hintThumbUrl).
+  async function openFile(fileId, hint) {
     // A running conversion still owns currentManageData — retargeting it here
     // would send the in-flight file's ciphertext to this file.
     if (_blockedByConversion()) return
@@ -1979,6 +2031,7 @@ window.ManageModal = (function() {
         return
       }
 
+      if (hint) data._hint = hint
       currentManageData = data
       restoreModalContent()
       populateFileModal(data, function() {

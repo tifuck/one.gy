@@ -409,8 +409,20 @@
     if(dlBtn) dlBtn.disabled = !ok
   }
 
-  function persist(){
+  // Typing saves at most every 300 ms; leaving or hiding the page saves at once.
+  var saveTimer = null
+  function flushSave(){
+    if(!saveTimer) return
+    clearTimeout(saveTimer)
+    saveTimer = null
     saveStored(draft)
+  }
+  window.addEventListener('pagehide', flushSave)
+  document.addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden') flushSave() })
+
+  function persist(){
+    clearTimeout(saveTimer)
+    saveTimer = setTimeout(flushSave, 300)
     refreshPreview()
   }
 
@@ -556,7 +568,7 @@
       applyDefaults(draft, draft.task, false)
       writeForm()
     }
-    showGroups()
+    if(k === 'task' || k === 'mode') showGroups()
     persist()
   }
 

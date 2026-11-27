@@ -7,8 +7,9 @@
    code to a check and takes every colour from those issues, never from
    thresholds of its own.
    Charts are plain SVG drawn at the container's real width (no library).
-   admin.js owns fetching and the live refresh timer; this file owns the
-   once-a-second "x s ago" ticker and the view tabs.
+   admin.js owns fetching and the live refresh timer, and loads this file when
+   the Monitoring tab first opens; this file owns the once-a-second "x s ago"
+   ticker and the view tabs.
    ========================================================================== */
 (function () {
   'use strict'
@@ -150,9 +151,7 @@
     { tip: tip, cls: 'mon-chart-card', meta: !multi && series.length && !empty ? H.esc(fmt(spec.unit, last(series[0]))) : '' })
   }
 
-  function drawLine (el, spec) {
-    var W = el.clientWidth, Hh = el.clientHeight
-    if (!W) return
+  function drawLine (el, spec, W, Hh) {
     var padR = 6, padT = 6, padB = 20
     var t = spec.t, n = t.length, t0 = spec.start || t[0], t1 = spec.end || t[n - 1]
     var series = spec.series
@@ -215,12 +214,10 @@
     }
     out += '<line class="mon-guide" x1="0" x2="0" y1="' + padT + '" y2="' + (padT + ih) + '" style="display:none"/>'
     el.innerHTML = '<svg width="' + W + '" height="' + Hh + '" viewBox="0 0 ' + W + ' ' + Hh + '">' + out + '</svg><div class="mon-tip" hidden></div>'
-    el._geo = { x: x, padL: padL, iw: iw, W: W }
+    el._geo = { x: x, padL: padL, iw: iw, W: W, Hh: Hh }
   }
 
-  function drawTimeline (el, spec) {
-    var W = el.clientWidth, Hh = el.clientHeight
-    if (!W) return
+  function drawTimeline (el, spec, W, Hh) {
     var padL = 48, padR = 8, laneH = 24, top = 4
     var iw = W - padL - padR, t0 = spec.start, t1 = spec.end
     function x (ts) { return padL + (ts - t0) / (t1 - t0) * iw }
@@ -239,57 +236,88 @@
       out += '<text x="' + x(ts).toFixed(1) + '" y="' + (Hh - 4) + '" text-anchor="' + (k === 0 ? 'start' : k === ticks ? 'end' : 'middle') + '" class="mon-axis">' + H.esc(clockLabel(ts, t1 - t0)) + '</text>'
     }
     el.innerHTML = '<svg width="' + W + '" height="' + Hh + '" viewBox="0 0 ' + W + ' ' + Hh + '">' + out + '</svg><div class="mon-tip" hidden></div>'
-    el._geo = { x: x, padL: padL, iw: iw, W: W, laneH: laneH, top: top }
+    el._geo = { x: x, padL: padL, iw: iw, W: W, Hh: Hh, laneH: laneH, top: top }
   }
 
+  // Visible charts only, all measured before any is drawn (one layout instead
+  // of one per chart); a chart already drawn at its size is left as it is.
   function drawAll (root) {
-    root.querySelectorAll('.mon-chart').forEach(function (el) {
+    var todo = []
+    root.querySelectorAll('.mon-view:not([hidden]) .mon-chart').forEach(function (el) {
       var spec = CHARTS[el.getAttribute('data-chart')]
-      if (!spec) return
-      if (spec.timeline) drawTimeline(el, spec); else drawLine(el, spec)
+      if (spec) todo.push({ el: el, spec: spec })
+    })
+    todo.forEach(function (c) { c.W = c.el.clientWidth; c.H = c.el.clientHeight })
+    todo.forEach(function (c) {
+      var g = c.el._geo
+      if (!c.W || (c.el._spec === c.spec && g && g.W === c.W && g.Hh === c.H)) return
+      if (c.spec.timeline) drawTimeline(c.el, c.spec, c.W, c.H); else drawLine(c.el, c.spec, c.W, c.H)
+      c.el._spec = c.spec; c.el._box = null; c.el._tipKey = null
     })
   }
 
+  // Pointer moves are handled once per frame. The chart's box is read once per
+  // hover (dropped on scroll, leave and redraw); the tooltip text and the
+  // crosshairs change only when the hovered point does; the tooltip moves by
+  // transform.
+  var hover = null, hoverFrame = 0
   function onHover (e) {
     var el = e.target.closest && e.target.closest('.mon-chart')
     if (!el || !el._geo) return
-    var spec = CHARTS[el.getAttribute('data-chart')], geo = el._geo
+    hover = { el: el, x: e.clientX, y: e.clientY }
+    if (!hoverFrame) hoverFrame = requestAnimationFrame(showHover)
+  }
+  function showHover () {
+    hoverFrame = 0
+    var h = hover
+    if (!h || !h.el._geo || !h.el.isConnected) return
+    var el = h.el, spec = CHARTS[el.getAttribute('data-chart')], geo = el._geo
     if (!spec) return
-    var box = el.getBoundingClientRect(), mx = e.clientX - box.left, my = e.clientY - box.top
-    var tip = el.querySelector('.mon-tip'), guide = el.querySelector('.mon-guide')
-    var html = ''
-    var px = mx
+    var box = el._box || (el._box = el.getBoundingClientRect()), mx = h.x - box.left, my = h.y - box.top
+    var tip = el.querySelector('.mon-tip')
+    var key, px, html
     if (spec.timeline) {
-      var lane = spec.lanes[Math.floor((my - geo.top) / geo.laneH)]
+      var li = Math.floor((my - geo.top) / geo.laneH), lane = spec.lanes[li]
       var best = null
-      if (lane) lane.runs.forEach(function (r) { var d = Math.abs(geo.x(r.t) - mx); if (d < 12 && (!best || d < best.d)) best = { d: d, r: r } })
-      if (!best) { tip.hidden = true; return }
+      if (lane) lane.runs.forEach(function (r, k) { var d = Math.abs(geo.x(r.t) - mx); if (d < 12 && (!best || d < best.d)) best = { d: d, r: r, k: k } })
+      if (!best) { tip.hidden = true; el._tipKey = null; return }
+      key = li + ':' + best.k
       px = geo.x(best.r.t)
-      html = '<b>' + H.esc(lane.name + ', ' + fullTime(best.r.t)) + '</b>' + best.r.lines.map(function (l) { return '<div>' + H.esc(l) + '</div>' }).join('')
+      if (key !== el._tipKey) html = '<b>' + H.esc(lane.name + ', ' + fullTime(best.r.t)) + '</b>' + best.r.lines.map(function (l) { return '<div>' + H.esc(l) + '</div>' }).join('')
     } else {
       var t = spec.t, i = 0, bestD = Infinity
       for (var j = 0; j < t.length; j++) { var dd = Math.abs(geo.x(t[j]) - mx); if (dd < bestD) { bestD = dd; i = j } }
+      key = i
       px = geo.x(t[i])
-      if (guide) { guide.setAttribute('x1', px); guide.setAttribute('x2', px); guide.style.display = '' }
-      // Shared crosshair: mark the same moment on the other charts of this view.
-      el.closest('.mon-view').querySelectorAll('.mon-chart').forEach(function (other) {
-        var g = other !== el && other._geo && other.querySelector('.mon-guide'), ox = g ? other._geo.x(t[i]) : 0
-        if (!g) return
-        g.setAttribute('x1', ox); g.setAttribute('x2', ox)
-        g.style.display = ox >= other._geo.padL && ox <= other._geo.W ? '' : 'none'
-      })
-      html = '<b>' + H.esc(fullTime(t[i])) + '</b>' + spec.series.map(function (s) {
-        return '<div><i style="background:' + s.color + '"></i>' + H.esc(s.name) + '<span>' + H.esc(fmt(spec.unit, s.values[i])) + '</span></div>'
-      }).join('')
+      if (key !== el._tipKey) {
+        var guide = el.querySelector('.mon-guide')
+        if (guide) { guide.setAttribute('x1', px); guide.setAttribute('x2', px); guide.style.display = '' }
+        // Shared crosshair: mark the same moment on the other charts of this view.
+        el.closest('.mon-view').querySelectorAll('.mon-chart').forEach(function (other) {
+          var g = other !== el && other._geo && other.querySelector('.mon-guide'), ox = g ? other._geo.x(t[i]) : 0
+          if (!g) return
+          g.setAttribute('x1', ox); g.setAttribute('x2', ox)
+          g.style.display = ox >= other._geo.padL && ox <= other._geo.W ? '' : 'none'
+        })
+        html = '<b>' + H.esc(fullTime(t[i])) + '</b>' + spec.series.map(function (s) {
+          return '<div><i style="background:' + s.color + '"></i>' + H.esc(s.name) + '<span>' + H.esc(fmt(spec.unit, s.values[i])) + '</span></div>'
+        }).join('')
+      }
     }
-    tip.innerHTML = html
-    tip.hidden = false
-    var tw = tip.offsetWidth
-    tip.style.left = Math.max(0, Math.min(geo.W - tw, px + 12 + tw > geo.W ? px - tw - 12 : px + 12)) + 'px'
+    if (key !== el._tipKey) {
+      tip.innerHTML = html
+      tip.hidden = false
+      el._tipKey = key
+      el._tipW = tip.offsetWidth
+    }
+    var tw = el._tipW
+    tip.style.transform = 'translateX(' + Math.max(0, Math.min(geo.W - tw, px + 12 + tw > geo.W ? px - tw - 12 : px + 12)) + 'px)'
   }
   function onLeave (e) {
     var el = e.target.closest && e.target.closest('.mon-chart')
     if (!el) return
+    hover = null
+    el._box = null; el._tipKey = null
     var tip = el.querySelector('.mon-tip')
     if (tip) tip.hidden = true
     el.closest('.mon-view').querySelectorAll('.mon-guide').forEach(function (g) { g.style.display = 'none' })
@@ -722,6 +750,18 @@
   }
 
   // ---- Public API ------------------------------------------------------------------
+  // Only the open view is built; the others are built from ctx when first shown.
+  var PANES = {
+    overview: function (c) {
+      return statusStrip(c.rows) + statPanels(c.st, c.dv, c.span, c.rangeText, c.now) +
+        '<div class="mon-cols is-split">' + issueLog(c.rows, c.hist, c.now, c.rangeText) + availability(c.st, c.dv, c.span, c.rangeText) + '</div>'
+    },
+    storage: function (c) { return nodesTable(c.st, c.now) + '<div class="mon-cols is-3">' + durabilityCard(c.st) + verifyAgeCard(c.st, c.now) + jobsCard(c.st, c.now, c.th) + '</div>' },
+    trends: function (c) { return trends(c.dv, c.span) },
+    backups: function (c) { return backupsView(c.st, c.hist.backups, c.th, c.now) }
+  }
+  var ctx = null
+
   function render (d, range, helpers) {
     H = helpers
     CHARTS = {}
@@ -749,16 +789,14 @@
     var ranges = '<div class="rd-tabs mon-range" role="group" aria-label="Time range">' + RANGES.map(function (r) {
       return '<button type="button" class="rd-tab' + (r[0] === range ? ' is-active' : '') + '" id="mon-range-' + r[0] + '" data-mon-range="' + r[0] + '" aria-pressed="' + (r[0] === range) + '">' + r[1] + '</button>'
     }).join('') + '</div>'
-    function pane (id, html) {
-      return '<div class="mon-view" role="tabpanel" id="mon-view-' + id + '" aria-labelledby="mon-tab-' + id + '"' + (id === view ? '' : ' hidden') + '>' + html + '</div>'
+    ctx = { st: st, hist: hist, now: now, th: th, span: span, rangeText: rangeText, rows: rows, dv: dv }
+    function pane (id) {
+      var on = id === view
+      return '<div class="mon-view" role="tabpanel" id="mon-view-' + id + '" aria-labelledby="mon-tab-' + id + '"' + (on ? '' : ' hidden') + '>' + (on ? PANES[id](ctx) : '') + '</div>'
     }
     return '<div class="mon">' +
       '<header class="mon-bar"><h1 class="rd-page-title">Monitoring</h1>' + tabs + '<span class="mon-bar-end">' + live + ranges + '</span></header>' +
-      pane('overview', statusStrip(rows) + statPanels(st, dv, span, rangeText, now) +
-        '<div class="mon-cols is-split">' + issueLog(rows, hist, now, rangeText) + availability(st, dv, span, rangeText) + '</div>') +
-      pane('storage', nodesTable(st, now) + '<div class="mon-cols is-3">' + durabilityCard(st) + verifyAgeCard(st, now) + jobsCard(st, now, th) + '</div>') +
-      pane('trends', trends(dv, span)) +
-      pane('backups', backupsView(st, hist.backups, th, now)) +
+      VIEWS.map(function (v) { return pane(v[0]) }).join('') +
       '</div>'
   }
 
@@ -769,7 +807,11 @@
       var on = b.getAttribute('data-mon-view') === v
       b.classList.toggle('is-active', on); b.setAttribute('aria-selected', String(on))
     })
-    panel.querySelectorAll('.mon-view').forEach(function (x) { x.hidden = x.id !== 'mon-view-' + v })
+    panel.querySelectorAll('.mon-view').forEach(function (x) {
+      var on = x.id === 'mon-view-' + v
+      if (on && !x.firstChild && ctx) { x.innerHTML = PANES[v](ctx); tick(x) }
+      x.hidden = !on
+    })
     drawAll(panel)
   }
 
@@ -801,6 +843,7 @@
       panel.addEventListener('mousemove', onHover)
       panel.addEventListener('mouseout', function (e) { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('.mon-chart')) onLeave(e) })
       panel.addEventListener('click', onClick)
+      window.addEventListener('scroll', function () { if (hover) hover.el._box = null }, { capture: true, passive: true })
     }
     clearInterval(ticker)
     ticker = setInterval(function () { tick(panel) }, 1000)
@@ -820,6 +863,8 @@
     clearInterval(ticker); ticker = null
     CHARTS = {}
     root = null
+    ctx = null
+    hover = null
   }
   // A chart tooltip is open: a repaint now would yank it from under the pointer.
   function busy (panel) { return !!panel.querySelector('.mon-tip:not([hidden])') }

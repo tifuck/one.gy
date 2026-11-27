@@ -122,7 +122,6 @@ try {
 
 <script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
 <script src="{{ versioned_static('quick-unlock.js') }}" defer></script>
-<script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">
 document.addEventListener('DOMContentLoaded', function() {
   try {
@@ -160,6 +159,55 @@ function clearLoginNotifDismissals() {
 
 // Pending 2FA state — holds password/splitKeys in memory across the inline 2FA step
 let pending2FA = null
+
+// ─── Ahead of the submit ────────────────────────────────────────────
+// The pre-login answer (salt) is fetched when the username field is left,
+// keyed on the trimmed name the submit sends. Only on blur, not on typing
+// pauses: partial names would spend the endpoint's 15/min per-IP budget. An
+// answer serves one submit at most and only while fresh: the salt changes with
+// the password, so a retry asks again.
+const PRE_LOGIN_MAX_AGE = 120000
+const preLoginCache = new Map()
+
+function fetchPreLogin(username) {
+  return fetch('/auth/pre-login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': document.getElementById('csrf_token').value },
+    body: JSON.stringify({ username })
+  }).then(function(resp) {
+    if (!resp.ok) throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE. REFRESH AND RETRY')
+    return resp.json()
+  })
+}
+
+function prefetchPreLogin() {
+  const username = document.getElementById('username').value.trim()
+  if (!username || preLoginCache.has(username)) return
+  const entry = { at: Date.now(), promise: fetchPreLogin(username) }
+  entry.promise.catch(function() { if (preLoginCache.get(username) === entry) preLoginCache.delete(username) })
+  preLoginCache.set(username, entry)
+}
+
+function takePreLogin(username) {
+  const entry = preLoginCache.get(username)
+  preLoginCache.delete(username)
+  if (!entry || Date.now() - entry.at > PRE_LOGIN_MAX_AGE) return fetchPreLogin(username)
+  return entry.promise.catch(function() { return fetchPreLogin(username) })
+}
+
+document.getElementById('username').addEventListener('blur', prefetchPreLogin)
+
+// The crypto worker's first start parses crypto.js again: start it while the
+// password is typed. crypto.js has no warm-up call, and an empty encryption is
+// its cheapest worker round trip.
+let cryptoWarmed = false
+document.getElementById('password').addEventListener('focus', function() {
+  if (cryptoWarmed || !window.OneGyCrypto || !window.crypto || !window.crypto.subtle) return
+  cryptoWarmed = true
+  OneGyCrypto.generateFileKey()
+    .then(function(key) { return OneGyCrypto.encryptFileData(new ArrayBuffer(0), key) })
+    .catch(function() {})
+})
 
 // Helper: safely parse JSON from a fetch response — handles non-JSON errors
 // (e.g. Flask-WTF CSRF failure returns HTML, which causes JSON.parse to throw
@@ -199,13 +247,8 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
     let authTokenSalt = null
     let splitKeys = null
     let quickOffer = null
-    const preResp = await fetch('/auth/pre-login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-      body: JSON.stringify({ username })
-    })
-    if (!preResp.ok) throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE. REFRESH AND RETRY')
-    const preData = await preResp.json()
+    let keyWarning = false
+    const preData = await takePreLogin(username)
     if (!preData || preData.split_key_version !== 1) {
       throw new Error('LOGIN SERVICE TEMPORARILY UNAVAILABLE. REFRESH AND RETRY')
     }
@@ -283,13 +326,16 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
           })
           
           // Store keys in sessionStorage for this browser session
-          await OneGyCrypto.storeMasterKeyInSession(masterKey)
-          await OneGyCrypto.storePrivateKeyInSession(privateKey)
+          await Promise.all([
+            OneGyCrypto.storeMasterKeyInSession(masterKey),
+            OneGyCrypto.storePrivateKeyInSession(privateKey)
+          ])
           quickOffer = { authToken: splitKeys.authToken, masterKey, username }
           
           showFlash('ENCRYPTION KEYS UNLOCKED', 'success')
         } catch (keyErr) {
           console.error('[LOGIN] Key unlock failed:', keyErr)
+          keyWarning = true
           showFlash('KEY UNLOCK FAILED. YOU MAY NEED TO RE-ENTER PASSWORD', 'error')
         }
       } else {
@@ -337,17 +383,17 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
             showProvisioningRetry(keyData)
             return
           }
+          keyWarning = true
           showFlash('KEY SETUP FAILED. WILL RETRY ON NEXT LOGIN', 'error')
         }
       }
     }
     
-    // Step 4: Redirect
+    // Step 4: Redirect (after a moment only when a key error toast needs reading)
     await offerQuickUnlock(document.getElementById('loginBox'), quickOffer, result.csrf_token)
     clearLoginNotifDismissals()
-    setTimeout(() => {
-      window.location.href = result.redirect
-    }, 500)
+    if (keyWarning) await new Promise(function(resolve) { setTimeout(resolve, 500) })
+    window.location.href = result.redirect
     
   } catch (err) {
     console.error('[LOGIN]', err)
@@ -394,6 +440,7 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
       throw new Error(result.error || 'VERIFICATION FAILED')
     }
     let quickOffer = null
+    let keyWarning = false
 
     // 2FA verified — now unlock E2EE keys using the in-memory wrapping key
     if (window.crypto && window.crypto.subtle && pending2FA) {
@@ -407,13 +454,16 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
             privateKeyNonce: result.private_key_nonce
           })
 
-          await OneGyCrypto.storeMasterKeyInSession(masterKey)
-          await OneGyCrypto.storePrivateKeyInSession(privateKey)
+          await Promise.all([
+            OneGyCrypto.storeMasterKeyInSession(masterKey),
+            OneGyCrypto.storePrivateKeyInSession(privateKey)
+          ])
           quickOffer = { authToken: pending2FA.splitKeys.authToken, masterKey, username: document.getElementById('username').value.trim() }
 
           showFlash('ENCRYPTION KEYS UNLOCKED', 'success')
         } catch (keyErr) {
           console.error('[LOGIN] Key unlock failed after 2FA:', keyErr)
+          keyWarning = true
           showFlash('KEY UNLOCK FAILED. YOU MAY NEED TO RE-ENTER PASSWORD', 'error')
         }
       } else if (!result.has_e2ee_keys) {
@@ -462,6 +512,7 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
             showProvisioningRetry(keyData)
             return
           }
+          keyWarning = true
           showFlash('KEY SETUP FAILED. WILL RETRY ON NEXT LOGIN', 'error')
         }
       }
@@ -470,12 +521,11 @@ document.getElementById('inlineTwoFactorForm').addEventListener('submit', async 
     // Clear sensitive data
     pending2FA = null
 
-    // Redirect to dashboard
+    // Redirect to dashboard (after a moment only when a key error toast needs reading)
     await offerQuickUnlock(document.getElementById('twoFactorBox'), quickOffer, result.csrf_token)
     clearLoginNotifDismissals()
-    setTimeout(() => {
-      window.location.href = result.redirect || '{{ url_for("files") }}'
-    }, 500)
+    if (keyWarning) await new Promise(function(resolve) { setTimeout(resolve, 500) })
+    window.location.href = result.redirect || '{{ url_for("files") }}'
 
   } catch (err) {
     console.error('[2FA]', err)

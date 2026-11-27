@@ -139,7 +139,7 @@
     return '<div class="rd-empty adm-empty"><span class="rd-empty-icon">' + I.alert + '</span><h3 class="rd-empty-title">' + esc(m) + '</h3>' +
       '<p class="rd-empty-text">The request failed. Check the server log, then try again.</p><button class="rd-btn rd-btn-ghost" data-retry>Try again</button></div>'
   }
-  function clearPurgeTimer () { if (S.purgeTimer) { clearInterval(S.purgeTimer); S.purgeTimer = null } }
+  function clearPurgeTimer () { if (S.purgeTimer) { clearTimeout(S.purgeTimer); S.purgeTimer = null } }
   function clearSearchTimers () { clearTimeout(S._ut); clearTimeout(S._ft); S._ut = null; S._ft = null }
   function isCurrentRender (tab, epoch) { return S.tab === tab && S.renderEpoch === epoch }
   function startRender (tab, epoch) {
@@ -151,6 +151,22 @@
     if (!isCurrentRender(tab, epoch)) return
     var nextEpoch = ++S.renderEpoch
     ;(TABS[tab] || tabOverview)(nextEpoch)
+  }
+  // admin-music.js and admin-monitor.js load when their tab first opens; the
+  // template passes their versioned URLs as data-music-src / data-monitor-src.
+  var LAZY = {}
+  function lazyScript (name, global) {
+    if (window[global]) return Promise.resolve()
+    if (!LAZY[name]) {
+      LAZY[name] = new Promise(function (resolve, reject) {
+        var s = document.createElement('script')
+        s.src = panel.getAttribute('data-' + name + '-src')
+        s.onload = resolve
+        s.onerror = function () { s.remove(); delete LAZY[name]; reject(new Error('Could not load ' + name)) }
+        document.head.appendChild(s)
+      })
+    }
+    return LAZY[name]
   }
 
   // ---- Overview ------------------------------------------------------------
@@ -299,7 +315,26 @@
       }
     } catch (e) { if (isCurrentRender('users', epoch)) paint(errState('Could not load accounts')) }
   }
-  function closeManager () { S.focusUser = S.selectedUserId; S.selectedUserId = null; refreshTab('users', S.renderEpoch) }
+  // Opens or closes the account drawer from S.users; only a change made in the
+  // drawer refetches the list.
+  function syncManager () {
+    panel.querySelectorAll('.adm-drawer-scrim, .adm-drawer').forEach(function (n) { n.remove() })
+    var selected = S.users.find(function (u) { return String(u.id) === String(S.selectedUserId) })
+    if (!selected) S.selectedUserId = null
+    panel.querySelectorAll('[data-user-manage]').forEach(function (b) {
+      var row = b.closest('tr')
+      if (row) row.classList.toggle('is-selected', !!selected && b.getAttribute('data-user-manage') === String(selected.id))
+    })
+    if (selected) {
+      panel.insertAdjacentHTML('beforeend', userManager(selected))
+      S.drawerEnter = false
+      var dr = panel.querySelector('.adm-drawer'); if (dr) dr.focus({ preventScroll: true })
+    } else if (S.focusUser) {
+      var back = panel.querySelector('[data-user-manage="' + S.focusUser + '"]'); S.focusUser = null
+      if (back) back.focus({ preventScroll: true })
+    }
+  }
+  function closeManager () { S.focusUser = S.selectedUserId; S.selectedUserId = null; syncManager() }
   function pager (page, pages, kind) {
     if (!pages || pages <= 1) return ''
     return '<div class="adm-pager"><span class="adm-meta">Page ' + page + ' of ' + pages + '</span>' +
@@ -747,20 +782,17 @@
     return parts.join('')
   }
 
-  function loadNodeDisk (id, epoch) {
-    if (!isCurrentRender('storage', epoch)) return
-    var el = panel.querySelector('[data-disk-id="' + id + '"]')
-    if (!el) return
-    jget('/admin/api/storage/nodes/' + id + '/disk-usage').then(function (d) {
+  // Every node card's disk stats in one request, after the cards are painted.
+  function loadDisks (epoch) {
+    if (!isCurrentRender('storage', epoch) || !panel.querySelector('[data-disk-id]')) return
+    function fill (byId) {
       if (!isCurrentRender('storage', epoch)) return
-      var box = panel.querySelector('[data-disk-id="' + id + '"]')
-      if (!box) return
-      box.innerHTML = diskMarkup(d || {})
-    }).catch(function () {
-      if (!isCurrentRender('storage', epoch)) return
-      var box = panel.querySelector('[data-disk-id="' + id + '"]')
-      if (box) box.innerHTML = '<div class="adm-st-disk-wait">Disk stats unavailable</div>'
-    })
+      panel.querySelectorAll('[data-disk-id]').forEach(function (box) {
+        var d = byId[box.getAttribute('data-disk-id')]
+        box.innerHTML = d ? diskMarkup(d) : '<div class="adm-st-disk-wait">Disk stats unavailable</div>'
+      })
+    }
+    jget('/admin/api/storage/disk-usage').then(function (d) { fill((d && d.nodes) || {}) }).catch(function () { fill({}) })
   }
 
   function sectionHead (title, extra) {
@@ -772,20 +804,12 @@
     clearPurgeTimer()
     loading()
     try {
-      var res = await Promise.all([
-        jget('/admin/api/storage/nodes'),
-        jget('/admin/api/storage/status'),
-        jget('/admin/api/storage/replication-speed'),
-        jget('/admin/api/storage/replication-source'),
-        jget('/admin/api/storage/replication-workers'),
-        jget('/admin/api/storage/health-check-interval'),
-        jget('/admin/api/storage/verify-checksum')
-      ])
+      var res = await jget('/admin/api/storage/dashboard')
       if (!isCurrentRender('storage', epoch)) return
-      var nodes = res[0].nodes || []
-      var st = res[1] || {}
-      SPEEDS = res[2]; SOURCES = res[3]; WORKERS = res[4]; HEALTH = res[5]
-      SPEEDS._checksum = !!(res[6] && res[6].enabled)
+      var nodes = res.nodes || []
+      var st = res.status || {}
+      SPEEDS = res.replication_speed; SOURCES = res.replication_source; WORKERS = res.replication_workers; HEALTH = res.health_check_interval
+      SPEEDS._checksum = !!(res.verify_checksum && res.verify_checksum.enabled)
       var statsById = {}
       ;(st.per_node || []).forEach(function (p) { statsById[p.node_id] = p })
       var cards = nodes.map(function (n) { return nodeCard(n, statsById[n.id]) }).join('')
@@ -800,11 +824,22 @@
         addNodeCard() + '</div>')
       var fields = $('admNodeFields')
       if (fields) fields.innerHTML = nodeFields('local')
-      nodes.forEach(function (n) { loadNodeDisk(n.id, epoch) })
+      loadDisks(epoch)
       pollPurge(true, epoch)
     } catch (e) { if (isCurrentRender('storage', epoch)) paint(errState('Could not load storage nodes')) }
   }
 
+  // While a purge runs, the next progress request goes out 2 s after the last
+  // answer, and waits while the browser tab is hidden.
+  function schedulePurge (epoch) {
+    clearPurgeTimer()
+    S.purgeTimer = setTimeout(function tick () {
+      if (!isCurrentRender('storage', epoch)) return
+      if (document.hidden) { S.purgeTimer = setTimeout(tick, 2000); return }
+      S.purgeTimer = null
+      pollPurge(false, epoch)
+    }, 2000)
+  }
   async function pollPurge (once, epoch) {
     if (!isCurrentRender('storage', epoch)) return
     var box = $('admPurgeStatus')
@@ -817,7 +852,7 @@
       if (p.status === 'running') {
         var pct = p.total ? Math.round((p.current || 0) / p.total * 100) : 0
         box.innerHTML = barRow(cap(p.phase || 'Working'), pct, (p.current || 0) + '/' + (p.total || 0) + ' · ' + fmtBytes(p.bytes_freed), '')
-        if (!S.purgeTimer) S.purgeTimer = setInterval(function () { pollPurge(false, epoch) }, 2000)
+        schedulePurge(epoch)
       } else if (p.status === 'completed') {
         box.innerHTML = pill('Completed', 'good', true) +
           '<span class="adm-meta">Freed ' + fmtBytes(p.bytes_freed) + ' · ' +
@@ -934,30 +969,38 @@
     clearTimeout(S.monTimer); S.monTimer = null
     if (window.AdmMonitor) window.AdmMonitor.unmount()
   }
-  // Live state is polled every MON_POLL_MS (the server caches it for 15 s);
-  // the 5-minute snapshot history only every MON_HISTORY_MS or on range change.
-  var MON_POLL_MS = 10000, MON_HISTORY_MS = 300000
+  // Live state is polled every MON_POLL_MS, as often as the server rebuilds it
+  // (its cache lasts 15 s); a poll that returns the state already on screen only
+  // pulses the live mark. The 5-minute snapshot history comes only every
+  // MON_HISTORY_MS or on range change.
+  var MON_POLL_MS = 15000, MON_HISTORY_MS = 300000
   async function tabMonitor (epoch, silent) {
     epoch = startRender('monitoring', epoch); if (epoch == null) return
     clearTimeout(S.monTimer)
     var full = !silent || !S.monData || Date.now() - S.monHistAt > MON_HISTORY_MS
     if (!silent) loading()
     try {
-      var d = await jget('/admin/api/monitoring?range=' + encodeURIComponent(S.monRange) + (full ? '' : '&live=1'))
+      var res = await Promise.all([
+        jget('/admin/api/monitoring?range=' + encodeURIComponent(S.monRange) + (full ? '' : '&live=1')),
+        lazyScript('monitor', 'AdmMonitor')
+      ])
+      var d = res[0]
       if (!isCurrentRender('monitoring', epoch)) return
       if (full) S.monHistAt = Date.now(); else d.history = S.monData.history
       S.monData = d
-      if (!silent || !window.AdmMonitor.busy(panel)) {
+      var same = !full && d.state && d.state.at === S.monShownAt
+      if (!same && (!silent || !window.AdmMonitor.busy(panel))) {
         var y = window.scrollY, main = document.querySelector('.adm-main'), my = main ? main.scrollTop : 0
         paint(window.AdmMonitor.render(d, S.monRange, MON_HELPERS))
         window.AdmMonitor.mount(panel)
+        S.monShownAt = d.state && d.state.at
         if (silent) { window.scrollTo(0, y); if (main) main.scrollTop = my }
       }
       window.AdmMonitor.setLive(panel, true)
     } catch (e) {
       if (!isCurrentRender('monitoring', epoch)) return
       if (!silent) paint(errState('Could not load monitoring data'))
-      else window.AdmMonitor.setLive(panel, false)
+      else if (window.AdmMonitor) window.AdmMonitor.setLive(panel, false)
     }
     S.monTimer = setTimeout(function tick () {
       if (S.tab !== 'monitoring' || S.renderEpoch !== epoch) return
@@ -971,17 +1014,41 @@
 
   // ---- Music (rendering lives in admin-music.js) -----------------------------
   var MUSIC_HELPERS = { esc: esc, num: num, fmtBytes: fmtBytes, pill: pill, searchBox: searchBox, trash: I.trash, refresh: I.refresh }
-  var MUSIC_POLL_MS = 5000
+  // The live part (switches, workers, queue, up next) is polled every
+  // MUSIC_POLL_MS, backing off to MUSIC_POLL_MAX_MS while nothing changes. The
+  // heavy part (roster, rules, proxies, library totals) loads on open (server
+  // cache), after an action (fresh) and at most every MUSIC_HEAVY_MS.
+  var MUSIC_POLL_MS = 15000, MUSIC_POLL_MAX_MS = 60000, MUSIC_HEAVY_MS = 60000
+  // seen_ago ticks on every poll: compare it at the precision the page shows.
+  function musicSig (d) {
+    return JSON.stringify(d, function (k, v) {
+      if (k !== 'seen_ago' || v == null) return v
+      return v < 60 ? 0 : v < 3600 ? 'm' + Math.floor(v / 60) : v < 86400 ? 'h' + Math.floor(v / 3600) : 'd' + Math.floor(v / 86400)
+    })
+  }
   async function tabMusic (epoch, silent) {
     epoch = startRender('music', epoch); if (epoch == null) return
     clearTimeout(S.muTimer)
-    if (!silent) loading()
+    var fresh = !silent && panel.getAttribute('data-shown') === 'music' && !S.muKeepHeavy
+    var heavy = !silent || !S.muHeavy || Date.now() - S.muHeavyAt >= MUSIC_HEAVY_MS
+    S.muKeepHeavy = false
+    if (!silent) { loading(); S.muDelay = MUSIC_POLL_MS }
     try {
-      var d = await jget('/admin/api/music' + (S.muQ ? '?q=' + encodeURIComponent(S.muQ) : ''))
+      var res = await Promise.all([
+        jget('/admin/api/music?part=live'),
+        heavy ? jget('/admin/api/music?part=heavy' + (fresh ? '&fresh=1' : '') + (S.muQ ? '&q=' + encodeURIComponent(S.muQ) : '')) : null,
+        lazyScript('music', 'AdmMusic')
+      ])
       if (!isCurrentRender('music', epoch)) return
+      if (res[1]) { S.muHeavy = res[1]; S.muHeavyAt = Date.now() }
+      var live = res[0]
+      var d = Object.assign({}, S.muHeavy, live, { library: Object.assign({}, S.muHeavy.library, live.library) })
+      var sig = musicSig(d), same = silent && sig === S.muSig
+      S.muDelay = same ? Math.min(MUSIC_POLL_MAX_MS, (S.muDelay || MUSIC_POLL_MS) * 2) : MUSIC_POLL_MS
       // A poll never repaints under a control the admin is using.
       var busy = silent && (panel.querySelector('[data-music-busy]') || (document.activeElement && panel.contains(document.activeElement) && document.activeElement.matches('input:not([type="checkbox"]), textarea, select')))
-      if (!busy) {
+      if (!same && !busy) {
+        S.muSig = sig
         MUSIC_HELPERS.proxyDraft = S.muProxyDraft || ''
         MUSIC_HELPERS.q = S.muQ || ''
         var y = window.scrollY, main = document.querySelector('.adm-main'), my = main ? main.scrollTop : 0
@@ -1001,7 +1068,7 @@
       if (S.tab !== 'music' || S.renderEpoch !== epoch) return
       if (document.hidden) { S.muTimer = setTimeout(tick, 5000); return }
       tabMusic(++S.renderEpoch, true)
-    }, MUSIC_POLL_MS)
+    }, S.muDelay || MUSIC_POLL_MS)
   }
   // Applies one Music control at once; the switch is reverted if the server refuses.
   async function musicSave (input, url, body, ok) {
@@ -1087,7 +1154,7 @@
       if (t.closest('[data-retry]')) { refreshTab(S.tab, epoch); return }
       var mv = t.closest('[data-music-view]'); if (mv) { window.AdmMusic.setView(panel, mv.getAttribute('data-music-view')); return }
       var mrf = t.closest('[data-music-rule-for]')
-      if (mrf) { S.muQ = mrf.getAttribute('data-music-rule-for'); window.AdmMusic.setView(panel, 'rules'); refreshTab('music', epoch); return }
+      if (mrf) { S.muQ = mrf.getAttribute('data-music-rule-for'); S.muKeepHeavy = true; window.AdmMusic.setView(panel, 'rules'); refreshTab('music', epoch); return }
       var mac = t.closest('[data-music-artist-clear]')
       if (mac) {
         jsend('POST', '/admin/api/music/artists/' + mac.getAttribute('data-music-artist-clear'), { mode: null, weight: 1 }).then(function () { refreshTab('music', epoch) }).catch(function (err) { failToast(err, 'COULD NOT SAVE') })
@@ -1146,7 +1213,7 @@
 
       // --- Users ---
       var manage = t.closest('[data-user-manage]')
-      if (manage) { S.selectedUserId = manage.getAttribute('data-user-manage'); S.drawerEnter = true; refreshTab('users', epoch); return }
+      if (manage) { S.selectedUserId = manage.getAttribute('data-user-manage'); S.drawerEnter = true; syncManager(); return }
       if (t.closest('[data-user-close]')) { closeManager(); return }
       if (t.closest('#admQuotaSave')) { saveUserQuota(t.closest('#admQuotaSave'), epoch); return }
       var ta = t.closest('[data-user-admin]')
@@ -1345,7 +1412,7 @@
       if (e.target.id === 'admFbSearch') { var fbQ = e.target.value.trim(), fbEpoch = S.renderEpoch; clearTimeout(S._ft); S._ft = setTimeout(function () { S._ft = null; if (!isCurrentRender('feedback', fbEpoch)) return; S.fbQ = fbQ; S.fbPage = 1; refreshTab('feedback', fbEpoch) }, 300) }
       if (e.target.matches('[data-setting], [data-setting-num]')) markSettingsDirty()
       if (e.target.id === 'muProxyText') S.muProxyDraft = e.target.value
-      if (e.target.id === 'muArtistSearch') { var muQ = e.target.value.trim(), muEpoch = S.renderEpoch; clearTimeout(S._mt); S._mt = setTimeout(function () { S._mt = null; if (!isCurrentRender('music', muEpoch)) return; S.muQ = muQ; refreshTab('music', muEpoch) }, 300) }
+      if (e.target.id === 'muArtistSearch') { var muQ = e.target.value.trim(), muEpoch = S.renderEpoch; clearTimeout(S._mt); S._mt = setTimeout(function () { S._mt = null; if (!isCurrentRender('music', muEpoch)) return; S.muQ = muQ; S.muKeepHeavy = true; refreshTab('music', muEpoch) }, 300) }
       if (e.target.id === 'admQuotaAmount') updateQuotaHint()
     })
   }

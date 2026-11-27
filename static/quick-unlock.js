@@ -193,38 +193,41 @@
 
   /* The sign-in page and the lock cards (Files, Notes): put the quick unlock in
      place of the password form while one is set up here, with a way back to the
-     password. onUnlocked gets the server's answer. */
+     password. onUnlocked gets the server's answer. It shows from the local record
+     at once; a record the server no longer knows brings the password form back. */
   function mount (form, onUnlocked) {
-    if (inDesktopApp || !form || !window.OneGyCrypto || !local()) return
-    status().then(function (rec) {
-      if (!rec) return
-      var box = document.createElement('div'); box.className = 'qu-box'
-      box.innerHTML = (rec.method === 'pin'
-        ? '<form class="qu-pin">' + pinInput('PIN') + '<button type="submit" class="rd-btn rd-btn-primary">Unlock</button></form>'
-        : '<button type="button" class="rd-btn rd-btn-primary qu-bio">Unlock with ' + BIO + '</button>') +
-        '<button type="button" class="qu-switch">Use password instead</button>'
-      if (rec.user) { var who = document.createElement('p'); who.className = 'qu-user'; who.textContent = rec.user; box.insertBefore(who, box.firstChild) }
-      var sub = form.parentNode.querySelector('p'), subText = sub && sub.textContent
-      if (sub) sub.textContent = subText.replace('Enter your password', rec.method === 'pin' ? 'Enter your PIN' : 'Use your ' + BIO)
-      form.hidden = true
-      form.parentNode.insertBefore(box, form)
-      function close () { box.remove(); form.hidden = false; if (sub) sub.textContent = subText }
-      function usePassword () { close(); var field = form.querySelector('input:not([type="hidden"])'); if (field) field.focus() }
-      async function run (btn, pin) {
-        btn.disabled = true
-        try { var d = await unlock(pin); close(); onUnlocked(d) } catch (e) {
-          failed(e, 'QUICK UNLOCK FAILED')
-          if (!local()) usePassword()
-        } finally { btn.disabled = false }
-      }
-      box.querySelector('.qu-switch').onclick = usePassword
-      var bio = box.querySelector('.qu-bio'); if (bio) bio.onclick = function () { run(bio) }
-      var pinForm = box.querySelector('.qu-pin')
-      if (pinForm) {
-        var input = pinForm.querySelector('input')
-        pinForm.onsubmit = function (e) { e.preventDefault(); if (input.value) run(pinForm.querySelector('button'), input.value).then(function () { input.value = '' }) }
-        input.focus()
-      }
+    var rec = inDesktopApp || !form || !window.OneGyCrypto ? null : local()
+    if (!rec) return
+    var box = document.createElement('div'); box.className = 'qu-box'
+    box.innerHTML = (rec.method === 'pin'
+      ? '<form class="qu-pin">' + pinInput('PIN') + '<button type="submit" class="rd-btn rd-btn-primary">Unlock</button></form>'
+      : '<button type="button" class="rd-btn rd-btn-primary qu-bio">Unlock with ' + BIO + '</button>') +
+      '<button type="button" class="qu-switch">Use password instead</button>'
+    if (rec.user) { var who = document.createElement('p'); who.className = 'qu-user'; who.textContent = rec.user; box.insertBefore(who, box.firstChild) }
+    var sub = form.parentNode.querySelector('p'), subText = sub && sub.textContent
+    if (sub) sub.textContent = subText.replace('Enter your password', rec.method === 'pin' ? 'Enter your PIN' : 'Use your ' + BIO)
+    form.hidden = true
+    form.parentNode.insertBefore(box, form)
+    function close () { box.remove(); form.hidden = false; if (sub) sub.textContent = subText }
+    function usePassword () { close(); var field = form.querySelector('input:not([type="hidden"])'); if (field) field.focus() }
+    async function run (btn, pin) {
+      btn.disabled = true
+      try { var d = await unlock(pin); close(); onUnlocked(d) } catch (e) {
+        failed(e, 'QUICK UNLOCK FAILED')
+        if (!local()) usePassword()
+      } finally { btn.disabled = false }
+    }
+    box.querySelector('.qu-switch').onclick = usePassword
+    var bio = box.querySelector('.qu-bio'); if (bio) bio.onclick = function () { run(bio) }
+    var pinForm = box.querySelector('.qu-pin')
+    if (pinForm) {
+      var input = pinForm.querySelector('input')
+      pinForm.onsubmit = function (e) { e.preventDefault(); if (input.value) run(pinForm.querySelector('button'), input.value).then(function () { input.value = '' }) }
+      input.focus()
+    }
+    status().then(function (live) {
+      if (live || !box.parentNode) return
+      if (box.contains(document.activeElement)) usePassword(); else close()
     })
   }
 

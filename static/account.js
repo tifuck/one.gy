@@ -286,13 +286,16 @@
       var info = await keyInfo(true)
 
       // 1) Prove the CURRENT credentials, and get the current wrapping key.
+      // 2) Derive the NEW split-key credentials (fresh salt, 600K PBKDF2 + HKDF).
+      //    Neither derivation needs the other, so both run at once.
       var payload = { new_password_length: next.length }
       if (pwTotp) payload.totp_code = pwTotp
-      var currentSplit = await OneGyCrypto.deriveAuthAndWrappingKeys(current, info.auth_token_salt)
+      var splits = await Promise.all([
+        OneGyCrypto.deriveAuthAndWrappingKeys(current, info.auth_token_salt),
+        OneGyCrypto.deriveAuthAndWrappingKeys(next)
+      ])
+      var currentSplit = splits[0], newSplit = splits[1]
       payload.current_auth_token = currentSplit.authToken
-
-      // 2) Derive the NEW split-key credentials (fresh salt, 600K PBKDF2 + HKDF).
-      var newSplit = await OneGyCrypto.deriveAuthAndWrappingKeys(next)
       payload.new_auth_token = newSplit.authToken
       payload.new_auth_salt = newSplit.salt
       // ZERO-KNOWLEDGE INVARIANT: the NEW password is never transmitted. The

@@ -73,7 +73,6 @@
 {% endif %}
 
 <script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
-<script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">
 // Helper: safely parse JSON from a fetch response
 async function safeParseJSON(response) {
@@ -127,10 +126,14 @@ document.getElementById('registerForm').addEventListener('submit', async functio
   try { captchaValue = await getCaptcha() } catch (cancelled) { return }
   {% endif %}
 
-  btn.disabled = true
-  btn.textContent = 'Creating account…'
   const vbtn = document.getElementById('captchaVerifyBtn')
-  if (vbtn) { vbtn.disabled = true; vbtn.textContent = 'Creating account…' }
+  function showStage(text) {
+    btn.textContent = text
+    if (vbtn) vbtn.textContent = text
+  }
+  btn.disabled = true
+  if (vbtn) vbtn.disabled = true
+  showStage('Securing your keys…')
   let keys = null
   let accountCreated = false
   let redirectUrl = ''
@@ -145,6 +148,7 @@ document.getElementById('registerForm').addEventListener('submit', async functio
       console.warn('[REGISTER] E2EE key setup failed:', cryptoErr)
       throw new Error('SECURE REGISTRATION REQUIRES A MODERN HTTPS BROWSER WITH WEBCRYPTO ENABLED')
     }
+    showStage('Creating account…')
 
     // Step 2: Send registration + encrypted keys to server
     // Zero-knowledge: when split-key keys are available, do NOT send the raw password
@@ -306,6 +310,21 @@ var _humanInteracted = false
 ;['pointerdown','keydown','mousemove','touchstart'].forEach(function(t) {
   window.addEventListener(t, function _mark() { _humanInteracted = true; window.removeEventListener(t, _mark) }, { once: true, passive: true })
 })
+// A WebGL context takes 10-100+ ms to create: read the renderer while the page
+// is idle, so the submit reuses it (or reads it then if idle never came).
+var _webglRenderer = null
+function webglRenderer() {
+  if (_webglRenderer !== null) return _webglRenderer
+  try {
+    var c = document.createElement('canvas'),
+        gl = c.getContext('webgl') || c.getContext('experimental-webgl'),
+        dbg = gl && gl.getExtension('WEBGL_debug_renderer_info')
+    _webglRenderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : ''
+  } catch (e) { _webglRenderer = '' }
+  return _webglRenderer
+}
+if (window.requestIdleCallback) requestIdleCallback(webglRenderer, { timeout: 2000 })
+else window.addEventListener('load', function() { setTimeout(webglRenderer, 0) })
 function detectAutomation() {
   var s = { interacted: _humanInteracted }
   try { s.webdriver = navigator.webdriver === true } catch (e) { s.webdriver = false }
@@ -314,12 +333,7 @@ function detectAutomation() {
   try { s.languages = (navigator.languages || []).length } catch (e) { s.languages = 0 }
   try { s.cores = navigator.hardwareConcurrency || 0 } catch (e) { s.cores = 0 }
   try { s.touch = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0 } catch (e) { s.touch = false }
-  try {
-    var c = document.createElement('canvas'),
-        gl = c.getContext('webgl') || c.getContext('experimental-webgl'),
-        dbg = gl && gl.getExtension('WEBGL_debug_renderer_info')
-    s.webgl = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : ''
-  } catch (e) { s.webgl = '' }
+  s.webgl = webglRenderer()
   s.softwareGL = /swiftshader|llvmpipe|software|mesa offscreen/i.test(s.webgl)
   // Hard-block only on the strongest, lowest-false-positive signals.
   s.blocked = s.webdriver === true || s.headlessUA === true

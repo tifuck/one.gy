@@ -1020,8 +1020,11 @@ async function _onUploadSuccess(result, opts) {
     window.location.assign('/share');
     return;
   }
-  // Reset drop zone then open manage overlay
+  // Reset drop zone then open manage overlay (loaded on first use, _uploader.html)
   opts.ui.restore();
+  if (typeof ManageModal === 'undefined' && typeof loadUploaderExtras === 'function') {
+    try { await loadUploaderExtras(); } catch (e) { /* falls back to the redirect below */ }
+  }
   if (typeof ManageModal !== 'undefined') {
     ManageModal.openFileByToken(result.response.management_token);
   } else if (result.response.redirect) {
@@ -1169,10 +1172,25 @@ async function createZip(files) {
     crcTable[n] = c;
   }
 
-  function crc32(data) {
+  // Hashed in chunks with a yield between them, so a large batch does not
+  // freeze the page (a message, not a timer: background tabs throttle timers).
+  // Same result as one pass.
+  const CRC_CHUNK = 4 * 1024 * 1024;
+  function yieldToPage() {
+    return new Promise((resolve) => {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+      ch.port2.postMessage(0);
+    });
+  }
+  async function crc32(data) {
     let crc = 0xFFFFFFFF;
-    for (let i = 0; i < data.length; i++) {
-      crc = crcTable[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+    for (let start = 0; start < data.length; start += CRC_CHUNK) {
+      if (start) await yieldToPage();
+      const end = Math.min(data.length, start + CRC_CHUNK);
+      for (let i = start; i < end; i++) {
+        crc = crcTable[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+      }
     }
     return (crc ^ 0xFFFFFFFF) >>> 0;
   }
@@ -1207,7 +1225,7 @@ async function createZip(files) {
     const data = new Uint8Array(await file.arrayBuffer());
     const compressedSize = data.length;
     const uncompressedSize = data.length;
-    const crc = crc32(data);
+    const crc = await crc32(data);
 
     // Local file header
     const localHeader = writeLocalFileHeader(filename, compressedSize, uncompressedSize, crc);

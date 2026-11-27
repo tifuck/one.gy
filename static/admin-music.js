@@ -4,7 +4,7 @@
    Connections, Limits) built from /admin/api/music, laid out like the Monitoring tab
    (.mon-* panels). admin.js (tabMusic) loads the data, polls it and wires the
    controls (data-music-* attributes); this file owns the markup and the view
-   tabs.
+   tabs. admin.js loads this file when the Music tab first opens.
    ========================================================================== */
 (function () {
   'use strict'
@@ -516,10 +516,30 @@
   }
 
   // ---- Public API ------------------------------------------------------------------------
+  // Only the open view is built; the others are built from `last` when first shown.
+  var PANES = {
+    overview: function (d, rows) { return statusStrip(d, rows) + stats(d) + '<div class="mon-cols is-split">' + activity(d) + queue(d) + '</div>' },
+    discovery: function (d) {
+      return '<section class="rd-panel mon-p mu-adm-solo">' + discoveryControl(d, '_v') + '</section>' +
+        '<div class="mon-cols is-2">' + roster(d) + howItWorks(d) + '</div>' + topArtists(d)
+    },
+    rules: function (d) { return '<div class="mon-cols is-split">' + artistRules(d) + genreRules(d) + '</div>' },
+    priorities: function (d) { return priorities(d) },
+    downloads: function (d) {
+      return '<section class="rd-panel mon-p mu-adm-solo">' + downloadControl(d, '_v') + '</section>' +
+        '<div class="mon-cols is-2">' + queue(d) + problems(d) + '</div>' +
+        '<div class="mon-cols is-2">' + recent(d) + sources(d) + '</div>'
+    },
+    connections: function (d) { return '<div class="mon-cols is-2">' + workers(d) + proxies(d) + '</div>' },
+    limits: function (d) { return limits(d) }
+  }
+  var last = null
+
   function render (d, helpers) {
     H = helpers
     if (!VIEWS.some(function (v) { return v[0] === view })) view = 'overview'
     var rows = checks(d)
+    last = { d: d, rows: rows }
     var rank = { bad: 3, warn: 2, idle: 1, good: 0 }, worst = {}
     rows.forEach(function (r) { if (!worst[r[4]] || rank[r[3]] > rank[worst[r[4]]]) worst[r[4]] = r[3] })
     var tabs = '<div class="rd-tabs mon-tabs" role="tablist" aria-label="Music views">' + VIEWS.map(function (v) {
@@ -527,21 +547,13 @@
       return '<button type="button" class="rd-tab' + (on ? ' is-active' : '') + '" role="tab" id="mu-tab-' + v[0] + '" aria-controls="mu-view-' + v[0] + '" aria-selected="' + on + '" data-music-view="' + v[0] + '">' +
         H.esc(v[1]) + (tone === 'bad' || tone === 'warn' ? '<span class="mon-tab-dot is-' + tone + '" aria-label="needs attention"></span>' : '') + '</button>'
     }).join('') + '</div>'
-    function pane (id, html) {
-      return '<div class="mon-view" role="tabpanel" id="mu-view-' + id + '" aria-labelledby="mu-tab-' + id + '"' + (id === view ? '' : ' hidden') + '>' + html + '</div>'
+    function pane (id) {
+      var on = id === view
+      return '<div class="mon-view" role="tabpanel" id="mu-view-' + id + '" aria-labelledby="mu-tab-' + id + '"' + (on ? '' : ' hidden') + '>' + (on ? PANES[id](d, rows) : '') + '</div>'
     }
     return '<div class="mon mu-adm">' +
       '<header class="mon-bar"><h1 class="rd-page-title">Music</h1>' + tabs + '<span class="mon-bar-end"><span class="mon-live"><i aria-hidden="true"></i>Live</span></span></header>' +
-      pane('overview', statusStrip(d, rows) + stats(d) + '<div class="mon-cols is-split">' + activity(d) + queue(d) + '</div>') +
-      pane('discovery', '<section class="rd-panel mon-p mu-adm-solo">' + discoveryControl(d, '_v') + '</section>' +
-        '<div class="mon-cols is-2">' + roster(d) + howItWorks(d) + '</div>' + topArtists(d)) +
-      pane('rules', '<div class="mon-cols is-split">' + artistRules(d) + genreRules(d) + '</div>') +
-      pane('priorities', priorities(d)) +
-      pane('downloads', '<section class="rd-panel mon-p mu-adm-solo">' + downloadControl(d, '_v') + '</section>' +
-        '<div class="mon-cols is-2">' + queue(d) + problems(d) + '</div>' +
-        '<div class="mon-cols is-2">' + recent(d) + sources(d) + '</div>') +
-      pane('connections', '<div class="mon-cols is-2">' + workers(d) + proxies(d) + '</div>') +
-      pane('limits', limits(d)) +
+      VIEWS.map(function (v) { return pane(v[0]) }).join('') +
       '</div>'
   }
 
@@ -553,7 +565,11 @@
       var on = b.getAttribute('data-music-view') === v
       b.classList.toggle('is-active', on); b.setAttribute('aria-selected', String(on))
     })
-    panelEl.querySelectorAll('.mu-adm > .mon-view').forEach(function (x) { x.hidden = x.id !== 'mu-view-' + v })
+    panelEl.querySelectorAll('.mu-adm > .mon-view').forEach(function (x) {
+      var on = x.id === 'mu-view-' + v
+      if (on && !x.firstChild && last) x.innerHTML = PANES[v](last.d, last.rows)
+      x.hidden = !on
+    })
   }
 
   function preset (name) {

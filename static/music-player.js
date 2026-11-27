@@ -2,7 +2,7 @@
 ;(function(mp) {
   'use strict'
 
-  const { _jsonHeaders, _lsGet, _lsSet, audio, _silentBlobUrl, _volCurve, _setVolume } = mp
+  const { _jsonHeaders, _lsGet, _lsSet, audio, _silentUrl, _volCurve, _setVolume } = mp
 
   let _audioPlayPrimed = false      // true = audio.play() has been called in a user gesture context
   let _singletonEventsBound = false
@@ -317,6 +317,7 @@
           mp.playlistBtn.classList.toggle('mp-btn-active')
           // Close devices panel when playlist opens
           if (mp.devicesPanel) mp.devicesPanel.classList.remove('mp-devices-visible')
+          mp._renderPlaylist()
         }
       })
     }
@@ -405,15 +406,25 @@
   // silent blob on a throwaway element. The shared element is never
   // touched: this capture-phase click may be the one starting a track, or
   // a restored track may already own it.
+  // The context only has to start inside a gesture (WebKit): once started,
+  // _resumeAudioContext() wakes it without one, so with no track routed
+  // through it, it is suspended again instead of running on every page.
   function _bindAutoplayPrimer() {
-    if (_silentBlobUrl && mp._syncLoggedIn && mp._syncEnabled) {
+    if (mp._syncLoggedIn && mp._syncEnabled) {
       document.addEventListener('click', function _primeAutoplay() {
         if (_audioPlayPrimed) return
         _audioPlayPrimed = true
-        if (mp._ensureAudioContext()) mp._resumeAudioContext()
+        if (mp._ensureAudioContext()) {
+          var ctx = mp._audioCtx
+          ctx.resume().then(function() {
+            if (!mp._fxConnected && ctx.state === 'running') ctx.suspend().catch(function() {})
+          }).catch(function() {})
+        }
         if (mp.currentIndex >= 0 || !audio.paused || mp._syncPhantomKeepaliveActive) return
+        var silentUrl = _silentUrl()
+        if (!silentUrl) return
         try {
-          var primer = new Audio(_silentBlobUrl)
+          var primer = new Audio(silentUrl)
           primer.play().then(function() { primer.pause() }).catch(function() {})
         } catch (e) {}
       }, { once: true, capture: true })

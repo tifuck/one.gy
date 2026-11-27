@@ -2,6 +2,7 @@
 {% block title %}Music{% endblock %}
 {% set nav_active = 'music' %}
 {% set ui_v2 = true %}
+{% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('music-library.css') }}">{% endblock %}
 
 {% block content %}
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token">
@@ -31,6 +32,7 @@
 
   <!-- Main -->
   <div class="mu-main">
+    <div class="mu-wash" id="muWash" aria-hidden="true"></div>
     <div class="mu-topbar">
       {% if not music_disabled %}
       <button type="button" class="mu-rail-toggle" id="muRailToggle" data-rd-collapse="side" title="Show or hide the library" aria-label="Library" aria-expanded="false">

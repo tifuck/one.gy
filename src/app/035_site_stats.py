@@ -26,7 +26,8 @@ def get_public_landing_stats():
 
     The refresh is single-flighted (AUDIT FIX A6): a request that arrives while
     another is already recomputing serves the previous value instead of running
-    the aggregates again."""
+    the aggregates again. Once a value exists, the refresh runs in a background
+    thread, so no visitor waits on the aggregates (only the first after boot)."""
     cached = _LANDING_STATS_CACHE.get('stats')
     if cached and (time.monotonic() - cached['ts']) < _LANDING_STATS_CACHE_TTL:
         return cached['value']
@@ -34,11 +35,32 @@ def get_public_landing_stats():
     if stale_value is not None:
         if not _LANDING_STATS_LOCK.acquire(blocking=False):
             return stale_value
+        try:
+            threading.Thread(target=_refresh_public_landing_stats_background,
+                             name='landing-stats', daemon=True).start()
+            return stale_value
+        except Exception as e:
+            print(f'[LANDING] Background stats refresh could not start, refreshing inline: {e}')
     elif not _LANDING_STATS_LOCK.acquire(timeout=_LANDING_STATS_LOCK_TIMEOUT):
         print('[LANDING] Stats refresh lock timed out; serving the unavailable fallback')
         return _landing_stats_unavailable()
     try:
         return _compute_public_landing_stats()
+    finally:
+        _LANDING_STATS_LOCK.release()
+
+
+def _refresh_public_landing_stats_background():
+    """Recompute the landing stats off the request thread. Entered holding
+    _LANDING_STATS_LOCK (taken by the request that found the value stale)."""
+    try:
+        with app.app_context():
+            try:
+                _compute_public_landing_stats()
+            finally:
+                db.session.remove()
+    except Exception as e:
+        print(f'[LANDING] Background stats refresh failed: {e}')
     finally:
         _LANDING_STATS_LOCK.release()
 

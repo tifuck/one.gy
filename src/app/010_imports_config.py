@@ -22,11 +22,13 @@ import qrcode
 import pyotp
 import fcntl
 import ipaddress
+import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, render_template, redirect, url_for, abort, send_file, send_from_directory, flash, jsonify, session, make_response, g, has_app_context, has_request_context
 from flask_sqlalchemy import SQLAlchemy
 from cryptography.fernet import Fernet, MultiFernet
-from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash, safe_join
 from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
@@ -88,7 +90,61 @@ app.config['COMPRESS_MIMETYPES'] = [
 ]
 app.config['COMPRESS_MIN_SIZE'] = 256       # Don't compress tiny responses
 app.config['COMPRESS_LEVEL'] = 6            # Balanced speed vs. compression ratio
-Compress(app)
+# Brotli before zstd: browsers that accept both would otherwise get zstd, which
+# is larger (files.js: br 10 ~31 KB, zstd 19 32.8 KB, zstd 3 38.3 KB); for
+# dynamic responses br 4 and zstd 3 are about even.
+app.config['COMPRESS_ALGORITHM'] = ['br', 'zstd', 'gzip', 'deflate']
+
+# Static assets are immutable per content hash, so each (file, encoding) is
+# compressed once per worker at a slow, small level and kept in memory. Brotli
+# 10, not 11: all static JS/CSS is 495 KB vs 484 KB at a third of the CPU
+# (0.7 s vs 1.9 s for the first visitor after a restart). Dynamic responses
+# keep Flask-Compress's fast per-request levels.
+_STATIC_COMPRESS_CACHE = OrderedDict()
+_STATIC_COMPRESS_CACHE_STATE = {'bytes': 0}
+_STATIC_COMPRESS_CACHE_MAX_BYTES = 32 * 1024 * 1024
+_STATIC_COMPRESS_LOCK = threading.Lock()
+
+
+class _StaticAwareCompress(Compress):
+    def compress(self, app, response, algorithm):
+        if (request.method != 'GET' or not request.path.startswith('/static/')
+                or 'Range' in request.headers or algorithm not in ('br', 'zstd', 'gzip')):
+            return super().compress(app, response, algorithm)
+        path = safe_join(app.static_folder, request.path[len('/static/'):])
+        try:
+            st = os.stat(path) if path else None
+        except OSError:
+            st = None
+        if st is None:
+            return super().compress(app, response, algorithm)
+        key = (path, st.st_mtime_ns, st.st_size, algorithm)
+        with _STATIC_COMPRESS_LOCK:
+            hit = _STATIC_COMPRESS_CACHE.get(key)
+            if hit is not None:
+                _STATIC_COMPRESS_CACHE.move_to_end(key)
+                return hit
+        data = response.get_data()
+        if algorithm == 'br':
+            import brotli
+            out = brotli.compress(data, quality=10)
+        elif algorithm == 'zstd':
+            import zstandard
+            out = zstandard.ZstdCompressor(level=19).compress(data)
+        else:
+            import gzip
+            out = gzip.compress(data, compresslevel=9, mtime=0)
+        with _STATIC_COMPRESS_LOCK:
+            if key not in _STATIC_COMPRESS_CACHE:
+                _STATIC_COMPRESS_CACHE[key] = out
+                _STATIC_COMPRESS_CACHE_STATE['bytes'] += len(out)
+                while _STATIC_COMPRESS_CACHE_STATE['bytes'] > _STATIC_COMPRESS_CACHE_MAX_BYTES and _STATIC_COMPRESS_CACHE:
+                    _, old = _STATIC_COMPRESS_CACHE.popitem(last=False)
+                    _STATIC_COMPRESS_CACHE_STATE['bytes'] -= len(old)
+        return out
+
+
+_StaticAwareCompress(app)
 
 # ── Static file cache busting ─────────────────────────────────────────────
 # Compute content hashes at startup for versioned static URLs.
