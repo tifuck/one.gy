@@ -90,8 +90,10 @@
       audio.pause()
       _clearAudioSrc()
       if (oldBlobUrl) URL.revokeObjectURL(oldBlobUrl)
-      // music-player-e2e.js loads with the first encrypted track
-      var e2eReady = await mp._loadPart('e2e').then(function() { return true }, function(err) {
+      // music-player-e2e.js loads with the first encrypted track, and crypto.js
+      // with it on pages that do not ship it (the music page)
+      var cryptoReady = typeof OneGyCrypto === 'undefined' ? mp._loadPart('crypto') : Promise.resolve()
+      var e2eReady = await cryptoReady.then(function() { return mp._loadPart('e2e') }).then(function() { return true }, function(err) {
         console.error('[MUSIC PLAYER] E2E decrypt error:', err)
         return false
       })

@@ -18,7 +18,23 @@
   function esc (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] }) }
   function csrf () { var m = document.querySelector('meta[name="csrf-token"]'); return m ? m.getAttribute('content') : (window.CSRF || '') }
   function toast (m, c) { if (window.showToast) window.showToast(m, c) }
-  async function jget (u) { var r = await fetch(u, { headers: { 'X-Requested-With': 'XMLHttpRequest' } }); if (!r.ok) throw new Error(u); return r.json() }
+  async function jget (u, signal) { var r = await fetch(u, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, signal: signal }); if (!r.ok) throw new Error(u); return r.json() }
+  // Library data (the same for every user) is kept for a minute, so going back
+  // or reopening a view shows it at once instead of fetching it again.
+  // shortcut: up to a minute stale after a library change; key on the server's ETag if that matters.
+  var CACHE_MS = 60000, cache = new Map()
+  function cachePut (u, p) {
+    var entry = { at: Date.now(), p: p }
+    cache.set(u, entry)
+    p.catch(function () { if (cache.get(u) === entry) cache.delete(u) })
+    return p
+  }
+  function jgetCached (u) {
+    var hit = cache.get(u)
+    return hit && Date.now() - hit.at < CACHE_MS ? hit.p : cachePut(u, jget(u))
+  }
+  // The page starts the home fetch while the scripts load (music.html)
+  if (window.MU_HOME) cachePut('/music/api/home', window.MU_HOME.then(function (r) { if (!r.ok) throw new Error('/music/api/home'); return r.json() }))
 
   var ICON_NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'
   var ICON_LIST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6.5h11M4 11.5h11M4 16.5h6"/><circle cx="17.5" cy="16.5" r="2.5"/><path d="M20 16.5V7l2-1"/></svg>'
@@ -26,10 +42,11 @@
   var ICON_CHEV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>'
   var ICON_HEART = '<svg viewBox="0 0 24 24"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.2a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z"/></svg>'
 
-  // size: 96 | 160 | 320 serves a small WebP (rows, tiles, cards); none: the original (hero art)
+  // size: 96 | 160 | 320 | 640 serves a small WebP (rows, tiles, cards, hero art); none: the original
   function coverUrl (p, size) { if (!p) return ''; var id = String(p).replace('covers/', '').replace('artists/', '').replace('.jpg', ''); return '/music/cover/' + encodeURIComponent(id) + (size ? '?s=' + size : '') }
-  function cover (p, cls, size) {
-    if (p) return '<img class="' + (cls || '') + '" src="' + esc(coverUrl(p, size)) + '" alt="" loading="lazy">'
+  // eager: the page's main image (hero art), fetched first instead of lazily
+  function cover (p, cls, size, eager) {
+    if (p) return '<img class="' + (cls || '') + '" src="' + esc(coverUrl(p, size)) + '" alt=""' + (eager ? ' fetchpriority="high"' : ' loading="lazy"') + '>'
     return '<span class="mu-art-ph ' + (cls || '') + '">' + ICON_NOTE + '</span>'
   }
   function artistNames (arts, feat) {
@@ -64,7 +81,7 @@
   // Card play button: start an album without opening it
   async function playAlbum (id) {
     try {
-      var r = await jget('/music/api/album/' + encodeURIComponent(id))
+      var r = await jgetCached('/music/api/album/' + encodeURIComponent(id))
       var a = r.album || r
       playList(r.tracks || a.tracks || [], -1, a.name)
     } catch (e) { toast('COULD NOT LOAD ALBUM', 'error') }
@@ -88,20 +105,30 @@
     if (MusicPlayer.setBarHeartState) MusicPlayer.setBarHeartState(liked)
     if (MusicPlayer.setFsHeartState) MusicPlayer.setFsHeartState(liked)
   }
+  function setLiked (id, liked) {
+    if (liked) S.likes.add(id); else S.likes.delete(id)
+    syncHearts()
+    syncPlayerHeart(id)
+    updateLikedCount()
+  }
+  // The heart flips at once; the server's answer (or a failure) settles it
+  // unless a later tap on the same song is still on its way.
   function toggleLike (id) {
+    var want = !S.likes.has(id)
+    setLiked(id, want)
     var previous = likeMutations[id] || likesReady
     var mutation = previous.then(async function () {
       try {
         // Send the wanted state (not a server toggle) so a stale heart cannot flip it the wrong way
-        var r = await fetch('/music/api/likes/' + encodeURIComponent(id), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ liked: !S.likes.has(id) }) })
+        var r = await fetch('/music/api/likes/' + encodeURIComponent(id), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ liked: want }) })
         if (!r.ok) throw new Error('like')
         var res = await r.json()
         if (typeof res.liked !== 'boolean') throw new Error('like')
-        if (res.liked) S.likes.add(id); else S.likes.delete(id)
-        syncHearts()
-        syncPlayerHeart(id)
-        updateLikedCount()
-      } catch (e) { toast('COULD NOT UPDATE LIKE', 'error') }
+        if (likeMutations[id] === mutation) setLiked(id, res.liked)
+      } catch (e) {
+        if (likeMutations[id] === mutation) setLiked(id, !want)
+        toast('COULD NOT UPDATE LIKE', 'error')
+      }
     })
     likeMutations[id] = mutation
     mutation.then(function () { if (likeMutations[id] === mutation) delete likeMutations[id] })
@@ -167,9 +194,9 @@
     var hsl = rgbToHsl(r / w, g / w, b / w)
     return 'rgb(' + hslToRgb(hsl[0], Math.min(0.8, Math.max(hsl[1] < 0.08 ? 0 : 0.35, hsl[1])), 0.4).join(' ') + ')'
   }
-  function tintOf (p) {
-    if (!p) return Promise.resolve(null)
-    var url = coverUrl(p, 96)   // sampled at 24 x 24: the smallest variant does
+  // url: the cover as the page shows it, so sampling it (at 24 x 24) costs no extra download
+  function tintOf (url) {
+    if (!url) return Promise.resolve(null)
     if (!tintCache.has(url)) {
       tintCache.set(url, new Promise(function (res) {
         var img = new Image()
@@ -186,12 +213,12 @@
     }
     return tintCache.get(url)
   }
-  // Page wash follows the open view; null falls back to the theme accent.
-  function wash (p) {
+  // Page wash follows the open view (url: a cover as shown); null falls back to the theme accent.
+  function wash (url) {
     var el = $('muWash'), token = ++washToken
     if (!el) return
-    if (!p) { el.style.removeProperty('--mu-tint'); return }
-    tintOf(p).then(function (c) { if (token !== washToken) return; if (c) el.style.setProperty('--mu-tint', c); else el.style.removeProperty('--mu-tint') })
+    if (!url) { el.style.removeProperty('--mu-tint'); return }
+    tintOf(url).then(function (c) { if (token !== washToken) return; if (c) el.style.setProperty('--mu-tint', c); else el.style.removeProperty('--mu-tint') })
   }
   var tileObserver = null
   function paintTile (el) {
@@ -221,50 +248,62 @@
   }
 
   // ---- Long lists ----------------------------------------------------------
-  // A view goes in with the first CHUNK rows / cards of a long list; the rest
-  // follow a chunk per idle slot, built then (likes and the current track are
-  // up to date). Handlers are delegated and rows keep data-track-index, so
-  // clicks, the "Show all" collapse (CSS) and sorting work as before.
-  var CHUNK = 200, restJobs = [], restSeq = 0, restToken = 0
-  var idle = window.requestIdleCallback ? function (f) { requestIdleCallback(f, { timeout: 300 }) } : function (f) { setTimeout(f, 30) }
-  // build(item, index) -> HTML; the remainder is marked by an empty <template>
+  // A view goes in with the first CHUNK rows / cards of a long list; the next
+  // chunk goes in when the end of the list comes near (an observed marker
+  // after the last item), built then (likes and the current track are up to
+  // date). Handlers are delegated and rows keep data-track-index, so clicks,
+  // the "Show all" collapse (CSS) and sorting work as before.
+  var CHUNK = 200, restJobs = [], restSeq = 0, restObserver = null
+  // build(item, index) -> HTML; the remainder is marked by an empty .mu-rest
   function chunked (items, build) {
     if (items.length <= CHUNK) return items.map(build).join('')
     var id = ++restSeq
     restJobs.push({ id: id, items: items, build: build, at: CHUNK })
-    return items.slice(0, CHUNK).map(build).join('') + '<template data-rest="' + id + '"></template>'
+    return items.slice(0, CHUNK).map(build).join('') + '<div class="mu-rest" data-rest="' + id + '" aria-hidden="true"></div>'
   }
-  // all: insert everything now (a scroll position is about to be restored)
-  function fillRest (all) {
-    var token = ++restToken
-    var jobs = restJobs.filter(function (job) { return (job.el = view.querySelector('template[data-rest="' + job.id + '"]')) })
+  // scrollTo: a scroll position about to be restored; enough goes in now to reach it
+  function fillRest (scrollTo) {
+    if (restObserver) { restObserver.disconnect(); restObserver = null }
+    var jobs = restJobs.filter(function (job) { return (job.el = view.querySelector('[data-rest="' + job.id + '"]')) })
     restJobs = []
-    function step () {
-      var job = jobs[0]
-      if (token !== restToken || !job || !job.el.isConnected) return
-      var end = all ? job.items.length : Math.min(job.items.length, job.at + CHUNK)
+    function step (job) {   // true once the list is complete
+      var end = Math.min(job.items.length, job.at + CHUNK)
       job.el.insertAdjacentHTML('beforebegin', job.items.slice(job.at, end).map(function (t, k) { return job.build(t, job.at + k) }).join(''))
       job.at = end
-      if (end >= job.items.length) { job.el.remove(); jobs.shift() }
-      if (!jobs.length) return
-      if (all) step(); else idle(step)
+      if (end < job.items.length) return false
+      job.el.remove(); jobs.splice(jobs.indexOf(job), 1)
+      return true
     }
-    if (jobs.length) { if (all) step(); else idle(step) }
+    while (scrollTo && jobs.length && view.scrollHeight < scrollTo + 2 * view.clientHeight) step(jobs[0])
+    if (!jobs.length) return
+    if (typeof IntersectionObserver !== 'function') { while (jobs.length) step(jobs[0]); return }
+    var obs = restObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        var job = jobs.filter(function (j) { return j.el === en.target })[0]
+        if (!en.isIntersecting || !job) return
+        // Observed again, it reports at once if the marker is still in range
+        obs.unobserve(job.el)
+        if (!step(job)) obs.observe(job.el)
+      })
+    }, { root: view, rootMargin: '1200px 0px' })
+    jobs.forEach(function (job) { obs.observe(job.el) })
   }
 
   // ---- Rendering: shared bits ---------------------------------------------
   function loading () { view.innerHTML = '<div class="mu-skel" aria-hidden="true">' + new Array(13).join('<span class="rd-skel"></span>') + '</div>' }
   // at: [view, id] of the view being opened, so a UI update reload (core.js) comes back to it.
   function startView (at) {
-    S.at = at; current = { tracks: [], albumName: '' }; loading(); view.scrollTop = 0
+    abortSearch(); S.searching = false
+    S.at = at; S.scrollTo = restoreScroll; restoreScroll = 0
+    current = { tracks: [], albumName: '' }; loading(); view.scrollTop = 0
     try { if (at) sessionStorage.setItem(SS_AT, JSON.stringify(at)) } catch (e) {}
     return ++viewEpoch
   }
   function isCurrentView (epoch) { return epoch === viewEpoch }
   function render (h) {
     view.innerHTML = h; paintTiles()
-    fillRest(!!restoreScroll)
-    if (restoreScroll) { view.scrollTop = restoreScroll; restoreScroll = 0 }
+    fillRest(S.scrollTo)
+    if (S.scrollTo) { view.scrollTop = S.scrollTo; S.scrollTo = 0 }
   }
 
   // ---- Breadcrumb (toolbar) -------------------------------------------------
@@ -283,12 +322,13 @@
   function crumbRoot (label, open) { trail = [{ label: label, open: open }]; renderCrumbs() }
   function crumbPush (label, open) {
     if (!trail.length) trail = [{ label: 'Home', open: viewHome }]
+    trail[trail.length - 1].scroll = view.scrollTop   // where Back returns to
     trail.push({ label: label, open: open })
     if (trail.length > 4) trail.splice(1, 1)   // root + the last three pages
     renderCrumbs()
   }
   function crumbLabel (label) { if (trail.length) trail[trail.length - 1].label = label; renderCrumbs() }
-  function crumbGo (i) { var c = trail[i]; if (!c) return; trail = trail.slice(0, i + 1); renderCrumbs(); c.open(true) }
+  function crumbGo (i) { var c = trail[i]; if (!c) return; trail = trail.slice(0, i + 1); renderCrumbs(); restoreScroll = c.scroll || 0; c.open(true) }
   // more: a rail view name for a "Show all" link
   function sectionTitle (t, sub, more) {
     return '<div class="mu-sec-head">' + (t ? '<h2 class="mu-h2">' + esc(t) + '</h2>' : '') + (sub ? '<span class="mu-sec-sub">' + esc(sub) + '</span>' : '') +
@@ -316,7 +356,7 @@
       '<span class="mu-card-sub">' + plural(a.song_count || 0, 'song') + '</span></button>'
   }
   function genreTile (g) {
-    return '<button type="button" class="mu-genre" data-genre="' + esc(g.name) + '"' + (g.cover_path ? ' data-tint="' + esc(g.cover_path) + '"' : '') + '>' +
+    return '<button type="button" class="mu-genre" data-genre="' + esc(g.name) + '"' + (g.cover_path ? ' data-tint="' + esc(coverUrl(g.cover_path, 160)) + '"' : '') + '>' +
       '<span class="mu-genre-name">' + esc(g.name).replace(/\//g, '/<wbr>') + '</span><span class="mu-genre-sub">' + plural(g.song_count, 'song') + '</span>' +
       (g.cover_path ? '<span class="mu-genre-art">' + cover(g.cover_path, '', 160) + '</span>' : '') + '</button>'
   }
@@ -387,19 +427,20 @@
   async function viewHome () {
     setActive('home'); crumbRoot('Home', viewHome); var epoch = startView(['home'])
     try {
-      var d = await jget('/music/api/home')
+      var d = await jgetCached('/music/api/home')
       if (!isCurrentView(epoch)) return
       var recent = d.recently_added || [], h = ''
       // Quick picks: liked songs, playlists, then the newest additions (8 tiles)
       var quick = [quickTile('data-go="liked"', '<span class="mu-liked-art">' + ICON_HEART + '</span>', 'Liked songs')]
-      S.playlists.slice(0, 3).forEach(function (p) { quick.push(quickTile('data-playlist="' + esc(p.id) + '"', p.cover_path ? cover(p.cover_path, '', 160) : '<span class="mu-art-ph">' + ICON_LIST + '</span>', p.name, p.cover_path)) })
-      recent.slice(0, 8 - quick.length).forEach(function (a) { quick.push(quickTile('data-album="' + esc(a.id) + '"', cover(a.cover_path, '', 160), a.name, a.cover_path)) })
+      S.playlists.slice(0, 3).forEach(function (p) { quick.push(quickTile('data-playlist="' + esc(p.id) + '"', p.cover_path ? cover(p.cover_path, '', 160) : '<span class="mu-art-ph">' + ICON_LIST + '</span>', p.name, coverUrl(p.cover_path, 160))) })
+      // Album tiles share the album cards' 320 covers (one download each)
+      recent.slice(0, 8 - quick.length).forEach(function (a) { quick.push(quickTile('data-album="' + esc(a.id) + '"', cover(a.cover_path, '', 320), a.name, coverUrl(a.cover_path, 320))) })
       if (recent.length) h += '<div class="mu-quick-grid">' + quick.join('') + '</div>'
       if (recent.length) h += sectionTitle('Recently added', '', 'albums') + '<div class="mu-shelf">' + recent.map(albumCard).join('') + '</div>'
       if ((d.new_releases || []).length) h += sectionTitle('New releases') + '<div class="mu-shelf">' + d.new_releases.map(albumCard).join('') + '</div>'
       if ((d.genres || []).length) h += sectionTitle('Browse by genre', '', 'genres') + '<div class="mu-shelf mu-shelf-genres">' + d.genres.map(genreTile).join('') + '</div>'
       if ((d.top_artists || []).length) h += sectionTitle('Top artists', '', 'artists') + '<div class="mu-shelf mu-shelf-artists">' + d.top_artists.map(artistCard).join('') + '</div>'
-      S.homeWash = recent[0] && recent[0].cover_path
+      S.homeWash = recent[0] && coverUrl(recent[0].cover_path, 320)
       wash(S.homeWash)
       render(h || empty('Your library is empty', 'Songs added to the music library show up here.'))
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load the library', 'Check your connection and try again.') }
@@ -435,7 +476,7 @@
   }
   async function viewAlbums () {
     setActive('albums'); crumbRoot('Albums', viewAlbums); var epoch = startView(['albums']); wash(null)
-    try { var d = await jget('/music/api/albums'); var arr = Array.isArray(d) ? d : (d.albums || [])
+    try { var d = await jgetCached('/music/api/albums'); var arr = Array.isArray(d) ? d : (d.albums || [])
       if (!isCurrentView(epoch)) return
       S.albums = arr
       if (arr.length) renderAlbums(arr); else render(empty('No albums yet'))
@@ -443,14 +484,14 @@
   }
   async function viewArtists () {
     setActive('artists'); crumbRoot('Artists', viewArtists); var epoch = startView(['artists']); wash(null)
-    try { var d = await jget('/music/api/artists'); var arr = Array.isArray(d) ? d : (d.artists || [])
+    try { var d = await jgetCached('/music/api/artists'); var arr = Array.isArray(d) ? d : (d.artists || [])
       if (!isCurrentView(epoch)) return
       render(arr.length ? sectionTitle('', plural(arr.length, 'artist')) + '<div class="mu-grid mu-grid-artists">' + chunked(arr, artistCard) + '</div>' : empty('No artists yet'))
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load artists', 'Check your connection and try again.') }
   }
   async function viewGenres () {
     setActive('genres'); crumbRoot('Genres', viewGenres); var epoch = startView(['genres']); wash(null)
-    try { var arr = await jget('/music/api/genres')
+    try { var arr = await jgetCached('/music/api/genres')
       if (!isCurrentView(epoch)) return
       render(arr.length ? sectionTitle('', plural(arr.length, 'genre')) + '<div class="mu-genre-grid">' + arr.map(genreTile).join('') + '</div>'
         : empty('No genres yet', 'Genres appear once songs in the library have been tagged.'))
@@ -460,11 +501,11 @@
     if (!again) crumbPush(name, function () { viewGenre(name, true) })
     var epoch = startView(['genre', name])
     try {
-      var r = await jget('/music/api/genre?name=' + encodeURIComponent(name))
+      var r = await jgetCached('/music/api/genre?name=' + encodeURIComponent(name))
       if (!isCurrentView(epoch)) return
       var songs = r.songs || [], albums = r.albums || [], artists = r.artists || []
       current = { tracks: songs, albumName: '' }
-      var art = albums[0] && albums[0].cover_path
+      var art = albums[0] && coverUrl(albums[0].cover_path, 320)   // as its release card shows it
       wash(art)
       var h = hero({ html: '<span class="mu-genre-hero"' + (art ? ' data-tint="' + esc(art) + '"' : '') + '>' + esc(name.charAt(0)) + '</span>' }, 'Genre', name,
         facts([plural(r.genre.song_count, 'song'), plural(albums.length, 'release'), plural(artists.length, 'artist')]))
@@ -478,15 +519,15 @@
     if (!again) crumbPush('Album', function () { viewAlbum(id, true) })
     var epoch = startView(['album', id])
     try {
-      var r = await jget('/music/api/album/' + encodeURIComponent(id))
+      var r = await jgetCached('/music/api/album/' + encodeURIComponent(id))
       if (!isCurrentView(epoch)) return
       if (r.error) { view.innerHTML = empty(r.error); return }
       var a = r.album || r, tracks = r.tracks || a.tracks || []   // response is { album, tracks }
       current = { tracks: tracks, albumName: a.name }
       crumbLabel(a.name)
-      wash(a.cover_path)
+      wash(coverUrl(a.cover_path, 640))
       var count = a.total_tracks && a.total_tracks > tracks.length ? tracks.length + ' of ' + plural(a.total_tracks, 'song') : plural(tracks.length, 'song')
-      var h = hero({ html: cover(a.cover_path) }, typeLabel(a.album_type) || 'Album', a.name,
+      var h = hero({ html: cover(a.cover_path, '', 640, true) }, typeLabel(a.album_type) || 'Album', a.name,
         facts(['<strong>' + artistLinks(a.artists) + '</strong>', esc(year(a)), esc(count), esc(totalDur(tracks))]))
       var tags = (a.genres || []).length ? '<div class="mu-tags">' + a.genres.map(function (g) { return '<button type="button" class="mu-chip" data-genre="' + esc(g) + '">' + esc(g) + '</button>' }).join('') + '</div>' : ''
       if (tracks.length) h += playButton(tags); else h += tags
@@ -502,17 +543,17 @@
     if (!again) crumbPush('Artist', function () { viewArtist(id, true) })
     var epoch = startView(['artist', id])
     try {
-      var r = await jget('/music/api/artist/' + encodeURIComponent(id))
+      var r = await jgetCached('/music/api/artist/' + encodeURIComponent(id))
       if (!isCurrentView(epoch)) return
       if (r.error) { view.innerHTML = empty(r.error); return }
       var a = r.artist || r                                        // response is { artist, songs, albums, featuring_albums }
       var own = r.albums || [], feat = r.featuring_albums || []
       crumbLabel(a.name)
-      wash(a.cover_path)
+      wash(coverUrl(a.cover_path, 640))
       var songs = r.songs || []
       var full = own.filter(function (x) { return x.album_type === 'album' || x.album_type === 'compilation' })
       var short = own.filter(function (x) { return full.indexOf(x) < 0 })
-      var h = hero({ html: cover(a.cover_path), cls: 'mu-round' }, 'Artist', a.name, facts([plural(songs.length, 'song'), own.length ? plural(own.length, 'release') : '']))
+      var h = hero({ html: cover(a.cover_path, '', 640, true), cls: 'mu-round' }, 'Artist', a.name, facts([plural(songs.length, 'song'), own.length ? plural(own.length, 'release') : '']))
       if (songs.length) {
         current = { tracks: songs, albumName: '' }
         h += playButton() + sectionTitle('Songs', String(songs.length)) + '<div class="mu-collapsed">' + trackList(songs, { art: true, album: true }) + '</div>' + moreToggle(songs.length)
@@ -545,22 +586,31 @@
       var tracks = p.songs || p.tracks || []
       current = { tracks: tracks, albumName: '' }
       crumbLabel(p.name)
-      wash(p.cover_path)
-      var h = hero({ html: p.cover_path ? cover(p.cover_path) : '<span class="mu-art-ph">' + ICON_LIST + '</span>' }, 'Playlist', p.name, facts([plural(tracks.length, 'song'), esc(totalDur(tracks))]), p.description || '')
+      wash(coverUrl(p.cover_path, 640))
+      var h = hero({ html: p.cover_path ? cover(p.cover_path, '', 640, true) : '<span class="mu-art-ph">' + ICON_LIST + '</span>' }, 'Playlist', p.name, facts([plural(tracks.length, 'song'), esc(totalDur(tracks))]), p.description || '')
       h += tracks.length ? playButton() + trackList(tracks, { art: true, album: true }) : empty('This playlist is empty', 'Add songs with the + button in the player.')
       render(h)
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Could not load this playlist', 'Check your connection and try again.') }
   }
+  // The search request in flight: a newer search or another view cancels it.
+  var searchCtl = null, shownQ = null
+  function abortSearch () { if (searchCtl) { searchCtl.abort(); searchCtl = null } }
   async function viewSearch (q) {
-    setActive(''); crumbRoot('Search', function () { viewSearch(q) }); var epoch = startView(); wash(null)
+    crumbRoot('Search', function () { viewSearch(q) })
+    var epoch
+    // Typing on keeps the current results up until the new ones arrive
+    if (S.searching) { abortSearch(); epoch = ++viewEpoch } else { setActive(''); epoch = startView(); wash(null); S.searching = true }
+    shownQ = q
+    var ctl = searchCtl = new AbortController()
     try {
-      var d = await jget('/music/api/search?q=' + encodeURIComponent(q))
+      var d = await jget('/music/api/search?q=' + encodeURIComponent(q), ctl.signal)
       if (!isCurrentView(epoch)) return
       var h = ''
       if ((d.songs || []).length) { current = { tracks: d.songs, albumName: '' }; h += sectionTitle('Songs', String(d.songs.length)) + trackList(d.songs, { art: true, album: true }) }
       if ((d.albums || []).length) h += sectionTitle('Albums', String(d.albums.length)) + '<div class="mu-grid">' + d.albums.map(albumCard).join('') + '</div>'
       if ((d.artists || []).length) h += sectionTitle('Artists', String(d.artists.length)) + '<div class="mu-grid mu-grid-artists">' + d.artists.map(artistCard).join('') + '</div>'
       render(h || empty('No results for “' + q + '”', 'Try a different spelling or a shorter search.'))
+      view.scrollTop = 0
     } catch (e) { if (isCurrentView(epoch)) view.innerHTML = empty('Search failed', 'Check your connection and try again.') }
   }
 
@@ -653,7 +703,13 @@
     document.addEventListener('musicplayer:fsadd', function (e) { if (e.detail && e.detail.id) addToPlaylistMenu(e.detail.id, e.detail.button) })
 
     var si = $('muSearch'), to = null
-    if (si) si.addEventListener('input', function () { var q = this.value.trim(), epoch = ++viewEpoch; clearTimeout(to); to = setTimeout(function () { if (isCurrentView(epoch)) { q ? viewSearch(q) : viewHome() } }, 260) })
+    if (si) si.addEventListener('input', function () {
+      var q = this.value.trim()
+      clearTimeout(to)
+      if (q === (S.searching ? shownQ : '')) return   // what is on screen already
+      var epoch = ++viewEpoch
+      to = setTimeout(function () { if (isCurrentView(epoch)) { q ? viewSearch(q) : viewHome() } }, 260)
+    })
 
     var cr = $('muCrumbs'); if (cr) cr.addEventListener('click', function (e) { var c = e.target.closest('[data-crumb]'); if (c) crumbGo(+c.getAttribute('data-crumb')) })
     var bk = $('muBack'); if (bk) bk.onclick = function () { crumbGo(trail.length - 2) }

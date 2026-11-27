@@ -151,6 +151,8 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 }
 /* Long grids (every album / artist): off-screen cards skip layout and paint */
 .mu-grid > .mu-card{ content-visibility:auto; contain-intrinsic-size:auto 172px auto 250px; }
+/* End-of-list marker: music.js adds the next chunk when it comes near */
+.mu-rest{ grid-column:1 / -1; height:1px; }
 .mu-card:hover{ background:var(--hover); }
 .mu-card:focus-visible{ outline-offset:0; }
 .mu-card-art{

@@ -11,8 +11,8 @@
     if (!('mediaSession' in navigator) || !track) return
     var title = _stripAudioExtension(track.name || '')
     var artwork = []
-    var coverSrc = _coverUrl(track.coverPath)
-    if (coverSrc) artwork = [{ src: coverSrc, type: 'image/jpeg' }]
+    var coverSrc = _coverUrl(track.coverPath, 640)
+    if (coverSrc) artwork = [{ src: coverSrc, type: 'image/webp' }]
     var artist = ''
     if (track.artists && track.artists.length > 0) {
       artist = track.artists.map(function(a) { return a.name }).join(', ')

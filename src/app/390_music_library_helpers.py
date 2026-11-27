@@ -19,6 +19,9 @@ _AVAILABLE_SONGS_DB_MTIME = None
 # cached under a key always saw that scan's songs.
 _MUSIC_CATALOG_CACHE = {}
 _MUSIC_CATALOG_KEY = None
+# One catalog build at a time: requests that arrive together after a library
+# change wait for the first build instead of each running their own.
+_MUSIC_CATALOG_BUILD_LOCK = threading.Lock()
 # Part of every catalog ETag: a restart (new code) changes them all.
 _MUSIC_CATALOG_BOOT = int(time.time())
 
@@ -27,9 +30,13 @@ def _music_library_mtime():
     stamps = []
     for path in (db_path, db_path + '-wal'):
         try:
-            stamps.append(os.stat(path).st_mtime_ns)
+            st = os.stat(path)
         except OSError:
-            pass
+            continue
+        # An empty -wal only means a connection has the database open (it goes
+        # when that closes): nothing changed, so it must not count as a change.
+        if st.st_size or path == db_path:
+            stamps.append(st.st_mtime_ns)
     return max(stamps) if stamps else None
 
 def _published_song_ids():
@@ -178,12 +185,16 @@ def _music_catalog(name, build):
     entry = _MUSIC_CATALOG_CACHE.get(name)
     if entry is not None and entry[0] == key:
         return entry
-    conn = _get_music_db(with_available=True)
-    try:
-        entry = (key, build(conn))
-    finally:
-        conn.close()
-    _MUSIC_CATALOG_CACHE[name] = entry
+    with _MUSIC_CATALOG_BUILD_LOCK:
+        entry = _MUSIC_CATALOG_CACHE.get(name)
+        if entry is not None and entry[0] == key:
+            return entry
+        conn = _get_music_db(with_available=True)
+        try:
+            entry = (key, build(conn))
+        finally:
+            conn.close()
+        _MUSIC_CATALOG_CACHE[name] = entry
     return entry
 
 def _music_catalog_json(name, build):

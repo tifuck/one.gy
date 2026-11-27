@@ -93,10 +93,10 @@ def music_stream(song_id):
     return resp
 
 
-# Small art (rows, tiles, cards, the player bar) asks for ?s=<size>: a WebP
+# Small art (rows, tiles, cards, the player bar, hero art) asks for ?s=<size>: a WebP
 # that fits in size x size. The library belongs to the music worker (and PROD
 # is sandboxed), so resized covers are kept in memory only, newest use last.
-_MUSIC_COVER_SIZES = (96, 160, 320)
+_MUSIC_COVER_SIZES = (96, 160, 320, 640)
 _MUSIC_COVER_CACHE_MAX_BYTES = 32 * 1024 * 1024
 _MUSIC_COVER_CACHE = {}
 _MUSIC_COVER_CACHE_BYTES = 0
@@ -135,7 +135,7 @@ def _music_cover_variant(path, mtime_ns, size):
 def music_cover(cover_id):
     """Serve album or per-song cover JPEG.
     Checks album covers first, then falls back to per-song cover.jpg.
-    ?s=96|160|320 serves a WebP resized to fit (other sizes: the original)."""
+    ?s=96|160|320|640 serves a WebP resized to fit (other sizes: the original)."""
     from flask import Response
     from werkzeug.utils import secure_filename as _sf
     safe_id = _sf(cover_id)
