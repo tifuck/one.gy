@@ -191,7 +191,15 @@
       },
     }
     for (var action in actions) {
-      try { navigator.mediaSession.setActionHandler(action, actions[action]) } catch(e) {}
+      try { navigator.mediaSession.setActionHandler(action, _asUserInput(actions[action])) } catch(e) {}
+    }
+  }
+
+  // Media keys and lock-screen controls are user input (listening history: idle_ms)
+  function _asUserInput(handler) {
+    return function(details) {
+      mp._listenInput()
+      return handler(details)
     }
   }
 
@@ -267,9 +275,12 @@
             artistIds: t.artistIds || [],
             artists: t.artists || [],
             albumId: t.albumId || null,
+            durationMs: t.durationMs || null,
             suggested: t.suggested || false,
           }
         }),
+        listenContext: mp._listenContext,
+        listen: mp._listenSnapshot(),
         suggestedStartIndex: mp._suggestedStartIndex,
         currentIndex: mp.currentIndex,
         currentTime: audio.currentTime || 0,
@@ -326,9 +337,11 @@
           artistIds: t.artistIds || [],
           artists: t.artists || [],
           albumId: t.albumId || null,
+          durationMs: t.durationMs || null,
           suggested: t.suggested || false,
         }
       })
+      mp._listenContext = typeof state.listenContext === 'string' ? state.listenContext : 'queue'
       mp._suggestedStartIndex = (typeof state.suggestedStartIndex === 'number' ? state.suggestedStartIndex : -1)
       mp.shuffleMode = !!state.shuffleMode
       mp.repeatMode = state.repeatMode || 'none'
@@ -369,6 +382,9 @@
         document.dispatchEvent(new CustomEvent('musicplayer:trackchange', { detail: { id: track.id, name: track.name } }))
       } catch(e) {}
 
+      // The play the previous page saved goes on (same client_id and reason)
+      mp._listenResume(state.listen, track)
+
       // Set up the audio source and seek (only while this restore is still
       // the latest load: a track clicked before then owns the element). Seek
       // on loadedmetadata, not canplay: buffering the start first only to
@@ -407,10 +423,14 @@
     }
   }
 
-  // Save state before page unload (navigation away). Only on pagehide: it
+  // Save state (and checkpoint the play in progress, music-player-listen.js)
+  // before page unload (navigation away). Only on pagehide: it
   // comes after beforeunload (the audio stopped there), fires on every unload
   // (iOS and the back/forward cache too), and a long queue is serialised once.
-  window.addEventListener('pagehide', _saveState)
+  window.addEventListener('pagehide', function() {
+    mp._listenCheckpoint()
+    _saveState()
+  })
 
   // Also save on visibility change (tab close, mobile switch)
   // On iOS, this is also where we handle background audio suspension and

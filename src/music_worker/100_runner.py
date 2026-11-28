@@ -112,6 +112,7 @@ def _discovery_allowed():
 
 
 def discovery_loop():
+    floored = frozenset()
     while not STOP.is_set():
         try:
             blocked = _discovery_allowed()
@@ -124,6 +125,10 @@ def discovery_loop():
                 if _due('charts_at', CHARTS_EVERY):
                     set_activity('Checking the charts')
                     charts_scan()
+                listened = _listened_artist_ids()
+                if listened - floored:
+                    listened_floors(listened - floored)
+                floored = listened
                 due = artists_due()
                 for artist_id in due:
                     if STOP.is_set() or _discovery_allowed():
@@ -188,16 +193,25 @@ def acquire_loop(index):
 
 def rescore_due(state):
     """Re-score the queue: all of it when a download-order setting or rule
-    changed, the boosted songs hourly (boosts run out by the day)."""
-    signature = priority_signature(priority_config())
+    changed; hourly the boosted songs (boosts run out by the day) and the songs
+    of artists that started or stopped counting as listened."""
+    cfg = priority_config()
+    signature = priority_signature(cfg)
     if signature != meta_get('prio_sig'):
-        log(f'queue: settings changed; re-scored {jobs_rescore():,} songs')
+        log(f'queue: settings changed; re-scored {jobs_rescore(cfg=cfg):,} songs')
         meta_set('prio_sig', signature)
+        meta_set('listened_scored', json.dumps(sorted(cfg['listened_ids'])))
         state['hot'] = time.time()
     elif time.time() - state['hot'] >= 3600:
-        changed = jobs_rescore(hot_only=True)
+        changed = jobs_rescore(hot_only=True, cfg=cfg)
         if changed:
             log(f'queue: {changed} songs changed boost')
+        moved = cfg['listened_ids'] ^ frozenset(json.loads(meta_get('listened_scored') or '[]'))
+        if moved:
+            changed = jobs_rescore(artists=moved, cfg=cfg)
+            meta_set('listened_scored', json.dumps(sorted(cfg['listened_ids'])))
+            if changed:
+                log(f'queue: {changed} songs changed listened boost')
         state['hot'] = time.time()
 
 

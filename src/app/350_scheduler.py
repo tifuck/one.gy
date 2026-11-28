@@ -65,6 +65,8 @@ def cleanup_job():
                 ('local_staged_files',     cleanup_local_staged_files),
                 ('temp_dirs',              cleanup_temp_dirs),
                 ('stale_music_sync',       cleanup_stale_music_sync),
+                # Listening history past retention and faded taste rows (once a day).
+                ('music_taste',            cleanup_music_taste),
                 # AUDIT FIX M14: drop expired session-revocation rows and refresh the
                 # process-local revoked-sid cache (so extra Gunicorn workers converge).
                 ('revoked_sessions',       _prune_revoked_sessions),

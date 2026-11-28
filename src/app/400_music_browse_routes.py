@@ -784,8 +784,14 @@ def music_api_suggest():
       4. Pick songs from top related artists weighted by score
       5. Mix in ~20% deeper cuts from the seed artists themselves
       6. Fall back to random if not enough results
+    Songs the user hid (or whose album or primary artist they hid) are left out;
+    with autoplay turned off the answer is {songs: [], autoplay: false}.
     """
     import random as _random
+    user_id = session['logged_in_user_id']
+    if not _music_user_prefs(user_id)[0]:
+        return jsonify({'songs': [], 'autoplay': False})
+    hidden = _music_hidden_song_ids(user_id)
     params = _json_object_body() if request.method == 'POST' else request.args
     # AUDIT FIX L9: tolerate non-numeric input instead of raising 500.
     try:
@@ -794,13 +800,13 @@ def music_api_suggest():
         count = 20
     count = max(1, min(count, 50))
     seed_artists = _music_id_list(params.get('seed_artists', ''))
-    exclude_set = set(_music_id_list(params.get('exclude', '')))
+    exclude_set = set(_music_id_list(params.get('exclude', ''))) | hidden
 
     # If no seed artists provided, fall back to random
     if not seed_artists or not _music_library_available():
         candidates = [sid for sid in _AVAILABLE_SONG_IDS if sid not in exclude_set]
         if not candidates:
-            candidates = list(_AVAILABLE_SONG_IDS)
+            candidates = [sid for sid in _AVAILABLE_SONG_IDS if sid not in hidden]
         selected = _random.sample(candidates, min(count, len(candidates)))
         songs = _enrich_songs_from_library(selected)
         _random.shuffle(songs)
@@ -826,7 +832,7 @@ def music_api_suggest():
             # Seed artists have no songs -- fall back to random
             candidates = [sid for sid in _AVAILABLE_SONG_IDS if sid not in exclude_set]
             if not candidates:
-                candidates = list(_AVAILABLE_SONG_IDS)
+                candidates = [sid for sid in _AVAILABLE_SONG_IDS if sid not in hidden]
             selected = _random.sample(candidates, min(count, len(candidates)))
             songs = _enrich_songs_from_library(selected)
             _random.shuffle(songs)

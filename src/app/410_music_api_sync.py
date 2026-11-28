@@ -32,12 +32,14 @@ def music_api_toggle_like(song_id):
             MusicLike.query.filter_by(user_id=user_id, song_id=song_id).delete(synchronize_session=False)
             db.session.commit()
             print(f'[MUSIC] User {user_id} unliked song {_log_safe(song_id)}')
+            _music_taste_signal(user_id, song_id, 'unlike')
         return jsonify({'liked': False})
     if not existing:
         db.session.add(MusicLike(user_id=user_id, song_id=song_id, liked_at=datetime.now(timezone.utc)))
         try:
             db.session.commit()
             print(f'[MUSIC] User {user_id} liked song {_log_safe(song_id)}')
+            _music_taste_signal(user_id, song_id, 'like')
         except _IntegrityError:
             # A concurrent request inserted the same like first.
             db.session.rollback()
@@ -130,6 +132,7 @@ def _music_playlists_payload(user_id):
             'id': p.id, 'name': p.name, 'description': p.description,
             'song_count': counts_by_playlist.get(p.id, 0),
             'cover_path': cover_path,
+            'exclude_taste': bool(p.exclude_taste),
             'created_at': p.created_at.isoformat() if p.created_at else None,
             'updated_at': p.updated_at.isoformat() if p.updated_at else None,
         })
@@ -157,7 +160,7 @@ def music_api_create_playlist():
     print(f'[MUSIC] User {user_id} created playlist "{_log_safe(name)}" (id={playlist.id})')
     return jsonify({
         'id': playlist.id, 'name': playlist.name, 'description': playlist.description,
-        'song_count': 0, 'cover_path': None,
+        'song_count': 0, 'cover_path': None, 'exclude_taste': False,
         'created_at': playlist.created_at.isoformat(),
         'updated_at': playlist.updated_at.isoformat(),
     }), 201
@@ -179,7 +182,7 @@ def music_api_playlist_detail(playlist_id):
     return jsonify({
         'id': playlist.id, 'name': playlist.name, 'description': playlist.description,
         'song_count': len(songs), 'total_duration_ms': total_duration,
-        'songs': songs,
+        'songs': songs, 'exclude_taste': bool(playlist.exclude_taste),
         'created_at': playlist.created_at.isoformat() if playlist.created_at else None,
         'updated_at': playlist.updated_at.isoformat() if playlist.updated_at else None,
     })
@@ -189,7 +192,7 @@ def music_api_playlist_detail(playlist_id):
 @limiter.limit(music_api_rate_limit)
 @_music_required
 def music_api_update_playlist(playlist_id):
-    """Update playlist name/description."""
+    """Update playlist name/description, and exclude_taste (its plays stay out of the taste profile)."""
     user_id = session['logged_in_user_id']
     playlist = MusicPlaylist.query.filter_by(id=playlist_id, user_id=user_id).first()
     if not playlist:
@@ -204,6 +207,10 @@ def music_api_update_playlist(playlist_id):
             playlist.name = new_name
     if 'description' in data:
         playlist.description = _music_json_str(data.get('description'), truncate_to=500) or None
+    if 'exclude_taste' in data:
+        if not isinstance(data['exclude_taste'], bool):
+            return jsonify({'error': 'EXCLUDE_TASTE MUST BE TRUE OR FALSE'}), 400
+        playlist.exclude_taste = data['exclude_taste']
     playlist.updated_at = datetime.now(timezone.utc)
     db.session.commit()
     print(f'[MUSIC] User {user_id} updated playlist {playlist_id}')
@@ -259,6 +266,7 @@ def music_api_playlist_songs(playlist_id):
         )
         db.session.add(entry)
         playlist.updated_at = datetime.now(timezone.utc)
+        excluded = playlist.exclude_taste
         try:
             db.session.commit()
         except _IntegrityError:
@@ -266,6 +274,8 @@ def music_api_playlist_songs(playlist_id):
             db.session.rollback()
             return jsonify({'error': 'SONG ALREADY IN PLAYLIST'}), 409
         print(f'[MUSIC] Added song {_log_safe(song_id)} to playlist {playlist_id}')
+        if not excluded:
+            _music_taste_signal(user_id, song_id, 'playlist_add')
         return jsonify({'success': True, 'position': entry.position})
     elif action == 'remove':
         song_id = data.get('song_id')
@@ -278,8 +288,11 @@ def music_api_playlist_songs(playlist_id):
             return jsonify({'error': 'SONG NOT IN PLAYLIST'}), 404
         db.session.delete(entry)
         playlist.updated_at = datetime.now(timezone.utc)
+        excluded = playlist.exclude_taste
         db.session.commit()
         print(f'[MUSIC] Removed song {_log_safe(song_id)} from playlist {playlist_id}')
+        if not excluded:
+            _music_taste_signal(user_id, song_id, 'playlist_remove')
         return jsonify({'success': True})
     elif action == 'reorder':
         song_ids = data.get('song_ids', [])

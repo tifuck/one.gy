@@ -8,29 +8,87 @@
 <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/inter-latin-500-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/inter-latin-700-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/jetbrains-mono-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
-{# Home data is fetched while the scripts load (music.js takes MU_HOME) when Home is what opens #}
-<script nonce="{{ csp_nonce }}">try { var muAt = sessionStorage.getItem('onegy_music_at'); if (!/^#(album|artist):/.test(location.hash) && (!muAt || muAt === '["home"]')) window.MU_HOME = fetch('/music/api/home', { headers: { 'X-Requested-With': 'XMLHttpRequest' } }) } catch (e) {}</script>
+{# Home data (library + For you) is fetched while the scripts load (music.js takes MU_HOME, MU_FORYOU) when Home is what opens #}
+<script nonce="{{ csp_nonce }}">try { var muAt = sessionStorage.getItem('onegy_music_at'), muH = { headers: { 'X-Requested-With': 'XMLHttpRequest' } }; if (!/^#(album|artist):/.test(location.hash) && (!muAt || muAt === '["home"]')) { window.MU_HOME = fetch('/music/api/home', muH); window.MU_FORYOU = fetch('/music/api/foryou', muH) } } catch (e) {}</script>
 {% endif %}{% endblock %}
 
 {% block content %}
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token">
 <div class="mu-shell">
 
-  <!-- Library rail — container/head/scroll come from .rd-side* (app-shell.css +
-       ui-v2.css) so it matches the Files tree and the Notes rail. -->
-  <aside class="mu-rail rd-side" id="muRail" aria-label="Music library">
+  <!-- Top row: library toggle + history (left), Home + search (centred), listening settings + devices (right) -->
+  {% if not music_disabled %}
+  <div class="mu-topbar">
+    <div class="mu-top-start">
+      <button type="button" class="mu-icon-btn mu-rail-toggle" id="muRailToggle" data-rd-collapse="side" title="Show or hide your library" aria-label="Your library" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>
+      </button>
+      <button type="button" class="mu-icon-btn mu-hist" id="muBack" aria-label="Go back" title="Go back" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 18-6-6 6-6"/></svg>
+      </button>
+      <button type="button" class="mu-icon-btn mu-hist mu-fwd" id="muFwd" aria-label="Go forward" title="Go forward" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 18 6-6-6-6"/></svg>
+      </button>
+    </div>
+    <div class="mu-top-mid">
+      <button type="button" class="mu-home-btn is-active" id="muHome" data-view="home" aria-label="Home" title="Home">
+        <svg class="mu-ic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.2 20.5 10v9.3a1.2 1.2 0 0 1-1.2 1.2h-4.8v-5.8h-5v5.8H4.7a1.2 1.2 0 0 1-1.2-1.2V10z"/></svg>
+        <svg class="mu-ic-on" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.2 20.5 10v9.3a1.2 1.2 0 0 1-1.2 1.2h-4.8v-5.8h-5v5.8H4.7a1.2 1.2 0 0 1-1.2-1.2V10z"/></svg>
+      </button>
+      <div class="mu-search" id="muSearchBox">
+        <svg class="mu-search-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg>
+        <input type="search" id="muSearch" placeholder="What do you want to play?" aria-label="Search music" aria-keyshortcuts="Control+K Meta+K" autocomplete="off" spellcheck="false" enterkeyhint="search">
+        <span class="mu-kbd" aria-hidden="true"><kbd id="muKbdMod">Ctrl</kbd><kbd>K</kbd></span>
+        <button type="button" class="mu-search-clear" id="muSearchClear" aria-label="Clear search" title="Clear search" tabindex="-1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 7 7 17M7 7l10 10"/></svg>
+        </button>
+        <span class="mu-search-sep" aria-hidden="true"></span>
+        <button type="button" class="mu-browse-btn" id="muBrowse" data-view="genres" aria-label="Browse genres" title="Browse">
+          <svg class="mu-ic-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.2" y="4.2" width="17.6" height="4.6" rx="1.2"/><path d="M4.8 8.8v9.4a1.6 1.6 0 0 0 1.6 1.6h11.2a1.6 1.6 0 0 0 1.6-1.6V8.8M10 12.8h4"/></svg>
+          <svg class="mu-ic-on" viewBox="0 0 24 24" fill="currentColor"><rect x="2.3" y="3.3" width="19.4" height="6.4" rx="1.6"/><path fill-rule="evenodd" d="M3.9 10.9h16.2v7.3a2.5 2.5 0 0 1-2.5 2.5H6.4a2.5 2.5 0 0 1-2.5-2.5zM10 12a.9.9 0 0 0 0 1.8h4a.9.9 0 0 0 0-1.8z"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="mu-top-end">
+      <button type="button" class="mu-private" id="muPrivate" title="Private session: what you play now does not shape your recommendations" aria-haspopup="menu" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg><span>Private session</span>
+      </button>
+      <button type="button" class="mu-icon-btn" id="muListenBtn" title="Listening settings" aria-label="Listening settings" aria-haspopup="menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7.5h8.5M16.5 7.5H20M4 16.5h3.5M11.5 16.5H20"/><circle cx="14.5" cy="7.5" r="2"/><circle cx="9.5" cy="16.5" r="2"/></svg>
+      </button>
+      <button type="button" class="mu-icon-btn mu-devices-btn" id="muDevicesBtn" title="Devices" aria-label="Devices" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="12" height="11" rx="1.5"/><path d="M6 19h6M9 15v4"/><rect x="17" y="8" width="4" height="12" rx="1"/></svg>
+      </button>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Your library: a panel built on .rd-side* (app-shell.css + ui-v2.css) so it
+       resizes and collapses like the Files tree and the Notes rail. -->
+  <aside class="mu-rail rd-side" id="muRail" aria-label="Your library">
     <div class="rd-side-inner">
-      <div class="rd-side-head">Library</div>
       {% if not music_disabled %}
-      <nav class="mu-rail-scroll rd-side-scroll" aria-label="Library">
-        <button type="button" class="mu-nav-item rd-side-row is-active" data-view="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.5 12 4l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5.5h-5V20H5a1 1 0 0 1-1-1z"/></svg>Home</button>
-        <button type="button" class="mu-nav-item rd-side-row" data-view="albums"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.5"/></svg>Albums</button>
-        <button type="button" class="mu-nav-item rd-side-row" data-view="artists"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>Artists</button>
-        <button type="button" class="mu-nav-item rd-side-row" data-view="genres"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Genres</button>
-        <button type="button" class="mu-nav-item rd-side-row" data-view="liked"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.2a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z"/></svg>Liked songs<span class="mu-liked-count" id="muLikedCount"></span></button>
-        <div class="rd-side-subhead"><span>Playlists</span><button type="button" id="muCreatePl" title="New playlist" aria-label="New playlist"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button></div>
+      <div class="mu-lib-head">
+        <h2 class="mu-lib-title">Your library</h2>
+        <button type="button" class="mu-create" id="muCreatePl" title="Create a playlist">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Create
+        </button>
+      </div>
+      <div class="mu-lib-chips" role="group" aria-label="Browse the library">
+        <button type="button" class="mu-chip" data-view="albums">Albums</button>
+        <button type="button" class="mu-chip" data-view="artists">Artists</button>
+        <button type="button" class="mu-chip" data-view="genres">Genres</button>
+      </div>
+      <nav class="mu-rail-scroll rd-side-scroll" aria-label="Playlists">
+        <button type="button" class="mu-lib-row" data-view="liked" data-lib-ctx="liked" title="Liked songs">
+          <span class="mu-lib-art mu-liked-art"><svg viewBox="0 0 24 24"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.2a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z"/></svg></span>
+          <span class="mu-lib-text"><span class="mu-lib-name">Liked songs</span><span class="mu-lib-sub">Playlist · <span id="muLikedCount">0 songs</span></span></span>
+          <svg class="mu-lib-playing" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5h3.2L11.5 6v12l-4.3-3.5H4z" fill="currentColor"/><path d="M15 9.2a4 4 0 0 1 0 5.6M17.8 6.6a7.6 7.6 0 0 1 0 10.8"/></svg>
+        </button>
         <div id="muRailPlaylists"></div>
       </nav>
+      {% else %}
+      <div class="mu-lib-head"><h2 class="mu-lib-title">Your library</h2></div>
       {% endif %}
     </div>
   </aside>
@@ -38,29 +96,9 @@
        aria-label="Resize library" tabindex="0" title="Drag to resize · double-click to collapse"></div>
   <div class="mu-rail-scrim" id="muRailScrim"></div>
 
-  <!-- Main -->
+  <!-- Main panel -->
   <div class="mu-main">
     <div class="mu-wash" id="muWash" aria-hidden="true"></div>
-    <div class="mu-topbar">
-      {% if not music_disabled %}
-      <button type="button" class="mu-rail-toggle" id="muRailToggle" data-rd-collapse="side" title="Show or hide the library" aria-label="Library" aria-expanded="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>
-      </button>
-      <button type="button" class="mu-back" id="muBack" aria-label="Back" title="Back" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-      </button>
-      {% endif %}
-      <nav class="mu-bcrumb" id="muCrumbs" aria-label="Breadcrumb"><span class="mu-bc-item is-current" aria-current="page">{{ 'Music' if music_disabled else 'Home' }}</span></nav>
-      {% if not music_disabled %}
-      <div class="mu-search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
-        <input type="search" id="muSearch" placeholder="Search music" aria-label="Search music" autocomplete="off" spellcheck="false">
-      </div>
-      <button type="button" class="mu-devices-btn" id="muDevicesBtn" title="Devices" aria-label="Devices" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="12" height="11" rx="1.5"/><path d="M6 19h6M9 15v4"/><rect x="17" y="8" width="4" height="12" rx="1"/></svg>
-      </button>
-      {% endif %}
-    </div>
     <div class="mu-view" id="muView" aria-live="polite">
       {% if music_disabled %}
       <div class="rd-empty">
@@ -86,7 +124,7 @@
     <div class="rd-modal-body mu-modal-body">
       <div class="rd-field">
         <label class="rd-field-label" for="muPlName">Name</label>
-        <input type="text" id="muPlName" class="form-input" placeholder="My playlist" maxlength="200" autocomplete="off">
+        <input type="text" id="muPlName" class="form-input" placeholder="My playlist" maxlength="200" autocomplete="off" data-autofocus>
       </div>
       <div class="rd-field">
         <label class="rd-field-label" for="muPlDesc">Description <span class="mu-optional">(optional)</span></label>
@@ -95,6 +133,23 @@
       <div class="rd-modal-foot">
         <button type="button" class="rd-btn rd-btn-ghost" data-rd-modal-close>Cancel</button>
         <button type="button" class="rd-btn rd-btn-primary" id="muPlSave">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Clear listening history modal -->
+<div class="rd-modal" id="muClearModal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="muClearTitle" aria-describedby="muClearText">
+  <div class="rd-modal-overlay" data-rd-modal-close></div>
+  <div class="rd-modal-panel">
+    <div class="rd-modal-head"><h3 class="rd-h3" id="muClearTitle">Clear listening history?</h3>
+      <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="rd-modal-body mu-modal-body">
+      <p class="mu-modal-text" id="muClearText">Your plays and taste profile are deleted and your recommendations start over. Liked songs and playlists stay.</p>
+      <div class="rd-modal-foot">
+        <button type="button" class="rd-btn rd-btn-ghost" data-rd-modal-close data-autofocus>Cancel</button>
+        <button type="button" class="rd-btn rd-btn-danger" id="muClearOk">Clear history</button>
       </div>
     </div>
   </div>

@@ -221,6 +221,11 @@
     const list = mp.playlistPanel.querySelector('.mp-playlist-list')
     if (!list) return
 
+    // The Autoplay switch belongs to library queues
+    var autoplayRow = document.getElementById('mpAutoplayRow')
+    if (autoplayRow) autoplayRow.hidden = mp._context !== 'music-library'
+    if (mp._context === 'music-library') mp._loadAutoplayPref()
+
     if (mp.playlist.length === 0) {
       list.innerHTML = '<div class="mp-playlist-empty">No audio files in this folder</div>'
       return
@@ -259,7 +264,7 @@
             mp.shufflePos = mp.shuffleOrder.indexOf(idx)
             if (mp.shufflePos === -1) mp.shufflePos = 0
           }
-          mp._loadTrack(idx)
+          mp._loadTrack(idx, 'pick')
         }
       })
     }

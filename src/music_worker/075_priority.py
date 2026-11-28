@@ -9,11 +9,14 @@
 #             what its chart position is worth.
 # reason      why the song is wanted: top 10, essentials or discography.
 # artist      the admin artist weight x the genre weight (artist_weight).
-# boosts      new release (for music_fresh_days) and current chart song.
+# boosts      new release (for music_fresh_days), current chart song, and a song
+#             by an artist the users listen to (_listened_artist_ids,
+#             docs/music-taste.md section 5).
 #
 # Weights, boosts and the new-release window are admin settings (Music tab,
 # Priorities). The inputs are kept in the job payload, so a settings or rule
-# change re-scores the whole queue without new lookups.
+# change re-scores the whole queue without new lookups; when the listened
+# artists change, their queued songs are re-scored within the hour.
 
 # MusicJob.bucket: why a song is queued, for the admin. P_HOT while a boost runs.
 P_HOT, P_TOP10, P_DISCOGRAPHY, P_ESSENTIALS, P_OTHER = 1, 2, 3, 4, 5
@@ -32,6 +35,8 @@ def priority_config():
         return {
             'chart': get_float_setting('music_boost_chart'),
             'fresh': get_float_setting('music_boost_fresh'),
+            'listened': get_float_setting('music_boost_listened'),
+            'listened_ids': _listened_artist_ids(),
             'reason': {P_TOP10: get_float_setting('music_weight_top10'),
                        P_ESSENTIALS: get_float_setting('music_weight_essentials'),
                        P_DISCOGRAPHY: get_float_setting('music_weight_discography'),
@@ -44,7 +49,7 @@ def priority_config():
 
 def priority_signature(cfg):
     """Changes when a setting or rule that scores the queue changes."""
-    scoring = [cfg['chart'], cfg['fresh'], sorted(cfg['reason'].items())]
+    scoring = [cfg['chart'], cfg['fresh'], cfg['listened'], sorted(cfg['reason'].items())]
     return hashlib.sha256(json.dumps([scoring, rules_signature()]).encode()).hexdigest()[:16]
 
 
@@ -63,6 +68,8 @@ def job_score(payload, weight, cfg, today):
         score *= cfg['fresh']
     if chart:
         score *= cfg['chart']
+    if int(payload.get('artist_dz') or 0) in cfg['listened_ids']:
+        score *= cfg['listened']
     return (P_HOT if fresh or chart else reason), round(score, 3)
 
 
@@ -131,26 +138,33 @@ def _apply(updates, skips):
         db.session.commit()
 
 
-def jobs_rescore(hot_only=False):
+def jobs_rescore(hot_only=False, artists=None, cfg=None):
     """Re-score open jobs from their payloads: all of them after a settings or
-    rule change, the boosted ones when a boost may have run out. Songs of a
-    blocked artist are skipped. Returns how many changed."""
-    cfg = priority_config()
+    rule change, the boosted ones when a boost may have run out, the songs of
+    `artists` (Deezer ids) when they start or stop counting as listened. Songs
+    of a blocked artist are skipped. Returns how many changed."""
+    cfg = cfg or priority_config()
     weights, blocked = artist_weights()
     today = now().strftime('%Y-%m-%d')
+    if artists is not None:
+        ids = sorted(artists)
+        scopes = [[MusicJob.artist_dz.in_(ids[i:i + 500])] for i in range(0, len(ids), 500)]
+    else:
+        scopes = [[MusicJob.bucket == P_HOT] if hot_only else []]
     changed = 0
-    for rows in _open_batches(*([MusicJob.bucket == P_HOT] if hot_only else [])):
-        updates, skips = [], {}
-        for row in rows:
-            src = row.src_dz or row.artist_dz
-            if row.artist_dz in blocked or src in blocked:
-                skips[row.id] = 'blocked'
-                continue
-            bucket, score = job_score(json.loads(row.payload), weights.get(src, 1.0), cfg, today)
-            if bucket != row.bucket or abs(score - row.priority) > 1e-6 * max(score, 1.0):
-                updates.append({'id': row.id, 'bucket': bucket, 'priority': score})
-        _apply(updates, skips)
-        changed += len(updates) + len(skips)
+    for scope in scopes:
+        for rows in _open_batches(*scope):
+            updates, skips = [], {}
+            for row in rows:
+                src = row.src_dz or row.artist_dz
+                if row.artist_dz in blocked or src in blocked:
+                    skips[row.id] = 'blocked'
+                    continue
+                bucket, score = job_score(json.loads(row.payload), weights.get(src, 1.0), cfg, today)
+                if bucket != row.bucket or abs(score - row.priority) > 1e-6 * max(score, 1.0):
+                    updates.append({'id': row.id, 'bucket': bucket, 'priority': score})
+            _apply(updates, skips)
+            changed += len(updates) + len(skips)
     return changed
 
 

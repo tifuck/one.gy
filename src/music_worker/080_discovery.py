@@ -103,6 +103,69 @@ def _liked_artist_ids():
         conn.close()
 
 
+# An artist counts as listened when the users' long-term taste for them, summed
+# over all users and decayed to now, is at least this: about three full plays.
+LISTENED_MIN_TASTE = 3.0
+LISTENED_EVERY = 15 * 60
+_LISTENED = {'at': 0.0, 'ids': frozenset()}
+_LISTENED_LOCK = threading.Lock()
+
+
+def _listened_artist_ids():
+    """Deezer ids of the artists the users listen to (docs/music-taste.md
+    section 5), recomputed at most every LISTENED_EVERY seconds."""
+    with _LISTENED_LOCK:
+        if time.time() - _LISTENED['at'] < LISTENED_EVERY:
+            return _LISTENED['ids']
+        t = now()
+        with app.app_context():
+            half_life = max(get_numeric_setting('music_taste_half_life_long_days'), 1)
+            rows = db.session.query(MusicAffinity.key, MusicAffinity.long, MusicAffinity.updated_at).filter(
+                MusicAffinity.kind == 'artist', MusicAffinity.long > 0).all()
+        taste = {}
+        for key, long, updated_at in rows:
+            age_days = max((t - _aware(updated_at)).total_seconds(), 0) / 86400
+            taste[key] = taste.get(key, 0.0) + long * 0.5 ** (age_days / half_life)
+        keys = [k for k, v in taste.items() if v >= LISTENED_MIN_TASTE]
+        ids = set()
+        if keys and os.path.isfile(LIB_DB):
+            conn = lib_connect()
+            try:
+                for start in range(0, len(keys), 500):
+                    chunk = keys[start:start + 500]
+                    ids |= {r[0] for r in conn.execute(f'''SELECT deezer_id FROM artists WHERE deezer_id IS NOT NULL
+                                                           AND id IN ({','.join('?' * len(chunk))})''', chunk)}
+            finally:
+                conn.close()
+        ids, old = frozenset(ids), _LISTENED['ids']
+        if ids != old:
+            log(f'taste: {len(ids)} listened artists ({len(ids - old)} new, {len(old - ids)} gone)')
+        _LISTENED.update(at=time.time(), ids=ids)
+        return ids
+
+
+def listened_floors(dz_ids):
+    """Between weekly roster builds: artists the users started to listen to get
+    at least Essentials at once and a scan within a day."""
+    t = now()
+    ids = sorted(dz_ids)
+    with app.app_context():
+        for start in range(0, len(ids), 500):
+            for artist in MusicArtist.query.filter(MusicArtist.deezer_id.in_(ids[start:start + 500])):
+                if MODE_RANK.get(artist.floor_mode or 'off', 0) < MODE_RANK['essentials']:
+                    artist.floor_mode = 'essentials'
+                mode = effective_mode(artist)
+                if mode not in MONITORED:
+                    continue
+                if artist.monitored_since is None:
+                    artist.monitored_since = t
+                if artist.mode_synced != mode:
+                    artist.next_scan_at = t
+                elif artist.next_scan_at is None or _aware(artist.next_scan_at) > t + timedelta(days=1):
+                    artist.next_scan_at = t + timedelta(days=1)
+        db.session.commit()
+
+
 def _percentiles(values):
     """value -> percentile in [0, 1] (1 = highest)."""
     ordered = sorted(set(values))
@@ -157,7 +220,8 @@ def roster_build():
             info = dz_artist(dz_id)
             c['nb_fan'] = (info or {}).get('nb_fan') or 0
     fan_pct = _percentiles([c['nb_fan'] for c in cands.values()])
-    liked = _liked_artist_ids()
+    # Liked, playlisted or listened to: at least Essentials.
+    liked = _liked_artist_ids() | _listened_artist_ids()
     t = now()
     with app.app_context():
         rows = {a.deezer_id: a for a in MusicArtist.query.all()}
@@ -211,7 +275,9 @@ def roster_build():
     log(f'roster: {len(cands)} candidates, {monitored} monitored artists')
 
 
-def _scan_interval(mode, last_release):
+def _scan_interval(mode, last_release, listened=False):
+    if listened:
+        return timedelta(days=1)
     if mode == 'top_tracks':
         return timedelta(days=7)
     try:
@@ -498,7 +564,7 @@ def artist_sync(artist_row_id):
         artist.mode_synced = mode
         artist.last_release = last_release
         artist.scanned_at = now()
-        artist.next_scan_at = now() + _scan_interval(mode, last_release)
+        artist.next_scan_at = now() + _scan_interval(mode, last_release, dz_id in cfg['listened_ids'])
         artist.have = have
         artist.wanted = len(own_jobs) - skipped + created
         db.session.commit()

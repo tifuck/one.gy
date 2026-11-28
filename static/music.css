@@ -127,6 +127,8 @@
   position:sticky; top:0; z-index:1; display:flex; align-items:center; height:42px; padding:0 14px; box-sizing:border-box;
   border-bottom:1px solid var(--line); background:var(--raise); font-size:.86rem; font-weight:600; color:var(--text);
 }
+/* Autoplay switch: the right side of the queue header, all of it the tap target */
+.ui-v2 .mp-autoplay{ align-self:stretch; display:flex; align-items:center; gap:8px; margin:0 -14px 0 auto; padding:0 14px; font-size:.8rem; font-weight:500; color:var(--text-dim); cursor:pointer; }
 .ui-v2 .mp-playlist-list, .ui-v2 .mp-devices-list{ padding:4px; }
 .ui-v2 .mp-playlist-item{
   display:grid; grid-template-columns:24px minmax(0,1fr) auto; align-items:center; gap:8px; min-height:40px;

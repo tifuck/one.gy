@@ -25,6 +25,7 @@
     isActive: () => mp.isVisible,
     hasAudio: () => mp.isVisible && (mp.currentIndex >= 0 || !audio.paused),
     getContext: () => mp._context,
+    setAutoplay: (on) => mp._setAutoplay(on),
     getCurrentTrackId: () => (mp.currentIndex >= 0 && mp.playlist[mp.currentIndex]) ? mp.playlist[mp.currentIndex].id : null,
     getPlaylist: () => mp.playlist.slice(),
     getCurrentIndex: () => mp.currentIndex,
@@ -280,8 +281,8 @@
 
     // Bind controls
     if (mp.playBtn) mp.playBtn.addEventListener('click', mp.togglePlay)
-    if (prevBtn) prevBtn.addEventListener('click', mp.playPrevious)
-    if (nextBtn) nextBtn.addEventListener('click', mp.playNext)
+    if (prevBtn) prevBtn.addEventListener('click', function() { mp.playPrevious() })
+    if (nextBtn) nextBtn.addEventListener('click', function() { mp.playNext() })
     if (mp.shuffleBtn) mp.shuffleBtn.addEventListener('click', mp.toggleShuffle)
     if (mp.repeatBtn) mp.repeatBtn.addEventListener('click', mp.cycleRepeat)
     if (closeBtn) closeBtn.addEventListener('click', mp.closePlayer)
@@ -344,6 +345,7 @@
 
   // Playlist panel toggle
   function _bindPlaylistToggle() {
+    mp._bindAutoplaySwitch()
     if (mp.playlistBtn) {
       mp.playlistBtn.addEventListener('click', () => {
         if (mp.playlistPanel) {

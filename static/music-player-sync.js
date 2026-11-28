@@ -736,6 +736,7 @@
 
       // Server rejected us as active — another device holds the active slot
       if (data.is_active === false && data.active_device_id && data.active_device_id !== mp._syncDeviceId) {
+        mp._listenEnd('handoff')
         mp._syncIsActive = false
         _syncStopKeepAlive()
         mp._wasPlayingBeforeBackground = false
@@ -765,6 +766,7 @@
 
   function _syncExecuteCommand(cmd) {
     if (!cmd || !cmd.action || !cmd.command_id) return
+    mp._listenInput()
     // Transport commands need a local session; play_tracks starts one
     var hasLocal = !mp._syncPhantomMode && mp._context === 'music-library' && mp.currentIndex >= 0
     try {
@@ -773,7 +775,7 @@
         if (!tracks || !Number.isInteger(cmd.index) || cmd.index < 0 || cmd.index >= tracks.length) {
           _syncSetCommandResult(cmd, { error: 'INVALID TRACKS', error_code: 'invalid_command' })
         } else {
-          mp._playLibraryTracks(tracks, cmd.index)
+          mp._playLibraryTracks(tracks, cmd.index, 'remote')
           _syncSetCommandResult(cmd, { ok: true })
         }
         return
@@ -802,11 +804,11 @@
           _syncSetCommandResult(cmd, { ok: true })
           break
         case 'next':
-          mp.playNext()
+          mp.playNext('remote')
           _syncSetCommandResult(cmd, { ok: true })
           break
         case 'prev':
-          mp.playPrevious()
+          mp.playPrevious('remote')
           _syncSetCommandResult(cmd, { ok: true })
           break
         case 'seek':
@@ -906,6 +908,8 @@
 
     // Load the remote playlist and start playing
     mp._context = 'music-library'
+    mp._listenContext = 'queue'
+    mp._listenInput()
     mp.playlist = remoteTracks
     mp._suggestedStartIndex = Number.isInteger(state.suggestedStartIndex) ? state.suggestedStartIndex : -1
     mp.shuffleMode = state.shuffleMode === true
@@ -928,7 +932,7 @@
 
     mp._syncIsActive = true  // This device is now the active one
     mp._syncForceActive = true  // Force claim — explicit transfer
-    mp._loadTrack(idx)
+    mp._loadTrack(idx, 'remote')
     var transferSeq = mp._loadSeq
 
     // Seek to the remote position after the track loads (unless another
@@ -937,6 +941,7 @@
       audio.removeEventListener('canplay', onCanPlay)
       if (transferSeq !== mp._loadSeq) return
       if (seekTo > 0 && !isNaN(audio.duration) && seekTo < audio.duration) {
+        mp._listenAdopt()  // continuing where the other device was is no seek
         audio.currentTime = seekTo
       }
     }
@@ -951,6 +956,7 @@
 
   function _syncYieldToDevice(targetDeviceId) {
     // Another device is taking over
+    mp._listenEnd('handoff')
     mp._syncIsActive = false
     mp._syncForceActive = false
     _syncStopKeepAlive()

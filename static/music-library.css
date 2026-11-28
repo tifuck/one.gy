@@ -5,101 +5,175 @@
    ui-v2.css.
    ========================================================================== */
 
-/* ---- Shell ----------------------------------------------------------------- */
+/* ---- Shell -----------------------------------------------------------------
+   Floating panels on a canvas: the top row spans the window, then the library
+   and the main view sit side by side as rounded panels with a gutter between.
+   --mu-canvas / --mu-panel / --mu-field (search pill, Home) differ per theme. */
 .mu-shell{
-  display:grid; grid-template-columns:var(--rd-side-eff) minmax(0,1fr);
+  --mu-canvas:var(--surface-2); --mu-panel:var(--bg); --mu-field:var(--bg); --mu-field-hi:color-mix(in srgb,var(--text) 3%,var(--mu-field));
+  --mu-gap:8px; --mu-top:64px;
+  display:grid; grid-template-columns:var(--rd-side-eff) minmax(0,1fr); grid-template-rows:auto minmax(0,1fr);
+  grid-template-areas:"top top" "side main"; column-gap:var(--mu-gap);
   height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h));
-  min-height:0; overflow:hidden; position:relative; background:var(--bg);
-  transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1);
+  box-sizing:border-box; padding:0 var(--mu-gap) var(--mu-gap);
+  min-height:0; overflow:hidden; position:relative; background:var(--mu-canvas);
+  transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1), column-gap .22s cubic-bezier(.2,.85,.25,1);
 }
+[data-theme="frost-dark"] .mu-shell{ --mu-canvas:var(--bg); --mu-panel:var(--pane); --mu-field:var(--surface-2); --mu-field-hi:color-mix(in srgb,var(--text) 7%,var(--mu-field)); }
+:root[data-rd-side="collapsed"] .mu-shell{ column-gap:0; }
+.mu-shell:not(:has(.mu-topbar)){ padding-top:var(--mu-gap); }
 /* The desktop bar is fixed: shrink the shell so it never covers content */
 body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
-.mu-main{ min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+.mu-main{
+  grid-area:main; position:relative; min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden;
+  border-radius:var(--radius); background:var(--mu-panel);
+}
 .mu-rail-scrim{ display:none; }
+/* The drag handle sits in the gutter, below the top row */
+.mu-shell > .rd-resizer[data-rd-resize="side"]{ top:var(--mu-top); bottom:var(--mu-gap); left:calc(var(--mu-gap) * 1.5 + var(--rd-side-eff)); }
+:root[data-rd-side="collapsed"] .mu-shell > .rd-resizer[data-rd-resize="side"]{ left:var(--mu-gap); }
 
-/* ---- Library rail ---------------------------------------------------------- */
-.mu-rail .rd-side-inner{ padding-top:8px; }
-.mu-nav-item, .mu-rail-pl{
-  gap:10px; padding:0 8px; border:0; background:none; cursor:pointer;
-  font:inherit; font-size:.84rem; color:var(--text); text-align:left;
-}
-.mu-nav-item svg{ width:16px; height:16px; flex:none; color:var(--text-dim); transition:color .12s; }
-.mu-nav-item.is-active svg{ color:var(--accent); }
-.mu-liked-count{
-  min-width:20px; height:18px; margin-left:auto; padding:0 6px; display:inline-grid; place-items:center; border-radius:9px;
-  background:var(--press); color:var(--text-dim); font-size:.7rem; font-weight:500; font-variant-numeric:tabular-nums;
-}
-.mu-liked-count:empty{ display:none; }
-.mu-rail .rd-side-subhead{ margin-top:16px; padding:0 2px 4px 8px; }
-.mu-rail .rd-side-subhead button{ width:24px; height:24px; border:0; border-radius:6px; background:none; color:var(--text-dim); }
-.mu-rail .rd-side-subhead button:hover{ background:var(--press); color:var(--text); }
-.mu-rail .rd-side-subhead button svg{ width:14px; height:14px; }
-#muRailPlaylists{ display:flex; flex-direction:column; gap:1px; flex:none; }
-.mu-rail-pl{ min-height:36px; padding-left:5px; }
-.mu-rail-pl .mu-rail-pl-art{ width:24px; height:24px; flex:none; border-radius:5px; object-fit:cover; background:var(--surface); }
-.mu-rail-pl .mu-rail-pl-art.mu-art-ph svg{ width:14px; height:14px; }
-.mu-rail-pl-name{ flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.mu-rail-hint{ padding:4px 8px; font-size:.8rem; color:var(--text-faint); }
-
-/* ---- Toolbar --------------------------------------------------------------- */
+/* ---- Top row ---------------------------------------------------------------
+   Library toggle + Back / Forward (start), Home + search centred on the
+   window, devices (end). */
 .mu-topbar{
-  position:relative; z-index:20; flex:none; box-sizing:border-box; height:52px;
-  display:flex; align-items:center; gap:10px; padding:0 16px 0 20px;
-  border-bottom:1px solid var(--line); background:var(--bg);
+  grid-area:top; position:relative; z-index:20; height:var(--mu-top); min-width:0;
+  display:grid; grid-template-columns:minmax(max-content,1fr) minmax(0,548px) minmax(max-content,1fr); align-items:center; gap:12px;
 }
-.mu-bcrumb{ display:flex; align-items:center; gap:2px; flex:1 1 0; min-width:0; height:30px; margin-left:-7px; overflow:hidden; }
-.mu-bc-item{
-  flex:none; max-width:16ch; height:26px; padding:0 7px; line-height:26px; border:0; border-radius:6px;
-  background:none; color:var(--text-dim); font:inherit; font-size:.86rem; font-weight:500; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; cursor:pointer; transition:background .12s, color .12s;
+.mu-top-start, .mu-top-mid, .mu-top-end{ display:flex; align-items:center; min-width:0; }
+.mu-top-start{ gap:2px; }
+.mu-top-mid{ gap:8px; }
+.mu-top-end{ justify-content:flex-end; gap:4px; padding-right:4px; }
+/* Private session indicator (opens the listening settings) */
+.mu-private{
+  flex:none; display:inline-flex; align-items:center; gap:6px; height:28px; margin-right:4px; padding:0 12px 0 10px; border:0; border-radius:var(--radius-pill);
+  background:var(--accent-soft); color:var(--accent); font:inherit; font-size:.78rem; font-weight:700; white-space:nowrap; cursor:pointer; transition:filter .12s;
 }
-.mu-bc-item:hover{ color:var(--text); background:var(--hover); }
-.mu-bc-item.is-current{ flex:0 1 auto; min-width:0; max-width:none; color:var(--text); font-size:.98rem; font-weight:600; letter-spacing:-.01em; cursor:default; background:none; }
-.mu-bc-sep{ flex:none; display:inline-flex; color:var(--text-faint); }
-.mu-bc-sep svg{ width:12px; height:12px; }
-.mu-back{ display:none; }
-.mu-rail-toggle, .mu-back{
-  display:none; flex:none; width:32px; height:32px; margin-left:-6px; align-items:center; justify-content:center;
-  border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
+.mu-private:hover{ filter:brightness(1.12); }
+.mu-private[hidden]{ display:none; }
+.mu-private svg{ width:14px; height:14px; }
+.mu-icon-btn{
+  flex:none; width:32px; height:32px; display:inline-grid; place-items:center; padding:0;
+  border:0; border-radius:50%; background:none; color:var(--text-dim); cursor:pointer; transition:background .12s, color .12s;
 }
-.mu-rail-toggle{ display:inline-flex; } /* shows or hides the library (panel-resize.js); a drawer on narrow windows */
-.mu-rail-toggle:hover, .mu-back:hover{ background:var(--hover); color:var(--text); }
-.mu-rail-toggle svg, .mu-back svg{ width:18px; height:18px; }
-/* Devices: pick a device to control even with no player bar showing */
-.mu-devices-btn{
-  flex:none; width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center;
-  border:0; border-radius:8px; background:none; color:var(--text-dim); cursor:pointer;
+.mu-icon-btn:hover:not(:disabled){ background:var(--hover); color:var(--text); }
+.mu-icon-btn:disabled{ color:var(--text-faint); opacity:.45; cursor:default; }
+.mu-icon-btn[hidden]{ display:none; }
+.mu-icon-btn svg{ width:20px; height:20px; }
+.mu-rail-toggle{ margin-right:6px; }
+.mu-rail-toggle svg{ width:18px; height:18px; }
+/* Home and Browse: outline icon, filled while their view is open */
+.mu-ic-on, .is-active > .mu-ic-off{ display:none; }
+.is-active > .mu-ic-on{ display:block; }
+.mu-home-btn{
+  flex:none; width:44px; height:44px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:var(--mu-field); color:var(--text-dim); cursor:pointer; transition:transform .14s cubic-bezier(.2,.8,.2,1), background .12s, color .12s;
 }
-.mu-devices-btn[hidden]{ display:none; }
-.mu-devices-btn:hover{ background:var(--hover); color:var(--text); }
-.mu-devices-btn svg{ width:18px; height:18px; }
-.mu-search{ position:relative; flex:0 1 300px; min-width:0; }
-.mu-search svg{ position:absolute; left:9px; top:50%; width:15px; height:15px; margin-top:-7.5px; color:var(--text-faint); pointer-events:none; }
+.mu-home-btn:hover{ color:var(--text); background:var(--mu-field-hi); transform:scale(1.04); }
+.mu-home-btn:active{ transform:scale(.96); }
+.mu-home-btn.is-active{ color:var(--text); }
+.mu-home-btn svg{ width:22px; height:22px; }
+/* Search pill: the whole pill is the field; a 2px ring while typing */
+.mu-search{
+  position:relative; flex:1 1 auto; min-width:0; height:44px; display:flex; align-items:center;
+  border-radius:var(--radius-pill); background:var(--mu-field); cursor:text;
+  box-shadow:inset 0 0 0 1px transparent; transition:background .12s, box-shadow .12s;
+}
+.mu-search:hover{ background:var(--mu-field-hi); box-shadow:inset 0 0 0 1px var(--line-strong); }
+.mu-search:has(input:focus){ background:var(--mu-field-hi); box-shadow:inset 0 0 0 2px var(--text); }
+.mu-search-ic{ position:absolute; left:12px; top:50%; width:22px; height:22px; margin-top:-11px; color:var(--text-dim); pointer-events:none; transition:color .12s; }
+.mu-search:hover .mu-search-ic, .mu-search:has(input:focus) .mu-search-ic{ color:var(--text); }
 .mu-search input{
-  width:100%; height:30px; box-sizing:border-box; padding:0 10px 0 31px; border:0; border-radius:8px;
-  background:var(--surface); color:var(--text); font:inherit; font-size:.84rem; transition:background .14s, box-shadow .14s;
+  flex:1 1 auto; min-width:0; height:100%; box-sizing:border-box; padding:0 10px 0 46px; border:0; border-radius:inherit;
+  background:none; color:var(--text); font:inherit; font-size:.94rem; text-overflow:ellipsis; outline:none;
 }
-.mu-search input:hover{ background:var(--surface-2); }
-.mu-search input::placeholder{ color:var(--text-faint); }
-.mu-search input:focus{ outline:none; background:var(--surface); box-shadow:inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+.mu-search input:focus-visible{ outline:none; }
+.mu-search input::placeholder{ color:var(--text-dim); opacity:1; }
+.mu-search input::-webkit-search-cancel-button{ -webkit-appearance:none; appearance:none; }
+.mu-kbd{ flex:none; display:flex; gap:3px; margin-right:12px; pointer-events:none; }
+.mu-kbd kbd{
+  min-width:22px; height:22px; box-sizing:border-box; padding:0 6px; display:inline-grid; place-items:center;
+  border:1px solid var(--line-strong); border-radius:5px; background:none; color:var(--text-dim);
+  font:inherit; font-size:.72rem; font-weight:500; line-height:1;
+}
+.mu-search:has(input:focus) .mu-kbd, .mu-search.has-q .mu-kbd{ display:none; }
+.mu-search-clear{
+  flex:none; display:none; width:32px; height:32px; margin-right:6px; place-items:center; padding:0; border:0; border-radius:50%;
+  background:none; color:var(--text-dim); cursor:pointer;
+}
+.mu-search.has-q .mu-search-clear{ display:grid; }
+.mu-search-clear:hover{ color:var(--text); }
+.mu-search-clear svg{ width:18px; height:18px; }
+.mu-search-sep{ flex:none; width:1px; height:24px; background:var(--line-strong); }
+.mu-browse-btn{
+  flex:none; width:44px; height:44px; margin:0 2px 0 4px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:none; color:var(--text-dim); cursor:pointer; transition:color .12s, transform .14s cubic-bezier(.2,.8,.2,1);
+}
+.mu-browse-btn:hover{ color:var(--text); transform:scale(1.06); }
+.mu-browse-btn.is-active{ color:var(--text); }
+.mu-browse-btn svg{ width:22px; height:22px; }
+/* The ui-v2 focus ring rounds its element: keep round controls round */
+:is(.mu-icon-btn, .mu-home-btn, .mu-browse-btn, .mu-search-clear, .mu-play-big, .mu-sticky-play, .mu-more, .mu-spot-play, .mu-spot-hide, .mu-spot-btn):focus-visible{ border-radius:50%; }
+:is(.mu-create, .mu-chip, .mu-private, .mu-spot-open):focus-visible{ border-radius:var(--radius-pill); }
+
+/* ---- Your library (rail panel) --------------------------------------------- */
+.mu-shell .mu-rail{ grid-area:side; background:var(--mu-panel); border:0; border-radius:var(--radius); }
+.mu-shell .mu-rail .rd-side-inner{ gap:12px; padding:12px 8px 8px; }
+.mu-lib-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:36px; padding:0 4px 0 8px; }
+.mu-lib-title{ min-width:0; margin:0; font-size:1rem; font-weight:700; letter-spacing:-.01em; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-create{
+  flex:none; display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 14px 0 10px; border:0; border-radius:var(--radius-pill);
+  background:color-mix(in srgb,var(--text) 9%,transparent); color:var(--text); font:inherit; font-size:.84rem; font-weight:700;
+  cursor:pointer; transition:background .12s, transform .14s cubic-bezier(.2,.8,.2,1);
+}
+.mu-create:hover{ background:color-mix(in srgb,var(--text) 15%,transparent); transform:scale(1.03); }
+.mu-create svg{ width:16px; height:16px; }
+.mu-lib-chips{ display:flex; gap:8px; padding:0 8px; overflow-x:auto; scrollbar-width:none; flex:none; }
+.mu-lib-chips::-webkit-scrollbar{ display:none; }
+.mu-lib-chips .mu-chip{ flex:none; }
+.mu-rail .mu-rail-scroll{ gap:0; margin-top:-4px; }
+.mu-lib-row{
+  display:flex; align-items:center; gap:12px; width:100%; min-height:64px; flex:none; box-sizing:border-box; padding:8px;
+  border:0; border-radius:6px; background:none; color:var(--text); font:inherit; text-align:left; cursor:pointer; transition:background .12s;
+}
+.mu-lib-row:hover{ background:var(--hover); }
+.mu-lib-row.is-active{ background:var(--press); }
+.mu-lib-row:focus-visible{ outline-offset:-2px; }
+.mu-lib-row .mu-lib-art{ width:48px; height:48px; flex:none; overflow:hidden; border-radius:4px; }
+.mu-lib-art img{ display:block; width:100%; height:100%; object-fit:cover; }
+.mu-lib-art .mu-art-ph svg{ width:22px; height:22px; }
+.mu-lib-row .mu-liked-art svg{ width:20px; height:20px; }
+.mu-lib-text{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.mu-lib-name, .mu-lib-sub{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-lib-name{ font-size:.92rem; font-weight:500; line-height:1.25; }
+.mu-lib-sub{ font-size:.8rem; color:var(--text-dim); line-height:1.25; font-variant-numeric:tabular-nums; }
+.mu-lib-playing{ display:none; flex:none; width:16px; height:16px; margin-right:4px; color:var(--accent); }
+.mu-lib-row.is-current .mu-lib-name{ color:var(--accent); }
+.mu-lib-row.is-playing .mu-lib-playing{ display:block; }
+.mu-lib-empty{
+  display:flex; flex-direction:column; align-items:flex-start; gap:6px; margin:8px 0 0; padding:16px;
+  border-radius:var(--radius); background:color-mix(in srgb,var(--text) 5%,transparent);
+}
+.mu-lib-empty strong{ font-size:.92rem; font-weight:700; color:var(--text); }
+.mu-lib-empty span{ font-size:.8rem; color:var(--text-dim); }
+.mu-lib-empty .mu-create-solid{ margin-top:10px; padding:0 16px; background:var(--text); color:var(--mu-panel); }
+.mu-lib-empty .mu-create-solid:hover{ background:var(--text); }
 
 /* ---- Cover wash ------------------------------------------------------------
    music.js sets --mu-tint on .mu-wash (first child of .mu-main) from the open
    view's cover (album, artist, genre, hovered home tile); it eases between
    views. Not inherited, so the easing restyles the wash only, not the view. */
 @property --mu-tint{ syntax:'<color>'; inherits:false; initial-value:transparent; }
-.mu-main{ position:relative; }
 .mu-wash{
   position:absolute; inset:0 0 auto; height:min(460px,62vh); pointer-events:none;
   --mu-tint:rgba(var(--accent-rgb),.5); transition:--mu-tint .7s ease;
   background:linear-gradient(180deg, color-mix(in srgb,var(--mu-tint) 60%,transparent), color-mix(in srgb,var(--mu-tint) 20%,transparent) 50%, transparent);
 }
-.mu-main .mu-topbar{ background:transparent; border-bottom-color:transparent; }
 .mu-link{ padding:0; border:0; background:none; color:inherit; font:inherit; cursor:pointer; }
 .mu-link:hover{ color:var(--text); text-decoration:underline; text-underline-offset:2px; }
 
 /* ---- View region ----------------------------------------------------------- */
-.mu-view{ position:relative; z-index:1; flex:1 1 auto; min-height:0; overflow-y:auto; padding:16px 24px 56px; }
+.mu-view{ --mu-pad-t:20px; --mu-pad-x:24px; container-type:inline-size; position:relative; z-index:1; flex:1 1 auto; min-height:0; overflow-y:auto; padding:var(--mu-pad-t) var(--mu-pad-x) 56px; }
 .mu-view:focus{ outline:none; }
 /* One quick fade per view swap (innerHTML replaces the children) */
 .mu-view > *{ animation:muIn .22s cubic-bezier(.2,.8,.2,1) backwards; }
@@ -115,9 +189,36 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 }
 .mu-sec-more:hover{ color:var(--text); text-decoration:underline; text-underline-offset:2px; }
 .mu-show-more{ display:block; margin:10px 12px 0; }
+/* Library views (Albums, Artists, Genres) */
+.mu-page-head{ display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 12px; margin:12px 4px 18px; }
+.mu-page-title{ margin:0; font-size:clamp(1.6rem,1.1rem + 1.2vw,2.1rem); font-weight:800; letter-spacing:-.03em; line-height:1.1; color:var(--text); }
+.mu-page-head + .mu-filterbar{ margin-top:0; margin-bottom:20px; }
+
+/* ---- Sticky title bar --------------------------------------------------------
+   First child of the view (music.js); takes no room in the flow. Shown once
+   the page title has scrolled under it, in the view's cover colour (--mu-bar). */
+.mu-sticky{
+  position:sticky; top:calc(var(--mu-pad-t) * -1); z-index:5; height:64px; box-sizing:border-box;
+  margin:calc(var(--mu-pad-t) * -1) calc(var(--mu-pad-x) * -1) calc(var(--mu-pad-t) - 64px); padding:0 var(--mu-pad-x);
+  display:flex; align-items:center; gap:12px; min-width:0;
+  background:color-mix(in srgb,var(--mu-bar,color-mix(in srgb,var(--accent) 50%,var(--mu-panel))) 45%,var(--mu-panel));
+  opacity:0; visibility:hidden; transition:opacity .2s, visibility 0s .2s;
+}
+.mu-view > .mu-sticky{ animation:none; }
+.mu-sticky.is-on{ opacity:1; visibility:visible; transition-delay:0s; }
+.mu-sticky-title{ min-width:0; font-size:1.4rem; font-weight:800; letter-spacing:-.02em; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-sticky-play{
+  flex:none; width:44px; height:44px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:var(--accent); color:var(--accent-contrast); cursor:pointer; transition:transform .12s, filter .12s;
+}
+.mu-sticky-play:hover{ transform:scale(1.05); filter:brightness(1.08); }
+.mu-sticky-play svg{ width:18px; height:18px; }
+.mu-sticky-play .mu-pp-play{ margin-left:2px; }
 
 /* ---- Home quick picks ------------------------------------------------------ */
-.mu-quick-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:8px; margin:8px 0 4px; }
+/* Four across (two rows of four tiles), two across in a narrow panel */
+.mu-quick-grid{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin:8px 0 4px; }
+@container (max-width:760px){ .mu-quick-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
 .mu-quick{
   display:flex; align-items:center; gap:12px; min-width:0; height:60px; padding:0 12px 0 0; overflow:hidden;
   border:0; border-radius:6px; background:color-mix(in srgb,var(--text) 9%,transparent); color:var(--text);
@@ -126,12 +227,172 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .mu-quick:hover{ background:color-mix(in srgb,var(--text) 16%,transparent); }
 .mu-quick-art{ width:60px; height:60px; flex:none; box-shadow:4px 0 16px -6px rgba(0,0,0,.45); }
 .mu-quick-art img{ display:block; width:100%; height:100%; object-fit:cover; }
-.mu-quick-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mu-quick-name{
+  flex:1 1 auto; min-width:0; overflow:hidden; line-height:1.25; overflow-wrap:anywhere;
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2;
+}
+/* Play button at the end of a tile: on hover, and kept (showing pause) while that list plays */
+.mu-quick-play{
+  flex:none; width:32px; height:32px; display:grid; place-items:center; border-radius:50%;
+  background:var(--accent); color:var(--accent-contrast); box-shadow:0 8px 16px -6px rgba(0,0,0,.5);
+  opacity:0; transition:opacity .16s, transform .14s cubic-bezier(.2,.8,.2,1);
+}
+.mu-quick-play svg{ width:14px; height:14px; }
+.mu-quick-play .mu-pp-play{ margin-left:2px; }
+.mu-quick:hover .mu-quick-play, .mu-quick:focus-visible .mu-quick-play, .mu-quick-play.is-playing{ opacity:1; }
+.mu-quick .mu-quick-play:hover{ transform:scale(1.08); }
 .mu-liked-art{
   display:grid; place-items:center; width:100%; height:100%; color:var(--on-media);
   background:linear-gradient(135deg, var(--accent), color-mix(in srgb,var(--accent) 35%,var(--on-media)));
 }
 .mu-liked-art svg{ width:42%; height:42%; fill:currentColor; }
+.mu-quick-art .mu-round{ border-radius:50%; }
+.mu-quick-art:has(.mu-round){ box-shadow:none; }
+/* "New from artists you play" follows the tiles like any section */
+.mu-fy-new > .mu-sec-head:first-child{ margin-top:36px; }
+
+/* ---- Spotlight banner (Home) -------------------------------------------------
+   One slide at a time on a card in the shown cover's colour (--mu-spot, set by
+   music.js and eased between slides like the page wash); text is --on-media.
+   The active segment's fill is the 8 s timer: music.js advances on its
+   animationend, so every pause below is animation-play-state. */
+@property --mu-spot{ syntax:'<color>'; inherits:false; initial-value:transparent; }
+/* The slot folds open once when the banner arrives after Home, and shut when its last slide is dismissed */
+.mu-spot-slot{ display:grid; grid-template-rows:1fr; }
+.mu-spot-slot.is-entering{ animation:muSpotIn .5s cubic-bezier(.2,.8,.2,1) backwards; }
+.mu-spot-slot.is-gone{ grid-template-rows:0fr; opacity:0; transition:grid-template-rows .3s cubic-bezier(.2,.8,.2,1), opacity .2s; }
+@keyframes muSpotIn{ from{ grid-template-rows:0fr; opacity:0; } }
+.mu-spot-clip{ min-height:0; overflow:hidden; }
+.mu-spot{
+  --mu-spot:color-mix(in srgb,var(--mu-panel) 30%,rgb(0 0 0));
+  position:relative; margin-bottom:16px; overflow:hidden; border-radius:12px; color:var(--on-media); touch-action:pan-y;
+  background:
+    radial-gradient(90% 140% at 0% 0%, color-mix(in srgb,var(--on-media) 10%,transparent), transparent 60%),
+    linear-gradient(100deg, var(--mu-spot) 20%, color-mix(in srgb,var(--mu-spot) 50%,rgb(0 0 0)));
+  transition:--mu-spot .8s ease;
+}
+.mu-spot-stage{ display:grid; }
+.mu-spot-slide{
+  grid-area:1 / 1; min-width:0; height:248px; box-sizing:border-box; padding:24px; display:flex; gap:28px; cursor:pointer;
+  opacity:0; visibility:hidden; transition:opacity .45s ease, visibility 0s .45s;
+}
+.mu-spot-slide.is-on{ opacity:1; visibility:visible; transition-delay:0s; }
+.mu-spot-slide.is-gone{ transition-duration:.2s; }
+.mu-spot-art{
+  flex:none; align-self:center; width:200px; aspect-ratio:1; overflow:hidden; border-radius:6px;
+  background:color-mix(in srgb,var(--on-media) 8%,transparent); box-shadow:0 22px 44px -16px rgba(0,0,0,.75), 0 2px 8px rgba(0,0,0,.25);
+  transform:scale(1.035); transition:transform .9s cubic-bezier(.2,.8,.2,1);
+}
+.mu-spot-slide.is-on .mu-spot-art{ transform:none; }
+.mu-spot-slide.is-gone .mu-spot-art{ transform:scale(.97); transition-duration:.2s; }
+.mu-spot-art img{ display:block; width:100%; height:100%; object-fit:cover; }
+.mu-spot-art .mu-art-ph{ background:none; color:color-mix(in srgb,var(--on-media) 60%,transparent); }
+/* Bottom-aligned text column; one-line title so every slide fits the fixed height */
+.mu-spot-body{ min-width:0; flex:1 1 auto; display:flex; flex-direction:column; justify-content:flex-end; align-items:flex-start; }
+.mu-spot-body > *{ flex:none; }
+.mu-spot-kicker{ display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:.82rem; font-weight:700; }
+.mu-spot-avatar{ width:24px; height:24px; flex:none; overflow:hidden; border-radius:50%; background:color-mix(in srgb,var(--on-media) 15%,transparent); }
+.mu-spot-avatar img{ display:block; width:100%; height:100%; object-fit:cover; }
+.mu-spot-title{
+  max-width:100%; margin:0 0 6px; padding-bottom:.04em; font-size:clamp(1.9rem,1rem + 3cqi,3rem); font-weight:800; letter-spacing:-.04em; line-height:1.1;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.mu-spot-title.is-long{ font-size:clamp(1.6rem,.6rem + 2.6cqi,2.4rem); letter-spacing:-.03em; }
+.mu-spot-title.is-xlong{ font-size:clamp(1.35rem,.6rem + 1.9cqi,1.9rem); letter-spacing:-.02em; }
+.mu-spot-meta, .mu-spot-reason{ max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.88rem; line-height:1.4; }
+.mu-spot-meta{ font-weight:600; font-variant-numeric:tabular-nums; }
+.mu-spot-reason{ margin-top:2px; }
+.mu-spot-meta > span + span::before{ content:"·"; margin:0 6px; }
+.mu-spot-reason{ color:color-mix(in srgb,var(--on-media) 72%,transparent); }
+.mu-spot .mu-link:hover{ color:inherit; }
+.mu-spot-actions{ display:flex; align-items:center; gap:12px; margin-top:14px; }
+.mu-spot-play{
+  flex:none; width:48px; height:48px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:var(--accent); color:var(--accent-contrast); cursor:pointer; box-shadow:0 8px 20px -6px rgba(0,0,0,.55); transition:transform .12s, filter .12s;
+}
+.mu-spot-play:hover{ transform:scale(1.05); filter:brightness(1.08); }
+.mu-spot-play:active{ transform:scale(.96); }
+.mu-spot-play svg{ width:20px; height:20px; }
+.mu-spot-play .mu-pp-play{ margin-left:2px; }
+.mu-spot-open{
+  flex:none; height:34px; padding:0 18px; border:1px solid color-mix(in srgb,var(--on-media) 45%,transparent); border-radius:var(--radius-pill);
+  background:none; color:var(--on-media); font:inherit; font-size:.86rem; font-weight:700; cursor:pointer; transition:border-color .12s, transform .12s;
+}
+.mu-spot-open:hover{ border-color:var(--on-media); transform:scale(1.03); }
+.mu-spot-hide, .mu-spot-btn{
+  flex:none; width:32px; height:32px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:none; color:color-mix(in srgb,var(--on-media) 70%,transparent); cursor:pointer; transition:background .12s, color .12s, opacity .15s;
+}
+.mu-spot-hide:hover, .mu-spot-btn:hover{ background:color-mix(in srgb,var(--on-media) 14%,transparent); color:var(--on-media); }
+.mu-spot-hide svg{ width:20px; height:20px; }
+.mu-spot :focus-visible{ outline-color:var(--on-media); }
+/* Controls: segments + rotation button level with the actions row; ‹ › top right, shown on hover */
+.mu-spot-ctrl{ display:contents; }
+.mu-spot-ctrl > *{ position:absolute; z-index:2; }
+.mu-spot-pause{ right:16px; bottom:32px; }
+.mu-spot-segs{ right:56px; bottom:46px; display:flex; gap:4px; }
+.mu-spot-btn svg{ width:16px; height:16px; }
+.mu-spot-pause svg{ width:14px; height:14px; }
+.mu-spot-pause > svg{ grid-area:1 / 1; transition:opacity .14s ease, transform .2s cubic-bezier(.2,.8,.2,1); }
+.mu-spot-pause .mu-pp-play{ margin-left:2px; }
+.mu-spot-prev{ top:16px; right:52px; }
+.mu-spot-next{ top:16px; right:16px; }
+.mu-spot-arrow{ opacity:0; }
+.mu-spot:hover .mu-spot-arrow, .mu-spot-arrow:focus-visible{ opacity:1; }
+.mu-spot-seg{ width:22px; height:3px; overflow:hidden; border-radius:2px; background:color-mix(in srgb,var(--on-media) 28%,transparent); transition:width .25s, margin .25s; }
+.mu-spot-seg > i{ display:block; height:100%; background:var(--on-media); transform:scaleX(0); transform-origin:left; }
+.mu-spot-seg.is-done > i{ transform:none; }
+.mu-spot-seg.is-on > i{ animation:muSpotFill 8s linear forwards; }
+.mu-spot-seg.is-gone{ width:0; margin-left:-4px; }
+@keyframes muSpotFill{ to{ transform:none; } }
+.mu-spot.is-single .mu-spot-ctrl{ display:none; }
+/* Short windows keep both rows of tiles in view */
+@media (max-height:760px){
+  .mu-spot-slide{ height:224px; padding:20px 24px; }
+  .mu-spot-art{ width:184px; }
+  .mu-spot-title{ font-size:clamp(1.9rem,1rem + 3cqi,2.6rem); }
+  .mu-spot-actions{ margin-top:10px; }
+  .mu-spot-play{ width:44px; height:44px; }
+  .mu-spot-pause{ bottom:28px; }
+  .mu-spot-segs{ bottom:42px; }
+}
+/* Paused: tab hidden or off-screen (.is-held), stopped, keyboard focus inside, a menu or dialog open, hover */
+.mu-spot:is(.is-held, .is-stopped) .mu-spot-seg > i, .mu-spot:has(:focus-visible) .mu-spot-seg > i,
+body:has(.rd-cmenu.is-open, .rd-modal.rd-open) .mu-spot-seg > i{ animation-play-state:paused; }
+@media (hover:hover){ .mu-spot:hover .mu-spot-seg > i{ animation-play-state:paused; } }
+@media (hover:none){ .mu-spot-arrow{ display:none; } }
+/* Narrow panel (phones): cover beside the title, reason and actions below, no arrows */
+@container (max-width:620px){
+  .mu-spot{ margin-bottom:12px; border-radius:10px; }
+  .mu-spot-slide{
+    height:auto; padding:16px; display:grid; grid-template-columns:104px minmax(0,1fr); grid-template-rows:1fr auto auto auto auto;
+    column-gap:14px; row-gap:2px;
+  }
+  .mu-spot-body{ display:contents; }
+  .mu-spot-art{ grid-column:1; grid-row:1 / 4; width:104px; align-self:end; }
+  .mu-spot-kicker{ grid-column:2; grid-row:1; align-self:end; margin-bottom:4px; font-size:.76rem; }
+  .mu-spot-avatar{ width:20px; height:20px; }
+  .mu-spot-title, .mu-spot-title.is-long, .mu-spot-title.is-xlong{
+    grid-column:2; grid-row:2; margin:0; font-size:1.35rem; letter-spacing:-.025em; line-height:1.12;
+    white-space:normal; overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2;
+  }
+  .mu-spot-title.is-xlong{ font-size:1.1rem; }
+  .mu-spot-meta{ grid-column:2; grid-row:3; font-size:.8rem; }
+  .mu-spot-meta{ margin-top:2px; }
+  .mu-spot-reason{ grid-column:1 / -1; grid-row:4; margin-top:12px; font-size:.8rem; }
+  .mu-spot-actions{ grid-column:1 / -1; grid-row:5; margin-top:10px; gap:10px; }
+  .mu-spot-play{ width:44px; height:44px; }
+  .mu-spot-play svg{ width:18px; height:18px; }
+  .mu-spot-meta{ white-space:normal; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
+  /* Artist on its own line, then "Single · 1 song" */
+  .mu-spot-meta > span:first-child{ display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mu-spot-meta > span:nth-child(2)::before{ content:none; }
+  .mu-spot-open{ height:32px; padding:0 16px; }
+  .mu-spot-pause{ right:8px; bottom:22px; }
+  .mu-spot-segs{ right:46px; bottom:36px; }
+  .mu-spot-arrow{ display:none; }
+  .mu-spot-seg{ width:16px; }
+}
 
 /* ---- Cards (albums / artists) ---------------------------------------------- */
 .mu-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(172px,1fr)); gap:6px; }
@@ -222,6 +483,12 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .mu-hero-facts strong{ color:var(--text); font-weight:700; }
 
 .mu-actions{ display:flex; align-items:center; gap:20px; padding:4px 4px 22px; }
+.mu-more{
+  flex:none; width:40px; height:40px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:none; color:var(--text-dim); cursor:pointer; transition:color .12s, transform .12s;
+}
+.mu-more:hover{ color:var(--text); transform:scale(1.06); }
+.mu-more svg{ width:26px; height:26px; }
 .mu-play-big{
   width:56px; height:56px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
   background:var(--accent); color:var(--accent-contrast); cursor:pointer;
@@ -232,7 +499,7 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .mu-play-big:hover{ transform:scale(1.05); filter:brightness(1.08); }
 .mu-play-big:active{ transform:scale(.96); }
 /* Play / pause: both icons share one cell; .is-playing (music.js) swaps them */
-.mu-play-big > svg, .mu-card-play > svg{ grid-area:1 / 1; transition:opacity .14s ease, transform .2s cubic-bezier(.2,.8,.2,1); }
+.mu-play-big > svg, .mu-card-play > svg, .mu-quick-play > svg, .mu-sticky-play > svg, .mu-spot-play > svg{ grid-area:1 / 1; transition:opacity .14s ease, transform .2s cubic-bezier(.2,.8,.2,1); }
 .mu-pp-pause, .is-playing > .mu-pp-play{ opacity:0; transform:scale(.6); }
 .is-playing > .mu-pp-pause{ opacity:1; transform:none; }
 
@@ -243,7 +510,7 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
   color:var(--text); font:inherit; font-size:.82rem; font-weight:600; white-space:nowrap; cursor:pointer; transition:background .12s, color .12s;
 }
 .mu-chip:hover{ background:color-mix(in srgb,var(--text) 16%,transparent); }
-.mu-chip.is-on{ background:var(--text); color:var(--bg); }
+.mu-chip.is-on, .mu-chip.is-active{ background:var(--text); color:var(--bg); }
 .mu-filterbar{ display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; margin:8px 4px 0; }
 .mu-chips{ display:flex; flex-wrap:wrap; gap:8px; flex:1 1 auto; }
 .mu-sort{ display:flex; align-items:center; gap:8px; font-size:.82rem; color:var(--text-dim); }
@@ -268,6 +535,8 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .mu-track:hover, .mu-track:focus-within{ background:var(--hover); }
 .mu-track:focus-visible{ outline-offset:-2px; }
 .mu-track.is-unavail{ opacity:.4; cursor:default; }
+/* "Not for me": still playable, dimmed */
+.mu-track.is-hidden :is(.mu-track-main, .mu-track-art, .mu-track-album){ opacity:.45; }
 .mu-track-num{ position:relative; height:16px; line-height:16px; text-align:center; font-size:.9rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
 .mu-track-play, .mu-track-pause{ position:absolute; left:50%; top:1px; width:14px; height:14px; margin-left:-7px; color:var(--text); opacity:0; }
 .mu-track:not(.is-unavail):hover .mu-track-num{ color:transparent; }
@@ -325,23 +594,24 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 .mu-modal-body{ display:flex; flex-direction:column; gap:14px; }
 .mu-modal-body .rd-modal-foot{ margin-top:6px; }
 .mu-optional{ font-weight:400; color:var(--text-faint); }
+#muClearModal .rd-modal-panel{ max-width:26rem; }
+.mu-modal-text{ margin:0; font-size:.9rem; line-height:1.5; color:var(--text-dim); }
 
 /* ---- Breakpoints ----------------------------------------------------------- */
 @media (max-width:920px){
-  .mu-shell{ grid-template-columns:1fr; }
+  .mu-shell{ grid-template-columns:minmax(0,1fr); grid-template-areas:"top" "main"; column-gap:0; }
   /* Drawer mode: rail is off-canvas at a fixed width (no resize/collapse) */
-  .mu-shell .rd-resizer, .mu-rail .rd-side-head{ display:none !important; }
+  .mu-shell .rd-resizer{ display:none !important; }
   :root[data-rd-side="collapsed"] .mu-rail > .rd-side-inner{ display:flex; }
-  .mu-rail{
-    position:fixed; top:var(--nav-h); left:0; bottom:0; width:272px; z-index:50;
-    transform:translateX(-102%); visibility:hidden; box-shadow:24px 0 48px -16px rgba(0,0,0,.5);
+  .mu-shell .mu-rail{
+    grid-area:auto; position:fixed; top:var(--nav-h); left:0; bottom:0; width:300px; max-width:calc(100vw - 48px); z-index:50;
+    border-radius:0; transform:translateX(-102%); visibility:hidden; box-shadow:24px 0 48px -16px rgba(0,0,0,.5);
     transition:transform .28s cubic-bezier(.2,.85,.25,1), visibility 0s .28s;
   }
-  .mu-rail.is-open{ transform:none; visibility:visible; transition-delay:0s; }
+  .mu-shell .mu-rail.is-open{ transform:none; visibility:visible; transition-delay:0s; }
   .mu-rail-scrim{ display:block; position:fixed; inset:var(--nav-h) 0 0 0; z-index:49; background:var(--scrim); opacity:0; pointer-events:none; transition:opacity .2s; }
   .mu-rail-scrim.is-open{ opacity:1; pointer-events:auto; }
-  .mu-topbar{ padding:0 12px; }
-  .mu-view{ padding:14px 12px 40px; }
+  .mu-view{ --mu-pad-t:14px; --mu-pad-x:12px; padding-bottom:40px; }
   .mu-shelf{ margin:0 -12px; padding:0 6px 6px; scroll-padding-inline:6px; }
   .mu-shelf-genres{ padding-inline:12px; }
   body.music-player-active .mu-rail .rd-side-inner{ padding-bottom:calc(12px + var(--mp-h,0px)); }
@@ -354,13 +624,21 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
 }
 
 @media (max-width:620px){
-  .mu-bcrumb{ display:none; }
-  .mu-back:not([hidden]){ display:inline-flex; margin-left:-4px; }
-  .mu-rail-toggle, .mu-back, .mu-devices-btn{ width:36px; height:36px; }
-  .mu-search{ flex:1 1 auto; }
-  .mu-topbar{ gap:6px; }
-  .mu-search input{ height:36px; font-size:16px; }
-  .mu-search svg{ left:10px; }
+  /* Phones: full-bleed main view, a compact top row (no Forward, Back only when it goes somewhere) */
+  .mu-shell{ --mu-top:56px; padding:0; }
+  .mu-main{ border-radius:0; }
+  .mu-topbar{ grid-template-columns:auto minmax(0,1fr) auto; gap:6px; padding:0 8px; }
+  .mu-top-start, .mu-top-end{ gap:0; padding:0; }
+  .mu-rail-toggle{ margin-right:0; }
+  .mu-fwd, .mu-hist:disabled{ display:none; }
+  .mu-icon-btn{ width:36px; height:36px; }
+  .mu-home-btn, .mu-browse-btn{ width:40px; height:40px; }
+  .mu-search{ height:40px; }
+  .mu-kbd{ display:none; }
+  .mu-search input{ padding-left:40px; font-size:16px; }
+  .mu-search-ic{ left:11px; width:20px; height:20px; margin-top:-10px; }
+  .mu-browse-btn{ margin-left:2px; }
+  .mu-page-head{ margin:8px 2px 14px; }
   .mu-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px; }
   .mu-grid-artists{ grid-template-columns:repeat(3,minmax(0,1fr)); }
   .mu-card{ padding:8px; }
@@ -374,8 +652,11 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
   .mu-quick-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
   .mu-quick{ height:52px; gap:8px; font-size:.8rem; }
   .mu-quick-art{ width:52px; height:52px; }
-  .mu-sec-head{ margin-top:28px; }
+  .mu-quick-play:not(.is-playing){ display:none; }
+  .mu-sec-head, .mu-fy-new > .mu-sec-head:first-child{ margin-top:28px; }
   .mu-h2{ font-size:1.2rem; }
+  .mu-private{ width:32px; height:32px; margin-right:0; padding:0; justify-content:center; }
+  .mu-private span{ display:none; }
   .mu-card-play{ display:none; }
   .mu-hero{ flex-direction:column; align-items:flex-start; gap:18px; padding:12px 2px 18px; }
   .mu-hero-art{ align-self:center; width:min(58vw,232px); }
@@ -401,13 +682,23 @@ body.music-player-active .mu-shell{ height:calc(100dvh - var(--nav-h) - 68px); }
   .mu-track:active{ background:var(--hover); }
   .mu-card:hover{ background:none; }
   .mu-card:active{ background:var(--hover); }
-  .mu-rail-pl, .mu-nav-item{ min-height:40px; }
-  .mu-rail .rd-side-subhead button{ width:32px; height:32px; }
+  .mu-quick-play:not(.is-playing){ display:none; }
+  .mu-lib-row:not(.is-active):hover{ background:none; }
+  .mu-lib-row:active{ background:var(--hover); }
+  /* A long press opens the song menu, not the text callout */
+  .mu-track{ -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; }
   /* iOS zooms the page into inputs under 16px */
   .mu-search input, .mu-sort select{ font-size:16px; }
 }
 
 @media (prefers-reduced-motion:reduce){
   .mu-view > *, .mu-view > .mu-skel, .mu-eq i{ animation:none !important; }
-  .mu-shell, .mu-wash, .mu-rail, .mu-card-play, .mu-genre, .mu-genre-art, .mu-play-big, .mu-play-big > svg, .mu-card-play > svg{ transition:none !important; }
+  .mu-shell, .mu-wash, .mu-rail, .mu-card-play, .mu-genre, .mu-genre-art, .mu-play-big, .mu-play-big > svg, .mu-card-play > svg,
+  .mu-home-btn, .mu-search, .mu-browse-btn, .mu-create, .mu-quick-play, .mu-quick-play > svg, .mu-sticky, .mu-sticky-play, .mu-sticky-play > svg,
+  .mu-spot, .mu-spot-slot, .mu-spot-slide, .mu-spot-art, .mu-spot-seg, .mu-spot-play, .mu-spot-play > svg, .mu-spot-open, .mu-more{ transition:none !important; }
+  /* The banner never moves on its own: no fill, no advance, no rotation button */
+  .mu-spot-slot.is-entering{ animation:none; }
+  .mu-spot-seg.is-on > i{ animation:none; transform:none; }
+  .mu-spot-pause{ display:none; }
+  .mu-spot-segs{ right:20px; }
 }

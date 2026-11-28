@@ -24,7 +24,7 @@ from difflib import SequenceMatcher
 from app import (app, db, get_setting, get_numeric_setting, get_float_setting, get_setting_value,
                  _invalidate_settings_cache, MUSIC_LIBRARY_PATH,
                  MusicJob, MusicArtist, MusicGenreRule, MusicSourceBudget, MusicAlbumMatch,
-                 MusicWorker, MusicLike, MusicPlaylistSong)
+                 MusicWorker, MusicLike, MusicPlaylistSong, MusicAffinity)
 
 WORKER_VERSION = '1.0.0'
 USER_AGENT = f'ONEGY-Music/{WORKER_VERSION} ( https://{os.environ.get("DOMAIN", "localhost")} )'

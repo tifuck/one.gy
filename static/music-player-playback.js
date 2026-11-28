@@ -53,7 +53,9 @@
   }
 
   // ─── Track Loading ──────────────────────────────────────────────
-  async function _loadTrack(index) {
+  // reason: why the track starts (music-player-listen.js): 'pick' (default),
+  // 'next', 'prev', 'auto', 'remote'
+  async function _loadTrack(index, reason) {
     if (!Number.isInteger(index) || index < 0 || index >= mp.playlist.length) return
     const loadSeq = ++mp._loadSeq
 
@@ -65,6 +67,7 @@
 
     mp.currentIndex = index
     const track = mp.playlist[index]
+    mp._listenStart(reason || 'pick', track)
 
     // Update UI immediately
     mp._setTitle(track.name)
@@ -177,11 +180,14 @@
     }
   }
 
-  function playNext() {
+  // reason: 'next' (buttons, keys; default), 'auto' (the track ended), 'remote'
+  function playNext(reason) {
     if (mp._syncPhantomMode) { mp._syncSendCommand('next'); return }
     if (mp.playlist.length === 0) return
+    reason = reason || 'next'
     mp._resumeAudioContext()
     if (mp.repeatMode === 'one') {
+      mp._listenStart(reason === 'auto' ? 'repeat' : reason, mp.playlist[mp.currentIndex])
       audio.currentTime = 0
       audio.play().catch(() => {})
       return
@@ -211,7 +217,7 @@
             var pos = mp.shuffleOrder.indexOf(mp.currentIndex) + 1
             if (added && pos > 0 && pos < mp.shuffleOrder.length) {
               mp.shufflePos = pos
-              _loadTrack(mp.shuffleOrder[mp.shufflePos])
+              _loadTrack(mp.shuffleOrder[mp.shufflePos], reason)
             } else {
               _pauseAtQueueEnd()
             }
@@ -240,7 +246,7 @@
               // Use currentIndex + 1 (not a pre-captured index) because
               // _autoQueueSuggested may trim played tracks from the front,
               // shifting all indices. currentIndex is adjusted during trim.
-              _loadTrack(mp.currentIndex + 1)
+              _loadTrack(mp.currentIndex + 1, reason)
             } else {
               _pauseAtQueueEnd()
             }
@@ -252,7 +258,7 @@
         }
       }
     }
-    _loadTrack(nextIdx)
+    _loadTrack(nextIdx, reason)
   }
 
   // The queue ran out: this pause is not an interruption to undo when the
@@ -263,7 +269,9 @@
     audio.pause()
   }
 
-  function playPrevious() {
+  // reason: 'prev' (buttons, keys; default) or 'remote'. A restart of the
+  // current track is a seek within the same play.
+  function playPrevious(reason) {
     if (mp._syncPhantomMode) { mp._syncSendCommand('prev'); return }
     if (mp.playlist.length === 0) return
     // If more than 3 seconds in, restart current track
@@ -296,7 +304,7 @@
         }
       }
     }
-    _loadTrack(prevIdx)
+    _loadTrack(prevIdx, reason || 'prev')
   }
 
   // Shuffle/repeat in phantom mode belong to the remote device: send them there.
@@ -335,6 +343,7 @@
   }
 
   function closePlayer() {
+    mp._listenEnd('stop')
     mp._loadSeq++  // invalidate any in-flight track load (e.g. a pending decrypt)
     if (mp._isFullscreen) mp._collapseFullscreen(true)
     mp._cancelCrossfade()
@@ -391,6 +400,7 @@
   // ─── Audio Event Handlers ──────────────────────────────────────
   function _onTimeUpdate() {
     if (mp._syncPhantomMode) return  // phantom mode drives progress via interpolation, not the silent keepalive
+    mp._listenTick()
     if (!isNaN(audio.duration) && audio.duration > 0) {
       if (!mp._scrubbing) {
         if (mp.progressEl) mp.progressEl.value = Math.round((audio.currentTime / audio.duration) * 1000)
@@ -480,12 +490,14 @@
       mp._finalizeCrossfade()
       return
     }
+    mp._listenEnd('done')
     if (mp.repeatMode === 'one') {
+      mp._listenStart('repeat', mp.playlist[mp.currentIndex])
       mp._resumeAudioContext()
       audio.currentTime = 0
       audio.play().catch(() => {})
     } else {
-      playNext()
+      playNext('auto')
     }
   }
 
@@ -497,6 +509,7 @@
     console.error('[MUSIC PLAYER] Audio error:', e)
     var track = mp.playlist[mp.currentIndex]
     if (track) mp._setTitle(track.name + ' (playback error)')
+    mp._listenEnd('error')
 
     // Reset playing state so the UI accurately reflects that nothing is playing
     mp.isPlaying = false
@@ -508,7 +521,7 @@
     if (mp._errorSkipCount <= 3 && mp.playlist.length > 1) {
       const skipSeq = mp._loadSeq
       setTimeout(function() {
-        if (skipSeq === mp._loadSeq) playNext()  // a newer load/close supersedes the skip
+        if (skipSeq === mp._loadSeq) playNext('auto')  // a newer load/close supersedes the skip
       }, 1500)
     } else if (mp._errorSkipCount > 3) {
       console.warn('[MUSIC PLAYER] Too many consecutive errors, stopping auto-advance')

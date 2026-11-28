@@ -73,6 +73,7 @@ def _load_parts():
         '400_music_browse_routes.py',
         '405_music_admin.py',
         '410_music_api_sync.py',
+        '415_music_taste.py',
         '420_main.py',
     ):
         path = os.path.join(here, name)

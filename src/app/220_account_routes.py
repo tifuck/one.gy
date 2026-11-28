@@ -625,6 +625,7 @@ def delete_account():
         MusicSyncCommand.query.filter_by(user_id=user_id).delete(synchronize_session=False)
         MusicDevice.query.filter_by(user_id=user_id).delete()
         MusicSyncState.query.filter_by(user_id=user_id).delete()
+        _delete_music_taste_of(user_id)
         NotificationDismissal.query.filter(NotificationDismissal.user_id == user_id).delete(synchronize_session=False)
         # AUDIT FIX (finding 18): the user's prompt-feedback rows are theirs;
         # do not retain them after the account is destroyed.

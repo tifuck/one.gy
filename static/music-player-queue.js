@@ -2,16 +2,21 @@
 ;(function(mp) {
   'use strict'
 
-  const { AUDIO_EXTS, audio, _applyOutputVolume, _applyCrossfadeVolumes, _jsonHeaders } = mp
+  const { AUDIO_EXTS, audio, _applyOutputVolume, _applyCrossfadeVolumes, _jsonHeaders, _lsGet, _lsSet } = mp
 
   let _crossfadeTimer = null
+  let _autoplayOn = _lsGet('mp_autoplay') !== '0'  // the switch as last known here (the server keeps the setting)
+  let _autoplayPrefLoaded = false   // fetched once per page view, when the queue panel first opens
+  let _autoplaySeq = 0              // bumped on every toggle: answers sent before it do not override it
+  let _autoplaySaving = false
 
   /**
    * Play tracks from the music library catalog.
-   * @param {Array} tracks - [{id, title, artists, album_name, cover_path, duration_ms, ...}]
+   * @param {Array} tracks - [{id, title, artists, album_id, cover_path, duration_ms, ...}]
    * @param {number} startIndex - Index to start playing from
+   * @param {Object} opts - {context}: where the queue came from ('album:<id>', 'liked', ...), for listening history
    */
-  function playMusicLibrary(tracks, startIndex) {
+  function playMusicLibrary(tracks, startIndex, opts) {
     if (!tracks || !tracks.length) return
     var list = tracks.map(t => ({
       id: t.id,
@@ -25,17 +30,20 @@
       artistIds: (t.artists || []).map(a => a.id),
       artists: (t.artists || []).map(a => ({ id: a.id, name: a.name })),
       albumId: t.album_id || null,
+      durationMs: t.duration_ms || null,
       suggested: false,
     }))
     // Controlling another device (mirroring it or picked in Devices): it plays there
     if (mp._syncPlayOnRemote(list, startIndex || 0)) return
-    _playLibraryTracks(list, startIndex)
+    _playLibraryTracks(list, startIndex, 'pick', opts && opts.context)
   }
 
   // Play a library queue (player track objects) on this device.
-  function _playLibraryTracks(list, startIndex) {
+  // reason: why it starts ('pick', or 'remote' for another device's command).
+  function _playLibraryTracks(list, startIndex, reason, context) {
     mp._resumeAudioContext()
     mp._context = 'music-library'
+    mp._listenContext = typeof context === 'string' && context ? context.slice(0, 100) : 'queue'
     mp._updateOwnLibraryState()
     mp.playlist = list
 
@@ -56,7 +64,7 @@
       _anchorShuffleAt(startIndex || 0)
     }
     mp._showPlayer()
-    mp._loadTrack(startIndex || 0)
+    mp._loadTrack(startIndex || 0, reason)
     mp._renderPlaylist()
 
     // Update album art in player
@@ -261,8 +269,79 @@
   }
 
   function _canAutoQueueSuggested() {
-    // Always on, like Spotify: the queue plays out, then suggestions follow
+    // Like Spotify: the queue plays out, then suggestions follow (unless the
+    // user turned Autoplay off: the suggest call then ends the queue)
     return mp._context === 'music-library'
+  }
+
+  // ─── Autoplay switch (queue panel) ──────────────────────────────────────
+  // Off: this queue stops asking for suggestions (like a 401); on again: it
+  // asks again. Every device of the user follows the server's setting.
+  function _applyAutoplay(on) {
+    _autoplayOn = on
+    _lsSet('mp_autoplay', on ? '1' : '0')
+    var sw = document.getElementById('mpAutoplay')
+    if (sw) sw.checked = on
+    mp._suggestApiUnavailable = !on
+    if (on) {
+      mp._autoQueueFailures = 0
+      mp._autoQueueRetryAt = 0
+    }
+  }
+
+  // The music page's listening menu changed the setting (already saved)
+  function _setAutoplay(on) {
+    _autoplaySeq++
+    _applyAutoplay(!!on)
+  }
+
+  function _bindAutoplaySwitch() {
+    var sw = document.getElementById('mpAutoplay')
+    if (!sw) return
+    sw.checked = _autoplayOn
+    sw.addEventListener('change', function() {
+      _autoplaySeq++
+      _applyAutoplay(sw.checked)
+      _saveAutoplay()
+    })
+  }
+
+  // One PUT at a time; a toggle made meanwhile is sent after it
+  function _saveAutoplay() {
+    if (_autoplaySaving) return
+    _autoplaySaving = true
+    var sent = _autoplayOn
+    fetch('/music/api/taste/prefs', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: _jsonHeaders(),
+      body: JSON.stringify({ autoplay: sent }),
+    }).then(function(r) {
+      if (!r.ok) throw new Error('prefs failed: ' + r.status)
+      _autoplaySaving = false
+      if (_autoplayOn !== sent) _saveAutoplay()
+    }).catch(function() {
+      _autoplaySaving = false
+      _autoplaySeq++
+      _applyAutoplay(!sent)
+      if (typeof showToast === 'function') showToast('COULD NOT SAVE AUTOPLAY', 'error')
+    })
+  }
+
+  // The server's setting, the first time the queue panel opens in this page view
+  function _loadAutoplayPref() {
+    if (_autoplayPrefLoaded) return
+    _autoplayPrefLoaded = true
+    var seq = _autoplaySeq
+    fetch('/music/api/taste/prefs', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function(r) {
+        if (!r.ok) throw new Error('prefs failed: ' + r.status)
+        return r.json()
+      })
+      .then(function(data) {
+        if (seq === _autoplaySeq && typeof data.autoplay === 'boolean' && data.autoplay !== _autoplayOn) _applyAutoplay(data.autoplay)
+      })
+      .catch(function() {})
   }
 
   function _buildSourceUrl(fileId, fileName, isE2E) {
@@ -336,6 +415,7 @@
     mp._autoQueueLoading = true
 
     var basePlaylist = mp.playlist  // replaced (not mutated) when another playlist opens
+    var autoplaySeq = _autoplaySeq
     // Build exclude list from current playlist (avoid repeats)
     var excludeIds = mp.playlist.map(function(t) { return t.id })
 
@@ -373,6 +453,11 @@
       mp._autoQueueLoading = false
       mp._autoQueuePromise = null
       if (!data) return false  // API was unavailable
+      if (data.autoplay === false) {
+        // The user turned Autoplay off (maybe on another device): this queue ends
+        if (autoplaySeq === _autoplaySeq && mp.playlist === basePlaylist) _applyAutoplay(false)
+        return false
+      }
       if (mp.playlist !== basePlaylist) return false  // a different playlist is playing now
       if (!data.songs || !data.songs.length) throw new Error('no suggestions')
       mp._autoQueueFailures = 0
@@ -395,6 +480,7 @@
           artistIds: (t.artists || []).map(function(a) { return a.id }),
           artists: (t.artists || []).map(function(a) { return { id: a.id, name: a.name } }),
           albumId: t.album_id || null,
+          durationMs: t.duration_ms || null,
           suggested: true,
         }
       })
@@ -500,6 +586,9 @@
     } else {
       mp.currentIndex = mp.currentIndex + 1
     }
+    // The outgoing play ends here (crossfaded out: done); the incoming one
+    // began on the side element and keeps what was heard there.
+    mp._listenStart('autoplay', mp.playlist[mp.currentIndex], mp._crossfadeAudio.currentTime * 1000)
 
     // Swap: take over from crossfade audio
     audio.pause()
@@ -565,6 +654,9 @@
     open,
     onFolderChanged,
     _canAutoQueueSuggested,
+    _bindAutoplaySwitch,
+    _setAutoplay,
+    _loadAutoplayPref,
     _generateShuffleOrder,
     _autoQueueSuggested,
     _startCrossfade,

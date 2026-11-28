@@ -722,6 +722,8 @@ class MusicPlaylist(db.Model):
     description = db.Column(db.String(500), nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    # Plays from this playlist stay in the history but never shape the taste profile
+    exclude_taste = db.Column(db.Boolean, nullable=False, default=False, server_default='0')
     songs = db.relationship('MusicPlaylistSong', backref='playlist', lazy=True,
                             cascade='all, delete-orphan', order_by='MusicPlaylistSong.position')
 
@@ -789,6 +791,97 @@ class MusicSyncCommand(db.Model):
         db.Index('ix_music_command_target_fifo', 'user_id', 'target_device_id', 'status', 'id'),
         db.Index('ix_music_command_requester_result', 'user_id', 'requester_device_id', 'status', 'id'),
     )
+
+# ─── Music taste (415_music_taste.py, docs/music-taste.md) ──────────────────
+# Song / album / artist ids are library.db ids. Every table is per user and is
+# deleted with the user (220_account_routes.py, 230_admin_users_settings.py).
+
+class MusicListen(db.Model):
+    """One play of a library song, reported by the device that played it.
+    client_id is the player's id for the play: a later report of the same play
+    (page reload, handoff) updates the row instead of adding one. Pruned after
+    music_listen_retention_days."""
+    id = db.Column(db.BigInteger().with_variant(db.Integer, 'sqlite'), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    client_id = db.Column(db.String(36), nullable=False)
+    song_id = db.Column(db.String(36), nullable=False)
+    album_id = db.Column(db.String(36), nullable=True)
+    device_id = db.Column(db.String(36), nullable=True)
+    started_at = db.Column(db.DateTime, nullable=False)
+    ended_at = db.Column(db.DateTime, nullable=False)
+    ms_played = db.Column(db.Integer, nullable=False, default=0)   # heard: paused, muted-out and skipped-over time excluded
+    duration_ms = db.Column(db.Integer, nullable=False, default=0)
+    seek_fwd = db.Column(db.SmallInteger, nullable=False, default=0)
+    seek_back = db.Column(db.SmallInteger, nullable=False, default=0)
+    muted_ms = db.Column(db.Integer, nullable=False, default=0)
+    idle_ms = db.Column(db.Integer, nullable=False, default=0)     # since the last user input, at the end
+    start_reason = db.Column(db.String(12), nullable=False, default='pick')
+    end_reason = db.Column(db.String(12), nullable=False, default='stop')
+    context = db.Column(db.String(100), nullable=True)             # 'album:<id>', 'playlist:<id>', 'liked', 'autoplay', ...
+    final = db.Column(db.Boolean, nullable=False, default=False)   # False: a checkpoint (page left mid-song)
+    outcome = db.Column(db.String(10), nullable=False, default='partial')  # server classification
+    weight = db.Column(db.Float, nullable=False, default=0.0)      # taste delta applied for this play
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'client_id', name='uq_music_listen_client'),
+        db.Index('ix_music_listen_user_time', 'user_id', 'started_at'),
+        db.Index('ix_music_listen_time', 'started_at'),
+    )
+
+class MusicAffinity(db.Model):
+    """A user's taste for one song, album, artist or genre: two exponentially
+    decayed sums (short and long half-life) stored as of updated_at; readers
+    decay them to now."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    kind = db.Column(db.String(8), nullable=False)    # 'song' | 'album' | 'artist' | 'genre'
+    key = db.Column(db.String(100), nullable=False)   # library id, or the genre name lowercased
+    short = db.Column(db.Float, nullable=False, default=0.0)
+    long = db.Column(db.Float, nullable=False, default=0.0)
+    updated_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    plays = db.Column(db.Integer, nullable=False, default=0)      # qualified listens
+    skips = db.Column(db.Integer, nullable=False, default=0)      # early skips
+    last_played_at = db.Column(db.DateTime, nullable=True)
+    last_skip_at = db.Column(db.DateTime, nullable=True)
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'kind', 'key', name='uq_music_affinity'),
+        db.Index('ix_music_affinity_user_kind', 'user_id', 'kind'),
+    )
+
+class MusicHide(db.Model):
+    """'Not for me': kept out of recommendations, autoplay and the spotlight."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    kind = db.Column(db.String(8), nullable=False)    # 'song' | 'album' | 'artist'
+    key = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    __table_args__ = (db.UniqueConstraint('user_id', 'kind', 'key', name='uq_music_hide'),)
+
+class MusicSpotlightSeen(db.Model):
+    """How often one spotlight item ('album:<id>') was shown to a user, and
+    what they did with it: drives frequency capping and dismissals."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, index=True)
+    item = db.Column(db.String(48), nullable=False)
+    impressions = db.Column(db.Integer, nullable=False, default=0)
+    days = db.Column(db.Integer, nullable=False, default=0)       # distinct UTC days it was shown
+    clicks = db.Column(db.Integer, nullable=False, default=0)
+    first_seen = db.Column(db.DateTime, nullable=True)
+    last_seen = db.Column(db.DateTime, nullable=True)
+    dismissed_at = db.Column(db.DateTime, nullable=True)
+    snoozed_until = db.Column(db.DateTime, nullable=True)
+    __table_args__ = (db.UniqueConstraint('user_id', 'item', name='uq_music_spotlight_item'),)
+
+class MusicUserPref(db.Model):
+    """Per-user music switches. No row means the defaults."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False, unique=True)
+    autoplay = db.Column(db.Boolean, nullable=False, default=True, server_default='1')
+    private_until = db.Column(db.DateTime, nullable=True)   # private session: no history, no taste
+    # Autoplay discovery share: a Beta(hits, misses) posterior over how often
+    # unfamiliar suggestions are kept rather than skipped.
+    discovery_hits = db.Column(db.Float, nullable=False, default=1.0, server_default='1')
+    discovery_misses = db.Column(db.Float, nullable=False, default=1.0, server_default='1')
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
 # ─── Music pipeline (music_worker.py) ───────────────────────────────────────
 # The worker owns library.db (what the site plays); these tables hold its queue,
@@ -983,6 +1076,21 @@ _SETTING_DEFAULTS = {
     'music_tier_top_tracks': '7500',
     # Use this server's own connection alongside the admin's proxies.
     'music_proxy_direct': True,
+    # Listening history and taste (415_music_taste.py, docs/music-taste.md).
+    'music_taste_enabled': True,
+    'music_listen_retention_days': '365',
+    'music_taste_half_life_short_days': '14',
+    'music_taste_half_life_long_days': '120',
+    # Auto-started plays with no user input for this long count as background listening.
+    'music_away_idle_minutes': '20',
+    # Home spotlight: per-user feed lifetime, release window, slides, frequency cap.
+    'music_spotlight_ttl_seconds': '900',
+    'music_spotlight_new_days': '21',
+    'music_spotlight_max_slides': '5',
+    'music_spotlight_impression_cap': '6',
+    'music_spotlight_snooze_days': '14',
+    # Worker: songs of artists users listen to are fetched sooner (075_priority.py).
+    'music_boost_listened': '1.5',
     # Desktop sync (375_apiv1_sync.py / 376_apiv1_sync_uploads.py).
     'allow_desktop_sync': True,
     'max_devices_per_user': '20',

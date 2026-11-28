@@ -30,6 +30,8 @@
     var remoteTrack = remoteTracks[state.currentIndex]
     var remotePlaying = state.isPlaying === true
 
+    // A play of this device's own ends: the other device has the session now
+    if (!mp._syncPhantomMode) mp._listenEnd('handoff')
     mp._syncPhantomMode = true
     mp._syncPhantomDeviceId = data.active_device_id
     mp._syncRemoteTarget = null

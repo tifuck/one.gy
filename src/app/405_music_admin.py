@@ -23,6 +23,7 @@ _MUSIC_UP_NEXT = 15
 _MUSIC_PRIORITY_FLOATS = {
     'music_boost_chart': (1.0, 10.0),
     'music_boost_fresh': (1.0, 10.0),
+    'music_boost_listened': (1.0, 10.0),
     'music_weight_top10': (0.1, 10.0),
     'music_weight_essentials': (0.1, 10.0),
     'music_weight_discography': (0.1, 10.0),

@@ -10,6 +10,7 @@
 //   music-player-session.js     Media Session, iOS background, persistence
 //   music-player-playback.js    track loading, transport, <audio> events
 //   music-player-queue.js       playlists, shuffle, autoplay, crossfade
+//   music-player-listen.js      listening history (one report per play)
 //   music-player-sync.js        cross-device sync engine
 //   music-player-devices.js     devices buttons, panel toggle
 //   music-player.js             window.MusicPlayer and init (load last)
@@ -81,6 +82,7 @@
   mp._lastPositionUpdate = 0      // timestamp of last Media Session position update
   mp._loadSeq = 0
   mp._scrubbing = false            // the user is dragging the progress thumb
+  mp._listenContext = null         // where the library queue came from ('album:<id>', 'liked', ...: docs/music-taste.md)
 
   // ─── Auto-queue State ───────────────────────────────────────────
   mp._autoQueueLoading = false
