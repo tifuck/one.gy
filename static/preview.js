@@ -42,6 +42,11 @@
   // Wrapped rows are measured per line in a hidden div; above this many lines
   // the gutter keeps one number per row and can drift on wrapped lines.
   var WRAP_MEASURE_MAX = 20000
+  // Above this many chars the editor compares the buffer with the saved text
+  // only once typing pauses, not on every keystroke.
+  var MARK_SYNC_MAX = 200000
+  // Gallery neighbours up to this size are loaded ahead (prefetchNeighbours).
+  var AHEAD_MAX = 32 * 1024 * 1024
   var _gallery = null  // { list, thumb } while an image is browsed in a list
   var _current = null
   var _zoomed = false
@@ -103,6 +108,7 @@
 
   function open (item, opts) {
     if (!$('previewModal') || !item) return
+    dropAhead()
     _gallery = opts && opts.list && opts.list.length > 1 && IMG.indexOf(extOf(item)) >= 0 ? opts : null
     buildStrip()
     show(item, false)
@@ -220,11 +226,51 @@
     })
   }
   function go (f) { if (f && (!_current || String(f.id) !== String(_current.id))) show(f, true) }
+  // While an image is on screen its gallery neighbours load: E2EE ones are
+  // fetched and decrypted (kept as a promise of the bytes, the shown one too
+  // for a step back), plain ones are requested by an Image kept here, so the
+  // next step paints from memory.
+  var _ahead = new Map()
+  var _aheadAbort = null
+  function prefetchNeighbours (item) {
+    var i = galleryIndex(item)
+    if (i < 0) return
+    if (!_aheadAbort) _aheadAbort = new AbortController()
+    var keep = new Set([String(item.id)])
+    ;[_gallery.list[i + 1], _gallery.list[i - 1]].forEach(function (f) {
+      if (!f || (f.size || 0) > AHEAD_MAX) return
+      var id = String(f.id)
+      keep.add(id)
+      if (_ahead.has(id)) return
+      if (f.is_e2e) {
+        if (!haveKeys()) return
+        var p = getBytes(f, _aheadAbort.signal)
+        p.catch(function () { if (_ahead.get(id) === p) _ahead.delete(id) })
+        _ahead.set(id, p)
+      } else if (extOf(f) !== 'svg') {
+        var im = new Image(); im.src = '/file/' + encodeURIComponent(f.id) + '/preview'
+        _ahead.set(id, im)
+      }
+    })
+    _ahead.forEach(function (v, id) { if (!keep.has(id)) _ahead.delete(id) })
+  }
+  function dropAhead () {
+    if (_aheadAbort) _aheadAbort.abort()
+    _aheadAbort = null
+    _ahead.clear()
+  }
+  // The bytes loaded ahead for item, falling back to a fresh load.
+  function aheadBytes (item, signal, onProgress) {
+    var p = _ahead.get(String(item.id))
+    if (!p || !p.then) return getBytes(item, signal, onProgress)
+    return p.catch(function () { return getBytes(item, signal, onProgress) })
+  }
   function step (d) { var i = galleryIndex(_current); if (i >= 0) go(_gallery.list[i + d]) }
 
   function close (fromHistory) {
     if (_historyOpen && !fromHistory) { history.back(); return }
     cancelOpen()
+    dropAhead()
     var modal = $('previewModal'); if (!modal) return
     modal.classList.remove('preview-visible', 'pv-text', 'pv-window', 'pv-gallery', 'pv-has-strip')
     document.documentElement.style.overflow = ''
@@ -360,17 +406,40 @@
     return r
   }
 
-  async function getBytes (item, signal) {
+  // A response body, with onProgress(share 0-1) as it arrives when the size is
+  // known. A body longer than Content-Length (a compressed transfer) is still
+  // read whole.
+  async function readBytes (r, onProgress) {
+    var total = +r.headers.get('Content-Length') || 0
+    if (!onProgress || !total || !r.body || !r.body.getReader) return r.arrayBuffer()
+    var reader = r.body.getReader(), buf = new Uint8Array(total), got = 0, parts = null
+    for (;;) {
+      var step = await reader.read()
+      if (step.done) break
+      var v = step.value
+      if (!parts && got + v.length <= total) buf.set(v, got)
+      else { if (!parts) parts = [buf.subarray(0, got)]; parts.push(v) }
+      got += v.length
+      onProgress(Math.min(1, got / total))
+    }
+    if (parts) return new Blob(parts).arrayBuffer()
+    return got === total ? buf.buffer : buf.slice(0, got).buffer
+  }
+
+  // onProgress(phase, share 0-1): optional, for the loading text.
+  async function getBytes (item, signal, onProgress) {
+    var step = function (phase) { return onProgress && function (p) { onProgress(phase, p) } }
     if (item.is_e2e) {
       if (!haveKeys()) throw new Error('KEYS LOCKED')
       var masterKey = await OneGyCrypto.getMasterKeyFromSession()
       if (!masterKey) throw new Error('KEYS LOCKED')
       var efk = item.encrypted_file_key, fkn = item.file_key_nonce
       if (!efk) { var ki = await (await okFetch('/f/' + item.id + '/key-info', signal)).json(); efk = ki.encrypted_file_key; fkn = ki.file_key_nonce }
-      var enc = await (await okFetch('/f/' + item.id + '/encrypted?preview=1', signal)).arrayBuffer()
-      return await OneGyCrypto.decryptFileForDownload(enc, efk, fkn, masterKey)
+      var enc = await readBytes(await okFetch('/f/' + item.id + '/encrypted?preview=1', signal), step('Downloading'))
+      var dec = step('Decrypting')
+      return await OneGyCrypto.decryptFileForDownload(enc, efk, fkn, masterKey, dec && function (pct) { dec(pct / 100) })
     }
-    return await (await okFetch('/file/' + item.id + '/preview', signal)).arrayBuffer()
+    return await readBytes(await okFetch('/file/' + item.id + '/preview', signal), step('Loading'))
   }
 
   async function render (item, body, dl, resEl, generation, signal) {
@@ -389,9 +458,14 @@
       if (dl && !item.is_e2e) { dl.href = directUrl; dl.download = item.name || 'file' }
       return
     }
+    var progress = function (phase, p) {
+      var note = isCurrent(generation) && body.querySelector('.preview-loading')
+      if (note) note.textContent = phase + ' preview… ' + Math.round(p * 100) + '%'
+    }
     try {
-      var bytes = direct ? null : await getBytes(item, signal)
+      var bytes = direct ? null : await aheadBytes(item, signal, progress)
       if (!isCurrent(generation)) return
+      if (_gallery && bytes && (item.size || 0) <= AHEAD_MAX && galleryIndex(item) >= 0) _ahead.set(String(item.id), Promise.resolve(bytes))
       var blob = function (mime) {
         if (direct) { if (dl) { dl.href = directUrl; dl.download = item.name || 'file' } return directUrl }
         var b = new Blob([bytes], { type: mime }); _blobUrl = URL.createObjectURL(b)
@@ -405,7 +479,7 @@
         var mimeI = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp', svg: 'image/svg+xml' }[ext] || 'image/jpeg'
         var url = blob(mimeI)
         var img = new Image(); img.className = 'preview-image'; img.alt = item.name || ''
-        img.onload = function () { if (!isCurrent(generation)) return; body.innerHTML = ''; body.appendChild(img); if (resEl) { resEl.textContent = img.naturalWidth + ' × ' + img.naturalHeight; resEl.classList.add('visible') } attachZoom(img, body, generation) }
+        img.onload = function () { if (!isCurrent(generation)) return; body.innerHTML = ''; body.appendChild(img); if (resEl) { resEl.textContent = img.naturalWidth + ' × ' + img.naturalHeight; resEl.classList.add('visible') } attachZoom(img, body, generation); prefetchNeighbours(item) }
         img.onerror = function () { if (isCurrent(generation)) body.innerHTML = '<div class="preview-error">Could not display this image</div>' }
         img.src = url
       } else if (TXT.indexOf(ext) >= 0 || (!known && bytes && looksLikeText(bytes))) {
@@ -558,6 +632,8 @@
     ta.value = text
     ta.setSelectionRange(0, 0)
     var clean = ta.value  // what the server holds (LF-normalised like ta.value); dirty = the textarea differs
+    var bigText = clean.length > MARK_SYNC_MAX
+    var markTimer = null
     var savedOnce = false
     var dirty = false
     var editRevision = 0
@@ -635,11 +711,19 @@
       hlTimer = setTimeout(paintHl, 200)
     }
     function setStatus (cls, msg) { status.textContent = msg; status.className = 'preview-ed-status' + (cls ? ' ' + cls : '') }
-    // Undoing back to the saved text is not an unsaved change.
+    // Undoing back to the saved text is not an unsaved change. A big buffer
+    // counts as changed at once; the compare with the saved text waits until
+    // typing pauses.
     function mark () {
       if (!isCurrent(generation)) return
       editRevision++
-      dirty = ta.value !== clean; _editorDirty = dirty
+      clearTimeout(markTimer)
+      if (!bigText) { showDirty(ta.value !== clean); return }
+      markTimer = setTimeout(function () { if (isCurrent(generation)) showDirty(ta.value !== clean) }, 300)
+      if (!dirty) showDirty(true)
+    }
+    function showDirty (d) {
+      dirty = d; _editorDirty = dirty
       if (!saving) saveBtn.disabled = !dirty
       if (saving) return
       if (dirty) setStatus('is-mod', 'Unsaved changes'); else setStatus(savedOnce ? 'is-saved' : '', savedOnce ? 'Saved' : '')

@@ -519,21 +519,18 @@ function setupPasswordUnlockFlow(keyInfo, pw) {
 
 // ─── Passphrase decrypt flow (guest upload, new system) ─────────────
 async function _doPassphraseDecrypt(passphrase, keyInfo, pw) {
-  // Try to decrypt filename with passphrase-derived key
-  try {
-    const fk = await OneGyCrypto.unwrapFileKeyWithPassphrase(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase)
-    await _tryDecryptOrigName(keyInfo, fk)
-  } catch (e) { /* non-critical */ }
+  // The download runs while the key is derived (PBKDF2), and that one key
+  // decrypts both the filename and the data: no second derivation.
+  const download = fetchEncryptedWithProgress(pw)
+  download.catch(function () {})
+  const fk = await OneGyCrypto.unwrapFileKeyWithPassphrase(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase)
+  await _tryDecryptOrigName(keyInfo, fk)
 
-  const encryptedData = await fetchEncryptedWithProgress(pw)
+  const encryptedData = await download
 
   _resetForDecrypt()
-  _updateProgress('Deriving key from passphrase…', 0, '')
 
-  const decrypted = await OneGyCrypto.decryptFileForGuestDownload(
-    encryptedData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase,
-    onDecryptProgress
-  )
+  const decrypted = await OneGyCrypto.decryptFileData(encryptedData, fk, onDecryptProgress)
 
   _updateProgress('Saving…', 99, '')
   downloadDecryptedFile(decrypted, origName)

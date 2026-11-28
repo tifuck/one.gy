@@ -33,6 +33,26 @@
 
   var hasCrypto = !!(window.crypto && window.crypto.subtle)
 
+  // crypto.js is only needed by the credential forms: it loads when one of
+  // their modals opens (or on submit), from the versioned URL the template puts
+  // on .acc-layout (data-crypto-src). A failed load is tried again on the next use.
+  var accLayout = document.querySelector('.acc-layout')
+  var cryptoSrc = accLayout ? accLayout.getAttribute('data-crypto-src') : ''
+  var cryptoLoad = null
+  function loadCrypto () {
+    if (window.OneGyCrypto) return Promise.resolve()
+    if (!cryptoLoad) {
+      cryptoLoad = new Promise(function (resolve, reject) {
+        var s = document.createElement('script')
+        s.src = cryptoSrc
+        s.onload = function () { resolve() }
+        s.onerror = function () { s.remove(); cryptoLoad = null; reject(new Error('COULD NOT LOAD crypto.js')) }
+        document.head.appendChild(s)
+      })
+    }
+    return cryptoLoad
+  }
+
   // ---- Credential proof helpers -----------------------------------------
   // The server only accepts a split-key auth_token, derived from the password
   // with the account's salt from /api/keys — exactly like login.html does.
@@ -50,6 +70,7 @@
   /* Build the credential-proof payload ({ auth_token }) for the given password. */
   async function credentialProof (password) {
     var info = await keyInfo()
+    try { await loadCrypto() } catch (e) {}
     if (!hasCrypto || !window.OneGyCrypto) throw new Error('THIS BROWSER CANNOT VERIFY YOUR PASSWORD SECURELY')
     var split = await OneGyCrypto.deriveAuthAndWrappingKeys(password, info.auth_token_salt)
     return { auth_token: split.authToken, _split: split }
@@ -117,6 +138,7 @@
     var m = document.getElementById(id); if (!m) return
     m.querySelectorAll('[aria-invalid]').forEach(function (el) { el.removeAttribute('aria-invalid') })
     modalOpener = document.activeElement
+    loadCrypto().catch(function () {})
     m.classList.add('rd-open'); m.setAttribute('aria-hidden', 'false'); document.documentElement.style.overflow = 'hidden'
   }
   function closeModal (m) {
@@ -277,12 +299,14 @@
     if (next.length < 6) { need(newEl, 'PASSWORD MUST BE AT LEAST 6 CHARACTERS'); return }
     if (next.length > 1024) { need(newEl, 'PASSWORD MUST BE 1024 CHARACTERS OR LESS'); return }
     if (next === current) { need(newEl, 'NEW PASSWORD MUST BE DIFFERENT'); return }
-    if (!hasCrypto || !window.OneGyCrypto) { toast('THIS BROWSER CANNOT CHANGE YOUR PASSWORD SECURELY', 'error'); return }
+    if (!hasCrypto) { toast('THIS BROWSER CANNOT CHANGE YOUR PASSWORD SECURELY', 'error'); return }
     var pwTotpEl = document.getElementById('pwTotp'), pwTotp = tfaCode('pwTotp')
     if (pwTotpEl && !pwTotpEl.closest('[data-tfa-field]').hidden && !pwTotp) { need(pwTotpEl, 'ENTER YOUR 6-DIGIT CODE'); return }
 
     pwSave.disabled = true
     try {
+      try { await loadCrypto() } catch (e) {}
+      if (!window.OneGyCrypto) throw new Error('THIS BROWSER CANNOT CHANGE YOUR PASSWORD SECURELY')
       var info = await keyInfo(true)
 
       // 1) Prove the CURRENT credentials, and get the current wrapping key.
@@ -460,8 +484,10 @@
   }
   async function loadKeys () {
     if (!keyList) return
+    // The first load takes the request the template started inline.
+    var pending = window.__ACC_KEYS__; window.__ACC_KEYS__ = null
     try {
-      var d = await parse(await fetch('/account/api-keys', { headers: { 'X-Requested-With': 'XMLHttpRequest' } }), function (v) {
+      var d = await parse(await (pending || fetch('/account/api-keys', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })), function (v) {
         return Array.isArray(v.keys) && v.keys.every(function (k) {
           return k && typeof k === 'object' && validKeyId(k.id) &&
             (k.label === null || typeof k.label === 'string') && k.permissions && typeof k.permissions === 'object' && !Array.isArray(k.permissions)

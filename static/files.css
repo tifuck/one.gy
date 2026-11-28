@@ -8,6 +8,9 @@
    ========================================================================== */
 
 :root{ --fx-bar-h:40px; }
+/* manage.css / preview.css arrive with their modal on first use (files.js
+   loadExtra); until then the modal markup stays out of the page. */
+html:not(.fx-manage-css) #manageModal, html:not(.fx-preview-css) #previewModal{ display:none; }
 .fx-shell{
   display:grid; grid-template-columns:var(--rd-side-eff) minmax(0,1fr);
   height:calc(100vh - var(--nav-h)); height:calc(100dvh - var(--nav-h));
@@ -562,7 +565,7 @@
 .fx-up-row-top .fx-name{ flex:1 1 auto; }
 .fx-up-pct{ font-size:.74rem; color:var(--text-dim); font-variant-numeric:tabular-nums; }
 .fx-up-bar{ height:3px; border-radius:3px; background:var(--press); overflow:hidden; }
-.fx-up-bar-fill{ width:0; height:100%; border-radius:3px; background:var(--accent); transition:width .2s; }
+.fx-up-bar-fill{ height:100%; border-radius:3px; background:var(--accent); transform:scaleX(0); transform-origin:left; transition:transform .2s; }
 .fx-up-row.is-done .fx-up-bar-fill{ background:var(--good); }
 .fx-up-row.is-err .fx-up-bar-fill{ background:var(--bad); }
 .fx-up-row.is-err .fx-up-pct{ color:var(--bad); }

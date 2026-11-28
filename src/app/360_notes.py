@@ -17,13 +17,15 @@ _MARIADB_TEXT_MAX_BYTES = 65535
 NOTES_ENCRYPTED_FIELD_MAX_BYTES = _MARIADB_TEXT_MAX_BYTES
 NOTES_ENCRYPTED_TAGS_MAX_BYTES = _MARIADB_TEXT_MAX_BYTES
 NOTES_WRAPPED_KEY_MAX_BYTES = _MARIADB_TEXT_MAX_BYTES
+NOTES_ENCRYPTED_SEARCH_TEXT_MAX_BYTES = _MARIADB_TEXT_MAX_BYTES
 # Every nonce column is String(255).
 NOTES_NONCE_MAX_BYTES = 255
 NOTES_JSON_ENVELOPE_MAX_BYTES = (
     NOTES_ENCRYPTED_FIELD_MAX_BYTES +
     NOTES_ENCRYPTED_TAGS_MAX_BYTES +
     NOTES_WRAPPED_KEY_MAX_BYTES +
-    (NOTES_NONCE_MAX_BYTES * 4) +
+    NOTES_ENCRYPTED_SEARCH_TEXT_MAX_BYTES +
+    (NOTES_NONCE_MAX_BYTES * 5) +
     (256 * 1024)
 )
 
@@ -214,6 +216,35 @@ def _notes_normalize_system_key(system_key):
 def _notes_is_system_notebook(notebook):
     return bool(notebook and notebook.system_key == NOTES_SHARED_INBOX_KEY)
 
+def _notes_etag(content_version, content_checksum, is_trashed, notebook_id):
+    """Validator for GET /notes/api/notes/<id> (bare tag; sent weak). Every content,
+    title, key, tag, pin or colour change bumps content_version; trash, restore and
+    notebook moves made outside a PUT do not, so they are in it too."""
+    raw = f'{int(content_version or 1)}:{content_checksum or ""}:{1 if is_trashed else 0}:{notebook_id or ""}'
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]
+
+def _notes_etag_header(tag):
+    return f'W/"{tag}"'
+
+def _notes_view_query(user_id):
+    """The notes one view of the notes page lists (?notebook_id=<id>|unfiled,
+    ?trash=true, ?received=true), or None when the notebook id is invalid."""
+    notebook_id = request.args.get('notebook_id')
+    show_trash = request.args.get('trash', 'false').lower() == 'true'
+    show_received = request.args.get('received', 'false').lower() == 'true'
+    query = Note.query.filter_by(user_id=user_id, is_trashed=show_trash)
+    if show_received:
+        query = query.filter(Note.received_from.isnot(None))
+    elif notebook_id is not None:
+        if notebook_id == 'unfiled':
+            query = query.filter(Note.notebook_id.is_(None))
+        else:
+            try:
+                query = query.filter_by(notebook_id=int(notebook_id))
+            except (ValueError, TypeError):
+                return None
+    return query
+
 def _notes_snapshot_version(n, force=False):
     """Add the note's CURRENT content to the session as a NoteVersion (caller
     commits it with the save that replaces it). Never raises: history must not
@@ -268,12 +299,26 @@ def notes_page():
 @app.route('/notes/api/notebooks', methods=['GET'])
 @login_required
 def notes_list_notebooks():
-    """List all notebooks for the current user."""
+    """List all notebooks for the current user. The storage figures come only
+    with ?storage=1: the notes page does not show them."""
     user_id = session['logged_in_user_id']
-    notebooks = Notebook.query.filter_by(user_id=user_id, is_trashed=False).order_by(Notebook.position.asc(), Notebook.created_at.asc()).all()
+    all_notebooks = Notebook.query.filter_by(user_id=user_id).order_by(Notebook.position.asc(), Notebook.created_at.asc()).all()
+    notebooks = [nb for nb in all_notebooks if nb.is_trashed is False]
+    trash_notebooks = sum(1 for nb in all_notebooks if nb.is_trashed is True)
+    # One grouped count instead of a COUNT per notebook plus the totals.
+    live_counts = {}
+    total_notes = trash_notes = 0
+    grouped = db.session.query(Note.notebook_id, Note.is_trashed, db.func.count(Note.id)).filter(
+        Note.user_id == user_id).group_by(Note.notebook_id, Note.is_trashed).all()
+    for notebook_id, is_trashed, count in grouped:
+        if is_trashed is True:
+            trash_notes += count
+        elif is_trashed is False:
+            total_notes += count
+            live_counts[notebook_id] = live_counts.get(notebook_id, 0) + count
     result = []
     for nb in notebooks:
-        note_count = Note.query.filter_by(notebook_id=nb.id, is_trashed=False).count()
+        note_count = live_counts.get(nb.id, 0)
         result.append({
             'id': nb.id,
             'encrypted_name': nb.encrypted_name,
@@ -287,24 +332,22 @@ def notes_list_notebooks():
             'created_at': _utc_aware(nb.created_at).isoformat() if nb.created_at else None,
             'updated_at': _utc_aware(nb.updated_at).isoformat() if nb.updated_at else None,
         })
-    # Include aggregate counts for sidebar
-    total_notes = Note.query.filter_by(user_id=user_id, is_trashed=False).count()
-    trash_notes = Note.query.filter_by(user_id=user_id, is_trashed=True).count()
-    trash_notebooks = Notebook.query.filter_by(user_id=user_id, is_trashed=True).count()
-    # Storage figures so the notes rail can show the same footer meter as the files sidebar
-    user = db.session.get(User, user_id)
-    storage_used = user.get_storage_used() if user else None
-    storage_limit_gb = round(user.storage_limit_gb, 2) if user else None
-    return jsonify({
+    payload = {
         'notebooks': result,
         'total_notes': total_notes,
         'trash_count': trash_notes + trash_notebooks,
         # The notes alone, as the Trash view lists them (trash_count also counts trashed notebooks).
         'trash_notes_count': trash_notes,
-        'storage_used_gb': round(storage_used / (1024 ** 3), 2) if user else None,
-        'storage_used_bytes': storage_used,
-        'storage_limit_gb': storage_limit_gb,
-    })
+    }
+    if request.args.get('storage') == '1':
+        user = db.session.get(User, user_id)
+        storage_used = user.get_storage_used() if user else None
+        payload.update({
+            'storage_used_gb': round(storage_used / (1024 ** 3), 2) if user else None,
+            'storage_used_bytes': storage_used,
+            'storage_limit_gb': round(user.storage_limit_gb, 2) if user else None,
+        })
+    return jsonify(payload)
 
 @app.route('/notes/api/notebooks', methods=['POST'])
 @login_required
@@ -499,20 +542,9 @@ def notes_restore_notebook(notebook_id):
 def notes_list_notes():
     """List all notes for the current user (metadata only, no content)."""
     user_id = session['logged_in_user_id']
-    notebook_id = request.args.get('notebook_id')
-    show_trash = request.args.get('trash', 'false').lower() == 'true'
-    show_received = request.args.get('received', 'false').lower() == 'true'
-    query = Note.query.filter_by(user_id=user_id, is_trashed=show_trash)
-    if show_received:
-        query = query.filter(Note.received_from.isnot(None))
-    elif notebook_id is not None:
-        if notebook_id == 'unfiled':
-            query = query.filter(Note.notebook_id.is_(None))
-        else:
-            try:
-                query = query.filter_by(notebook_id=int(notebook_id))
-            except (ValueError, TypeError):
-                return jsonify({'error': 'INVALID NOTEBOOK ID'}), 400
+    query = _notes_view_query(user_id)
+    if query is None:
+        return jsonify({'error': 'INVALID NOTEBOOK ID'}), 400
     notes = query.order_by(Note.is_pinned.desc(), Note.updated_at.desc()).all()
     result = []
     for n in notes:
@@ -539,13 +571,36 @@ def notes_list_notes():
         })
     return jsonify({'notes': result})
 
+@app.route('/notes/api/search-text', methods=['GET'])
+@login_required
+def notes_list_search_text():
+    """The encrypted search text of the notes in one view (same filters as the
+    list), so a search reads them in one request instead of fetching every note.
+    Notes without one (not saved since, or saved by an older page) are left out."""
+    user_id = session['logged_in_user_id']
+    query = _notes_view_query(user_id)
+    if query is None:
+        return jsonify({'error': 'INVALID NOTEBOOK ID'}), 400
+    rows = query.filter(Note.encrypted_search_text.isnot(None)).with_entities(
+        Note.id, Note.encrypted_search_text, Note.search_text_nonce).all()
+    return jsonify({'notes': [{'id': r[0], 'encrypted_search_text': r[1], 'search_text_nonce': r[2]} for r in rows]})
+
 @app.route('/notes/api/notes/<string:note_id>', methods=['GET'])
 @login_required
 def notes_get_note(note_id):
     """Get a single note with encrypted content (read from disk)."""
     user_id = session['logged_in_user_id']
-    if not Note.query.filter_by(id=note_id, user_id=user_id).first():
+    n = Note.query.filter_by(id=note_id, user_id=user_id).first()
+    if not n:
         return jsonify({'error': 'NOTE NOT FOUND'}), 404
+    # notes.js keeps opened notes in memory and sends the tag back: a copy that is
+    # still current costs no lock, no read, no hash and no transfer. Unlocked is
+    # fine: a row committed ahead of its payload has a new tag and reads below.
+    tag = _notes_etag(n.content_version, n.content_checksum, n.is_trashed, n.notebook_id)
+    if request.if_none_match.contains_weak(tag):
+        resp = app.response_class(status=304)
+        resp.set_etag(tag, weak=True)
+        return resp
     # A concurrent PUT commits new metadata and then swaps the payload while it
     # holds this lock; reading under it keeps metadata, key and ciphertext from
     # one generation (and never catches the committed-but-unfinalized window).
@@ -574,7 +629,8 @@ def _notes_get_note_locked(note_id, user_id):
     if n.received_from and not n.is_read:
         n.is_read = True
         db.session.commit()
-    return jsonify({
+    tag = _notes_etag(n.content_version, n.content_checksum, n.is_trashed, n.notebook_id)
+    resp = jsonify({
         'id': n.id,
         'notebook_id': n.notebook_id,
         'encrypted_title': n.encrypted_title,
@@ -596,7 +652,11 @@ def _notes_get_note_locked(note_id, user_id):
         'is_trashed': n.is_trashed,
         'created_at': _utc_aware(n.created_at).isoformat() if n.created_at else None,
         'updated_at': _utc_aware(n.updated_at).isoformat() if n.updated_at else None,
+        # The header's copy gains a ":br" suffix when the response is compressed; this one is sent back as is.
+        'etag': _notes_etag_header(tag),
     })
+    resp.set_etag(tag, weak=True)
+    return resp
 
 @app.route('/notes/api/notes', methods=['POST'])
 @login_required
@@ -613,6 +673,7 @@ def notes_create_note():
         _notes_validate_wrapped_field_pair(data, 'encrypted_note_key', 'note_key_nonce', 'ENCRYPTED KEY', required=True, value_max_bytes=NOTES_WRAPPED_KEY_MAX_BYTES)
         _notes_validate_wrapped_field_pair(data, 'encrypted_title', 'title_nonce', 'ENCRYPTED TITLE')
         _notes_validate_wrapped_field_pair(data, 'encrypted_tags', 'tags_nonce', 'ENCRYPTED TAGS', value_max_bytes=NOTES_ENCRYPTED_TAGS_MAX_BYTES)
+        _notes_validate_wrapped_field_pair(data, 'encrypted_search_text', 'search_text_nonce', 'ENCRYPTED SEARCH TEXT', value_max_bytes=NOTES_ENCRYPTED_SEARCH_TEXT_MAX_BYTES)
         _notes_validate_content_field(data)
         color = _notes_normalize_color(data.get('color'))
         position = _notes_parse_position(data.get('position', 0), 'POSITION') if 'position' in data else 0
@@ -657,6 +718,8 @@ def notes_create_note():
             content_checksum=content_checksum,
             encrypted_tags=data.get('encrypted_tags'),
             tags_nonce=data.get('tags_nonce'),
+            encrypted_search_text=data.get('encrypted_search_text') or None,
+            search_text_nonce=data.get('search_text_nonce') or None,
             position=position,
         )
         # Write content first, then commit its metadata while the quota lock is held.
@@ -697,7 +760,8 @@ def notes_create_note():
             created_id = None
             raise
         print(f'[NOTES] User {user_id} created note {n.id} (type={note_type}, size={content_size})')
-        return jsonify({'id': n.id, 'note_type': note_type, 'created_at': _utc_aware(n.created_at).isoformat(), 'updated_at': _utc_aware(n.updated_at).isoformat(), 'size': n.size or 0, 'content_version': int(n.content_version or 1)}), 201
+        return jsonify({'id': n.id, 'note_type': note_type, 'created_at': _utc_aware(n.created_at).isoformat(), 'updated_at': _utc_aware(n.updated_at).isoformat(), 'size': n.size or 0, 'content_version': int(n.content_version or 1),
+                        'etag': _notes_etag_header(_notes_etag(1, content_checksum, False, notebook_id))}), 201
     except Exception:
         if created_id and not committed:
             try:
@@ -733,6 +797,7 @@ def notes_update_note(note_id):
         _notes_validate_wrapped_field_pair(data, 'encrypted_title', 'title_nonce', 'ENCRYPTED TITLE')
         _notes_validate_wrapped_field_pair(data, 'encrypted_note_key', 'note_key_nonce', 'ENCRYPTED KEY', value_max_bytes=NOTES_WRAPPED_KEY_MAX_BYTES)
         _notes_validate_wrapped_field_pair(data, 'encrypted_tags', 'tags_nonce', 'ENCRYPTED TAGS', value_max_bytes=NOTES_ENCRYPTED_TAGS_MAX_BYTES)
+        _notes_validate_wrapped_field_pair(data, 'encrypted_search_text', 'search_text_nonce', 'ENCRYPTED SEARCH TEXT', value_max_bytes=NOTES_ENCRYPTED_SEARCH_TEXT_MAX_BYTES)
         _notes_validate_content_field(data)
         notebook_id = _notes_parse_notebook_id(data.get('notebook_id'))
     except ValueError as e:
@@ -808,13 +873,16 @@ def notes_update_note(note_id):
             user = db.session.get(User, user_id)
             old_size = int(n.size or 0)
             net_increase = max(content_size - old_size, 0)
-            if user and net_increase > 0 and not user.has_storage_available(net_increase):
+            # Both checks below are User.has_storage_available() against ONE usage sum (four SUMs each).
+            storage_used = user.get_storage_used() if user else 0
+            storage_limit = user.storage_limit_gb * 1024 * 1024 * 1024 if user else 0
+            if user and net_increase > 0 and storage_used + net_increase > storage_limit:
                 storage.rollback_staged_note(n.id, staging_id=staging_id)
                 return jsonify({'error': 'STORAGE LIMIT EXCEEDED'}), 413
 
             # The old payload is still on disk here (the staged one replaces it after the commit).
             # History counts toward quota and is skipped when it would not fit.
-            if not user or user.has_storage_available(content_size):
+            if not user or storage_used + content_size <= storage_limit:
                 _notes_snapshot_version(n, force=bool(data.get('force_version')))
 
             new_version = expected_version + 1
@@ -841,8 +909,13 @@ def notes_update_note(note_id):
             if 'encrypted_tags' in data:
                 update_values[Note.encrypted_tags] = data['encrypted_tags']
                 update_values[Note.tags_nonce] = data.get('tags_nonce')
+            # The search text describes this content: a save without one (an older page) drops the stale one.
+            update_values[Note.encrypted_search_text] = data.get('encrypted_search_text') or None
+            update_values[Note.search_text_nonce] = data.get('search_text_nonce') or None
             if parsed_position is not None:
                 update_values[Note.position] = parsed_position
+            etag = _notes_etag(new_version, content_checksum, False,
+                               notebook_id if 'notebook_id' in data else n.notebook_id)
 
             # Startup recovery keeps a staged .new only when this .meta matches the
             # committed row; committing without it would lose the edit on a crash.
@@ -904,7 +977,8 @@ def notes_update_note(note_id):
             _release_lifecycle_lock(lifecycle_lock)
             _release_user_quota_lock(quota_lock)
             _release_note_rewrite_lock(note_lock)
-        return jsonify({'success': True, 'updated_at': now.isoformat(), 'size': content_size, 'content_version': new_version})
+        return jsonify({'success': True, 'updated_at': now.isoformat(), 'size': content_size, 'content_version': new_version,
+                        'etag': _notes_etag_header(etag)})
 
     # AUDIT FIX M4: optimistic-concurrency control for metadata-only PUTs.
     # Previously the metadata branch (title/key/notebook/pin/color/tags) did a
@@ -945,12 +1019,18 @@ def notes_update_note(note_id):
     if 'encrypted_tags' in data:
         metadata_updates[Note.encrypted_tags] = data['encrypted_tags']
         metadata_updates[Note.tags_nonce] = data.get('tags_nonce')
+    if 'encrypted_search_text' in data:
+        metadata_updates[Note.encrypted_search_text] = data['encrypted_search_text'] or None
+        metadata_updates[Note.search_text_nonce] = data.get('search_text_nonce') or None
     if parsed_position is not None:
         metadata_updates[Note.position] = parsed_position
     now_ts = datetime.now(timezone.utc)
     metadata_updates[Note.updated_at] = now_ts
     new_metadata_version = current_version + 1
     metadata_updates[Note.content_version] = new_metadata_version
+    # The content is unchanged: the conditional UPDATE below only lands on this version.
+    etag = _notes_etag(new_metadata_version, n.content_checksum, False,
+                       notebook_id if 'notebook_id' in data else n.notebook_id)
 
     lifecycle_lock = None
     try:
@@ -994,7 +1074,8 @@ def notes_update_note(note_id):
         db.session.commit()
     finally:
         _release_lifecycle_lock(lifecycle_lock)
-    return jsonify({'success': True, 'updated_at': now_ts.isoformat(), 'size': content_size, 'content_version': new_metadata_version})
+    return jsonify({'success': True, 'updated_at': now_ts.isoformat(), 'size': content_size, 'content_version': new_metadata_version,
+                    'etag': _notes_etag_header(etag)})
 
 _NOTES_REORDER_MAX_ITEMS = 5000
 

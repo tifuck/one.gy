@@ -48,11 +48,13 @@
   function toast (m, c) { if (window.showToast) window.showToast(m, c) }
   function failToast (e, fallback) { toast((e && e.message) ? e.message : (fallback || 'FAILED'), 'error') }
   function hdr (json) { var h = { 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' }; if (json) h['Content-Type'] = 'application/json'; return h }
-  async function jget (u) {
-    var r = await fetch(u, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+  // pending: a fetch already started for u (the template's stats prefetch).
+  async function jget (u, pending) {
+    var r = await (pending || fetch(u, { headers: { 'X-Requested-With': 'XMLHttpRequest' } }))
     if (!r.ok) { var e = {}; try { e = await r.json() } catch (x) {} throw new Error(e.error || ('HTTP ' + r.status)) }
     return r.json()
   }
+  function takeStatsPrefetch () { var p = window.__ADM_STATS__; window.__ADM_STATS__ = null; return p }
   async function jsend (m, u, body, form) {
     var o = { method: m, headers: hdr(!form) }
     if (body) o.body = form ? body : JSON.stringify(body)
@@ -174,7 +176,7 @@
     epoch = startRender('overview', epoch); if (epoch == null) return
     loading()
     try {
-      var d = await jget('/admin/api/stats'); if (!isCurrentRender('overview', epoch)) return; S.stats = d
+      var d = await jget('/admin/api/stats', takeStatsPrefetch()); if (!isCurrentRender('overview', epoch)) return; S.stats = d
       var o = d.overview || {}, st = d.storage || {}
       var rep = d.replication || {}
       var rc = rep.config || d.replication_config || {}
@@ -934,7 +936,7 @@
     epoch = startRender('statistics', epoch); if (epoch == null) return
     loading()
     try {
-      var d = await jget('/admin/api/stats'); if (!isCurrentRender('statistics', epoch)) return; S.stats = d
+      var d = await jget('/admin/api/stats', takeStatsPrefetch()); if (!isCurrentRender('statistics', epoch)) return; S.stats = d
       var o = d.overview || {}, st = d.storage || {}
       var det = d.details || {}
       function val (v) { return v == null ? 'n/a' : (typeof v === 'number' ? num(v) : esc(v)) }
@@ -969,11 +971,11 @@
     clearTimeout(S.monTimer); S.monTimer = null
     if (window.AdmMonitor) window.AdmMonitor.unmount()
   }
-  // Live state is polled every MON_POLL_MS, as often as the server rebuilds it
-  // (its cache lasts 15 s); a poll that returns the state already on screen only
-  // pulses the live mark. The 5-minute snapshot history comes only every
-  // MON_HISTORY_MS or on range change.
-  var MON_POLL_MS = 15000, MON_HISTORY_MS = 300000
+  // Live state is polled every MON_POLL_MS, twice the server cache lifetime
+  // (15 s), since nearly every poll rebuilds it (GROUP BY scans); a poll that
+  // returns the state already on screen only pulses the live mark. The 5-minute
+  // snapshot history comes only every MON_HISTORY_MS or on range change.
+  var MON_POLL_MS = 30000, MON_HISTORY_MS = 300000
   async function tabMonitor (epoch, silent) {
     epoch = startRender('monitoring', epoch); if (epoch == null) return
     clearTimeout(S.monTimer)

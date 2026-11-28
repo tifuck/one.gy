@@ -409,10 +409,10 @@ def admin_revoke_user_access(user_id):
 @admin_required
 def admin_api_stats():
     """Return comprehensive admin statistics as JSON."""
-    snapshot = capture_system_metrics_snapshot(force=False)
+    latest_snapshot_at = latest_system_metrics_snapshot_at()
     payload = _build_admin_live_stats()
     payload['history'] = {
-        'latest_snapshot_at': _utc_aware(snapshot.captured_at).isoformat() if snapshot else None,
+        'latest_snapshot_at': latest_snapshot_at.isoformat() if latest_snapshot_at else None,
         'windows': list(ADMIN_STATS_WINDOWS.keys()),
     }
     return jsonify(payload)

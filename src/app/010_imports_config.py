@@ -26,6 +26,7 @@ import threading
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, render_template, redirect, url_for, abort, send_file, send_from_directory, flash, jsonify, session, make_response, g, has_app_context, has_request_context
+from flask.sessions import SecureCookieSessionInterface
 from flask_sqlalchemy import SQLAlchemy
 from cryptography.fernet import Fernet, MultiFernet
 from werkzeug.security import generate_password_hash, check_password_hash, safe_join
@@ -224,6 +225,24 @@ app.config['SESSION_COOKIE_SECURE'] = True      # Only send over HTTPS
 app.config['SESSION_COOKIE_HTTPONLY'] = True     # Not accessible via JavaScript
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'   # Prevent CSRF via cross-site requests
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=6)
+
+
+# Public responses cached for a year (static assets, the ?v= prompts catalog).
+_SESSIONLESS_ENDPOINTS = frozenset({'static', 'prompts_catalog'})
+
+
+class _NoStaticSessionInterface(SecureCookieSessionInterface):
+    """Static assets are public and cached for a year: they never carry the
+    session cookie. A re-signed Set-Cookie (and the Vary: Cookie that came with
+    it) on every asset made browsers re-download all JS/CSS on each signed-in
+    page load, because the cookie changes every second."""
+    def save_session(self, app, session, response):
+        if request.endpoint in _SESSIONLESS_ENDPOINTS:
+            return None
+        return super().save_session(app, session, response)
+
+
+app.session_interface = _NoStaticSessionInterface()
 # Bind session cookies to this deployment, so another instance that shares
 # SECRET_KEY (DEV vs PROD) cannot mint a cookie this one accepts.
 app.session_interface.salt = 'cookie-session:' + os.environ.get(

@@ -115,16 +115,33 @@ def search_index():
     """Every active file and folder the user owns, for the Files page search.
     E2EE names only exist encrypted (orig_name/name hold a placeholder), so
     /search can never match them; the browser decrypts this index and matches
-    names itself. Entries mirror /files/list so results render the same way."""
+    names itself. Entries mirror /files/list so results render the same way.
+    ETag: the user's sync_seq covers every sync field the entries carry
+    (045_sync_feed.py); the rest (sharing, thumbnails, dates, expiry) is hashed
+    from a narrow column query, so an unchanged index answers 304 before any
+    entry is built."""
     user = _current_session_user()
     now_utc = datetime.now(timezone.utc)
-    # ponytail: whole index in one response; page it if accounts reach ~100k files.
-    files = File.query.filter(
+    file_filter = (
         File.registered_user_id == user.id,
         File.is_temp_upload == False,
         File.is_trashed == False,
-        db.or_(File.expires_at == None, File.expires_at >= now_utc)
-    ).order_by(File.upload_time.desc()).all()
+        db.or_(File.expires_at == None, File.expires_at >= now_utc),
+    )
+    file_marks = db.session.query(
+        File.id, File.is_public, File.has_thumbnail, File.encrypted_thumbnail_nonce,
+        File.thumbnail_checksum, File.is_e2e_encrypted, File.upload_time,
+    ).filter(*file_filter).order_by(File.id).all()
+    folder_marks = db.session.query(Folder.id, Folder.updated_at, Folder.created_at).filter_by(
+        user_id=user.id, is_trashed=False).order_by(Folder.id).all()
+    etag = hashlib.sha256(repr((int(user.sync_seq or 0), file_marks, folder_marks)).encode()).hexdigest()[:32]
+    if request.if_none_match and etag in request.if_none_match:
+        resp = make_response('', 304)
+        resp.headers['ETag'] = '"' + etag + '"'
+        resp.headers['Cache-Control'] = 'private, no-cache'
+        return resp
+    # ponytail: whole index in one response; page it if accounts reach ~100k files.
+    files = File.query.filter(*file_filter).order_by(File.upload_time.desc()).all()
     folders = Folder.query.filter_by(user_id=user.id, is_trashed=False).all()
 
     file_results = []
@@ -152,6 +169,9 @@ def search_index():
             entry['file_key_nonce'] = f.file_key_nonce
         if f.is_e2e_encrypted and f.has_thumbnail and f.encrypted_thumbnail_nonce:
             entry['enc_thumb_nonce'] = f.encrypted_thumbnail_nonce
+        thumb_v = _thumbnail_version(f)
+        if thumb_v:
+            entry['thumb_v'] = thumb_v
         file_results.append(entry)
 
     folder_results = []
@@ -172,9 +192,61 @@ def search_index():
             entry['name_key_nonce'] = fld.name_key_nonce
         folder_results.append(entry)
 
-    return jsonify({'files': file_results, 'folders': folder_results})
+    resp = jsonify({'files': file_results, 'folders': folder_results})
+    resp.headers['ETag'] = '"' + etag + '"'
+    resp.headers['Cache-Control'] = 'private, no-cache'
+    return resp
 
 _MAX_BULK_IDS = 1000
+_MAX_BATCH_LINK_KEYS = 200
+
+@app.route('/f/batch-link-key', methods=['POST'])
+@limiter.limit(file_ops_rate_limit)
+@login_required
+def batch_set_link_keys():
+    """Store link-wrapped file keys for up to _MAX_BATCH_LINK_KEYS files at once,
+    with the rules of /f/<id>/link-key (310_link_key_routes.py), which takes one.
+    Body: {"scope": "file" | "folder", "keys": {file_id: {"encrypted_file_key",
+    "file_key_nonce"}}}. Answers {"success": true, "keyed": [ids], "failed": [ids]};
+    failed ids are not this user's E2EE files."""
+    user = _current_session_user()
+    data = request.get_json(silent=True)
+    keys = data.get('keys') if isinstance(data, dict) else None
+    if not isinstance(keys, dict) or not keys or len(keys) > _MAX_BATCH_LINK_KEYS:
+        return jsonify({'error': 'INVALID REQUEST'}), 400
+    scope = data.get('scope')
+    if scope is None:
+        scope = 'file'
+    elif not isinstance(scope, str) or scope.strip().lower() not in ('file', 'folder'):
+        return jsonify({'error': 'INVALID LINK KEY SCOPE'}), 400
+    scope = scope.strip().lower()
+    for wrap in keys.values():
+        if not isinstance(wrap, dict) or not wrap.get('encrypted_file_key') or not wrap.get('file_key_nonce'):
+            return jsonify({'error': 'INVALID REQUEST'}), 400
+        wrap_err = _e2ee_wrap_field_error((
+            ('encrypted_file_key', wrap['encrypted_file_key'], 48),
+            ('file_key_nonce', wrap['file_key_nonce'], 12),
+        ))
+        if wrap_err:
+            return wrap_err
+    files = File.query.filter(
+        File.id.in_([str(fid) for fid in keys]),
+        File.registered_user_id == user.id,
+        File.is_e2e_encrypted == True,
+    ).all()
+    for file in files:
+        wrap = keys[file.id]
+        if scope == 'folder':
+            file.folder_link_encrypted_file_key = wrap['encrypted_file_key']
+            file.folder_link_file_key_nonce = wrap['file_key_nonce']
+        else:
+            file.link_encrypted_file_key = wrap['encrypted_file_key']
+            file.link_file_key_nonce = wrap['file_key_nonce']
+        file.is_link_shared = True
+    db.session.commit()
+    keyed = [file.id for file in files]
+    print(f'[FILE] Link keys set for {len(keyed)} files ({scope} scope)')
+    return jsonify({'success': True, 'keyed': keyed, 'failed': sorted(set(keys) - set(keyed))})
 
 def _parse_bulk_id_list(value, cast=None, label='IDS'):
     """AUDIT FIX (finding 10): bulk endpoints used to feed request JSON

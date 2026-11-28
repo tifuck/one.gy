@@ -4,57 +4,37 @@
 
   const { AUDIO_MIME, _ssGet, audio } = mp
 
-  async function _loadE2ETrack(track, loadSeq) {
-    mp._setTitle(track.name + ' (decrypting…)')
+  let _prefetched = null   // {id, promise, taken}: the next E2E track, decrypted ahead (music-player-playback.js)
 
-    try {
-      if (mp._context === 'dashboard') {
-        await _loadE2EDashboard(track, loadSeq)
-      } else if (mp._context === 'temp') {
-        await _loadE2ETemp(track, loadSeq)
-      } else if (mp._context === 'browse') {
-        await _loadE2EBrowse(track, loadSeq)
-      }
-    } catch (err) {
-      if (loadSeq !== mp._loadSeq) return
-      console.error('[MUSIC PLAYER] E2E decrypt error:', err)
-      mp._setTitle(track.name + ' (decrypt failed)')
-    }
+  // A failure shown after the title, e.g. "(fetch failed)"
+  function _e2eError(label) {
+    var err = new Error(label)
+    err.e2eLabel = label
+    return err
   }
 
-  async function _loadE2EDashboard(track, loadSeq) {
-    if (typeof OneGyCrypto === 'undefined' || !OneGyCrypto.hasSessionKeys()) {
-      mp._setTitle(track.name + ' (E2E keys unavailable)')
+  async function _loadE2ETrack(track, loadSeq) {
+    mp._setTitle(track.name + ' (decrypting…)')
+    var ahead = null
+    if (_prefetched && _prefetched.id === track.id) {
+      ahead = _prefetched
+      ahead.taken = true
+      _prefetched = null
+    } else {
+      _dropPrefetch()
+    }
+    var blobUrl
+    try {
+      if (ahead) blobUrl = await ahead.promise.catch(function() { return null })
+      if (loadSeq !== mp._loadSeq) { if (blobUrl) URL.revokeObjectURL(blobUrl); return }
+      if (!blobUrl) blobUrl = await _decryptE2E(track, function() { return loadSeq !== mp._loadSeq })
+    } catch (err) {
+      if (loadSeq !== mp._loadSeq) return
+      if (!err.e2eLabel) console.error('[MUSIC PLAYER] E2E decrypt error:', err)
+      mp._setTitle(track.name + ' (' + (err.e2eLabel || 'decrypt failed') + ')')
       return
     }
-    const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-    if (loadSeq !== mp._loadSeq) return
-    if (!masterKey) {
-      mp._setTitle(track.name + ' (master key unavailable)')
-      return
-    }
-    const keyResp = await fetch(`/f/${track.id}/key-info`)
-    if (loadSeq !== mp._loadSeq) return
-    const keyInfo = await keyResp.json()
-    if (loadSeq !== mp._loadSeq) return
-    if (!keyInfo.encrypted_file_key) {
-      mp._setTitle(track.name + ' (file key not found)')
-      return
-    }
-    const encResp = await fetch(`/f/${track.id}/encrypted?preview=1`)
-    if (loadSeq !== mp._loadSeq) return
-    if (!encResp.ok) {
-      mp._setTitle(track.name + ' (fetch failed)')
-      return
-    }
-    const encData = await encResp.arrayBuffer()
-    if (loadSeq !== mp._loadSeq) return
-    const decrypted = await OneGyCrypto.decryptFileForDownload(
-      encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
-    )
-    if (loadSeq !== mp._loadSeq) return
-    const blob = new Blob([decrypted], { type: AUDIO_MIME[track.extension] || 'audio/mpeg' })
-    const blobUrl = URL.createObjectURL(blob)
+    if (!blobUrl) return
     if (loadSeq !== mp._loadSeq) {
       URL.revokeObjectURL(blobUrl)
       return
@@ -65,112 +45,109 @@
     audio.play().catch(err => console.warn('[MUSIC PLAYER] E2E play failed:', err.message))
   }
 
-  // Temp upload page E2E: supports both passphrase and master-key wrapped files
-  async function _loadE2ETemp(track, loadSeq) {
-    if (typeof OneGyCrypto === 'undefined') {
-      mp._setTitle(track.name + ' (crypto unavailable)')
-      return
-    }
-    var keyResp = await fetch('/f/' + track.id + '/key-info')
-    if (loadSeq !== mp._loadSeq) return
-    var keyInfo = await keyResp.json()
-    if (loadSeq !== mp._loadSeq) return
-    if (!keyInfo.encrypted_file_key) {
-      mp._setTitle(track.name + ' (file key not found)')
-      return
-    }
-    var encResp = await fetch('/f/' + track.id + '/encrypted?preview=1')
-    if (loadSeq !== mp._loadSeq) return
-    if (!encResp.ok) {
-      mp._setTitle(track.name + ' (fetch failed)')
-      return
-    }
-    var encData = await encResp.arrayBuffer()
-    if (loadSeq !== mp._loadSeq) return
+  // Decrypt the next track while the current one plays out, so it starts
+  // without a silent gap. One at a time; an unused one is dropped.
+  function _prefetchE2E(track) {
+    if (!track || !track.isE2E || (_prefetched && _prefetched.id === track.id)) return
+    _dropPrefetch()
+    var entry = { id: track.id, promise: null, taken: false }
+    entry.promise = _decryptE2E(track, function() { return _prefetched !== entry && !entry.taken })
+    entry.promise.catch(function() {})
+    _prefetched = entry
+  }
+
+  function _dropPrefetch() {
+    var entry = _prefetched
+    _prefetched = null
+    if (entry) entry.promise.then(function(url) { if (url) URL.revokeObjectURL(url) }, function() {})
+  }
+
+  // Resolves to a blob URL of the decrypted track (null once cancelled()
+  // says nobody wants it any more); fails with an e2eLabel for the title.
+  async function _decryptE2E(track, cancelled) {
     var decrypted
+    if (mp._context === 'dashboard') decrypted = await _decryptE2EDashboard(track, cancelled)
+    else if (mp._context === 'temp') decrypted = await _decryptE2ETemp(track, cancelled)
+    else if (mp._context === 'browse') decrypted = await _decryptE2EBrowse(track, cancelled)
+    if (!decrypted || cancelled()) return null
+    return URL.createObjectURL(new Blob([decrypted], { type: AUDIO_MIME[track.extension] || 'audio/mpeg' }))
+  }
+
+  async function _fetchEncrypted(track, cancelled) {
+    const encResp = await fetch(`/f/${track.id}/encrypted?preview=1`)
+    if (cancelled()) return null
+    if (!encResp.ok) throw _e2eError('fetch failed')
+    return encResp.arrayBuffer()
+  }
+
+  async function _decryptE2EDashboard(track, cancelled) {
+    if (typeof OneGyCrypto === 'undefined' || !OneGyCrypto.hasSessionKeys()) throw _e2eError('E2E keys unavailable')
+    const masterKey = await OneGyCrypto.getMasterKeyFromSession()
+    if (cancelled()) return null
+    if (!masterKey) throw _e2eError('master key unavailable')
+    const keyResp = await fetch(`/f/${track.id}/key-info`)
+    if (cancelled()) return null
+    const keyInfo = await keyResp.json()
+    if (cancelled()) return null
+    if (!keyInfo.encrypted_file_key) throw _e2eError('file key not found')
+    const encData = await _fetchEncrypted(track, cancelled)
+    if (!encData || cancelled()) return null
+    return OneGyCrypto.decryptFileForDownload(
+      encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
+    )
+  }
+
+  // Temp upload page E2E: supports both passphrase and master-key wrapped files
+  async function _decryptE2ETemp(track, cancelled) {
+    if (typeof OneGyCrypto === 'undefined') throw _e2eError('crypto unavailable')
+    var keyResp = await fetch('/f/' + track.id + '/key-info')
+    if (cancelled()) return null
+    var keyInfo = await keyResp.json()
+    if (cancelled()) return null
+    if (!keyInfo.encrypted_file_key) throw _e2eError('file key not found')
+    var encData = await _fetchEncrypted(track, cancelled)
+    if (!encData || cancelled()) return null
     if (keyInfo.file_key_salt) {
       // Passphrase-wrapped: try per-file keychain first, then global sessionStorage
       var passphrase = null
       if (typeof TempKeychain !== 'undefined') {
         try { passphrase = await TempKeychain.get(track.id) } catch (e) {}
-        if (loadSeq !== mp._loadSeq) return
+        if (cancelled()) return null
       }
       if (!passphrase) passphrase = _ssGet('e2e_passphrase')
-      if (!passphrase) {
-        mp._setTitle(track.name + ' (passphrase unavailable)')
-        return
-      }
-      decrypted = await OneGyCrypto.decryptFileForGuestDownload(
+      if (!passphrase) throw _e2eError('passphrase unavailable')
+      return OneGyCrypto.decryptFileForGuestDownload(
         encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, keyInfo.file_key_salt, passphrase
       )
-    } else if (OneGyCrypto.hasSessionKeys()) {
-      // Master-key-wrapped
-      var masterKey = await OneGyCrypto.getMasterKeyFromSession()
-      if (loadSeq !== mp._loadSeq) return
-      decrypted = await OneGyCrypto.decryptFileForDownload(
-        encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
-      )
-    } else {
-      mp._setTitle(track.name + ' (keys unavailable)')
-      return
     }
-    if (loadSeq !== mp._loadSeq) return
-    var blob = new Blob([decrypted], { type: AUDIO_MIME[track.extension] || 'audio/mpeg' })
-    var blobUrl = URL.createObjectURL(blob)
-    if (loadSeq !== mp._loadSeq) {
-      URL.revokeObjectURL(blobUrl)
-      return
-    }
-    mp._currentBlobUrl = blobUrl
-    audio.src = mp._currentBlobUrl
-    mp._setTitle(track.name)
-    audio.play().catch(function(err) { console.warn('[MUSIC PLAYER] E2E temp play failed:', err.message) })
+    if (!OneGyCrypto.hasSessionKeys()) throw _e2eError('keys unavailable')
+    // Master-key-wrapped
+    var masterKey = await OneGyCrypto.getMasterKeyFromSession()
+    if (cancelled()) return null
+    return OneGyCrypto.decryptFileForDownload(
+      encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
+    )
   }
 
   // Browse page E2E uses link secret
-  async function _loadE2EBrowse(track, loadSeq) {
-    if (typeof OneGyCrypto === 'undefined') {
-      mp._setTitle(track.name + ' (crypto unavailable)')
-      return
-    }
+  async function _decryptE2EBrowse(track, cancelled) {
+    if (typeof OneGyCrypto === 'undefined') throw _e2eError('crypto unavailable')
     const linkSecret = window._mpLinkSecret || ''
-    if (!linkSecret || linkSecret.length < 10) {
-      mp._setTitle(track.name + ' (link key unavailable)')
-      return
-    }
+    if (!linkSecret || linkSecret.length < 10) throw _e2eError('link key unavailable')
     const keyResp = await fetch(`/f/${track.id}/key-info`)
-    if (loadSeq !== mp._loadSeq) return
+    if (cancelled()) return null
     const keyInfo = await keyResp.json()
-    if (loadSeq !== mp._loadSeq) return
+    if (cancelled()) return null
     const encKey = keyInfo.link_encrypted_file_key || keyInfo.encrypted_file_key
     const encNonce = keyInfo.link_file_key_nonce || keyInfo.file_key_nonce
-    if (!encKey) {
-      mp._setTitle(track.name + ' (file key not found)')
-      return
-    }
-    const encResp = await fetch(`/f/${track.id}/encrypted?preview=1`)
-    if (loadSeq !== mp._loadSeq) return
-    if (!encResp.ok) {
-      mp._setTitle(track.name + ' (fetch failed)')
-      return
-    }
-    const encData = await encResp.arrayBuffer()
-    if (loadSeq !== mp._loadSeq) return
-    const decrypted = await OneGyCrypto.decryptFileFromLink(encData, encKey, encNonce, linkSecret)
-    if (loadSeq !== mp._loadSeq) return
-    const blob = new Blob([decrypted], { type: AUDIO_MIME[track.extension] || 'audio/mpeg' })
-    const blobUrl = URL.createObjectURL(blob)
-    if (loadSeq !== mp._loadSeq) {
-      URL.revokeObjectURL(blobUrl)
-      return
-    }
-    mp._currentBlobUrl = blobUrl
-    audio.src = mp._currentBlobUrl
-    mp._setTitle(track.name)
-    audio.play().catch(err => console.warn('[MUSIC PLAYER] E2E browse play failed:', err.message))
+    if (!encKey) throw _e2eError('file key not found')
+    const encData = await _fetchEncrypted(track, cancelled)
+    if (!encData || cancelled()) return null
+    return OneGyCrypto.decryptFileFromLink(encData, encKey, encNonce, linkSecret)
   }
 
   Object.assign(mp, {
     _loadE2ETrack,
+    _prefetchE2E,
   })
 })(window._mpCore)

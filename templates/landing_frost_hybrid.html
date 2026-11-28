@@ -118,7 +118,7 @@
     </div>
     {% if allow_temp_uploads %}
     <div class="fh-share-drop">
-      {% include '_uploader.html' %}
+      {% with uploader_lazy = true %}{% include '_uploader.html' %}{% endwith %}
     </div>
     {% else %}
     <div class="fh-anatomy" role="figure" aria-label="Anatomy of a share link">

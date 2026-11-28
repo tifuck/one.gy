@@ -4,7 +4,26 @@
 {% set ui_v2 = true %}
 {% block head_extra %}
 <link rel="stylesheet" href="{{ versioned_static('notes.css') }}">
-<link rel="stylesheet" href="{{ versioned_static('notes-canvas.css') }}">
+{% endblock %}
+
+{% block head_early %}
+{# The first load's requests start now instead of after every deferred script, in parallel: notebooks, the notes of
+   the view notes.js saved and the note it had open (notes.js loadAll/viewQuery and fetchNote take them by URL).
+   Only with unlocked keys (crypto.js hasSessionKeys). #}
+<script nonce="{{ csp_nonce }}">(function () {
+  try {
+    if (sessionStorage.getItem('onegy_keys_present') !== '1' && sessionStorage.getItem('onegy_master_key') === null) return
+    var get = function (url) { var p = fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } }); p.catch(function () {}); return p }
+    var link = /^#n=([\w-]{1,64})$/.exec(location.hash)
+    var view = link ? 'all' : localStorage.getItem('onegy_notes_view') || 'all', open = link ? link[1] : localStorage.getItem('onegy_notes_open')
+    if (!/^(all|unfiled|trash|\d+)$/.test(view)) view = 'all'
+    var list = '/notes/api/notes' + (view === 'trash' ? '?trash=true' : view === 'unfiled' ? '?notebook_id=unfiled' : view !== 'all' ? '?notebook_id=' + view : '')
+    var pre = { '/notes/api/notebooks': get('/notes/api/notebooks') }
+    pre[list] = get(list)
+    if (open) pre['/notes/api/notes/' + encodeURIComponent(open)] = get('/notes/api/notes/' + encodeURIComponent(open))
+    window.__NT_PREFETCH__ = pre
+  } catch (e) {}
+})();</script>
 {% endblock %}
 
 {% block content %}
@@ -26,12 +45,17 @@
   <div class="nt-panes" id="ntPanes">
     <div class="nt-list" id="ntList" aria-label="Notes">
       <div class="nt-list-head" aria-hidden="true"><span class="rd-skel nt-skel-title"></span></div>
-      <div class="nt-skel-list" aria-hidden="true">
-        <div class="rd-skel nt-skel-item"></div>
-        <div class="rd-skel nt-skel-item"></div>
-        <div class="rd-skel nt-skel-item"></div>
-        <div class="rd-skel nt-skel-item"></div>
-        <div class="rd-skel nt-skel-item"></div>
+      {# The search row is here from the start (notes.js listItemsEl keeps it), so the first list does not push it in. #}
+      <div class="nt-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg><input type="search" id="ntSearch" placeholder="Search notes" aria-label="Search notes" autocomplete="off" spellcheck="false"></div>
+      <div class="nt-items">
+        <div class="nt-skel-list" aria-hidden="true">
+          <div class="rd-skel nt-skel-item"></div>
+          <div class="rd-skel nt-skel-item"></div>
+          <div class="rd-skel nt-skel-item"></div>
+          <div class="rd-skel nt-skel-item"></div>
+          <div class="rd-skel nt-skel-item"></div>
+          <div class="rd-skel nt-skel-item"></div>
+        </div>
       </div>
     </div>
     <section class="nt-editor" id="ntEditor" aria-label="Editor"></section>
@@ -81,6 +105,6 @@
 <script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
 <script src="{{ versioned_static('quick-unlock.js') }}" defer></script>
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
-{# notes-canvas.js and highlight.js load on first use: notes.js opens the canvas engine, the canvas asks crypto.js for the highlighter. #}
-<script src="{{ versioned_static('notes.js') }}" data-canvas-js="{{ versioned_static('notes-canvas.js') }}" defer></script>
+{# notes-canvas.js, notes-canvas.css and highlight.js load on first use: notes.js opens the canvas engine with its styles, the canvas asks crypto.js for the highlighter. #}
+<script src="{{ versioned_static('notes.js') }}" data-canvas-js="{{ versioned_static('notes-canvas.js') }}" data-canvas-css="{{ versioned_static('notes-canvas.css') }}" defer></script>
 {% endblock %}

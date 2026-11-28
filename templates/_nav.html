@@ -171,4 +171,4 @@
 </header>
 {% endif %}
 {% if _cu %}<script src="{{ versioned_static('desktop-bridge.js') }}" defer></script>{% endif %}
-<div id="rdNotifBanners" class="rd-notif-banners" aria-live="polite"></div>
+<div id="rdNotifBanners" class="rd-notif-banners" aria-live="polite"{% if notifications_live is sameas false %} data-none{% endif %}></div>

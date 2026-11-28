@@ -13,13 +13,15 @@
   <link rel="apple-touch-icon" sizes="180x180" href="{{ versioned_static('logos/apple-touch-icon.png') }}">
   <link rel="manifest" href="{{ versioned_static('manifest.webmanifest') }}">
   <meta name="theme-color" content="#161616">
-  {# Same unversioned URL as the @font-face rules in core.css, or the preload is a second download #}
+  {# Same unversioned URL as the @font-face rules in core.css, or the preload is a second download.
+     Only 400/600: more preloads delay first paint on slow links (~300 ms at 1.6 Mbps), and the
+     metric-matched 'Inter Fallback' (core.css) keeps a late 500/700 from moving the layout. #}
   <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/inter-latin-600-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{{ versioned_static('core.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('components.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('themes.css') }}">
-  <link rel="stylesheet" href="{{ versioned_static('editorial-base.css') }}">
+  {% if not ui_v2|default(true) %}<link rel="stylesheet" href="{{ versioned_static('editorial-base.css') }}">{% endif %}
   {% if ui_v2|default(true) %}<link rel="stylesheet" href="{{ versioned_static('ui-v2.css') }}">{% endif %}
   {% block head_extra %}{% endblock %}
   {% if desktop_app %}<link rel="stylesheet" href="{{ versioned_static('desktop-shell.css') }}">{% endif %}

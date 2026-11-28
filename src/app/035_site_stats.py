@@ -526,10 +526,23 @@ def capture_system_metrics_snapshot(force=False):
         db.session.commit()
         return snapshot
 
+# metrics_snapshot_job captures every 5 minutes. Admin requests only read, and
+# capture themselves only when there is no snapshot yet (first boot) or the
+# scheduler has missed three runs, so opening a page never shifts its cadence.
+_METRICS_SNAPSHOT_REQUEST_STALE = timedelta(minutes=15)
+
+
+def latest_system_metrics_snapshot_at():
+    """UTC captured_at of the newest snapshot, capturing one only if none is recent."""
+    latest = _utc_aware(db.session.query(db.func.max(SystemMetricSnapshot.captured_at)).scalar())
+    if latest is None or datetime.now(timezone.utc) - latest >= _METRICS_SNAPSHOT_REQUEST_STALE:
+        latest = _utc_aware(capture_system_metrics_snapshot(force=False).captured_at)
+    return latest
+
 def build_admin_stats_history(window_key):
     cfg = ADMIN_STATS_WINDOWS.get(window_key) or ADMIN_STATS_WINDOWS['1d']
     now = datetime.now(timezone.utc)
-    capture_system_metrics_snapshot(force=False)
+    latest_system_metrics_snapshot_at()
     start = now - cfg['delta']
     aligned_start = _round_datetime_floor(start, cfg['bucket'])
     query_start = aligned_start - cfg['bucket']

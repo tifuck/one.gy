@@ -213,6 +213,29 @@ async function traverseDirectory(directory, files, path = '') {
   } while (entries.length > 0);
 }
 
+// The files of a drop, from its entries (FileSystemEntry or File) taken
+// synchronously in the drop handler. Also called by the landing page's stub
+// for a drop that came before this script (_uploader.html).
+async function filesFromDropEntries(entries) {
+  const files = [];
+  for (const entry of entries) {
+    if (!entry) continue;
+    if (entry instanceof File) {
+      files.push(entry);
+    } else if (entry.isFile) {
+      const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+      Object.defineProperty(file, 'fullPath', {
+        value: file.name,
+        writable: false
+      });
+      files.push(file);
+    } else if (entry.isDirectory) {
+      await traverseDirectory(entry, files, '');
+    }
+  }
+  return files;
+}
+
 // Initialize drop zone upload handlers. Called on page load and also from SPA
 // navigation to /share (since script.js is loaded once and skipped on re-nav,
 // the drop zone element is new but has no handlers attached).
@@ -224,6 +247,7 @@ window.initShareUpload = function() {
   if (dropZone._uploadInitialized) return;
   dropZone._uploadInitialized = true;
 
+  // On the landing page the stub in _uploader.html made it, with its own change handler.
   let fileInput = document.getElementById('fileInput');
   if (!fileInput) {
     const input = document.createElement('input');
@@ -277,36 +301,13 @@ window.initShareUpload = function() {
 
   dropZone.addEventListener('drop', async (e) => {
     if (_uploadInFlight || dropZone.classList.contains('uploading')) return;
-    const files = [];
     const items = e.dataTransfer.items;
-
-    if (items && items.length > 0) {
-      // The DataTransferItemList is emptied once this handler first awaits, so
-      // take every entry synchronously before reading any of them.
-      const entries = Array.from(items, item => (item.webkitGetAsEntry && item.webkitGetAsEntry()) || item.getAsFile());
-      for (const entry of entries) {
-        if (!entry) continue;
-        if (entry instanceof File) {
-          files.push(entry);
-        } else if (entry.isFile) {
-          const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
-          Object.defineProperty(file, 'fullPath', {
-            value: file.name,
-            writable: false
-          });
-          files.push(file);
-        } else if (entry.isDirectory) {
-          await traverseDirectory(entry, files, '');
-        }
-      }
-    } else {
-      const fileList = e.dataTransfer.files;
-      for (let file of fileList) {
-        files.push(file);
-      }
-    }
-
-    uploadFiles(files);
+    // The DataTransferItemList is emptied once this handler first awaits, so
+    // take every entry synchronously before reading any of them.
+    const entries = items && items.length > 0
+      ? Array.from(items, item => (item.webkitGetAsEntry && item.webkitGetAsEntry()) || item.getAsFile())
+      : Array.from(e.dataTransfer.files);
+    uploadFiles(await filesFromDropEntries(entries));
   });
 };
 

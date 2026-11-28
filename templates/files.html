@@ -2,21 +2,26 @@
 {% block title %}Files{% endblock %}
 {% set nav_active = 'files' %}
 {% set ui_v2 = true %}
-{% block head_extra %}
-<link rel="stylesheet" href="{{ versioned_static('manage.css') }}">
-<link rel="stylesheet" href="{{ versioned_static('preview.css') }}">
-<link rel="stylesheet" href="{{ versioned_static('files.css') }}">
-{% endblock %}
-
-{% block content %}
+{% block head_early %}
 {# The first listing starts now instead of after every deferred script;
-   files.js takes this response for its first load (fetchListing). #}
+   files.js takes this response for its first load (fetchListing). It sits
+   before the stylesheets: an inline script after them waits for all of them,
+   and the frame painted meanwhile has no .fx-shell yet (core.css then offsets
+   main, which jumps once the shell parses). #}
 <script nonce="{{ csp_nonce }}">(function () {
   var url = {{ ('/trash/list' if is_trash_view else ('/files/list/' ~ current_folder.id if current_folder else '/files/list'))|tojson }};
   var p = fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
   p.catch(function () {});
   window.__FX_PREFETCH__ = { url: url, p: p };
 })();</script>
+{% endblock %}
+{# manage.css and preview.css load with their modals on first use (files.js),
+   inserted before #fxCss so the cascade order stays the same. #}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ versioned_static('files.css') }}" id="fxCss">
+{% endblock %}
+
+{% block content %}
 <div class="fx-shell">
 
   <!-- Sidebar -->
@@ -198,12 +203,13 @@
 <script src="{{ versioned_static('quick-unlock.js') }}" defer></script>
 <script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
-<script src="{{ versioned_static('manage-e2e.js') }}" defer></script>
-<script src="{{ versioned_static('manage-modal.js') }}" defer></script>
-<script src="{{ versioned_static('file-versions.js') }}" defer></script>
-<script src="{{ versioned_static('preview.js') }}" defer></script>
 <script nonce="{{ csp_nonce }}">window.__FX_ROOT_NAME__ = {{ (root_folder_name or 'FILES')|tojson }};
 window.__FX_INITIAL_FOLDER__ = {{ (current_folder.id if current_folder is defined and current_folder else None)|tojson }};
 window.__FX_INITIAL_TRASH__ = {{ (true if is_trash_view else false)|tojson }};</script>
-<script src="{{ versioned_static('files.js') }}" defer></script>
+{# The manage modal and the preview load on first use (files.js loadExtra). #}
+<script src="{{ versioned_static('files.js') }}"
+        data-manage-css="{{ versioned_static('manage.css') }}"
+        data-manage-js="{{ versioned_static('manage-e2e.js') }} {{ versioned_static('manage-modal.js') }} {{ versioned_static('file-versions.js') }}"
+        data-preview-css="{{ versioned_static('preview.css') }}"
+        data-preview-js="{{ versioned_static('preview.js') }}" defer></script>
 {% endblock %}

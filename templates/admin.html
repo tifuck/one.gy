@@ -4,6 +4,18 @@
 {% set nav_active = 'admin' %}
 {% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('admin.css') }}">{% endblock %}
 
+{% block head_early %}
+{# Overview and Statistics open on /admin/api/stats: start it now instead of
+   after every deferred script; admin.js takes it for its first render. #}
+<script nonce="{{ csp_nonce }}">(function () {
+  var t = location.hash.slice(1);
+  if (t && t !== 'overview' && t !== 'statistics') return;
+  var p = fetch('/admin/api/stats', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  p.catch(function () {});
+  window.__ADM_STATS__ = p;
+})();</script>
+{% endblock %}
+
 {% block content %}
 <div class="adm-wrap adm-layout">
   <aside class="adm-side">

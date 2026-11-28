@@ -10,25 +10,39 @@
 
   var S = {
     notebooks: [], notes: [], view: 'all', noteId: null,
-    noteKey: null, meta: null, ver: null, titles: {}, dirty: false, saveTimer: null,
+    noteKey: null, meta: null, ver: null, titles: {}, dirty: false, saveTimer: null, saveBytes: 0,
     currentType: null, canvas: null, isSaving: false, saveAgain: false,
     editRevision: 0, openSeq: 0, pendingOpenId: null, saveFailures: 0, query: '',
     trashCount: 0, editorReady: false, saveBlocked: false, forceVersion: false
   }
   var $ = function (id) { return document.getElementById(id) }
   var listEl, editorEl
-  // The canvas engine (notes-canvas.js) loads on first use: its versioned URL comes from this script tag (notes.html).
+  // The canvas engine (notes-canvas.js) and its styles load on first use: their versioned URLs come from this script tag (notes.html).
   var CANVAS_JS = (document.currentScript && document.currentScript.getAttribute('data-canvas-js')) || '', canvasEngine = null
+  var CANVAS_CSS = (document.currentScript && document.currentScript.getAttribute('data-canvas-css')) || '', canvasStyles = null
+  // Waited for, so a canvas never shows unstyled for a frame; a stylesheet that fails to load does not stop the engine.
+  function loadCanvasStyles () {
+    if (!canvasStyles) {
+      canvasStyles = new Promise(function (resolve) {
+        if (!CANVAS_CSS) { resolve(); return }
+        var link = document.createElement('link'); link.rel = 'stylesheet'; link.href = CANVAS_CSS
+        link.onload = link.onerror = function () { resolve() }
+        document.head.appendChild(link)
+      })
+    }
+    return canvasStyles
+  }
   function loadCanvasEngine () {
-    if (window.FxCanvas) return Promise.resolve(window.FxCanvas)
+    if (window.FxCanvas) return loadCanvasStyles().then(function () { return window.FxCanvas })
     if (!canvasEngine) {
-      canvasEngine = new Promise(function (resolve, reject) {
+      canvasEngine = Promise.all([new Promise(function (resolve, reject) {
         if (!CANVAS_JS) { reject(new Error('NO CANVAS ENGINE')); return }
         var script = document.createElement('script'); script.src = CANVAS_JS
         script.onload = function () { if (window.FxCanvas) resolve(window.FxCanvas); else reject(new Error('NO CANVAS ENGINE')) }
         script.onerror = function () { script.remove(); reject(new Error('NO CANVAS ENGINE')) }
         document.head.appendChild(script)
-      }).catch(function (e) { canvasEngine = null; throw e }) // a failed load is tried again on the next open
+      }), loadCanvasStyles()]).then(function (loaded) { return loaded[0] })
+        .catch(function (e) { canvasEngine = null; throw e }) // a failed load is tried again on the next open
     }
     return canvasEngine
   }
@@ -173,7 +187,16 @@
   }
   function haveKeys () { return typeof OneGyCrypto !== 'undefined' && OneGyCrypto.hasSessionKeys && OneGyCrypto.hasSessionKeys() }
   function headers () { return { 'Content-Type': 'application/json', 'X-CSRFToken': csrf(), 'X-Requested-With': 'XMLHttpRequest' } }
-  async function apiGet (u) { var r = await fetch(u, { headers: { 'X-Requested-With': 'XMLHttpRequest' } }); if (!r.ok) throw new Error(u); return r.json() }
+  // notes.html starts the first load's requests (notebooks, the saved view's notes, the open note) before any script
+  // runs; each is taken once, by URL, and what the first load leaves is dropped (loadAll).
+  var prefetched = window.__NT_PREFETCH__ || {}
+  window.__NT_PREFETCH__ = null
+  async function takePrefetch (url) {
+    var p = prefetched[url]; delete prefetched[url]
+    var r = p ? await p.catch(function () { return null }) : null
+    return r && r.ok ? r : null
+  }
+  async function apiGet (u) { var r = (await takePrefetch(u)) || await fetch(u, { headers: { 'X-Requested-With': 'XMLHttpRequest' } }); if (!r.ok) throw new Error(u); return r.json() }
   async function apiSend (m, u, b) {
     var r = await fetch(u, { method: m, headers: headers(), body: b ? JSON.stringify(b) : undefined })
     if (!r.ok) {
@@ -191,13 +214,27 @@
   async function decTags (n, nk) {
     try { var list = JSON.parse(await OneGyCrypto.decryptFileName(n.encrypted_tags, n.tags_nonce, nk)); return Array.isArray(list) ? list.map(function (t) { return String((t && t.name) || '').slice(0, 40) }).filter(Boolean).slice(0, 20) : [] } catch (e) { return [] }
   }
+  // Unwrapped note keys and decrypted titles and tags, by note id and the ciphertext they came from: a list reload
+  // only decrypts what changed (memory only, like everything else decrypted here).
+  var noteKeys = new Map(), titleCache = new Map()
+  async function noteKeyOf (n, mk) {
+    var hit = noteKeys.get(n.id)
+    if (hit && hit.wrapped === n.encrypted_note_key) return hit.key
+    var key = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
+    noteKeys.set(n.id, { wrapped: n.encrypted_note_key, key: key })
+    return key
+  }
   // Also fills n._tags, from the same unwrapped key.
   async function decTitle (n, mk) {
+    var sig = n.encrypted_note_key + '|' + (n.encrypted_title || '') + '|' + (n.encrypted_tags || ''), hit = titleCache.get(n.id)
+    if (hit && hit.sig === sig) { n._tags = hit.tags; return hit.title }
     n._tags = []
     try {
-      var nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
+      var nk = await noteKeyOf(n, mk)
       if (n.encrypted_tags && n.tags_nonce) n._tags = await decTags(n, nk)
-      return n.encrypted_title ? await OneGyCrypto.decryptFileName(n.encrypted_title, n.title_nonce, nk) : null
+      var title = n.encrypted_title ? await OneGyCrypto.decryptFileName(n.encrypted_title, n.title_nonce, nk) : null
+      titleCache.set(n.id, { sig: sig, title: title, tags: n._tags })
+      return title
     } catch (e) { return null }
   }
   async function decNotebookName (nb, mk) {
@@ -242,100 +279,151 @@
   function lsSet (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v) } catch (e) {} }
   function showList () { if (window.RdPanels) RdPanels.setCollapsed('side', false, true) }
 
+  // The query string of a view's note list (the search text endpoint takes the same one). notes.html builds the same
+  // URL for its prefetch.
+  function viewQuery (view) { return view === 'trash' ? '?trash=true' : view === 'unfiled' ? '?notebook_id=unfiled' : view !== 'all' ? '?notebook_id=' + view : '' }
   async function loadAll () {
     if (!haveKeys()) { showLock(true); return }
     showLock(false)
-    var mk = await masterKey(); if (!mk) { showLock(true); return }
+    var first = !restored
+    // A link to a note (/notes#n=<id>, made by "Link to a note" or "Copy link to note") opens that note.
+    var linked = first && noteLinkId(location.href), open = first && (linked || lsGet(LS_OPEN))
+    if (open && !S.noteId && (!editorEl.firstElementChild || editorEl.querySelector('.nt-empty-editor'))) editorEl.innerHTML = editorSkeleton()
+    var mk = await masterKey(); if (!mk) { clearEditorSkeleton(); showLock(true); return }
+    // The notes of the view to show are asked for alongside the notebooks; a saved view that is gone loads again as All notes.
+    var want = linked ? 'all' : first ? lsGet(LS_VIEW) || S.view : S.view, list = { url: '/notes/api/notes' + viewQuery(want) }
+    list.p = apiGet(list.url); list.p.catch(function () {})
     try {
       var nbData = await apiGet('/notes/api/notebooks')
       S.notebooks = nbData.notebooks || []
       await Promise.all(S.notebooks.map(async function (nb) { nb._name = await decNotebookName(nb, mk) }))
       // trash_count also counts trashed notebooks, which the Trash view never lists; trash_notes_count is the notes alone.
       S.trashCount = nbData.trash_notes_count != null ? nbData.trash_notes_count : (nbData.trash_count || 0)
-      var v = !restored && lsGet(LS_VIEW)
-      if (v && (['all', 'unfiled', 'trash'].indexOf(v) >= 0 || S.notebooks.some(function (nb) { return String(nb.id) === v }))) S.view = v
-      // A link to a note (/notes#n=<id>, made by "Link to a note" or "Copy link to note") opens that note.
-      var linked = !restored && noteLinkId(location.href)
-      if (linked) { S.view = 'all'; history.replaceState(history.state, '', location.pathname) }
-      await loadNotes()
-      if (!restored) {
-        restored = true
-        var open = linked || lsGet(LS_OPEN)
-        // A blank note is no page to land on: show the list beside it.
-        if (open && S.notes.some(function (n) { return n.id === open })) { openNote(open).then(function () { if (S.openedBlank && S.noteId === open) showList() }); if (linked) showEditorMobile() }
-        else { lsSet(LS_OPEN, null); showList() }
-      }
-    } catch (e) { listItemsEl().innerHTML = errState('Could not load notebooks.') }
+      if (first && (['all', 'unfiled', 'trash'].indexOf(want) >= 0 || S.notebooks.some(function (nb) { return String(nb.id) === want }))) S.view = want
+      if (linked) history.replaceState(history.state, '', location.pathname)
+      await loadNotes(list, first ? function (notes) { restoreOpen(notes, open, linked) } : null)
+      if (first) { restored = true; prefetched = {} }
+    } catch (e) { clearEditorSkeleton(); listItemsEl().innerHTML = errState('Could not load notebooks.') }
   }
+  // The note open when the page was left reopens as soon as the list names it, while the titles still decrypt.
+  function restoreOpen (notes, open, linked) {
+    var entry = open && notes.filter(function (n) { return n.id === open })[0]
+    // A blank note is no page to land on: show the list beside it.
+    if (entry) { openNote(open, entry).then(function () { if (S.openedBlank && S.noteId === open) showList() }); if (linked) showEditorMobile() }
+    else { lsSet(LS_OPEN, null); clearEditorSkeleton(); showList() }
+  }
+  function editorSkeleton () {
+    return '<div class="nt-ed-skel" aria-hidden="true"><div class="rd-skel nt-ed-skel-bar"></div>' + new Array(6).join('<div class="rd-skel nt-ed-skel-line"></div>') + '</div>'
+  }
+  function clearEditorSkeleton () { if (!S.noteId && editorEl.querySelector('.nt-ed-skel')) editorEl.innerHTML = '' }
 
   var loadNotesSeq = 0
   var loadedView = null  // entrance animation: only when a view's notes are first shown
-  async function loadNotes () {
+  // pre: {url, p} a request already under way (loadAll); used when it is for this view.
+  // onList: called with the notes as soon as they arrive, before their titles are decrypted.
+  async function loadNotes (pre, onList) {
     var seq = ++loadNotesSeq  // a later view switch supersedes this response
     var mk = await masterKey(); if (!mk || seq !== loadNotesSeq) return
-    var url = '/notes/api/notes'
-    if (S.view === 'trash') url += '?trash=true'
-    else if (S.view === 'unfiled') url += '?notebook_id=unfiled'
-    else if (S.view !== 'all') url += '?notebook_id=' + S.view
+    var url = '/notes/api/notes' + viewQuery(S.view)
     var fresh = loadedView !== S.view
     // The head (e.g. "Empty trash") is built from S.notes: do not let it
     // describe the previous view's notes while this one loads.
-    if (fresh) S.notes = []
+    if (fresh) { S.notes = []; indexGen++ }
     if (fresh) listItemsEl().innerHTML = '<div class="nt-skel-list" aria-hidden="true">' + new Array(7).join('<div class="rd-skel nt-skel-item"></div>') + '</div>'
     try {
-      var d = await apiGet(url)
+      var d = await (pre && pre.url === url ? pre.p : apiGet(url))
       if (seq !== loadNotesSeq) return
       var notes = d.notes || []
+      if (onList) onList(notes)
       await Promise.all(notes.map(async function (n) { var t = await decTitle(n, mk); if (n.encrypted_title) { S.titles[n.id] = t || 'Untitled'; n._title = S.titles[n.id] } else n._title = n.title || 'Untitled' }))
       if (seq !== loadNotesSeq) return
       S.notes = notes
       loadedView = S.view
       lsSet(LS_VIEW, String(S.view))
       renderList(null, fresh)
-      if (!S.noteId && (!editorEl.firstElementChild || editorEl.querySelector('.nt-empty-editor'))) editorEl.innerHTML = emptyEditor()
-    } catch (e) { if (seq === loadNotesSeq) listItemsEl().innerHTML = errState('Could not load notes.') }
+      if (!S.noteId && (!editorEl.firstElementChild || editorEl.querySelector('.nt-empty-editor, .nt-ed-skel'))) editorEl.innerHTML = emptyEditor()
+    } catch (e) { if (seq === loadNotesSeq) { clearEditorSkeleton(); listItemsEl().innerHTML = errState('Could not load notes.') } }
   }
 
   // ---- Search inside notes ---------------------------------------------------
-  // The decrypted text of each note, held in memory only (never on disk: see the zero-knowledge note further down) and
-  // read the first time a search runs.
-  // ponytail: one GET per note per page load; keep an encrypted text digest with each note if libraries get large.
-  // staleBody: a body saved while no search was showing, read into bodyText only when a search needs it.
-  var bodyText = {}, staleBody = {}, indexing = 0
-  function plainText (type, body) {
-    var text = function (html) { var t = document.createElement('template'); t.innerHTML = String(html || '').replace(/</g, ' <'); return t.content.textContent }
-    if (type !== 'canvas') return text(body)
-    try {
-      return (JSON.parse(body || '{}').blocks || []).map(function (b) {
-        return [text(b.content), b.code || '', (b.items || []).map(function (item) { return (item && item.text) || '' }).join(' '), (b.cells || []).map(function (row) { return (row || []).map(text).join(' ') }).join(' '), b.fileName || ''].join(' ')
-      }).join(' ')
-    } catch (e) { return '' }
+  // The decrypted text of each note, held in memory only (never on disk: see the zero-knowledge note further down).
+  // Every save stores the note's text with it, encrypted under the note key like its title (encrypted_search_text), so
+  // a search reads a whole view's text in one request; only notes not saved since then are fetched one by one.
+  // shortcut: a search sees the first 32 KB of a note's text (the column is a 64 KB TEXT); a longer column if that bites.
+  var SEARCH_TEXT_MAX_BYTES = 32 * 1024
+  // A note with no stored text that is bigger than this (pictures, mostly) is not fetched: it is found after its next save.
+  var SEARCH_FETCH_MAX_BYTES = 2 * 1024 * 1024
+  // indexGen: a cleared search or another view stops the indexing under way.
+  var bodyText = {}, indexing = 0, indexGen = 0
+  function htmlText (html) { var t = document.createElement('template'); t.innerHTML = String(html || '').replace(/</g, ' <'); return t.content.textContent }
+  function canvasText (data) {
+    return ((data && data.blocks) || []).map(function (b) {
+      return [htmlText(b.content), b.code || '', (b.items || []).map(function (item) { return (item && item.text) || '' }).join(' '), (b.cells || []).map(function (row) { return (row || []).map(htmlText).join(' ') }).join(' '), b.fileName || ''].join(' ')
+    }).join(' ')
   }
-  function setBodyText (id, type, body) { delete staleBody[id]; var text = plainText(type, body).replace(/\s+/g, ' ').trim(); bodyText[id] = { text: text, low: text.toLowerCase() } }
-  // A save re-reads the text at once only while a search shows it; a note never indexed is fetched when a search needs it.
-  function noteSaved (id, type, body) { if (S.query) setBodyText(id, type, body); else if (bodyText[id]) staleBody[id] = { type: type, body: body } }
-  function bodyOf (id) { var stale = staleBody[id]; if (stale) setBodyText(id, stale.type, stale.body); return bodyText[id] }
+  function plainText (type, body) {
+    if (type !== 'canvas') return htmlText(body)
+    try { return canvasText(JSON.parse(body || '{}')) } catch (e) { return '' }
+  }
+  // The open document's text read off the editor (no copy of its markup, pictures and all): a space where an element
+  // starts or ends, as htmlText() reads the markup.
+  function editorText (el) {
+    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), parts = []
+    while (walker.nextNode()) {
+      var node = walker.currentNode
+      if (parts.length && node.previousSibling && node.previousSibling.nodeType === 3) parts[parts.length - 1] += node.nodeValue
+      else parts.push(node.nodeValue)
+    }
+    return parts.join(' ')
+  }
+  // Whitespace folded and cut to SEARCH_TEXT_MAX_BYTES of UTF-8.
+  function searchText (text) {
+    text = String(text || '').slice(0, SEARCH_TEXT_MAX_BYTES * 4).replace(/\s+/g, ' ').trim().slice(0, SEARCH_TEXT_MAX_BYTES)
+    var bytes = new TextEncoder().encode(text)
+    return bytes.length <= SEARCH_TEXT_MAX_BYTES ? text : new TextDecoder().decode(bytes.subarray(0, SEARCH_TEXT_MAX_BYTES)).replace(/\uFFFD$/, '')
+  }
+  function setBodyText (id, text) { text = searchText(text); bodyText[id] = { text: text, low: text.toLowerCase() } }
+  // A save hands over the text it stored, so a search shows the note as it is now.
+  function noteSaved (id, text) { setBodyText(id, text) }
   async function indexBodies () {
-    var mk = await masterKey(), todo = S.notes.filter(function (n) { return !bodyText[n.id] })
+    var mk = await masterKey(), gen = indexGen, view = S.view, todo = S.notes.filter(function (n) { return !bodyText[n.id] })
     if (!mk || !todo.length || indexing) return
+    var live = function () { return gen === indexGen && S.query.trim().length > 1 }
     indexing = todo.length; renderList()
+    var rest = todo
+    try {
+      var stored = {}
+      ;((await apiGet('/notes/api/search-text' + viewQuery(view))).notes || []).forEach(function (x) { stored[x.id] = x })
+      if (live()) {
+        rest = []
+        await Promise.all(todo.map(async function (n) {
+          var x = stored[n.id]
+          try { if (x) { setBodyText(n.id, await OneGyCrypto.decryptFileName(x.encrypted_search_text, x.search_text_nonce, await noteKeyOf(n, mk))); return } } catch (e) {}
+          rest.push(n)
+        }))
+      }
+    } catch (e) {}
     var worker = async function () {
-      for (var n = todo.shift(); n; n = todo.shift()) {
+      for (var n = rest.shift(); n && live(); n = rest.shift()) {
+        if (bodyText[n.id]) continue
+        var hit = noteCache.get(n.id)
+        if (hit && hit.d.content_version === n.content_version) { setBodyText(n.id, plainText(hit.d.note_type, hit.content)); continue }
+        if ((n.size || 0) > SEARCH_FETCH_MAX_BYTES) { bodyText[n.id] = { text: '', low: '' }; continue }
         try {
-          var d = await apiGet('/notes/api/notes/' + encodeURIComponent(n.id)), nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(d.encrypted_note_key, d.note_key_nonce, mk)
-          setBodyText(n.id, d.note_type, d.encrypted_content ? await decContent(d.encrypted_content, nk) : '')
+          var d = await apiGet('/notes/api/notes/' + encodeURIComponent(n.id)), nk = await noteKeyOf(d, mk)
+          setBodyText(n.id, plainText(d.note_type, d.encrypted_content ? await decContent(d.encrypted_content, nk) : ''))
         } catch (e) { bodyText[n.id] = { text: '', low: '' } }
         // Each note is decoded and parsed on the main thread: let typing and painting in between.
         await new Promise(function (resolve) { setTimeout(resolve, 0) })
       }
     }
-    await Promise.all([worker(), worker(), worker(), worker()])
+    if (live()) await Promise.all([worker(), worker(), worker(), worker()])
     indexing = 0
-    if (S.query) { renderList(); indexBodies() } // the view may have changed meanwhile
+    if (S.query.trim().length > 1) { renderList(); indexBodies() } // the view may have changed meanwhile
   }
   // Where the search matched in the text (not for title matches, which the row already shows).
   function snippet (n, q) {
-    var body = q && bodyOf(n.id), at = q && body && (n._title || '').toLowerCase().indexOf(q) < 0 ? body.low.indexOf(q) : -1
+    var body = q && bodyText[n.id], at = q && body && (n._title || '').toLowerCase().indexOf(q) < 0 ? body.low.indexOf(q) : -1
     return at < 0 ? '' : (at > 24 ? '…' : '') + body.text.slice(Math.max(0, at - 24), at + q.length + 48)
   }
 
@@ -382,23 +470,36 @@
     if (query != null) S.query = query
     var notes = S.notes.slice()
     var q = S.query.toLowerCase()
-    if (q) notes = notes.filter(function (n) { var body = bodyOf(n.id); return (n._title || '').toLowerCase().indexOf(q) >= 0 || (body ? body.low : '').indexOf(q) >= 0 || (n._tags || []).join(' ').toLowerCase().indexOf(q) >= 0 })
+    if (q) notes = notes.filter(function (n) { var body = bodyText[n.id]; return (n._title || '').toLowerCase().indexOf(q) >= 0 || (body ? body.low : '').indexOf(q) >= 0 || (n._tags || []).join(' ').toLowerCase().indexOf(q) >= 0 })
     notes.sort(function (a, b) { return (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0) || ((b.updated_at || '') < (a.updated_at || '') ? -1 : 1) })
     var pinned = S.view === 'trash' ? 0 : notes.filter(function (n) { return n.is_pinned }).length
     var nbById = new Map(S.notebooks.map(function (nb) { return [String(nb.id), nb] }))
     var items = notes.map(function (n, i) {
-      var col = normColor(n.color), canvas = n.note_type === 'canvas'
       var label = pinned && (i === 0 || i === pinned) ? sectionLabel(i ? 'Notes' : 'Pinned', i ? notes.length - pinned : pinned) : ''
-      return label + '<button type="button" class="nt-item' + (col ? ' has-color' : '') + (n.id === S.noteId ? ' is-active' : '') + '" data-note="' + esc(n.id) + '"' +
-        (col ? ' style="--nt-color:' + col + '"' : '') + '>' +
-        '<span class="nt-item-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (canvas ? NI.canvas : NI.doc) + '</svg></span>' +
-        '<span class="nt-item-main"><span class="nt-item-row"><span class="nt-item-title">' + (n.is_pinned && !pinned ? '<svg class="nt-pin" viewBox="0 0 24 24" fill="currentColor"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg>' : '') + '<span class="nt-item-name">' + esc(n._title || 'Untitled') + '</span></span></span>' +
-        '<span class="nt-item-meta"><span>' + esc(snippet(n, q) || fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' + nbTag(n, nbById) +
-        (n._tags || []).slice(0, 3).map(function (tag) { return '<span class="nt-badge">#' + esc(tag) + '</span>' }).join('') +
-        (canvas ? '<span class="nt-badge">Canvas</span>' : '') + '</span></span></button>'
+      return label + rowHtml(n, q, pinned, nbById)
     }).join('')
     listItemsEl().innerHTML = items || listEmpty(S.query.trim())
     if (animate) { var its = listEl.querySelectorAll('.nt-item'); for (var ii = 0; ii < its.length; ii++) its[ii].style.setProperty('--i', ii) }
+  }
+  // pinned: the list has a Pinned section, so a row needs no pin of its own.
+  function rowHtml (n, q, pinned, nbById) {
+    var col = normColor(n.color), canvas = n.note_type === 'canvas'
+    return '<button type="button" class="nt-item' + (col ? ' has-color' : '') + (n.id === S.noteId ? ' is-active' : '') + '" data-note="' + esc(n.id) + '"' +
+      (col ? ' style="--nt-color:' + col + '"' : '') + '>' +
+      '<span class="nt-item-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (canvas ? NI.canvas : NI.doc) + '</svg></span>' +
+      '<span class="nt-item-main"><span class="nt-item-row"><span class="nt-item-title">' + (n.is_pinned && !pinned ? '<svg class="nt-pin" viewBox="0 0 24 24" fill="currentColor"><path d="M14 4v6l3 3v2H7v-2l3-3V4z"/></svg>' : '') + '<span class="nt-item-name">' + esc(n._title || 'Untitled') + '</span></span></span>' +
+      '<span class="nt-item-meta"><span>' + esc(snippet(n, q) || fmtDate(n.updated_at) || 'No date') + (n.received_from ? ' · from ' + esc(n.received_from) : '') + '</span>' + nbTag(n, nbById) +
+      (n._tags || []).slice(0, 3).map(function (tag) { return '<span class="nt-badge">#' + esc(tag) + '</span>' }).join('') +
+      (canvas ? '<span class="nt-badge">Canvas</span>' : '') + '</span></span></button>'
+  }
+  // A colour, rename or tag change redraws that note's row only. While a search filters the list the change may make the
+  // note match or not, so the list is rebuilt.
+  function patchRow (n) {
+    if (S.query) { renderList(); return }
+    var row = listEl.querySelector('.nt-item[data-note="' + CSS.escape(n.id) + '"]'); if (!row) return
+    listEl.classList.remove('is-anim')
+    var pinned = S.view !== 'trash' && S.notes.some(function (x) { return x.is_pinned })
+    row.outerHTML = rowHtml(n, '', pinned, new Map(S.notebooks.map(function (nb) { return [String(nb.id), nb] })))
   }
   // All notes mixes notebooks, so each row names its own.
   function nbTag (n, nbById) {
@@ -455,7 +556,40 @@
     if (editorEl) editorEl.innerHTML = html == null ? '' : html
   }
 
-  async function openNote (id) {
+  // ---- Opened notes, kept in memory ------------------------------------------
+  // Metadata and decrypted content of recently opened notes (memory only, like bodyText) with the server's tag for them
+  // (360_notes.py _notes_etag): reopening one asks only whether it changed, and a 304 skips the download and decrypt.
+  var NOTE_CACHE_MAX_CHARS = 32 * 1024 * 1024
+  var noteCache = new Map(), noteCacheChars = 0
+  function cacheNote (id, etag, d, content) {
+    dropCachedNote(id)
+    if (!etag || content.length > NOTE_CACHE_MAX_CHARS / 2) return
+    noteCache.set(id, { etag: etag, d: d, content: content }); noteCacheChars += content.length
+    noteCache.forEach(function (hit, key) { if (noteCacheChars > NOTE_CACHE_MAX_CHARS && key !== id) dropCachedNote(key) }) // oldest first
+  }
+  function dropCachedNote (id) { var hit = noteCache.get(id); if (hit) { noteCacheChars -= hit.content.length; noteCache.delete(id) } }
+  // After this tab's own PUT the copy follows it (the fields written, the server's new tag); content: a content save's body.
+  function cacheNoteWrite (id, fields, resp, content) {
+    var hit = noteCache.get(id); if (!hit) return
+    if (!resp || !resp.etag) { dropCachedNote(id); return }
+    Object.keys(fields).forEach(function (key) { if (!/^(encrypted_content|encrypted_search_text|search_text_nonce|expected_content_version|force_version)$/.test(key)) hit.d[key] = fields[key] })
+    hit.d.content_version = resp.content_version
+    if (resp.updated_at) hit.d.updated_at = resp.updated_at
+    hit.etag = resp.etag
+    if (content != null) { noteCacheChars += content.length - hit.content.length; hit.content = content }
+  }
+  // The note's current metadata ({d}), or the copy in memory ({d, content}) when the server says it is still current.
+  async function fetchNote (id) {
+    var url = '/notes/api/notes/' + encodeURIComponent(id), hit = noteCache.get(id)
+    var r = (await takePrefetch(url)) || await fetch(url, { headers: hit ? { 'X-Requested-With': 'XMLHttpRequest', 'If-None-Match': hit.etag } : { 'X-Requested-With': 'XMLHttpRequest' } })
+    if (r.status === 304 && hit) { cacheNote(id, hit.etag, hit.d, hit.content); return hit } // newest again (or back, if evicted meanwhile)
+    if (!r.ok) throw new Error(url)
+    return { d: await r.json() }
+  }
+
+  // entry: the note's list row when S.notes does not hold it yet (the first load); preload: {d, content} of a note this
+  // tab has just created.
+  async function openNote (id, entry, preload) {
     // Monotonic open token, taken at ENTRY: every await below re-checks it so
     // a superseded open can never write its note into the current editor.
     var seq = ++S.openSeq
@@ -487,25 +621,25 @@
     // Seamless switch: dim the outgoing note and hold the spinner back so
     // fast opens (cache/local) swap directly without a loading flash
     editorEl.classList.add('nt-ed-busy')
-    var spinT = setTimeout(function () { if (seq === S.openSeq) editorEl.innerHTML = '<div class="nt-ed-loading"><span class="nt-spin"></span></div>' }, 180)
+    var spinT = setTimeout(function () { if (seq === S.openSeq && !editorEl.querySelector('.nt-ed-skel')) editorEl.innerHTML = '<div class="nt-ed-loading"><span class="nt-spin"></span></div>' }, 180)
     var endBusy = function () { clearTimeout(spinT); editorEl.classList.remove('nt-ed-busy') }
     var fail = function (msg) { endBusy(); resetOpenState('<div class="nt-ed-head nt-ed-head-bare">' + BACK_BTN + '</div>' + errState(msg)) }
     var mk = await masterKey()
     if (seq !== S.openSeq) return
     if (!mk) { fail('Your encryption keys are locked. Unlock them and open the note again.'); return }
-    var n = S.notes.filter(function (x) { return x.id === id })[0]
+    var n = entry || S.notes.filter(function (x) { return x.id === id })[0]
     if (!n) { fail('That note is no longer in this list.'); return }
     try {
       // A canvas starts loading its engine while the note itself is fetched and decrypted.
       var engine = n.note_type === 'canvas' ? loadCanvasEngine().catch(function () {}) : null
-      var noteKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
+      var noteKey = await noteKeyOf(n, mk)
       if (seq !== S.openSeq) return
-      var d = await apiGet('/notes/api/notes/' + encodeURIComponent(id))
+      var got = preload || await fetchNote(id), d = got.d
       if (seq !== S.openSeq) return
       // The list entry may be stale (another tab renamed or re-keyed the note);
       // the title must come from the same fetch as the version we will save over.
       if (d.encrypted_note_key && d.encrypted_note_key !== n.encrypted_note_key) {
-        noteKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(d.encrypted_note_key, d.note_key_nonce, mk)
+        noteKey = await noteKeyOf(d, mk)
         if (seq !== S.openSeq) return
       }
       if (d.encrypted_title) {
@@ -514,11 +648,15 @@
         if (seq !== S.openSeq) return
         if (freshTitle) { S.titles[id] = freshTitle; n._title = freshTitle }
       }
-      var content = ''
-      if (d.encrypted_content) content = await decContent(d.encrypted_content, noteKey)
+      var content = got.content
+      if (content == null) {
+        content = d.encrypted_content ? await decContent(d.encrypted_content, noteKey) : ''
+        delete d.encrypted_content // kept decrypted below, not twice
+        cacheNote(id, d.etag, d, content)
+      }
       if (d.note_type === 'canvas') await (engine || loadCanvasEngine().catch(function () {})) // renderCanvasNote reports a failed load
       if (seq !== S.openSeq || S.pendingOpenId !== id) return
-      S.noteKey = noteKey; S.meta = d; S.ver = d.content_version || 1
+      S.noteKey = noteKey; S.meta = d; S.ver = d.content_version || 1; S.saveBytes = (d.encrypted_content || '').length || d.size || 0
       if (d.note_type === 'canvas') {
         var canvasData
         try { canvasData = validateCanvasData(JSON.parse(content || '{"blocks":[]}')) } catch (e) { canvasData = null }
@@ -532,7 +670,7 @@
       renderEditor(n._title || S.titles[id] || 'Untitled', content, !!d.is_trashed)
       var body = $('ntBody')
       S.openedBlank = !!body && !body.textContent.trim() && !body.querySelector('img, table, hr, input')
-    } catch (e) { if (seq === S.openSeq) fail('Could not decrypt this note. It was not changed.') }
+    } catch (e) { dropCachedNote(id); if (seq === S.openSeq) fail('Could not decrypt this note. It was not changed.') }
   }
   function renderEditor (title, html, readonly) {
     S.currentType = 'document'
@@ -714,7 +852,8 @@
     $('ntBody').addEventListener('mousedown', function (e) { if (e.target.nodeName === 'INPUT' || colBorderAt(e)) e.preventDefault() })
     $('ntBody').addEventListener('keydown', bodyKeydown)
     $('ntBody').addEventListener('pointerdown', function (e) { tapType = e.pointerType; startColResize(e) })
-    $('ntBody').addEventListener('pointermove', function (e) { this.style.cursor = !e.buttons && colBorderAt(e) ? 'col-resize' : '' })
+    // Written only when it changes: a write on every move invalidated style right before the next move's layout read.
+    $('ntBody').addEventListener('pointermove', function (e) { var cursor = !e.buttons && colBorderAt(e) ? 'col-resize' : ''; if (this.style.cursor !== cursor) this.style.cursor = cursor })
     $('ntBody').addEventListener('contextmenu', function (e) { if (e.target.nodeName !== 'IMG' || !hasMenu()) return; e.preventDefault(); frameImage(e.target); imageMenu(e.target, e.clientX, e.clientY) })
     $('ntBody').addEventListener('click', bodyClick)
     $('ntBody').addEventListener('input', markDirty)
@@ -1148,8 +1287,12 @@
     S.pendingOpenId = S.noteId
     S.editRevision++; S.dirty = true; setSaveState('Unsaved')
     if (S.isSaving) { S.saveAgain = true; return }
-    clearTimeout(S.saveTimer); S.saveTimer = setTimeout(saveNote, 1100)
+    clearTimeout(S.saveTimer); S.saveTimer = setTimeout(saveNote, saveDelay())
   }
+  // Every save uploads the whole note, pictures included: past 512 KB the pause
+  // before a save grows by a second per MB (at most 6 s). Leaving the tab or the
+  // note still saves at once (saveNow).
+  function saveDelay () { var mb = S.saveBytes / 1048576; return mb < 0.5 ? 1100 : Math.min(6000, 1100 + Math.round(mb * 1000)) }
   function setSaveState (t) { var e = $('ntSaveState'); if (e) e.textContent = t }
   function imageFiles (files) { return Array.prototype.slice.call(files || []).filter(function (file) { return file && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type) }) }
   function firstImageFile (files) { return imageFiles(files)[0] || null }
@@ -1348,16 +1491,20 @@
       return
     }
     var title = titleValue(titleEl)
+    // Read in the same tick as the body, so the stored search text describes exactly this content.
+    var text = searchText(snap.type === 'canvas' ? canvasText(canvasData) : editorText($('ntBody')))
     S.isSaving = true; S.saveAgain = false
     var saveRevision = S.editRevision
     setSaveState('Saving…')
     try {
       var contentEnc = await encContent(body, snap.key)
+      if (snap.id === S.noteId) S.saveBytes = contentEnc.length
       // Preflight against the REAL server limit (app.py
       // NOTES_NOTE_CONTENT_MAX_BYTES) instead of firing a doomed request.
       if (contentEnc.length > NOTES_CONTENT_MAX_BYTES) {
         var big = new Error('NOTE TOO LARGE'); big.status = 413; big.oversize = true; throw big
       }
+      var textEnc = await OneGyCrypto.encryptFileName(text, snap.key)
       var resp = await queueWrite(async function () {
         // Read the title only now, so a rename that landed while the body was
         // encrypting is not written back over.
@@ -1369,14 +1516,17 @@
         // check ran after the request had already been sent, so it prevented
         // nothing.
         if (!snapshotIsCurrent(snap)) return null
-        var r = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(snap.id), {
+        var fields = {
           encrypted_title: titleEnc.encryptedName, title_nonce: titleEnc.nameNonce,
           encrypted_content: contentEnc, content_nonce: contentNonceOf(contentEnc), expected_content_version: snap.ver,
+          encrypted_search_text: textEnc.encryptedName, search_text_nonce: textEnc.nameNonce,
           force_version: S.forceVersion ? true : undefined // restoring a version: the server keeps what this save replaces
-        })
+        }
+        var r = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(snap.id), fields)
         S.forceVersion = false
         // Inside the queue, so the next queued write already sends this version.
         applyMetadataVersion(snap.id, { content_version: r.content_version || (snap.ver + 1) })
+        cacheNoteWrite(snap.id, fields, r, body)
         return r
       })
       if (!resp) { S.saveAgain = true; setSaveState('Unsaved'); return }
@@ -1385,7 +1535,7 @@
       S.saveFailures = 0
       S.saveBlocked = false
       S.titles[snap.id] = title
-      noteSaved(snap.id, snap.type, body)
+      noteSaved(snap.id, text)
       if (n) { n._title = title; n.updated_at = resp.updated_at || new Date().toISOString() }
       if (S.editRevision === saveRevision) { S.dirty = false; setSaveState('Saved'); setTimeout(function () { if (!S.dirty) setSaveState('') }, 1400) }
       else { S.dirty = true; S.saveAgain = true; setSaveState('Unsaved') }
@@ -1395,6 +1545,7 @@
       var msg = 'COULD NOT SAVE NOTE'
       S.saveAgain = false; saveRevision = S.editRevision
       if (status === 409) {
+        dropCachedNote(snap.id)
         S.saveBlocked = true
         msg = 'NOTE CHANGED IN ANOTHER TAB. REOPEN IT BEFORE SAVING'
         showConflictState()
@@ -1433,7 +1584,8 @@
     try {
       var noteKey = await OneGyCrypto.generateFileKey()
       var wrapped = await OneGyCrypto.wrapFileKeyWithMasterKey(noteKey, mk)
-      var titleEnc = await OneGyCrypto.encryptFileName(type === 'canvas' ? 'Untitled canvas' : 'Untitled note', noteKey)
+      var title = type === 'canvas' ? 'Untitled canvas' : 'Untitled note', body = type === 'canvas' ? '{"blocks":[]}' : ''
+      var titleEnc = await OneGyCrypto.encryptFileName(title, noteKey)
       var notebookId = (S.view !== 'all' && S.view !== 'unfiled' && S.view !== 'trash') ? parseInt(S.view) : null
       var payload = {
         notebook_id: isNaN(notebookId) ? null : notebookId, note_type: type,
@@ -1441,14 +1593,53 @@
         encrypted_note_key: wrapped.encryptedFileKey, note_key_nonce: wrapped.nonce
       }
       if (type === 'canvas') {
-        var canvasEnc = await encContent('{"blocks":[]}', noteKey)
+        var canvasEnc = await encContent(body, noteKey)
         payload.encrypted_content = canvasEnc
         payload.content_nonce = contentNonceOf(canvasEnc)
       }
       var resp = await apiSend('POST', '/notes/api/notes', payload)
-      await loadAll(); await openNote(resp.id)
+      // One round trip: the list row and the editor come from what this tab just sent, not from reloading everything.
+      var meta = createdNote(resp, payload), n = Object.assign({ _title: title, _tags: [] }, meta)
+      noteKeys.set(meta.id, { wrapped: meta.encrypted_note_key, key: noteKey })
+      addNoteLocally(n)
+      cacheNote(meta.id, resp.etag, meta, body)
+      await openNote(meta.id, n, { d: meta, content: body })
       if (S.noteId === resp.id && S.editorReady) focusEditorBody()
     } catch (e) { toast('COULD NOT CREATE NOTE', 'error'); if (!S.noteId) hideEditorMobile() }
+  }
+  // The metadata the server holds for a note this tab just created (POST /notes/api/notes), as the list and GET return it.
+  function createdNote (resp, payload) {
+    return {
+      id: resp.id, notebook_id: payload.notebook_id == null ? null : payload.notebook_id,
+      encrypted_title: payload.encrypted_title, title_nonce: payload.title_nonce,
+      encrypted_note_key: payload.encrypted_note_key, note_key_nonce: payload.note_key_nonce,
+      note_type: payload.note_type, is_pinned: false, color: payload.color || null, size: resp.size || 0,
+      content_version: resp.content_version || 1, position: 0, encrypted_tags: null, tags_nonce: null,
+      received_from: null, is_read: true, is_trashed: false, created_at: resp.created_at, updated_at: resp.updated_at
+    }
+  }
+
+  // ---- Optimistic list edits -------------------------------------------------
+  // The list and the notebook counts follow a change at once instead of reloading everything; when the request fails,
+  // the snapshot taken before puts them back (the caller restores the note's own fields) and the error toast shows.
+  function inView (n) {
+    if (S.view === 'trash') return !!n.is_trashed
+    return !n.is_trashed && (S.view === 'all' || (S.view === 'unfiled' ? n.notebook_id == null : String(n.notebook_id) === String(S.view)))
+  }
+  function nbCount (notebookId, delta) {
+    var nb = notebookId != null && S.notebooks.filter(function (x) { return String(x.id) === String(notebookId) })[0]
+    if (nb) nb.note_count = Math.max(0, (nb.note_count || 0) + delta)
+  }
+  function listSnapshot () {
+    var view = S.view, notes = S.notes.slice(), trash = S.trashCount, counts = S.notebooks.map(function (nb) { return [nb, nb.note_count] })
+    // Another view loaded meanwhile came from the server, which the failed request did not change.
+    return function () { if (S.view === view) S.notes = notes; S.trashCount = trash; counts.forEach(function (c) { c[0].note_count = c[1] }); renderList() }
+  }
+  function dropFromList (id) { S.notes = S.notes.filter(function (x) { return x.id !== id }) }
+  function addNoteLocally (n) {
+    if (inView(n) && !S.notes.some(function (x) { return x.id === n.id })) S.notes.push(n)
+    nbCount(n.notebook_id, 1)
+    renderList()
   }
 
   async function createNotebook (name) {
@@ -1461,26 +1652,20 @@
         encrypted_name: enc.encryptedName, name_nonce: enc.nameNonce,
         encrypted_name_key: wrapped.encryptedNameKey, name_key_nonce: wrapped.nonce
       })
-      if (made.id != null) S.view = String(made.id)
-      toast('NOTEBOOK CREATED', 'success'); loadAll()
+      toast('NOTEBOOK CREATED', 'success')
+      if (made.id == null) { loadAll(); return }
+      // The new notebook joins the switcher as sent and opens (empty): only its note list is asked for.
+      if (!S.notebooks.some(function (nb) { return String(nb.id) === String(made.id) })) {
+        S.notebooks.push({ id: made.id, encrypted_name: enc.encryptedName, name_nonce: enc.nameNonce, encrypted_name_key: wrapped.encryptedNameKey,
+          name_key_nonce: wrapped.nonce, color: null, system_key: made.system_key || null, position: made.position, note_count: 0, _name: name })
+      }
+      S.view = String(made.id); loadNotes()
     } catch (e) { toast('COULD NOT CREATE NOTEBOOK', 'error') }
   }
 
-  async function deleteNote (perm) {
-    if (!S.noteId) return
-    if (perm && !(await confirmForever())) return
-    if (!perm && S.dirty) { if (S.canvas && S.canvas.flush) S.canvas.flush(); await saveNote(); if (S.dirty) { toast('SAVE THE NOTE BEFORE MOVING IT TO TRASH', 'error'); return } }
-    try {
-      await apiSend('DELETE', '/notes/api/notes/' + encodeURIComponent(S.noteId) + (perm ? '?permanent=true' : ''), null)
-      toast(perm ? 'NOTE DELETED' : 'MOVED TO TRASH', 'success')
-      closeEditor()
-      await loadAll()
-    } catch (e) { toast('COULD NOT DELETE NOTE', 'error') }
-  }
-  async function restoreNote () {
-    if (!S.noteId) return
-    try { await apiSend('POST', '/notes/api/notes/' + encodeURIComponent(S.noteId) + '/restore', {}); toast('NOTE RESTORED', 'success'); closeEditor(); await loadAll() } catch (e) { toast('COULD NOT RESTORE', 'error') }
-  }
+  // The trashed note's own buttons in the editor head.
+  function deleteNote (perm) { if (S.noteId) return perm ? deleteForeverById(S.noteId) : trashNoteById(S.noteId) }
+  function restoreNote () { if (S.noteId) return restoreNoteById(S.noteId) }
 
   // ---- Per-note actions (context menu) -------------------------------------
   // The editor-header actions above all operate on S.noteId. These variants
@@ -1501,6 +1686,7 @@
       payload.expected_content_version = noteVersion(id)
       var resp = await apiSend('PUT', '/notes/api/notes/' + encodeURIComponent(id), payload)
       applyMetadataVersion(id, resp)
+      cacheNoteWrite(id, payload, resp)
       return resp
     })
   }
@@ -1534,26 +1720,25 @@
     return !S.dirty
   }
 
+  // Sets a field on the note's list row and on the open note's fetched copy (they are separate objects).
+  function setNoteField (n, key, value) {
+    n[key] = value
+    if (S.meta && S.meta.id === n.id) S.meta[key] = value
+  }
+
   async function setNoteColorById (id, color) {
     var n = noteById(id); if (!n) return
-    var safe = normColor(color)
-    try {
-      await putMetadata(id, { color: safe })
-      n.color = safe
-      if (S.meta && S.meta.id === id) S.meta.color = safe
-      renderList()
-    } catch (e) { toast('COULD NOT UPDATE COLOUR', 'error') }
+    var safe = normColor(color), was = n.color
+    setNoteField(n, 'color', safe); patchRow(n)
+    try { await putMetadata(id, { color: safe }) } catch (e) { setNoteField(n, 'color', was); patchRow(n); toast('COULD NOT UPDATE COLOUR', 'error') }
   }
 
   async function togglePinById (id) {
     var n = noteById(id); if (!n) return
     var np = !n.is_pinned
-    try {
-      await putMetadata(id, { is_pinned: np })
-      n.is_pinned = np
-      if (S.meta && S.meta.id === id) S.meta.is_pinned = np
-      renderList()
-    } catch (e) { toast('COULD NOT UPDATE PIN', 'error') }
+    // A pin moves the row between the sections, so the list is rebuilt.
+    setNoteField(n, 'is_pinned', np); renderList()
+    try { await putMetadata(id, { is_pinned: np }) } catch (e) { setNoteField(n, 'is_pinned', !np); renderList(); toast('COULD NOT UPDATE PIN', 'error') }
   }
 
   async function renameNoteById (id) {
@@ -1564,16 +1749,21 @@
     if (next == null) return
     next = next.trim()
     if (!next || next === current) return
+    var input = function (value) { if (S.noteId === id && $('ntTitle')) $('ntTitle').value = value }
+    var applied = false
     try {
-      var nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
+      var nk = await noteKeyOf(n, mk)
       var enc = await OneGyCrypto.encryptFileName(next, nk)
-      await putMetadata(id, { encrypted_title: enc.encryptedName, title_nonce: enc.nameNonce })
-      n._title = next; S.titles[id] = next
+      n._title = next; S.titles[id] = next; applied = true
       // Keep the open editor in sync or the next autosave writes the old title back.
-      if (S.noteId === id && $('ntTitle')) $('ntTitle').value = next
-      renderList()
+      input(next)
+      patchRow(n)
+      await putMetadata(id, { encrypted_title: enc.encryptedName, title_nonce: enc.nameNonce })
       toast('NOTE RENAMED', 'success')
-    } catch (e) { toast('COULD NOT RENAME NOTE', 'error') }
+    } catch (e) {
+      if (applied) { n._title = current; S.titles[id] = current; if (S.noteId === id && $('ntTitle') && $('ntTitle').value === next) input(current); patchRow(n) }
+      toast('COULD NOT RENAME NOTE', 'error')
+    }
   }
 
   async function editTagsById (id) {
@@ -1581,13 +1771,15 @@
     var mk = await masterKey(); if (!mk) { toast('UNLOCK YOUR KEYS FIRST', 'error'); return }
     var typed = await openPrompt('Tags (separate with commas)', 'work, ideas, to read', (n._tags || []).join(', ')); if (typed == null) return
     var tags = typed.split(',').map(function (tag) { return tag.trim().replace(/^#/, '').slice(0, 40) }).filter(function (tag, i, all) { return tag && all.indexOf(tag) === i }).slice(0, 20)
+    var was = n._tags || [], applied = false
+    var setTags = function (list) { S.notes.concat(S.meta && S.meta.id === id ? [S.meta] : []).forEach(function (x) { if (x.id === id) x._tags = list }); n._tags = list; patchRow(n) }
     try {
-      var nk = await OneGyCrypto.unwrapFileKeyWithMasterKey(n.encrypted_note_key, n.note_key_nonce, mk)
+      var nk = await noteKeyOf(n, mk)
       var enc = await OneGyCrypto.encryptFileName(JSON.stringify(tags.map(function (tag) { return { name: tag } })), nk)
+      setTags(tags); applied = true
       await putMetadata(id, { encrypted_tags: enc.encryptedName, tags_nonce: enc.nameNonce })
-      S.notes.concat(S.meta && S.meta.id === id ? [S.meta] : []).forEach(function (x) { if (x.id === id) x._tags = tags })
-      renderList(); toast('TAGS UPDATED', 'success')
-    } catch (e) { toast('COULD NOT UPDATE TAGS', 'error') }
+      toast('TAGS UPDATED', 'success')
+    } catch (e) { if (applied) setTags(was); toast('COULD NOT UPDATE TAGS', 'error') }
   }
 
   // ---- Version history -------------------------------------------------------
@@ -1741,32 +1933,40 @@
         payload.encrypted_content = copyEnc
         payload.content_nonce = contentNonceOf(copyEnc)
       }
-      await apiSend('POST', '/notes/api/notes', payload)
+      // The copy has a new key, so its search text is made again under that key.
+      var textEnc = await OneGyCrypto.encryptFileName(searchText(plainText(type, body)), noteKey)
+      payload.encrypted_search_text = textEnc.encryptedName; payload.search_text_nonce = textEnc.nameNonce
+      var resp = await apiSend('POST', '/notes/api/notes', payload)
+      noteKeys.set(resp.id, { wrapped: payload.encrypted_note_key, key: noteKey })
+      addNoteLocally(Object.assign({ _title: title + ' (copy)', _tags: [] }, createdNote(resp, payload)))
       toast('NOTE DUPLICATED', 'success')
-      await loadAll()
     } catch (e) { toast('COULD NOT CONFIRM NOTE DUPLICATION. REFRESH TO CHECK', 'error') }
   }
 
   async function moveNoteById (id, notebookId) {
     var n = noteById(id); if (!n) return
+    var from = n.notebook_id, undo = listSnapshot()
+    setNoteField(n, 'notebook_id', notebookId)
+    nbCount(from, -1); nbCount(notebookId, 1)
+    if (!inView(n)) dropFromList(id)
+    renderList()
     try {
       await putMetadata(id, { notebook_id: notebookId })
-      n.notebook_id = notebookId
-      if (S.meta && S.meta.id === id) S.meta.notebook_id = notebookId
       toast('NOTE MOVED', 'success')
-      await loadAll()
-    } catch (e) { toast('COULD NOT MOVE NOTE', 'error') }
+    } catch (e) { setNoteField(n, 'notebook_id', from); undo(); toast('COULD NOT MOVE NOTE', 'error') }
   }
 
   async function trashNoteById (id) {
-    if (!noteById(id)) return
+    var n = noteById(id); if (!n) return
     if (!(await flushIfOpen(id))) { toast('SAVE THE NOTE BEFORE MOVING IT TO TRASH', 'error'); return }
+    var undo = listSnapshot()
+    dropFromList(id); S.trashCount++; nbCount(n.notebook_id, -1)
+    renderList()
     try {
       await apiSend('DELETE', '/notes/api/notes/' + encodeURIComponent(id), null)
       toast('MOVED TO TRASH', 'success')
-      clearEditorIfOpen(id)
-      await loadAll()
-    } catch (e) { toast('COULD NOT DELETE NOTE', 'error') }
+      clearEditorIfOpen(id); dropCachedNote(id)
+    } catch (e) { undo(); toast('COULD NOT DELETE NOTE', 'error') }
   }
 
   function confirmDanger (title, message, action) {
@@ -1777,34 +1977,42 @@
 
   async function deleteForeverById (id) {
     if (!(await confirmForever())) return
+    var undo = listSnapshot()
+    dropFromList(id); S.trashCount = Math.max(0, S.trashCount - 1)
+    renderList()
     try {
       await apiSend('DELETE', '/notes/api/notes/' + encodeURIComponent(id) + '?permanent=true', null)
       toast('NOTE DELETED', 'success')
-      clearEditorIfOpen(id)
-      await loadAll()
-    } catch (e) { toast('COULD NOT DELETE NOTE', 'error') }
+      clearEditorIfOpen(id); dropCachedNote(id)
+    } catch (e) { undo(); toast('COULD NOT DELETE NOTE', 'error') }
   }
 
   async function restoreNoteById (id) {
+    var n = noteById(id), undo = listSnapshot()
+    // The server files the note as unfiled when its notebook is in the trash too (the switcher lists live notebooks only).
+    var lands = n && n.notebook_id != null && S.notebooks.some(function (nb) { return String(nb.id) === String(n.notebook_id) }) ? n.notebook_id : null
+    dropFromList(id); S.trashCount = Math.max(0, S.trashCount - 1); nbCount(lands, 1)
+    renderList()
     try {
       await apiSend('POST', '/notes/api/notes/' + encodeURIComponent(id) + '/restore', {})
       toast('NOTE RESTORED', 'success')
-      clearEditorIfOpen(id)
-      await loadAll()
-    } catch (e) { toast('COULD NOT RESTORE', 'error') }
+      clearEditorIfOpen(id); dropCachedNote(id)
+    } catch (e) { undo(); toast('COULD NOT RESTORE', 'error') }
   }
 
   async function emptyTrash () {
     if (!(await confirmDanger('Empty the trash?', 'Everything in the trash will be deleted permanently. This cannot be undone.', 'Empty trash'))) return
     // Only close the editor if it shows one of the deleted notes: a live note
     // left open while browsing the trash may hold unsaved edits.
-    var trashed = S.view === 'trash' ? S.notes.map(function (n) { return n.id }) : []
+    var trashed = S.view === 'trash' ? S.notes.map(function (n) { return n.id }) : [], undo = listSnapshot()
+    if (S.view === 'trash') S.notes = []
+    S.trashCount = 0
+    renderList()
     try {
       await apiSend('DELETE', '/notes/api/trash', null)
       toast('TRASH EMPTIED', 'success')
-      trashed.forEach(clearEditorIfOpen)
-      await loadAll()
-    } catch (e) { toast('COULD NOT EMPTY TRASH', 'error') }
+      trashed.forEach(clearEditorIfOpen); trashed.forEach(dropCachedNote)
+    } catch (e) { undo(); toast('COULD NOT EMPTY TRASH', 'error') }
   }
 
   // ---- Context menus -------------------------------------------------------
@@ -1927,18 +2135,20 @@
     var mk = await masterKey(); if (!mk) { toast('UNLOCK YOUR KEYS FIRST', 'error'); return }
     var next = ((await openPrompt('Rename notebook', 'Notebook name', nb._name)) || '').trim()
     if (!next || next === nb._name) return
+    var was = { encrypted_name: nb.encrypted_name, name_nonce: nb.name_nonce, _name: nb._name }, applied = false
     try {
       var key = await OneGyCrypto.unwrapFolderNameKey(nb.encrypted_name_key, nb.name_key_nonce, mk)
       var enc = await OneGyCrypto.encryptFolderName(next, key)
-      await apiSend('PUT', '/notes/api/notebooks/' + nb.id, { encrypted_name: enc.encryptedName, name_nonce: enc.nameNonce })
-      nb.encrypted_name = enc.encryptedName; nb.name_nonce = enc.nameNonce; nb._name = next
+      nb.encrypted_name = enc.encryptedName; nb.name_nonce = enc.nameNonce; nb._name = next; applied = true
       renderList()
+      await apiSend('PUT', '/notes/api/notebooks/' + nb.id, { encrypted_name: enc.encryptedName, name_nonce: enc.nameNonce })
       toast('NOTEBOOK RENAMED', 'success')
-    } catch (e) { toast('COULD NOT RENAME NOTEBOOK', 'error') }
+    } catch (e) { if (applied) { Object.assign(nb, was); renderList() } toast('COULD NOT RENAME NOTEBOOK', 'error') }
   }
   async function setNotebookColor (nb, color) {
-    var safe = normColor(color)
-    try { await apiSend('PUT', '/notes/api/notebooks/' + nb.id, { color: safe }); nb.color = safe; renderList() } catch (e) { toast('COULD NOT UPDATE COLOUR', 'error') }
+    var safe = normColor(color), was = nb.color
+    nb.color = safe; renderList()
+    try { await apiSend('PUT', '/notes/api/notebooks/' + nb.id, { color: safe }) } catch (e) { nb.color = was; renderList(); toast('COULD NOT UPDATE COLOUR', 'error') }
   }
   async function deleteNotebook (nb) {
     var count = nb.note_count || 0
@@ -1951,9 +2161,10 @@
     }
     try {
       await apiSend('DELETE', '/notes/api/notebooks/' + nb.id, null)
-      if (String(S.view) === String(nb.id)) S.view = 'all'
       toast('NOTEBOOK DELETED', 'success')
-      await loadAll()
+      // Its notes are in the trash now. Not optimistic: All notes can only be shown once the server has moved them.
+      S.notebooks = S.notebooks.filter(function (x) { return x !== nb }); S.trashCount += count
+      if (String(S.view) === String(nb.id)) { S.view = 'all'; loadNotes() } else { S.notes = S.notes.filter(function (n) { return String(n.notebook_id) !== String(nb.id) }); renderList() }
     } catch (e) { toast('COULD NOT DELETE NOTEBOOK', 'error') }
   }
 
@@ -2156,7 +2367,10 @@
   function inkHighlights (root) {
     var marks = root ? root.querySelectorAll('[style*="background"]') : []; if (!marks.length) return
     var base = getComputedStyle(root).color
-    Array.prototype.slice.call(marks).reverse().forEach(function (node) { var ink = getComputedStyle(node).color === base && inkOn(getComputedStyle(node).backgroundColor); if (ink) node.style.color = ink })
+    // Every read first, then the writes: alternating them recalculated styles once per mark. Same result as inner marks
+    // first, since a mark's ink never changes the computed colour of a mark around or before it.
+    var inks = Array.prototype.map.call(marks, function (node) { var style = getComputedStyle(node); return style.color === base && inkOn(style.backgroundColor) })
+    inks.forEach(function (ink, i) { if (ink) marks[i].style.color = ink })
   }
   function destroyCanvas () { if (S.canvas) { try { S.canvas.destroy() } catch (e) {} S.canvas = null } }
 

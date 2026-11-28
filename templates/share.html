@@ -139,22 +139,39 @@ document.addEventListener('click', async function(e){
     }
   }
 });
-document.querySelectorAll('[data-thumb-fill]').forEach(function (slot) {
-  var id = slot.getAttribute('data-thumb-fill')
-  var tries = 0
-  function attempt () {
+// Plain row thumbnails: loaded as their rows come into view, a few at a time
+// (every row at once, each retrying up to 8 times, was a burst on big lists).
+;(function () {
+  var queue = [], active = 0, MAX = 6
+  function pump () {
+    while (active < MAX && queue.length) attempt(queue.shift())
+  }
+  function attempt (job) {
+    active++
     var img = new Image()
     img.className = 'file-thumbnail'
     img.alt = ''
-    img.onload = function () { slot.replaceWith(img) }
+    img.onload = function () { active--; job.slot.replaceWith(img); pump() }
     img.onerror = function () {
-      tries++
-      if (tries < 8) setTimeout(attempt, Math.min(8000, 700 * tries))
+      active--
+      job.tries++
+      if (job.tries < 8) setTimeout(function () { queue.push(job); pump() }, Math.min(8000, 700 * job.tries))
+      pump()
     }
-    img.src = '/file/' + encodeURIComponent(id) + '/thumbnail'
+    img.src = '/file/' + encodeURIComponent(job.slot.getAttribute('data-thumb-fill')) + '/thumbnail'
   }
-  attempt()
-})
+  function enqueue (slot) { queue.push({ slot: slot, tries: 0 }); pump() }
+  var slots = document.querySelectorAll('[data-thumb-fill]')
+  if (!('IntersectionObserver' in window)) { slots.forEach(enqueue); return }
+  var io = new IntersectionObserver(function (ents) {
+    ents.forEach(function (en) {
+      if (!en.isIntersecting) return
+      io.unobserve(en.target)
+      enqueue(en.target)
+    })
+  }, { rootMargin: '200px' })
+  slots.forEach(function (slot) { io.observe(slot) })
+})()
 // Relative expiry on each row ("23h left"); the absolute time stays in the title.
 document.querySelectorAll('.file-badge-expires[data-expires-at]').forEach(function (badge) {
   var ms = new Date(badge.getAttribute('data-expires-at')) - Date.now()

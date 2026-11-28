@@ -1,6 +1,6 @@
 <!-- Music Player (music-player.js rearranges the bar at init: progress under
      the controls, volume/FX into the right group, like/add into the info) -->
-<div class="music-player" id="musicPlayer" data-uid="{{ _mp_uid }}" data-music="{{ '1' if allow_music else '' }}" data-ticker="{{ versioned_static('music-sync-ticker.js') }}" data-part-e2e="{{ versioned_static('music-player-e2e.js') }}" data-part-crypto="{{ versioned_static('crypto.js') }}" data-part-devices="{{ versioned_static('music-player-devices-panel.js') }}">
+<div class="music-player" id="musicPlayer" data-uid="{{ _mp_uid }}" data-music="{{ '1' if allow_music else '' }}" data-ticker="{{ versioned_static('music-sync-ticker.js') }}" data-part-e2e="{{ versioned_static('music-player-e2e.js') }}" data-part-crypto="{{ versioned_static('crypto.js') }}" data-part-devices="{{ versioned_static('music-player-devices-panel.js') }}" data-part-fullscreen="{{ versioned_static('music-player-fullscreen.js') }}" data-part-fx="{{ versioned_static('music-player-fx.js') }}" data-part-phantom="{{ versioned_static('music-player-phantom.js') }}">
   <!-- Fullscreen header (visible only in expanded mobile view) -->
   <div class="mp-fs-header" id="mpFsHeader">
     <button class="mp-fs-collapse" id="mpFsCollapse" title="Collapse">

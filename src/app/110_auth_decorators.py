@@ -266,8 +266,8 @@ def _drop_dead_session():
         _clear_auth_session()
         return None
     if request.endpoint == 'static':
-        # Static files skip the DB checks; the age cap alone bounds a revoked
-        # cookie refreshed here to its revocation record's lifetime.
+        # Static files skip the DB checks; their responses never save the
+        # session (_NoStaticSessionInterface), so nothing is refreshed here.
         return None
     if _current_session_user() is not None:
         return None

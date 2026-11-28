@@ -705,7 +705,7 @@ def download_folder_logic(share_token):
         if ancestor:
             folder_is_browsable = True
     if folder_is_browsable:
-        return _render_shared_folder_browse(folder, is_owner, share_token, folder_is_browsable)
+        return _render_shared_folder_browse(folder, is_owner, share_token)
     
     if request.method == 'HEAD':
         return _build_streaming_response(
@@ -857,14 +857,13 @@ def download_folder_logic(share_token):
             _release_zip_slot(zip_reservation)
 
 
-def _render_shared_folder_browse(folder, is_owner, share_token, folder_is_browsable):
-    """HTML browse page of a browsable shared folder (optionally a subfolder via ?folder=)."""
-    # Support subfolder navigation via query param
-    subfolder_id = request.args.get('folder')
-    browse_folder_id = folder.id
-    current_browse_folder = folder
-    breadcrumbs = []
+def _render_shared_folder_browse(folder, is_owner, share_token):
+    """HTML browse page of a browsable shared folder (optionally a subfolder via ?folder=).
 
+    Only the shell: browse.html renders no listing data. browse.js loads the
+    listing, tree and totals from /f/<token>/browse-data (prefetched inline by
+    the template), so the share is walked once per open instead of twice."""
+    subfolder_id = request.args.get('folder')
     if subfolder_id:
         try:
             subfolder_id = int(subfolder_id)
@@ -873,73 +872,12 @@ def _render_shared_folder_browse(folder, is_owner, share_token, folder_is_browsa
         # Verify subfolder belongs to this folder tree.
         # AUDIT FIX P2: trash AND expiry, on the sub-folder and every folder
         # between it and the share root -- not just containment.
-        subfolder = _shared_subfolder_available(subfolder_id, folder)
-        if not subfolder:
+        if not _shared_subfolder_available(subfolder_id, folder):
             abort(404)
-        browse_folder_id = subfolder.id
-        current_browse_folder = subfolder
-        breadcrumbs = build_browse_breadcrumbs(subfolder.id, folder)
-
-    # Get files in current folder level only (not recursive)
-    current_files = File.query.filter_by(
-        folder_id=browse_folder_id, is_temp_upload=False, is_trashed=False
-    ).all()
-
-    # Filter by access permissions and encryption accessibility
-    # Non-E2E files: always accessible (server decrypts for visitors)
-    # E2E files: only accessible if link_encrypted_file_key is set (visitor can decrypt)
-    visible_files = []
-    current_e2e_boundary = _e2e_upload_boundary_for_folder(current_browse_folder)
-    for file in current_files:
-        # AUDIT FIX P1: an expired file must not be listed through a folder token.
-        if not _file_not_expired(file):
-            continue
-        if not is_owner and current_e2e_boundary and not file.is_e2e_encrypted:
-            continue
-        if not file.is_public and file.registered_user_id and not folder_is_browsable:
-            if not is_owner:
-                continue
-        if file.password_hash:
-            continue
-        # Hide E2EE files without link/passphrase-scoped keys from non-owners.
-        if file.is_e2e_encrypted and not is_owner and not _e2e_file_has_non_owner_key(file):
-            continue
-        visible_files.append(file)
-
-    # Get subfolders in current level (these display in the main file browser).
-    # AUDIT FIX P2: expired sub-folders are not offered.
-    current_subfolders = [
-        sf for sf in Folder.query.filter_by(
-            parent_id=browse_folder_id, is_trashed=False
-        ).order_by(Folder.name).all()
-        if _folder_not_expired(sf) and not _locked_folder_share(sf, folder)
-    ]
-
-    # Collect ALL subfolders recursively (for sidebar tree)
-    all_subfolders = collect_browsable_folders(folder.id)
-
-    # Also collect ALL files recursively for total count and folder sizes
-    # AUDIT FIX (finding 13): pass the ANCESTOR-DERIVED folder_is_browsable
-    # flag resolved at the top of this route, not the stale per-folder one.
-    all_files = collect_browsable_files(folder.id, is_owner, folder.is_public or folder_is_browsable, bool(folder.is_link_shared))
-
-    folder_sizes, init_e2e_counts, init_file_counts, init_has_mixed = _browse_tree_stats(
-        folder, all_subfolders, all_files)
 
     return render_template('browse.html',
         folder=folder,
-        current_folder=current_browse_folder,
-        files=visible_files,
-        current_folders=current_subfolders,
-        folders=all_subfolders,
-        breadcrumbs=breadcrumbs,
         share_token=share_token,
-        total_file_count=len(all_files),
-        folder_sizes=folder_sizes,
-        folder_e2e_counts=init_e2e_counts,
-        folder_file_counts=init_file_counts,
-        folder_has_mixed=init_has_mixed,
-        is_e2e_folder=any(f.is_e2e_encrypted for f in all_files),
         is_owner=is_owner
     )
 

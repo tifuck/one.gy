@@ -12,9 +12,17 @@ def music_page():
         session.clear()
         return redirect(url_for('login'))
     music_disabled = not get_setting('allow_music')
+    music_boot = None
     if music_disabled:
         print(f'[MUSIC] Serving /music in disabled (empty shell) mode for user {user.id}')
-    return render_template('music.html', user=user, music_disabled=music_disabled)
+    else:
+        # Liked ids and playlists ride with the page (music.js MU_BOOT): no two
+        # fetches after the scripts, no hearts flipping, Home tiles complete.
+        music_boot = {
+            'likes': [song_id for (song_id,) in db.session.query(MusicLike.song_id).filter_by(user_id=user.id)],
+            'playlists': _music_playlists_payload(user.id),
+        }
+    return render_template('music.html', user=user, music_disabled=music_disabled, music_boot=music_boot)
 
 
 # ─── Music Asset Routes ─────────────────────────────────────────────────────
@@ -130,7 +138,7 @@ def _music_cover_variant(path, mtime_ns, size):
 
 
 @app.route('/music/cover/<cover_id>')
-@limiter.limit(music_cover_rate_limit)
+@limiter.limit(music_cover_rate_limit, deduct_when=_count_uncached_thumbnail)  # a 304 revalidation is free
 @_music_required
 def music_cover(cover_id):
     """Serve album or per-song cover JPEG.
@@ -740,12 +748,32 @@ def music_api_random():
 
 # ─── Music Suggested Songs API (Collaboration-Graph) ────────────────────────
 
-@app.route('/music/api/suggest')
+_MUSIC_SUGGEST_IDS_MAX = 5000  # ids read from seed_artists / exclude (a queue's worth)
+
+
+def _music_id_list(value):
+    """Ids from a comma-separated query value or a JSON list (strings or numbers)."""
+    if isinstance(value, str):
+        value = value.split(',')
+    elif not isinstance(value, list):
+        return []
+    ids = []
+    for item in value[:_MUSIC_SUGGEST_IDS_MAX]:
+        if isinstance(item, bool) or not isinstance(item, (str, int)):
+            continue
+        item = str(item).strip()
+        if item:
+            ids.append(item)
+    return ids
+
+
+@app.route('/music/api/suggest', methods=['GET', 'POST'])
 @limiter.limit(music_api_rate_limit)
 @_music_required
 def music_api_suggest():
     """Return suggested songs based on artist collaboration graph.
-    Query params:
+    Query params (GET) or a JSON body (POST: a long queue's exclude list does
+    not fit in a URL; seed_artists / exclude may be lists there):
       count         - number of songs to return (default 20, max 50)
       seed_artists  - comma-separated artist IDs from the current playlist
       exclude       - comma-separated song IDs already in queue
@@ -758,16 +786,15 @@ def music_api_suggest():
       6. Fall back to random if not enough results
     """
     import random as _random
+    params = _json_object_body() if request.method == 'POST' else request.args
     # AUDIT FIX L9: tolerate non-numeric input instead of raising 500.
     try:
-        count = int(request.args.get('count', 20))
+        count = int(params.get('count', 20))
     except (TypeError, ValueError):
         count = 20
     count = max(1, min(count, 50))
-    seed_raw = request.args.get('seed_artists', '')
-    seed_artists = [a.strip() for a in seed_raw.split(',') if a.strip()] if seed_raw else []
-    exclude_raw = request.args.get('exclude', '')
-    exclude_set = set(e.strip() for e in exclude_raw.split(',') if e.strip()) if exclude_raw else set()
+    seed_artists = _music_id_list(params.get('seed_artists', ''))
+    exclude_set = set(_music_id_list(params.get('exclude', '')))
 
     # If no seed artists provided, fall back to random
     if not seed_artists or not _music_library_available():

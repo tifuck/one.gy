@@ -659,6 +659,11 @@ class Note(db.Model):
     content_checksum = db.Column(db.String(64), nullable=True)     # SHA-256 hex digest of encrypted note content on disk
     encrypted_tags = db.Column(db.Text, nullable=True)                # AES-256-GCM encrypted JSON array of {name,color} tags (base64)
     tags_nonce = db.Column(db.String(255), nullable=True)             # Nonce for tags encryption (base64)
+    # Plain text of the content (capped client-side), AES-256-GCM encrypted under the note key like the title, so a
+    # search reads it instead of every note. Written with each content save; NULL until the next save.
+    # Deferred: up to 64 KB a note, and only /notes/api/search-text reads it.
+    encrypted_search_text = db.deferred(db.Column(db.Text, nullable=True))
+    search_text_nonce = db.Column(db.String(255), nullable=True)
     position = db.Column(db.Integer, default=0)                      # Manual sort order (0 = default)
     received_from = db.Column(db.String(150), nullable=True)         # Username of sender (for received notes)
     is_read = db.Column(db.Boolean, default=True)                     # False for new received notes
@@ -755,6 +760,9 @@ class MusicSyncState(db.Model):
     # LONGTEXT: pushes accept up to _MUSIC_SYNC_STATE_MAX (1 MiB); TEXT caps at 64 KiB.
     state_json = db.Column(db.Text().with_variant(LONGTEXT(), 'mysql', 'mariadb'), nullable=True)  # JSON blob of playback state
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    # Kept with state_json by every write: polls compare the key and check freshness without reading the state
+    state_key = db.Column(db.String(32), nullable=True)  # content hash of state_json
+    state_playing = db.Column(db.Boolean, nullable=True)  # its isPlaying: a paused state stays fresh for the online window
     transfer_to = db.Column(db.String(36), nullable=True)  # Device ID that requested transfer
     pending_command = db.Column(db.Text, nullable=True)  # JSON: {action, seekTime?} from phantom device
     pending_result = db.Column(db.Text, nullable=True)  # JSON: command execution result for phantom to read

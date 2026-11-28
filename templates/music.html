@@ -105,6 +105,7 @@
 {% block scripts %}
 <script nonce="{{ csp_nonce }}">var CSRF = '{{ csrf_token() }}'; var USERNAME = {{ (user.username|upper)|tojson if user else '""' }};
 var MUSIC_DISABLED = {{ 'true' if music_disabled else 'false' }};
+var MU_BOOT = {{ music_boot|tojson }};
 try { if (!MUSIC_DISABLED) localStorage.setItem('onegy_last_page', JSON.stringify({ page: '/music' })) } catch(e) {}</script>
 {% if not music_disabled %}
 {# crypto.js loads with the first encrypted track (music-player-playback.js) #}

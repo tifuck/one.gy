@@ -279,104 +279,114 @@
   // browser has the passphrase needed to replace it with the real metadata.
   const _rowThumbUrls = []
 
+  // A few rows at a time: one row is a key derivation, a name decrypt and a
+  // thumbnail fetch, and one after another the names filled in row by row.
+  const ROW_HYDRATE_POOL = 4
+
   async function _hydrateTempUploadRows() {
     if (typeof OneGyCrypto === 'undefined') return
 
-    const rows = document.querySelectorAll('.temp-browser-row[data-e2e="true"]')
-    for (const row of rows) {
-      const fileId = row.dataset.fileId
-      if (!fileId || !row.dataset.encryptedFileKey || !row.dataset.fileKeyNonce) continue
+    const rows = Array.from(document.querySelectorAll('.temp-browser-row[data-e2e="true"]'))
+    let next = 0
+    async function worker() {
+      while (next < rows.length) await _hydrateTempUploadRow(rows[next++])
+    }
+    await Promise.all(Array.from({ length: Math.min(ROW_HYDRATE_POOL, rows.length) }, worker))
+  }
 
-      try {
-        let fileKey = null
-        if (row.dataset.fileKeySalt) {
-          let passphrase = null
-          if (typeof TempKeychain !== 'undefined') passphrase = await TempKeychain.get(fileId)
-          if (!passphrase) passphrase = _getPassphrase()
-          if (!passphrase) continue
-          fileKey = await OneGyCrypto.unwrapFileKeyWithPassphrase(
+  async function _hydrateTempUploadRow(row) {
+    const fileId = row.dataset.fileId
+    if (!fileId || !row.dataset.encryptedFileKey || !row.dataset.fileKeyNonce) return
+
+    try {
+      let fileKey = null
+      if (row.dataset.fileKeySalt) {
+        let passphrase = null
+        if (typeof TempKeychain !== 'undefined') passphrase = await TempKeychain.get(fileId)
+        if (!passphrase) passphrase = _getPassphrase()
+        if (!passphrase) return
+        fileKey = await OneGyCrypto.unwrapFileKeyWithPassphrase(
+          row.dataset.encryptedFileKey,
+          row.dataset.fileKeyNonce,
+          row.dataset.fileKeySalt,
+          passphrase
+        )
+      } else if (_hasMasterKey()) {
+        const masterKey = await OneGyCrypto.getMasterKeyFromSession()
+        if (masterKey) {
+          fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(
             row.dataset.encryptedFileKey,
             row.dataset.fileKeyNonce,
-            row.dataset.fileKeySalt,
-            passphrase
+            masterKey
           )
-        } else if (_hasMasterKey()) {
-          const masterKey = await OneGyCrypto.getMasterKeyFromSession()
-          if (masterKey) {
-            fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(
-              row.dataset.encryptedFileKey,
-              row.dataset.fileKeyNonce,
-              masterKey
-            )
+        }
+      }
+      if (!fileKey) return
+
+      if (row.dataset.encryptedName && row.dataset.nameNonce) {
+        const realName = await OneGyCrypto.decryptFileName(
+          row.dataset.encryptedName,
+          row.dataset.nameNonce,
+          fileKey
+        )
+        const dot = realName.lastIndexOf('.')
+        const base = dot > 0 ? realName.slice(0, dot) : realName
+        const suffix = dot > 0 ? realName.slice(dot) : ''
+        const extension = suffix ? suffix.slice(1).toLowerCase() : ''
+        const nameEl = row.querySelector('.file-name-text')
+        if (nameEl) {
+          nameEl.textContent = ''
+          const baseEl = document.createElement('span')
+          baseEl.className = 'file-name-base'
+          baseEl.textContent = base
+          nameEl.appendChild(baseEl)
+          if (suffix) {
+            const extEl = document.createElement('span')
+            extEl.className = 'file-name-ext'
+            extEl.textContent = suffix
+            nameEl.appendChild(extEl)
           }
         }
-        if (!fileKey) continue
+        row.dataset.fileName = realName
+        row.dataset.extension = extension
+        row.dataset.previewable = [...IMAGE_EXTS, ...TEXT_EXTS, ...AUDIO_EXTS, ...VIDEO_EXTS, ...PDF_EXTS].includes(extension) ? 'true' : 'false'
+        const deleteBtn = row.querySelector('.delete-temp-file-btn')
+        if (deleteBtn) deleteBtn.dataset.filename = realName
+        const downloadBtn = row.querySelector('.action-download')
+        if (downloadBtn && !row.dataset.shortCode) {
+          // AUDIT FIX F3: NEVER put the decrypted (plaintext) filename into a
+          // server URL — /f/<id>/<name> sends the zero-knowledge name to
+          // server access logs / proxies / Referer on middle-click, copy-link
+          // or direct navigation. The filename path segment is optional
+          // server-side (and ignored for file downloads); a normal click is
+          // intercepted below by the delegated handler, which decrypts
+          // client-side using row.dataset.fileName (DOM-only, never a URL).
+          downloadBtn.href = '/f/' + encodeURIComponent(fileId)
+        }
+      }
 
-        if (row.dataset.encryptedName && row.dataset.nameNonce) {
-          const realName = await OneGyCrypto.decryptFileName(
-            row.dataset.encryptedName,
-            row.dataset.nameNonce,
+      if (row.dataset.encThumbNonce) {
+        const response = await fetch('/file/' + encodeURIComponent(fileId) + '/e2e-thumbnail')
+        if (response.ok) {
+          const decrypted = await OneGyCrypto.decryptThumbnail(
+            await response.arrayBuffer(),
+            row.dataset.encThumbNonce,
             fileKey
           )
-          const dot = realName.lastIndexOf('.')
-          const base = dot > 0 ? realName.slice(0, dot) : realName
-          const suffix = dot > 0 ? realName.slice(dot) : ''
-          const extension = suffix ? suffix.slice(1).toLowerCase() : ''
-          const nameEl = row.querySelector('.file-name-text')
-          if (nameEl) {
-            nameEl.textContent = ''
-            const baseEl = document.createElement('span')
-            baseEl.className = 'file-name-base'
-            baseEl.textContent = base
-            nameEl.appendChild(baseEl)
-            if (suffix) {
-              const extEl = document.createElement('span')
-              extEl.className = 'file-name-ext'
-              extEl.textContent = suffix
-              nameEl.appendChild(extEl)
-            }
-          }
-          row.dataset.fileName = realName
-          row.dataset.extension = extension
-          row.dataset.previewable = [...IMAGE_EXTS, ...TEXT_EXTS, ...AUDIO_EXTS, ...VIDEO_EXTS, ...PDF_EXTS].includes(extension) ? 'true' : 'false'
-          const deleteBtn = row.querySelector('.delete-temp-file-btn')
-          if (deleteBtn) deleteBtn.dataset.filename = realName
-          const downloadBtn = row.querySelector('.action-download')
-          if (downloadBtn && !row.dataset.shortCode) {
-            // AUDIT FIX F3: NEVER put the decrypted (plaintext) filename into a
-            // server URL — /f/<id>/<name> sends the zero-knowledge name to
-            // server access logs / proxies / Referer on middle-click, copy-link
-            // or direct navigation. The filename path segment is optional
-            // server-side (and ignored for file downloads); a normal click is
-            // intercepted below by the delegated handler, which decrypts
-            // client-side using row.dataset.fileName (DOM-only, never a URL).
-            downloadBtn.href = '/f/' + encodeURIComponent(fileId)
+          const url = URL.createObjectURL(new Blob([decrypted], { type: 'image/jpeg' }))
+          _rowThumbUrls.push(url)
+          const icon = row.querySelector('.file-icon-small')
+          if (icon) {
+            const img = new Image()
+            img.className = 'file-thumbnail'
+            img.alt = ''
+            img.src = url
+            icon.replaceWith(img)
           }
         }
-
-        if (row.dataset.encThumbNonce) {
-          const response = await fetch('/file/' + encodeURIComponent(fileId) + '/e2e-thumbnail')
-          if (response.ok) {
-            const decrypted = await OneGyCrypto.decryptThumbnail(
-              await response.arrayBuffer(),
-              row.dataset.encThumbNonce,
-              fileKey
-            )
-            const url = URL.createObjectURL(new Blob([decrypted], { type: 'image/jpeg' }))
-            _rowThumbUrls.push(url)
-            const icon = row.querySelector('.file-icon-small')
-            if (icon) {
-              const img = new Image()
-              img.className = 'file-thumbnail'
-              img.alt = ''
-              img.src = url
-              icon.replaceWith(img)
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('[TEMP LIST] Could not decrypt listing metadata for ' + fileId, e)
       }
+    } catch (e) {
+      console.warn('[TEMP LIST] Could not decrypt listing metadata for ' + fileId, e)
     }
   }
 

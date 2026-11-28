@@ -154,7 +154,9 @@
     mp.titleEl.classList.remove('mp-title-scrolling')
   }
 
+  // Every play-state change (local audio, phantom, errors) comes through here: the music page follows it
   function _updatePlayButton() {
+    try { document.dispatchEvent(new CustomEvent('musicplayer:playpause', { detail: { playing: !!mp.isPlaying } })) } catch(e) {}
     if (!mp.playBtn) return
     if (mp.isPlaying) {
       mp.playBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>'

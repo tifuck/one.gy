@@ -323,6 +323,24 @@ def _music_prepare_sync_state(state, previous_json):
     return json.dumps(state, separators=(',', ':')), None, True
 
 
+def _music_state_key(state_json):
+    """Content hash a poll compares (state_key): not updated_at, which has 1 s precision."""
+    return hashlib.sha256(state_json.encode('utf-8')).hexdigest()[:32] if state_json else None
+
+
+def _music_set_sync_state(sync, state_json, state):
+    """Store a pushed state with the fields polls read instead of it."""
+    sync.state_json = state_json
+    sync.state_key = _music_state_key(state_json)
+    sync.state_playing = (state.get('isPlaying') is True) if state_json else None
+
+
+def _music_state_fresh_seconds(state_playing, playing_seconds):
+    """How long a pushed state counts as current. A paused one does not move,
+    so its device only heartbeats under the online window; unknown counts as playing."""
+    return _MUSIC_ONLINE_WINDOW.total_seconds() if state_playing is False else playing_seconds
+
+
 def _music_mailbox_lock(user_id):
     return _acquire_scoped_lock(f'music-sync-mailbox:{int(user_id)}', prefix='music_sync')
 
@@ -349,7 +367,7 @@ def _music_clear_stale_active_device(user_id, online_cutoff):
         ).with_for_update().populate_existing().first():
             print(f'[MUSIC] Active device {stale_id[:8]} stale (>30s), clearing sync state for user {user_id}')
             sync.active_device_id = None
-            sync.state_json = None
+            _music_set_sync_state(sync, None, None)
             sync.transfer_to = None
         return sync
     finally:

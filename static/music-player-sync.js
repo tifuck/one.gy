@@ -2,7 +2,7 @@
 ;(function(mp) {
   'use strict'
 
-  const { _jsonHeaders, _lsGet, _lsSet, _ssSet, audio, _coverUrl } = mp
+  const { _jsonHeaders, _lsGet, _lsSet, _ssSet, _ssRemove, audio, _coverUrl, _clearAudioSrc } = mp
 
   // ─── Sync Engine State (shared sync state lives in core) ────────
   const _SYNC_QUEUE_RADIUS = 100    // tracks pushed on each side of the current one
@@ -10,9 +10,13 @@
   const _SYNC_HEARTBEAT_MS = 4000   // unchanged state is re-pushed this often (server: stale after 10 s)
   const _SYNC_LEASE_MS = 120000     // a tab holding the browser's device id renews it well within this
   const _SYNC_ALONE_MS = 15000      // idle heartbeat with no other device online (server online window: 30 s)
-  const _SYNC_TABS_KEY = 'mp_sync_tabs'  // this browser's tabs: {device id: last renewal}
+  const _SYNC_PAUSED_MS = 15000     // a paused track's heartbeat (server: a paused state stays fresh for the 30 s window)
+  const _SYNC_PAUSED_HIDDEN_MS = 25000  // the same in a hidden tab
+  const _SYNC_TABS_KEY = 'mp_sync_tabs'  // this browser's tabs: {device id: last renewal, or -(closed at)}
   const _SYNC_TAB_TTL_MS = 60000    // a tab renews its entry every few ticks, well within this
+  const _SYNC_TAB_GONE_MS = 35000   // a closed tab's device stays online server-side for the 30 s window
   const _SYNC_KICK_KEY = 'mp_sync_kick'  // written after a command / transfer: sibling tabs poll at once
+  const _SYNC_SIBLING_QUIET_MS = 30000  // a sibling's broadcast state is followed without fast polls this long
   const _AUTO_NAME_RE = /^(Edge|Opera|Chrome|Firefox|Safari|Browser|ONE\.GY Desktop) on (iPad|iPhone|Android|Mac|Windows|Linux|ChromeOS|Device)$/
   let _syncTimer = null             // setTimeout handle for the next sync tick
   let _syncDueAt = 0                // when the scheduled tick runs (0: none scheduled)
@@ -21,6 +25,7 @@
   let _syncClaimInFlight = false
   let _syncLastPushSig = null       // state signature, time and position of the last accepted push
   let _syncLastPushAt = 0
+  let _syncLastPushSentAt = 0       // when the last push went out (heartbeats count from it)
   let _syncLastPushPos = 0
   let _syncRunning = false          // sync loop wanted (logged in, enabled, music-library)
   let _syncErrorCount = 0           // consecutive failed sync requests (exponential backoff)
@@ -37,6 +42,8 @@
   let _syncKnownState = null        // {key, state}: the last full state a poll returned (sent back as state_key)
   let _syncTabAt = 0                // when this tab last renewed its sibling-registry entry
   let _syncSiblingKicked = false    // a sibling tab sent a command or transfer
+  let _syncChannel = null           // BroadcastChannel to this browser's other tabs (null: unavailable)
+  let _syncSiblingHeard = null      // {id, at}: the active sibling tab whose state last came over the channel
 
   // ─── Cross-Device Sync Engine ─────────────────────────────────
 
@@ -79,6 +86,9 @@
   // and a later tab may take it.
   window.addEventListener('pagehide', function() {
     _syncDropTab()
+    // The next page of this tab polls at once to show the mirror again
+    if (mp._syncPhantomMode) _ssSet('mp_mirroring', '1')
+    else _ssRemove('mp_mirroring')
     if (!_syncOwnsStableId()) return
     _syncLeaseAt = 0
     _lsSet('mp_device_lease', '0')
@@ -87,7 +97,10 @@
   // Tabs of this browser are separate devices to the server, but another tab
   // is no reason to poll fast: each keeps a leased entry in a shared registry
   // and the poll rate only counts devices outside it. Commands and transfers
-  // between tabs wake the others through a storage event instead.
+  // between tabs wake the others through a storage event instead, and the
+  // playing tab hands its state to their mirrors over a BroadcastChannel.
+  // A closed tab leaves a tombstone (its negative closing time): the server
+  // lists its device as online for 30 s more, and that is no other device.
   function _syncReadTabs() {
     try {
       var tabs = JSON.parse(_lsGet(_SYNC_TABS_KEY) || '{}')
@@ -100,22 +113,27 @@
     if (!mp._syncDeviceId || now - _syncTabAt < _SYNC_TAB_TTL_MS / 6) return
     _syncTabAt = now
     var tabs = _syncReadTabs()
-    for (var id in tabs) if (!(now - tabs[id] < _SYNC_TAB_TTL_MS)) delete tabs[id]
+    for (var id in tabs) if (!_syncTabListed(tabs[id], now)) delete tabs[id]
     tabs[mp._syncDeviceId] = now
     _lsSet(_SYNC_TABS_KEY, JSON.stringify(tabs))
+  }
+
+  function _syncTabListed(at, now) {
+    return at > 0 ? now - at < _SYNC_TAB_TTL_MS : now + at < _SYNC_TAB_GONE_MS
   }
 
   function _syncDropTab() {
     _syncTabAt = 0
     var tabs = _syncReadTabs()
     if (!(mp._syncDeviceId in tabs)) return
-    delete tabs[mp._syncDeviceId]
+    tabs[mp._syncDeviceId] = -Date.now()
     _lsSet(_SYNC_TABS_KEY, JSON.stringify(tabs))
   }
 
+  // This browser's other tabs, open or closed within the server's online window
   function _syncSiblingIds() {
     var tabs = _syncReadTabs(), now = Date.now(), ids = {}
-    for (var id in tabs) if (id !== mp._syncDeviceId && now - tabs[id] < _SYNC_TAB_TTL_MS) ids[id] = true
+    for (var id in tabs) if (id !== mp._syncDeviceId && _syncTabListed(tabs[id], now)) ids[id] = true
     return ids
   }
 
@@ -131,6 +149,39 @@
     _syncSiblingKicked = true
     _syncKick()
   })
+
+  // Each push the server accepted from the playing tab reaches its sibling
+  // mirrors at once, so they follow it without fast polls (and without a
+  // round trip through the server each second).
+  try { if (typeof BroadcastChannel === 'function') _syncChannel = new BroadcastChannel('onegy-music-sync') } catch (e) {}
+  if (_syncChannel) _syncChannel.onmessage = function(e) {
+    var m = e.data
+    if (!_syncRunning || !m || typeof m !== 'object' || !m.state || typeof m.device_id !== 'string' ||
+        m.uid !== (mp.playerEl && mp.playerEl.dataset.uid) || m.device_id === mp._syncDeviceId ||
+        !_syncSiblingIds()[m.device_id] || _syncPushing()) return
+    _syncSiblingHeard = { id: m.device_id, at: Date.now() }
+    _syncFollow({
+      active: true, active_device_id: m.device_id, active_device_name: m.device_name, state: m.state,
+      state_key: null, state_updated_at: new Date(m.at).toISOString(), state_age_ms: Math.max(0, Date.now() - m.at),
+    })
+    _syncTightenSchedule()
+  }
+
+  function _syncBroadcast(state, queue) {
+    if (!_syncChannel) return
+    var full = Object.assign({}, state, { playlist: queue })
+    delete full.queueKey
+    try {
+      _syncChannel.postMessage({ uid: mp.playerEl && mp.playerEl.dataset.uid, device_id: mp._syncDeviceId,
+        device_name: mp._syncDeviceName, state: full, at: _syncLastPushSentAt })
+    } catch (e) {}
+  }
+
+  // The mirrored device is a sibling tab whose broadcasts arrive
+  function _syncFollowsBroadcast() {
+    return !!_syncSiblingHeard && _syncSiblingHeard.id === mp._syncPhantomDeviceId &&
+      Date.now() - _syncSiblingHeard.at < _SYNC_SIBLING_QUIET_MS
+  }
 
   function _detectDeviceName() {
     var ua = navigator.userAgent || ''
@@ -237,10 +288,28 @@
     })
   }
 
+  // Someone may follow this tab's playback: another device, or a sibling tab
+  function _syncWatched() {
+    if (_syncOthersOnline()) return true
+    for (var id in _syncSiblingIds()) return true
+    return false
+  }
+
   // This device outputs the session's audio and publishes its state.
   function _syncPushing() {
     return mp._syncIsActive && !mp._syncPhantomMode && mp._context === 'music-library' &&
       (mp.isPlaying || (mp.isVisible && mp.currentIndex >= 0))
+  }
+
+  // audio.paused flips in play() itself; the play event (isPlaying) comes later
+  function _syncPlaying() {
+    return mp.isPlaying || !audio.paused
+  }
+
+  // Unchanged state is re-pushed this often: a paused track left in the bar
+  // only has to stay listed (the server keeps a paused state fresh for 30 s)
+  function _syncHeartbeatMs(playing) {
+    return playing ? _SYNC_HEARTBEAT_MS : (document.hidden ? _SYNC_PAUSED_HIDDEN_MS : _SYNC_PAUSED_MS)
   }
 
   // Every signed-in page polls, so each open device is listed and can be
@@ -248,15 +317,22 @@
   // with another device online, it mirrors or controls a remote one, or its
   // devices panel is open. Another device online with nothing to follow: 3 s
   // (10 s hidden). Alone it only heartbeats under the server's 30 s online
-  // window. Failures back off exponentially.
+  // window, and so does a paused track (its heartbeat is a push). A mirror of
+  // a sibling tab gets that tab's state over the channel, not by polling.
+  // Failures back off exponentially.
   function _syncNextDelay() {
     var others = _syncOthersOnline()
+    var pushing = _syncPushing()
     var delay
-    if (_syncPushing()) delay = others ? 1000 : 3000
-    else if (mp._syncPhantomMode || mp._syncRemoteTarget) delay = document.hidden ? 5000 : 1000
+    if (pushing && _syncPlaying()) delay = others ? 1000 : 3000
+    else if ((mp._syncPhantomMode && !_syncFollowsBroadcast()) || mp._syncRemoteTarget) delay = document.hidden ? 5000 : 1000
     else if (mp.devicesPanel && mp.devicesPanel.classList.contains('mp-devices-visible')) delay = 1000
     else if (others) delay = document.hidden ? 10000 : 3000
-    else delay = _SYNC_ALONE_MS
+    else delay = pushing ? _syncHeartbeatMs(false) : _SYNC_ALONE_MS
+    // A paused track's heartbeat goes out on time, between slower ticks
+    if (pushing && !_syncPlaying() && !_syncPushPending) {
+      delay = Math.min(delay, Math.max(1000, _syncHeartbeatMs(false) - (Date.now() - _syncLastPushSentAt)))
+    }
     if (_syncErrorCount) delay = Math.max(delay, Math.min(30000, 1000 * Math.pow(2, _syncErrorCount)))
     return delay
   }
@@ -338,7 +414,8 @@
   // the browser from revoking autoplay permission when the active device is
   // paused.  Without this, remote play commands fail because
   // audio.play() is blocked by autoplay policy when there is no recent user
-  // gesture and no recent audio output.
+  // gesture and no recent audio output. Only while another device is online
+  // (no command can come otherwise); else the paused context is suspended.
   function _syncStartKeepAlive() {
     if (_syncKeepAliveTimer) return  // already running
     function ping() {
@@ -373,7 +450,56 @@
       clearInterval(_syncKeepAliveTimer)
       _syncKeepAliveTimer = null
       console.log('[MUSIC PLAYER] Sync keepalive stopped')
+      _syncIdleAudio()
     }
+  }
+
+  // Nothing plays through the AudioContext: suspend it (every play() wakes it,
+  // music-player-core.js). A moment later, so a track change does not bounce it.
+  function _syncIdleAudio() {
+    setTimeout(function() {
+      var ctx = mp._audioCtx
+      if (ctx && ctx.state === 'running' && audio.paused && !_syncKeepAliveTimer &&
+          !mp._syncPhantomKeepaliveActive && !mp._crossfadeActive) ctx.suspend().catch(function() {})
+    }, 1000)
+  }
+
+  function _syncPhantomStopInterpolation() {
+    if (mp._syncPhantomTimer) { clearInterval(mp._syncPhantomTimer); mp._syncPhantomTimer = null }
+  }
+
+  // Phantom mode lives in music-player-phantom.js, loaded before the first
+  // mirror; a call that waited for it is dropped if a local play, transfer or
+  // phantom exit came in between.
+  function _syncPhantom(name, data) {
+    if (mp[name]) { mp[name](data); return }
+    var epoch = mp._syncEpoch
+    mp._loadPart('phantom').then(function() {
+      if (epoch === mp._syncEpoch && mp[name]) mp[name](data)
+    }).catch(function(err) { console.warn('[MUSIC PLAYER]', err.message) })
+  }
+
+  // Local playback ends any mirror or remote control shown in the bar
+  function _syncResetForLocalPlayback() {
+    mp._syncRemoteTarget = null
+    mp._syncPhantomDeviceId = null
+    if (!mp._syncPhantomMode && !mp._syncPhantomKeepaliveActive && !mp._syncPhantomTimer && !mp._syncPhantomPositionTimer && !audio.loop &&
+        !(mp.playerEl && mp.playerEl.classList.contains('mp-phantom'))) return
+
+    mp._syncPhantomMode = false
+    mp._syncPhantomTrackId = null
+    mp._syncPhantomPlaying = false
+    mp._syncPhantomStale = false
+    mp._syncPhantomStateTs = null
+    mp._syncPhantomKeepaliveActive = false
+    _syncPhantomStopInterpolation()
+    if (mp._syncPhantomPositionTimer) { clearInterval(mp._syncPhantomPositionTimer); mp._syncPhantomPositionTimer = null }
+    if (mp.playerEl) mp.playerEl.classList.remove('mp-phantom')
+    if (mp.phantomLabel) mp.phantomLabel.textContent = ''
+    audio.loop = false
+    audio.pause()
+    _clearAudioSrc()
+    audio.muted = mp._volSlider === 0
   }
 
   function _syncPoll() {
@@ -388,7 +514,7 @@
     var pushing = _syncPushing()
     if (pushing) {
       // Paused: keep the audio context warm so remote commands can play
-      if (mp.isPlaying) _syncStopKeepAlive()
+      if (mp.isPlaying || !_syncOthersOnline()) _syncStopKeepAlive()
       else _syncStartKeepAlive()
       // A changed state goes out at once, an unchanged one as a heartbeat; in
       // between a cheap GET watches for commands and transfers (with no other
@@ -459,24 +585,8 @@
         _syncClearRemoteTarget()
       }
 
-      var remoteActive = data.active && data.active_device_id && data.active_device_id !== mp._syncDeviceId && data.state
-      if (!remoteActive || data.active_device_id !== mp._syncPhantomDismissed) mp._syncPhantomDismissed = null
-      // Own files playing (or paused) in the bar are not replaced by a mirror
-      var ownPlayback = mp.isVisible && !mp._syncPhantomMode && mp.currentIndex >= 0 && mp._context !== 'music-library'
-
-      if (remoteActive && !mp._syncPhantomDismissed && !ownPlayback) {
-        mp._syncEnterPhantom(data)
-      } else if (mp._syncPhantomMode) {
-        // Remote device stopped updating — check if we should pause phantom or exit
-        if (data.state_updated_at && !mp._syncPhantomStale) {
-          // State existed but server says it's stale (>10s no update) — pause phantom
-          mp._syncPausePhantom()
-        } else if (!data.state_updated_at) {
-          // No state at all — exit phantom entirely
-          mp._syncExitPhantom()
-        }
-        // If already stale, stay paused (don't keep re-entering or exiting)
-      }
+      // A sibling tab's broadcasts are newer than an answer sent around them
+      if (!(_syncFollowsBroadcast() && data.active && data.active_device_id === mp._syncPhantomDeviceId)) _syncFollow(data)
 
       // Results remain on the server until this requesting device acknowledges
       // them. Retain the local ack state as well when the POST fails.
@@ -493,6 +603,29 @@
       _syncPollInFlight = false
       _syncOnError(err)
     })
+  }
+
+  // Mirror the active remote device (a poll answer, or a sibling tab's broadcast)
+  function _syncFollow(data) {
+    var remoteActive = data.active && data.active_device_id && data.active_device_id !== mp._syncDeviceId && data.state
+    if (!remoteActive || data.active_device_id !== mp._syncPhantomDismissed) mp._syncPhantomDismissed = null
+    // Own files playing (or paused) in the bar are not replaced by a mirror
+    var ownPlayback = mp.isVisible && !mp._syncPhantomMode && mp.currentIndex >= 0 && mp._context !== 'music-library'
+
+    if (remoteActive && !mp._syncPhantomDismissed && !ownPlayback) {
+      data.sibling = !!_syncSiblingIds()[data.active_device_id]
+      _syncPhantom('_syncEnterPhantom', data)
+    } else if (mp._syncPhantomMode) {
+      // Remote device stopped updating — check if we should pause phantom or exit
+      if (data.state_updated_at && !mp._syncPhantomStale) {
+        // State existed but server says it's stale (no recent update) — pause phantom
+        mp._syncPausePhantom()
+      } else if (!data.state_updated_at) {
+        // No state at all — exit phantom entirely
+        mp._syncExitPhantom()
+      }
+      // If already stale, stay paused (don't keep re-entering or exiting)
+    }
   }
 
   // Only a window around the current track is pushed (a queue can be
@@ -515,8 +648,7 @@
       currentIndex: mp.currentIndex - start,
       currentTime: audio.currentTime || 0,
       duration: (!isNaN(audio.duration) && isFinite(audio.duration)) ? audio.duration : 0,
-      // audio.paused flips in play() itself; the play event (isPlaying) comes later
-      isPlaying: mp.isPlaying || !audio.paused,
+      isPlaying: _syncPlaying(),
       shuffleMode: mp.shuffleMode,
       repeatMode: mp.repeatMode,
       shuffleOrder: windowOrder,
@@ -535,7 +667,7 @@
     var s = built.state
     var expected = _syncLastPushPos + (s.isPlaying ? (now - _syncLastPushAt) / 1000 : 0)
     return mp._syncForceActive || !!_syncCommandResult || built.sig !== _syncLastPushSig ||
-      now - _syncLastPushAt >= _SYNC_HEARTBEAT_MS || Math.abs(s.currentTime - expected) > 1.5
+      now - _syncLastPushSentAt >= _syncHeartbeatMs(s.isPlaying) || Math.abs(s.currentTime - expected) > 1.5
   }
 
   function _syncPushState(built) {
@@ -560,6 +692,7 @@
     var sentCommandResult = _syncCommandResult
     if (sentCommandResult) pushBody.command_result = sentCommandResult
     var epoch = mp._syncEpoch
+    _syncLastPushSentAt = Date.now()
 
     _syncFetch('/music/api/sync', {
       method: 'POST',
@@ -580,6 +713,7 @@
         _syncPushedQueueJson = queueJson
         _syncQueueKey = data.queue_key
       }
+      if (data.is_active) _syncBroadcast(statePayload, queue)
 
       // Update devices list from POST response
       if (data.devices) {
@@ -607,7 +741,8 @@
         mp._wasPlayingBeforeBackground = false
         audio.pause()
         if (data.state) {
-          mp._syncEnterPhantom(data)
+          data.sibling = !!_syncSiblingIds()[data.active_device_id]
+          _syncPhantom('_syncEnterPhantom', data)
         }
         console.log('[MUSIC PLAYER] Server rejected active claim, entering phantom mode')
         return
@@ -761,7 +896,7 @@
     mp._syncPhantomStale = false
     mp._syncPhantomStateTs = null
     mp._syncPhantomKeepaliveActive = false
-    mp._syncPhantomStopInterpolation()
+    _syncPhantomStopInterpolation()
     if (mp._syncPhantomPositionTimer) { clearInterval(mp._syncPhantomPositionTimer); mp._syncPhantomPositionTimer = null }
     if (mp.playerEl) mp.playerEl.classList.remove('mp-phantom')
     if (mp.phantomLabel) mp.phantomLabel.textContent = ''
@@ -983,10 +1118,11 @@
       // Show devices button if not already shown
       if (mp.devicesBtn) mp.devicesBtn.style.display = ''
     }
-    if (_syncPushing() && _syncOthersOnline()) _syncKick()  // mirrors see it now, not next tick
+    if (_syncPushing() && _syncWatched()) _syncKick()  // mirrors see it now, not next tick
   })
   audio.addEventListener('pause', function() {
-    if (_syncPushing() && _syncOthersOnline()) _syncKick()
+    if (_syncPushing() && _syncWatched()) _syncKick()
+    if (!_syncKeepAliveTimer) _syncIdleAudio()
   })
 
   Object.assign(mp, {
@@ -996,7 +1132,10 @@
     _syncKick,
     _syncNum,
     _syncTracksFromState,
+    _syncOthersOnline,
     _syncStopKeepAlive,
+    _syncPhantomStopInterpolation,
+    _syncResetForLocalPlayback,
     _syncSendCommand,
     _syncPlayOnRemote,
     _syncSetRemoteTarget,

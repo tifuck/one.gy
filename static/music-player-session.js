@@ -407,10 +407,9 @@
     }
   }
 
-  // Save state before page unload (navigation away)
-  window.addEventListener('beforeunload', _saveState)
-  // pagehide comes later (the audio stopped there) and also fires where
-  // beforeunload does not (iOS, back/forward cache)
+  // Save state before page unload (navigation away). Only on pagehide: it
+  // comes after beforeunload (the audio stopped there), fires on every unload
+  // (iOS and the back/forward cache too), and a long queue is serialised once.
   window.addEventListener('pagehide', _saveState)
 
   // Also save on visibility change (tab close, mobile switch)

@@ -22,7 +22,7 @@
   --pv-code-size:.8125rem; --pv-lh:1.25rem;
   position:fixed; inset:0; z-index:200; display:none; flex-direction:column;
   color-scheme:dark; color:var(--pv-fg); font-family:var(--font-body);
-  background:rgba(0,0,0,.9); -webkit-backdrop-filter:blur(12px); backdrop-filter:blur(12px);
+  background:rgba(0,0,0,.9);
 }
 /* Light themes: anything themed inside the overlay (the share page's editor
    card, .rd-btn) gets dark tokens too, so it never shows a white header. */

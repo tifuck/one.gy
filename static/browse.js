@@ -212,16 +212,25 @@
   }
 
   // ═══ DATA ════════════════════════════════════════════════════════════════
+  // browse.html starts the first listing request inline, before the deferred
+  // scripts: take that response once if it is for this URL, else fetch.
+  async function fetchBrowseData (url) {
+    var pre = window.__BW_PREFETCH__
+    window.__BW_PREFETCH__ = null
+    if (pre && pre.url === url) { try { return await pre.p } catch (e) {} }
+    return fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+  }
+
   async function load (folderId, opts) {
     opts = opts || {}
     var epoch = opts.epoch == null ? nextRequestEpoch() : opts.epoch
     if (!hasRequestAuthority(epoch)) return
     searchIndex = null
-    if (!opts.silent) renderSkeleton()
+    if (!opts.silent) { renderSkeleton(); resetThumbs() }
     var url = '/f/' + encodeURIComponent(TOKEN) + '/browse-data' + (folderId ? '?folder=' + encodeURIComponent(folderId) : '')
     var d
     try {
-      var r = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      var r = await fetchBrowseData(url)
       if (!hasRequestAuthority(epoch)) return
       if (!r.ok) throw new Error('HTTP ' + r.status)
       d = await r.json()
@@ -284,6 +293,7 @@
 
   // ═══ RENDER ══════════════════════════════════════════════════════════════
   function renderSkeleton () {
+    stopChunks()
     el('bwView').innerHTML = '<div class="bw-skel" aria-hidden="true">' +
       new Array(9).join('<div class="bw-skel-card"></div>') + '</div>'
   }
@@ -292,6 +302,7 @@
       '<h3 class="rd-empty-title">' + esc(title) + '</h3><p class="rd-empty-text">' + esc(text) + '</p></div>'
   }
   function renderError (msg) {
+    stopChunks()
     el('bwView').innerHTML = emptyState(ICO.alert, 'This share is unavailable',
       'It may have expired or been revoked. (' + msg + ')')
     el('bwTree').innerHTML = ''
@@ -365,47 +376,44 @@
     bc.classList.remove('is-fitting')
   }
 
-  function renderTree () {
-    var kids = Object.create(null)
-    S.tree.forEach(function (f) { (kids[f.parent_id] = kids[f.parent_id] || []).push(f) })
-
-    function row (f, depth, hasKids, isOpen, inner) {
-      var twist = hasKids
-        ? '<span class="bw-tree-twist" data-twist="' + f.id + '">' + ICO.chev + '</span>'
-        : '<span class="bw-tree-twist"></span>'
-      return '<div class="bw-tree-row' + (isOpen ? ' is-open' : '') + '" style="--d:' + depth + '">' +
-        '<button type="button" class="bw-tree-link folder-tree-link' + (String(f.id) === String(S.folderId) ? ' is-active' : '') +
-          '" data-folder-id="' + f.id + '" title="' + esc(f.name) + '">' +
-          twist + '<span class="bw-tree-ico">' + ICO.folderLine + '</span><span class="bw-tree-name">' + esc(f.name) + '</span>' +
-        '</button>' + inner +
-      '</div>'
-    }
-    function branch (parentId, depth) {
-      var list = kids[parentId] || []
-      if (!list.length) return ''
-      list.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)) })
-      return list.map(function (f) {
-        var hasKids = !!(kids[f.id] && kids[f.id].length)
-        // An explicit toggle wins; untouched branches auto-open down to the
-        // current folder (forcing that open made ancestors uncollapsible).
-        var isOpen = S.open[f.id] != null ? S.open[f.id] : isAncestorOf(f.id, S.folderId, kids)
-        return row(f, depth, hasKids, isOpen, hasKids && isOpen ? '<div class="bw-tree-kids">' + branch(f.id, depth + 1) + '</div>' : '')
-      }).join('')
-    }
-
-    el('bwTree').innerHTML = row({ id: S.rootId, name: S.rootName }, 0, false, true,
-      '<div class="bw-tree-kids">' + branch(S.rootId, 1) + '</div>')
+  // Children by parent id and the ancestors of the current folder, from the
+  // last renderTree(); a twist click renders just that branch from them.
+  var treeKids = Object.create(null)
+  var treeOnPath = Object.create(null)
+  function treeRow (f, depth, hasKids, isOpen, inner) {
+    var twist = hasKids
+      ? '<span class="bw-tree-twist" data-twist="' + f.id + '">' + ICO.chev + '</span>'
+      : '<span class="bw-tree-twist"></span>'
+    return '<div class="bw-tree-row' + (isOpen ? ' is-open' : '') + '" style="--d:' + depth + '">' +
+      '<button type="button" class="bw-tree-link folder-tree-link' + (String(f.id) === String(S.folderId) ? ' is-active' : '') +
+        '" data-folder-id="' + f.id + '" title="' + esc(f.name) + '">' +
+        twist + '<span class="bw-tree-ico">' + ICO.folderLine + '</span><span class="bw-tree-name">' + esc(f.name) + '</span>' +
+      '</button>' + inner +
+    '</div>'
+  }
+  function treeBranch (parentId, depth) {
+    var list = treeKids[parentId] || []
+    if (!list.length) return ''
+    list.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)) })
+    return list.map(function (f) {
+      var hasKids = !!(treeKids[f.id] && treeKids[f.id].length)
+      // An explicit toggle wins; untouched branches auto-open down to the
+      // current folder (forcing that open made ancestors uncollapsible).
+      var isOpen = S.open[f.id] != null ? S.open[f.id] : !!treeOnPath[f.id]
+      return treeRow(f, depth, hasKids, isOpen, hasKids && isOpen ? '<div class="bw-tree-kids">' + treeBranch(f.id, depth + 1) + '</div>' : '')
+    }).join('')
   }
 
-  function isAncestorOf (candidateId, folderId, kids) {
-    // Auto-expand the path down to the folder currently being viewed.
-    var stack = (kids[candidateId] || []).slice()
-    while (stack.length) {
-      var n = stack.pop()
-      if (n.id === folderId) return true
-      ;(kids[n.id] || []).forEach(function (c) { stack.push(c) })
-    }
-    return false
+  function renderTree () {
+    var kids = treeKids = Object.create(null)
+    S.tree.forEach(function (f) { (kids[f.parent_id] = kids[f.parent_id] || []).push(f) })
+    // Auto-expand the path down to the folder currently being viewed: one walk
+    // up the parents (bounded, a corrupt tree may loop).
+    var onPath = treeOnPath = Object.create(null)
+    for (var p = byId(S.tree, S.folderId), n = 0; p && n < 1000; p = byId(S.tree, p.parent_id), n++) onPath[p.parent_id] = true
+
+    el('bwTree').innerHTML = treeRow({ id: S.rootId, name: S.rootName }, 0, false, true,
+      '<div class="bw-tree-kids">' + treeBranch(S.rootId, 1) + '</div>')
   }
 
   // One collator: localeCompare with options builds one per comparison.
@@ -423,8 +431,8 @@
     return arr.slice().sort(by[s] || by.name)
   }
 
-  function check (kind, id) {
-    return '<input type="checkbox" class="bw-check ' + kind + '-checkbox" data-' + kind + '-id="' + esc(id) + '" aria-label="Select ' + kind + '">'
+  function check (kind, id, on) {
+    return '<input type="checkbox" class="bw-check ' + kind + '-checkbox" data-' + kind + '-id="' + esc(id) + '" aria-label="Select ' + kind + '"' + (on ? ' checked' : '') + '>'
   }
   function act (cls, data, title, icon) {
     return '<button type="button" class="bw-act ' + cls + '" ' + data + ' title="' + title + '" aria-label="' + title + '">' + icon + '</button>'
@@ -434,9 +442,10 @@
   function folderCard (f) {
     var badges = f.is_e2e ? E2E_BADGE : (f.has_mixed_e2e ? '<span class="bw-badge bw-badge-mixed" title="Some files are not end-to-end encrypted">Mixed</span>' : '')
     var count = (f.file_count || 0) + (f.file_count === 1 ? ' file' : ' files')
-    return '<div class="bw-item is-folder folder-row folder-tile" data-folder-id="' + f.id + '" data-folder-name="' + esc(f.name) + '"' +
+    var on = !!S.sel['folder:' + f.id]
+    return '<div class="bw-item is-folder folder-row folder-tile' + (on ? ' is-selected' : '') + '" data-folder-id="' + f.id + '" data-folder-name="' + esc(f.name) + '"' +
         (f.is_e2e ? ' data-is-e2e-folder="true"' : '') + '>' +
-      check('folder', f.id) +
+      check('folder', f.id, on) +
       '<span class="bw-item-thumb">' + ICO.folder + '</span>' +
       '<span class="bw-item-name folder-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
       '<span class="bw-item-meta">' + badges + '</span>' +
@@ -451,9 +460,10 @@
 
   function fileCard (f) {
     var kind = KIND[extOf(f.name)] || 'file'
-    return '<div class="bw-item is-file file-row file-tile" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '"' +
+    var on = !!S.sel['file:' + f.id]
+    return '<div class="bw-item is-file file-row file-tile' + (on ? ' is-selected' : '') + '" data-file-id="' + esc(f.id) + '" data-file-name="' + esc(f.name) + '"' +
         ' data-e2e="' + (f.is_e2e ? 'true' : 'false') + '">' +
-      check('file', f.id) +
+      check('file', f.id, on) +
       '<span class="bw-item-thumb" data-thumb-for="' + esc(f.id) + '"' + (TEXT_KIND[kind] ? ' data-text' : '') + '>' + docIcon(f.name) + '</span>' +
       '<span class="bw-item-name file-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' +
       '<span class="bw-item-meta">' + (f.is_e2e ? E2E_BADGE : '') + '</span>' +
@@ -475,8 +485,20 @@
 
   function parentId () { return S.crumbs.length > 1 ? S.crumbs[S.crumbs.length - 2].id : null }
 
+  // A big folder renders in chunks: the first CHUNK items now, the next ones
+  // as the end of the list comes near. One innerHTML of thousands of items was
+  // a long task on every navigation, sort and view switch.
+  var CHUNK = 200
+  var chunk = null
+  var chunkObs = null
+  function stopChunks () {
+    if (chunkObs) { chunkObs.disconnect(); chunkObs = null }
+    chunk = null
+  }
+
   function renderItems () {
     var view = el('bwView')
+    stopChunks()
     view.dataset.view = S.view
     if (!S.folders.length && !S.files.length) {
       view.innerHTML = emptyState(ICO.folderLine, 'This folder is empty', 'Nothing has been shared here yet.')
@@ -489,17 +511,72 @@
       html += '<div class="rd-callout is-warn bw-locked">' + ICO.lock + '<div>Some names could not be decrypted. ' +
         'Open the full share link, including the part after #, to see them.</div></div>'
     }
-    if (S.folders.length) html += section('Folders', S.folders.length, sortItems(S.folders, false).map(folderCard).join(''), 'has-folders')
-    if (S.files.length) html += section('Files', S.files.length, sortItems(S.files, true).map(fileCard).join(''))
+    var c = { folders: sortItems(S.folders, false), files: sortItems(S.files, true), nf: 0, nfi: 0 }
+    c.nf = Math.min(c.folders.length, CHUNK)
+    c.nfi = Math.min(c.files.length, CHUNK - c.nf)
+    if (c.folders.length) html += section('Folders', c.folders.length, c.folders.slice(0, c.nf).map(folderCard).join(''), 'has-folders')
+    if (c.nfi) html += section('Files', c.files.length, c.files.slice(0, c.nfi).map(fileCard).join(''), 'is-files')
     view.innerHTML = html
+    if (c.nf < c.folders.length || c.nfi < c.files.length) watchChunks(c)
+  }
+
+  function watchChunks (c) {
+    var view = el('bwView')
+    chunk = c
+    view.insertAdjacentHTML('beforeend', '<div class="bw-chunk-end" aria-hidden="true"></div>')
+    var end = view.lastElementChild
+    if (!('IntersectionObserver' in window)) { while (chunk === c) appendChunk(); return }
+    chunkObs = new IntersectionObserver(function (ents) {
+      if (!ents.some(function (en) { return en.isIntersecting })) return
+      appendChunk()
+      // Still in reach after the append: observe again for a fresh entry.
+      if (chunkObs) { chunkObs.unobserve(end); chunkObs.observe(end) }
+    }, { root: view, rootMargin: '0px 0px 800px 0px' })
+    chunkObs.observe(end)
+  }
+
+  function appendChunk () {
+    var c = chunk
+    if (!c) return
+    var view = el('bwView'), end = view.querySelector('.bw-chunk-end'), room = CHUNK
+    if (c.nf < c.folders.length) {
+      var fs = c.folders.slice(c.nf, c.nf + room)
+      c.nf += fs.length; room -= fs.length
+      view.querySelector('.bw-items.has-folders').insertAdjacentHTML('beforeend', fs.map(folderCard).join(''))
+    }
+    if (room > 0 && c.nfi < c.files.length) {
+      var fl = c.files.slice(c.nfi, c.nfi + room)
+      c.nfi += fl.length
+      var box = view.querySelector('.bw-items.is-files')
+      if (!box) {
+        end.insertAdjacentHTML('beforebegin', section('Files', c.files.length, '', 'is-files'))
+        box = view.querySelector('.bw-items.is-files')
+      }
+      var from = box.children.length, slots = []
+      box.insertAdjacentHTML('beforeend', fl.map(fileCard).join(''))
+      for (var i = from; i < box.children.length; i++) {
+        var slot = box.children[i].querySelector('[data-thumb-for]')
+        if (slot) slots.push(slot)
+      }
+      hydrateThumbs(slots)
+    }
+    if (c.nf >= c.folders.length && c.nfi >= c.files.length) {
+      stopChunks()
+      if (end) end.remove()
+    }
   }
 
   // ── Thumbnails: lazy, plain via server URL, E2EE decrypted in-browser ─────
   var thumbObs = null
   var thumbQueue = []
   var thumbQueued = new Set()
+  var thumbRetries = new Map()
   var thumbInFlight = 0
-  var THUMB_CONCURRENCY = 32
+  // 8 at a time, as on the Files page: the edge answers bigger bursts with 429.
+  var THUMB_CONCURRENCY = 8
+  // One per listing: a new listing aborts the old one's loads, so they stop
+  // holding slots its own thumbnails wait for.
+  var thumbAbort = new AbortController()
   // Decrypted E2EE thumbnails, by file id: re-renders (sort/view) reuse them and
   // a replaced or evicted object URL is revoked.
   var e2eThumbCache = new Map()
@@ -523,107 +600,119 @@
       im.src = url
     })
   }
-  function hydrateThumbs () {
+  function resetThumbs () {
     if (thumbObs) { try { thumbObs.disconnect() } catch (e) {} thumbObs = null }
+    thumbAbort.abort()
+    thumbAbort = new AbortController()
     thumbQueue = []
     thumbQueued = new Set()
-    var slots = document.querySelectorAll('[data-thumb-for]')
-    if (!slots.length) return
-    var scroller = el('bwView')
-    function enqueue (slot) {
-      var id = slot.getAttribute('data-thumb-for')
-      if (!id || thumbQueued.has(id)) return
-      thumbQueued.add(id)
-      thumbQueue.push(slot)
-      pump()
+    thumbRetries = new Map()
+  }
+  function enqueueThumb (slot) {
+    var id = slot.getAttribute('data-thumb-for')
+    if (!id || thumbQueued.has(id)) return
+    thumbQueued.add(id)
+    thumbQueue.push(slot)
+    pumpThumbs()
+  }
+  function pumpThumbs () {
+    while (thumbInFlight < THUMB_CONCURRENCY && thumbQueue.length) {
+      var slot = thumbQueue.shift()
+      thumbInFlight++
+      Promise.resolve(loadThumb(slot)).then(function () {}, function () {}).then(function () {
+        thumbInFlight--
+        pumpThumbs()
+      })
     }
-    function pump () {
-      while (thumbInFlight < THUMB_CONCURRENCY && thumbQueue.length) {
-        var slot = thumbQueue.shift()
-        thumbInFlight++
-        Promise.resolve(load(slot)).then(function () {}, function () {}).then(function () {
-          thumbInFlight--
-          pump()
-        })
-      }
-    }
-    var thumbRetries = new Map()
-    function scheduleRetry (slot) {
-      var id = slot.getAttribute('data-thumb-for')
-      var n = (thumbRetries.get(id) || 0) + 1
-      if (n > 8) return
-      thumbRetries.set(id, n)
-      setTimeout(function () {
-        if (!id || !slot.isConnected) return
-        thumbQueued.delete(id)
-        enqueue(slot)
-      }, Math.min(8000, 700 * n))
-    }
-    function canThumb (f) {
-      if (!f) return false
-      if (f.has_thumbnail) return true
-      if (f.is_e2e) return false
-      if (f.thumbnailable) return true
-      var ext = String(f.extension || '').replace(/^\./, '').toLowerCase()
-      var text = { txt:1, md:1, log:1, csv:1, json:1, xml:1, yaml:1, yml:1, py:1, js:1, html:1, css:1, sh:1, bat:1, ini:1, cfg:1, conf:1, c:1, cpp:1, h:1, hpp:1, lua:1, rb:1, rs:1, go:1, java:1, ts:1, tsx:1, jsx:1, toml:1, ps1:1, sql:1, r:1, swift:1, kt:1, php:1, pl:1, diff:1, makefile:1, env:1 }
-      var video = { mp4:1, webm:1, ogg:1, mov:1, mkv:1, avi:1, wmv:1, flv:1, m4v:1, '3gp':1 }
-      var image = { jpg:1, jpeg:1, png:1, gif:1, bmp:1, webp:1 }
-      var base = String(f.name || '').split(/[/\\]/).pop().toLowerCase()
-      return !!(image[ext] || text[ext] || video[ext] || base === '.env' || base.indexOf('.env.') === 0)
-    }
-    function load (slot) {
-      var id = slot.getAttribute('data-thumb-for')
-      var f = byId(S.files, id)
-      if (!f) return
-      if (!f.is_e2e) {
-        if (!canThumb(f)) return
-        return (async function () {
-          try {
-            var tr = await fetch('/f/' + encodeURIComponent(TOKEN) + '/thumb/' + encodeURIComponent(f.id))
-            // 404 is almost always permanent: one retry still picks up the
-            // server's on-demand fill, more only for 429 / transient errors.
-            if (!tr.ok) { if (tr.status !== 404 || !thumbRetries.has(id)) scheduleRetry(slot); return }
-            await paintThumb(slot, URL.createObjectURL(await tr.blob()), true)
-          } catch (e) { scheduleRetry(slot) }
-        })()
-      }
-      if (!f.enc_thumb_nonce || typeof OneGyCrypto === 'undefined') return
+  }
+  function scheduleThumbRetry (slot) {
+    var id = slot.getAttribute('data-thumb-for')
+    var retries = thumbRetries
+    var n = (retries.get(id) || 0) + 1
+    if (n > 8) return
+    retries.set(id, n)
+    setTimeout(function () {
+      if (!id || !slot.isConnected || retries !== thumbRetries) return
+      thumbQueued.delete(id)
+      enqueueThumb(slot)
+    }, Math.min(8000, 700 * n))
+  }
+  function canThumb (f) {
+    if (!f) return false
+    if (f.has_thumbnail) return true
+    if (f.is_e2e) return false
+    if (f.thumbnailable) return true
+    var ext = String(f.extension || '').replace(/^\./, '').toLowerCase()
+    var text = { txt:1, md:1, log:1, csv:1, json:1, xml:1, yaml:1, yml:1, py:1, js:1, html:1, css:1, sh:1, bat:1, ini:1, cfg:1, conf:1, c:1, cpp:1, h:1, hpp:1, lua:1, rb:1, rs:1, go:1, java:1, ts:1, tsx:1, jsx:1, toml:1, ps1:1, sql:1, r:1, swift:1, kt:1, php:1, pl:1, diff:1, makefile:1, env:1 }
+    var video = { mp4:1, webm:1, ogg:1, mov:1, mkv:1, avi:1, wmv:1, flv:1, m4v:1, '3gp':1 }
+    var image = { jpg:1, jpeg:1, png:1, gif:1, bmp:1, webp:1 }
+    var base = String(f.name || '').split(/[/\\]/).pop().toLowerCase()
+    return !!(image[ext] || text[ext] || video[ext] || base === '.env' || base.indexOf('.env.') === 0)
+  }
+  function loadThumb (slot) {
+    var id = slot.getAttribute('data-thumb-for')
+    var f = byId(S.files, id)
+    if (!f) return
+    var signal = thumbAbort.signal
+    if (!f.is_e2e) {
+      if (!canThumb(f)) return
       return (async function () {
         try {
-          var url = e2eThumbCache.get(id)
-          if (!url) {
-            var key = await fileKeyFor(f)
-            if (!key) return
-            var r = await fetch('/f/' + encodeURIComponent(TOKEN) + '/e2e-thumb/' + encodeURIComponent(f.id))
-            if (r.status === 429) { scheduleRetry(slot); return }
-            if (!r.ok) return
-            var buf = await r.arrayBuffer()
-            if (!buf || buf.byteLength < 16) return
-            var plain = await OneGyCrypto.decryptThumbnail(buf, f.enc_thumb_nonce, key)
-            url = URL.createObjectURL(new Blob([plain]))
-            rememberE2eThumb(id, url)
-          }
-          await paintThumb(slot, url, false)
-        } catch (e) {}
+          var tr = await fetch('/f/' + encodeURIComponent(TOKEN) + '/thumb/' + encodeURIComponent(f.id), { signal: signal })
+          // 404 is almost always permanent: one retry still picks up the
+          // server's on-demand fill, more only for 429 / transient errors.
+          if (!tr.ok) { if (tr.status !== 404 || !thumbRetries.has(id)) scheduleThumbRetry(slot); return }
+          await paintThumb(slot, URL.createObjectURL(await tr.blob()), true)
+        } catch (e) { if (!signal.aborted) scheduleThumbRetry(slot) }
       })()
     }
+    if (!f.enc_thumb_nonce || typeof OneGyCrypto === 'undefined') return
+    return (async function () {
+      try {
+        var url = e2eThumbCache.get(id)
+        if (!url) {
+          var key = await fileKeyFor(f)
+          if (!key || signal.aborted) return
+          var r = await fetch('/f/' + encodeURIComponent(TOKEN) + '/e2e-thumb/' + encodeURIComponent(f.id), { signal: signal })
+          if (r.status === 429) { scheduleThumbRetry(slot); return }
+          if (!r.ok) return
+          var buf = await r.arrayBuffer()
+          if (!buf || buf.byteLength < 16) return
+          var plain = await OneGyCrypto.decryptThumbnail(buf, f.enc_thumb_nonce, key)
+          url = URL.createObjectURL(new Blob([plain]))
+          rememberE2eThumb(id, url)
+        }
+        await paintThumb(slot, url, false)
+      } catch (e) {}
+    })()
+  }
+  // Watch the listing's thumbnail slots. With slots: a chunk added to the
+  // current listing; without: a new listing, so start over.
+  function hydrateThumbs (slots) {
+    if (!slots) {
+      resetThumbs()
+      slots = document.querySelectorAll('[data-thumb-for]')
+    }
+    if (!slots.length) return
     if (!('IntersectionObserver' in window)) {
-      slots.forEach(enqueue)
+      Array.prototype.forEach.call(slots, enqueueThumb)
       return
     }
-    thumbObs = new IntersectionObserver(function (ents) {
-      ents.forEach(function (en) {
-        if (!en.isIntersecting) return
-        thumbObs.unobserve(en.target)
-        enqueue(en.target)
-      })
-    }, { root: scroller || null, rootMargin: '280px' })
-    slots.forEach(function (n) { thumbObs.observe(n) })
+    if (!thumbObs) {
+      thumbObs = new IntersectionObserver(function (ents) {
+        ents.forEach(function (en) {
+          if (!en.isIntersecting) return
+          thumbObs.unobserve(en.target)
+          enqueueThumb(en.target)
+        })
+      }, { root: el('bwView') || null, rootMargin: '280px' })
+    }
+    Array.prototype.forEach.call(slots, function (n) { thumbObs.observe(n) })
   }
 
   // ═══ DOWNLOADS ═══════════════════════════════════════════════════════════
   function saveBlob (buf, name) {
-    var url = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }))
+    var url = URL.createObjectURL(buf instanceof Blob ? buf : new Blob([buf], { type: 'application/octet-stream' }))
     var a = document.createElement('a')
     a.href = url; a.download = name
     document.body.appendChild(a); a.click(); a.remove()
@@ -736,6 +825,9 @@
     var n = selCount()
     el('bwSelCount').textContent = n
     el('bwSelbar').classList.toggle('is-open', n > 0)
+    // Shows every tick while anything is selected (browse.css); a :has() over
+    // all ticks re-matched every item on each toggle.
+    el('bwView').classList.toggle('has-sel', n > 0)
   }
   function toggleSel (kind, id, on) {
     var k = kind + ':' + id
@@ -834,13 +926,15 @@
     }
     var cd = concatBytes(centrals)
     if (offset > ZIP32_MAX || cd.length > ZIP32_MAX) throw new Error('ARCHIVE TOO LARGE')
-    return concatBytes(locals.concat([
+    // The parts go to the Blob as they are: joining them first was one more
+    // copy of the whole archive on the main thread.
+    return new Blob(locals.concat([
       cd,
       concatBytes([
         new Uint8Array([0x50, 0x4b, 0x05, 0x06]), u16(0), u16(0),
         u16(entries.length), u16(entries.length), u32(cd.length), u32(offset), u16(0)
       ])
-    ]))
+    ]), { type: 'application/octet-stream' })
   }
   async function resolveZipPath (file, folderNames) {
     var parts = String(file.name == null ? '' : file.name).split('/')
@@ -868,6 +962,20 @@
     }
     return out.join('/')
   }
+  // Fetches (and decrypts) one ZIP member. null: an E2EE file with no key.
+  async function zipMemberBytes (f) {
+    if (f.is_e2e) {
+      var key = f._zipKey || await fileKeyFor(f)
+      if (!key) return null
+      f._zipKey = key
+      var buf = await xhrArrayBuffer('/f/' + encodeURIComponent(f.id) + '/encrypted')
+      return new Uint8Array(await OneGyCrypto.decryptFileData(buf, key))
+    }
+    return new Uint8Array(await xhrArrayBuffer(f.download_url || ('/f/' + TOKEN + '/file/' + f.id)))
+  }
+  // Members are fetched and decrypted ZIP_POOL at a time but added in list
+  // order, so names and skips come out as they did one by one.
+  var ZIP_POOL = 3
   async function clientZip (files, zipName, ticket, subfolderId, folderNames) {
     if (!files.length) { toast('NO DOWNLOADABLE FILES', 'error'); return }
     prog.open(zipName || 'download.zip')
@@ -875,30 +983,29 @@
     var skipped = []
     var usedNames = {}
     var zipOffset = 0
-    try {
-      for (var i = 0; i < files.length; i++) {
-        var f = files[i]
-        prog.set((i / files.length) * 90, 'File ' + (i + 1) + '/' + files.length)
+    var pending = [], started = 0
+    function startNext () {
+      if (started >= files.length) return
+      var f = files[started++]
+      pending.push((async function () {
         // The file key also decrypts the member's name, so fetch it first.
         if (f.is_e2e && !f._zipKey) {
           try { f._zipKey = await fileKeyFor(f) } catch (e) {}
         }
+        try { return { bytes: await zipMemberBytes(f) } } catch (memberErr) { return { failed: true } }
+      })())
+    }
+    try {
+      for (var p = 0; p < ZIP_POOL; p++) startNext()
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i]
+        prog.set((i / files.length) * 90, 'File ' + (i + 1) + '/' + files.length)
+        var got = await pending.shift()
+        startNext()
         var zipPath = uniqueZipName(await resolveZipPath(f, folderNames), usedNames)
-        var bytes
-        try {
-          if (f.is_e2e) {
-            var key = f._zipKey || await fileKeyFor(f)
-            if (!key) { skipped.push(zipPath + '  [NO DECRYPTION KEY]'); continue }
-            f._zipKey = key
-            var buf = await xhrArrayBuffer('/f/' + encodeURIComponent(f.id) + '/encrypted')
-            bytes = new Uint8Array(await OneGyCrypto.decryptFileData(buf, key))
-          } else {
-            bytes = new Uint8Array(await xhrArrayBuffer(f.download_url || ('/f/' + TOKEN + '/file/' + f.id)))
-          }
-        } catch (memberErr) {
-          skipped.push(zipPath + '  [DECRYPTION OR DOWNLOAD FAILED]')
-          continue
-        }
+        if (got.failed) { skipped.push(zipPath + '  [DECRYPTION OR DOWNLOAD FAILED]'); continue }
+        if (!got.bytes) { skipped.push(zipPath + '  [NO DECRYPTION KEY]'); continue }
+        var bytes = got.bytes
         if (bytes.length > ZIP32_MAX) {
           skipped.push(zipPath + '  [FILE TOO LARGE FOR ZIP: DOWNLOAD INDIVIDUALLY]')
           continue
@@ -1062,7 +1169,10 @@
   // every keystroke cancelled an in-flight folder load, and a short query
   // refetched the folder (wiping the selection) even when no results were up.
   var searchEpoch = null
+  // Aborts the previous keystroke's server search (its answer is dropped anyway).
+  var searchAbort = null
   async function runSearch (q) {
+    if (searchAbort) { searchAbort.abort(); searchAbort = null }
     if (!q || q.trim().length < 2) {
       // Results on screen, or a search still in flight that would land them.
       if (S.searching || hasRequestAuthority(searchEpoch)) load(S.folderId, { noPush: true })
@@ -1080,8 +1190,9 @@
         files = all.filter(hit)
         folders = S.tree.filter(hit)
       } else {
+        searchAbort = new AbortController()
         var r = await fetch('/f/' + encodeURIComponent(TOKEN) + '/search?q=' + encodeURIComponent(q.trim()),
-          { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+          { headers: { 'X-Requested-With': 'XMLHttpRequest' }, signal: searchAbort.signal })
         if (!hasRequestAuthority(epoch)) return
         if (!r.ok) throw new Error('HTTP ' + r.status)
         var d = await r.json()
@@ -1105,6 +1216,8 @@
     }
   }
   function paintSearch () {
+    stopChunks()
+    resetThumbs()
     var h = searchHits
     // Results are always rows: the location column says where each hit lives.
     var view = el('bwView')
@@ -1145,8 +1258,16 @@
     if (twist) {
       e.stopPropagation()
       var tid = twist.dataset.twist
-      S.open[tid] = !twist.closest('.bw-tree-row').classList.contains('is-open')
-      renderTree()
+      var trow = twist.closest('.bw-tree-row')
+      var opening = S.open[tid] = !trow.classList.contains('is-open')
+      // Only this branch changes: drop or build its children in place.
+      trow.classList.toggle('is-open', opening)
+      var tkids = trow.querySelector(':scope > .bw-tree-kids')
+      if (tkids) tkids.remove()
+      if (opening) {
+        var tdepth = parseInt(trow.style.getPropertyValue('--d'), 10) || 0
+        trow.insertAdjacentHTML('beforeend', '<div class="bw-tree-kids">' + treeBranch(tid, tdepth + 1) + '</div>')
+      }
       return
     }
     if (e.target.closest('#bwUp')) { if (S.folderId !== S.rootId) load(parentId()); return }

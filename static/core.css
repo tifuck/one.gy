@@ -10,26 +10,25 @@
 @font-face{font-family:'Inter';font-style:normal;font-weight:500;font-display:swap;src:url('/static/vendor/fonts/inter-latin-500-normal.woff2') format('woff2')}
 @font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:swap;src:url('/static/vendor/fonts/inter-latin-600-normal.woff2') format('woff2')}
 @font-face{font-family:'Inter';font-style:normal;font-weight:700;font-display:swap;src:url('/static/vendor/fonts/inter-latin-700-normal.woff2') format('woff2')}
+/* Metric-matched stand-ins for Inter while it loads (font-display:swap), so the
+   swap barely reflows text: Arial/Helvetica (Liberation Sans and Arimo are
+   metric clones), else Android's Roboto, scaled to Inter's widths (shaped
+   site copy per weight, short labels for 500) with Inter 4's line metrics
+   (ascent .96875, descent .2412, no gap) divided by that scale. Latin range
+   only, like the Inter files: other scripts keep falling back to system-ui. */
+@font-face{font-family:'Inter Fallback';font-weight:100 400;src:local('Arial'),local('ArialMT'),local('Helvetica'),local('Liberation Sans'),local('Arimo');size-adjust:106.6%;ascent-override:90.88%;descent-override:22.63%;line-gap-override:0%;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Inter Fallback';font-weight:500;src:local('Arial'),local('ArialMT'),local('Helvetica'),local('Liberation Sans'),local('Arimo');size-adjust:107%;ascent-override:90.54%;descent-override:22.54%;line-gap-override:0%;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Inter Fallback';font-weight:600;src:local('Arial Bold'),local('Arial-BoldMT'),local('Helvetica Bold'),local('Liberation Sans Bold'),local('Arimo Bold');size-adjust:101.2%;ascent-override:95.73%;descent-override:23.84%;line-gap-override:0%;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Inter Fallback';font-weight:700 900;src:local('Arial Bold'),local('Arial-BoldMT'),local('Helvetica Bold'),local('Liberation Sans Bold'),local('Arimo Bold');size-adjust:102.6%;ascent-override:94.42%;descent-override:23.51%;line-gap-override:0%;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Inter Fallback Roboto';font-weight:100 500;src:local('Roboto'),local('Roboto-Regular');size-adjust:108%;ascent-override:89.7%;descent-override:22.33%;line-gap-override:0%;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Inter Fallback Roboto';font-weight:600 900;src:local('Roboto Bold'),local('Roboto-Bold');size-adjust:108.4%;ascent-override:89.37%;descent-override:22.25%;line-gap-override:0%;unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
 @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/static/vendor/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2')}
 @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url('/static/vendor/fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2')}
 @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:600;font-display:swap;src:url('/static/vendor/fonts/jetbrains-mono-latin-600-normal.woff2') format('woff2')}
 @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:700;font-display:swap;src:url('/static/vendor/fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2')}
-@font-face{font-family:'Fraunces';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/fraunces-400-normal.woff2') format('woff2')}
-@font-face{font-family:'Fraunces';font-style:italic;font-weight:400;font-display:swap;src:url('/static/fonts/fraunces-400-italic.woff2') format('woff2')}
-@font-face{font-family:'Fraunces';font-style:normal;font-weight:600;font-display:swap;src:url('/static/fonts/fraunces-600-normal.woff2') format('woff2')}
-@font-face{font-family:'Fraunces';font-style:normal;font-weight:900;font-display:swap;src:url('/static/fonts/fraunces-900-normal.woff2') format('woff2')}
 @font-face{font-family:'Bricolage Grotesque';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/bricolage-grotesque-500-normal.woff2') format('woff2')}
 @font-face{font-family:'Bricolage Grotesque';font-style:normal;font-weight:700;font-display:swap;src:url('/static/fonts/bricolage-grotesque-700-normal.woff2') format('woff2')}
 @font-face{font-family:'Bricolage Grotesque';font-style:normal;font-weight:800;font-display:swap;src:url('/static/fonts/bricolage-grotesque-800-normal.woff2') format('woff2')}
-@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/space-grotesk-400-normal.woff2') format('woff2')}
-@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/space-grotesk-500-normal.woff2') format('woff2')}
-@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:700;font-display:swap;src:url('/static/fonts/space-grotesk-700-normal.woff2') format('woff2')}
-@font-face{font-family:'Baloo 2';font-style:normal;font-weight:500;font-display:swap;src:url('/static/fonts/baloo-2-500-normal.woff2') format('woff2')}
-@font-face{font-family:'Baloo 2';font-style:normal;font-weight:700;font-display:swap;src:url('/static/fonts/baloo-2-700-normal.woff2') format('woff2')}
-@font-face{font-family:'Baloo 2';font-style:normal;font-weight:800;font-display:swap;src:url('/static/fonts/baloo-2-800-normal.woff2') format('woff2')}
-@font-face{font-family:'Nunito';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/nunito-400-normal.woff2') format('woff2')}
-@font-face{font-family:'Nunito';font-style:normal;font-weight:700;font-display:swap;src:url('/static/fonts/nunito-700-normal.woff2') format('woff2')}
-@font-face{font-family:'Nunito';font-style:normal;font-weight:800;font-display:swap;src:url('/static/fonts/nunito-800-normal.woff2') format('woff2')}
 
 /* ---- Modern reset -------------------------------------------------------- */
 *,*::before,*::after{box-sizing:border-box}
@@ -85,8 +84,8 @@ p{text-wrap:pretty}
      values here keep the public (non-switchable) shells rendering correctly. */
   --code-bg:#0f1720; --code-fg:#dfe7ef;
   --toggle-off:#d3dbe4; --scrim:rgba(10,16,24,.5);
-  --font-display:'Inter',system-ui,sans-serif;
-  --font-body:'Inter',system-ui,sans-serif;
+  --font-display:'Inter','Inter Fallback','Inter Fallback Roboto',system-ui,sans-serif;
+  --font-body:'Inter','Inter Fallback','Inter Fallback Roboto',system-ui,sans-serif;
   --font-mono:'JetBrains Mono',ui-monospace,monospace;
   --radius:12px; --radius-lg:22px; --radius-pill:999px;
   --shadow-1:0 1px 2px rgba(16,18,24,.06),0 4px 12px rgba(16,18,24,.05);
@@ -190,6 +189,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-we
 .rd-nav-open .rd-nav-toggle span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
 .rd-badge{display:inline-grid;place-items:center;min-width:1.15rem;height:1.15rem;padding:0 .3rem;margin-left:.4rem;
   font-family:var(--font-mono);font-size:.62rem;font-weight:700;background:var(--accent);color:var(--accent-contrast);vertical-align:middle}
+/* The unread count arrives after first paint (core.js): it sits on the link's
+   corner so the centred nav links do not move when it shows. */
+.rd-nav-mid .rd-nav-link:has(> .rd-badge){position:relative}
+.rd-nav-mid .rd-badge{position:absolute;top:-4px;right:-5px;margin:0}
 
 /* ONE.GY Desktop site bridge (desktop-bridge.js sets html.is-desktop-app):
    the Sync nav entry exists only inside the app, download links only outside.

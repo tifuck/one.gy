@@ -132,6 +132,8 @@
   display:grid; grid-template-columns:24px minmax(0,1fr) auto; align-items:center; gap:8px; min-height:40px;
   padding:5px 10px 5px 4px; border-radius:7px; cursor:pointer; transition:background .1s;
 }
+/* A long queue: rows off screen skip layout and paint */
+.ui-v2 .mp-playlist-item{ content-visibility:auto; contain-intrinsic-size:auto 40px; }
 .ui-v2 .mp-playlist-item:hover{ background:var(--hover); }
 .ui-v2 .mp-playlist-item.mp-playlist-current{ background:var(--press); }
 .ui-v2 .mp-playlist-num{ text-align:center; font-size:.74rem; color:var(--text-faint); font-variant-numeric:tabular-nums; }

@@ -8,6 +8,9 @@
 (function () {
   'use strict'
 
+  // files.html puts the on-demand module URLs on this tag (loadExtra).
+  var extrasTag = document.currentScript
+
   // ---- State ---------------------------------------------------------------
   var SEARCH_PAGE = 200      // search hits rendered per "Show more"
   var S = {
@@ -16,6 +19,7 @@
     folders: [], files: [],  // current listing (names decrypted in place)
     breadcrumbs: [],
     sidebar: [],             // flat folder tree
+    treeSeq: null,           // server tree_seq S.sidebar was built from
     view: 'grid',
     sort: 'name',
     sel: new Set(),          // "f<id>" files, "d<id>" folders
@@ -212,11 +216,16 @@
   }
 
   // ---- Sorting -------------------------------------------------------------
+  // Names are lower-cased once per item, not per comparison. The last result
+  // per kind is kept: S.files / S.folders are only ever reassigned, so a view
+  // change, "Show more" or a preview of the same listing sorts nothing again.
+  var sortMemo = {}
   function sortItems (arr, isFolder) {
-    var s = S.sort
-    var a = arr.slice()
-    a.sort(function (x, y) {
-      var nx = displayName(x, isFolder).toLowerCase(), ny = displayName(y, isFolder).toLowerCase()
+    var s = S.sort, memo = sortMemo[isFolder ? 'd' : 'f']
+    if (memo && memo.src === arr && memo.sort === s) return memo.out
+    var a = arr.map(function (x) { return { x: x, n: displayName(x, isFolder).toLowerCase() } })
+    a.sort(function (p, q) {
+      var x = p.x, y = q.x, nx = p.n, ny = q.n
       switch (s) {
         case 'name-desc': return ny < nx ? -1 : ny > nx ? 1 : 0
         case 'size': return (y.size || 0) - (x.size || 0)
@@ -226,7 +235,9 @@
         default: return nx < ny ? -1 : nx > ny ? 1 : 0
       }
     })
-    return a
+    var out = a.map(function (p) { return p.x })
+    sortMemo[isFolder ? 'd' : 'f'] = { src: arr, sort: s, out: out }
+    return out
   }
 
   // ---- Data load -----------------------------------------------------------
@@ -282,7 +293,7 @@
     if (!opts.keepSel) clearSel()
     var url = (id == null) ? '/files/list' : '/files/list/' + id
     try {
-      var r = await fetchListing(url)
+      var r = await fetchListing(withTreeSeq(url))
       if (stale(seq)) return
       if (!r.ok) {
         if (sessionExpired(r, id == null ? '/files' : '/files/folder/' + id)) return
@@ -313,7 +324,7 @@
       if (!opts.noPush && window.location.pathname !== path) history.pushState({ fx: true, folderId: S.folderId }, '', path)
       // The tree holds every folder in the account, so it comes after the
       // listing; the previous (decrypted) tree stays until then.
-      await setSidebar(d.sidebar_folders || [], seq)
+      await setSidebar(d.sidebar_unchanged ? null : (d.sidebar_folders || []), seq, d.tree_seq)
     } catch (e) {
       if (stale(seq)) return
       endLoad(null)
@@ -338,7 +349,7 @@
     S.trashMode = true; clearSel()
     $('fxNewFolder').hidden = true; $('fxUploadBtn').hidden = true
     try {
-      var r = await fetchListing('/trash/list')
+      var r = await fetchListing(withTreeSeq('/trash/list'))
       if (stale(seq)) return
       // A JSON error body used to be parsed as an empty listing, which renders
       // "Trash is empty" — telling the user their deleted data is already gone
@@ -363,7 +374,7 @@
       if (restoreAllBtn) restoreAllBtn.hidden = !(S.files.length || S.folders.length)
       updateSelbar()
       if (!opts.noPush && window.location.pathname !== '/trash') history.pushState({ fx: true, trash: true }, '', '/trash')
-      await setSidebar(d.sidebar_folders || [], seq)
+      await setSidebar(d.sidebar_unchanged ? null : (d.sidebar_folders || []), seq, d.tree_seq)
     } catch (e) {
       if (stale(seq)) return
       endLoad(null)
@@ -377,13 +388,37 @@
     $('fxTrashBtn').classList.add('is-active')
   }
 
+  // The listing calls send the tree_seq of the tree on screen; the server then
+  // leaves an unchanged tree out (sidebar_unchanged).
+  function withTreeSeq (url) { return S.treeSeq == null ? url : url + '?tree_seq=' + encodeURIComponent(S.treeSeq) }
   // Decrypts and paints a new sidebar tree, unless a newer load has started.
-  async function setSidebar (sidebar, seq) {
+  // sidebar null: the tree on screen is still current, so only the open path
+  // and the active row follow the new folder (names left encrypted while the
+  // keys were locked get another try).
+  async function setSidebar (sidebar, seq, treeSeq) {
+    if (!sidebar) {
+      var undecrypted = haveKeys() && S.sidebar.some(function (f) { return f.is_e2e && f.encrypted_name && !f._dec })
+      if (undecrypted) await decryptNames(null, S.sidebar)
+      if (stale(seq)) return
+      var opened = S.treeOpen.size
+      if (!S.trashMode) openActiveTreePath()
+      if (undecrypted || S.treeOpen.size !== opened || !markTreeActive()) renderSidebar()
+      return
+    }
     await decryptNames(null, sidebar)
     if (stale(seq)) return
     S.sidebar = sidebar
+    S.treeSeq = treeSeq == null ? null : treeSeq
     if (!S.trashMode) openActiveTreePath()
     renderSidebar(!S._sbAnimated); S._sbAnimated = true
+  }
+  // Moves .is-active to the open folder's row; false when no tree is painted.
+  function markTreeActive () {
+    var rows = document.querySelectorAll('#fxTree .fx-tree-row')
+    if (!rows.length) return false
+    var cur = S.trashMode ? null : (S.folderId == null ? '' : String(S.folderId))
+    rows.forEach(function (r) { r.classList.toggle('is-active', r.getAttribute('data-fid') === cur) })
+    return true
   }
 
   // Re-run whatever is on screen (folder, trash or search results) after a
@@ -654,8 +689,9 @@
       for (var i = S.breadcrumbs.length - 1; i >= 0 && !s; i--) s = syncFor(S.breadcrumbs[i].id)
       s = s || syncFor(null)
     }
-    chip.hidden = !s
-    fitCrumbs()
+    // The path only needs fitting again when the chip comes or goes: a
+    // fit here after every render() forced a layout of the fresh listing.
+    if (chip.hidden !== !s) { chip.hidden = !s; fitCrumbs() }
     if (!s) return
     chip.className = 'rd-pill fx-sync-chip' + (SYNC_TONE[s.state] || '')
     chip.setAttribute('data-sync-state', s.state)
@@ -672,6 +708,7 @@
   // ---- Rendering: listing --------------------------------------------------
   function skeleton () {
     el.view.classList.remove('is-enter')
+    stopMore()
     keyNodes = null
     el.view.innerHTML = '<div class="fx-skel">' + Array(9).join('<div class="fx-skel-card"></div>') + '</div>'
   }
@@ -701,11 +738,18 @@
     listed = folders.map(function (f) { return keyOf(f, true) }).concat(files.map(function (f) { return keyOf(f, false) }))
     keyNodes = null
     marked = new Set(S.sel); if (S.lastFocus) marked.add(S.lastFocus)
+    stopMore()
     // Failed loads leave the listing empty, so the error is derived here: a
     // later sort / view change must not repaint it as "Trash is empty".
     if (!folders.length && !files.length) { el.view.innerHTML = S.loadFailed ? errorState(S.loadError) : emptyState(); stopThumbs(); paintSyncs(); return }
     var fn = { grid: renderGrid, list: renderList, gallery: renderGallery, columns: renderColumns }[S.view] || renderGrid
-    fn(folders, files)
+    var n = { folders: folders.length, files: files.length }
+    if (n.folders + n.files > RENDER_FIRST) {
+      var nf = Math.min(n.folders, RENDER_FIRST), nfi = RENDER_FIRST - nf
+      more = { folders: folders.slice(nf), files: files.slice(nfi), n: n }
+      fn(folders.slice(0, nf), files.slice(0, nfi), n)
+      watchMore()
+    } else fn(folders, files, n)
     if (S.searchQ && hidden > 0) {
       (el.view.querySelector('.fx-col') || el.view).insertAdjacentHTML('beforeend', '<div class="fx-more"><button type="button" class="rd-btn rd-btn-ghost" data-show-more>Show more (' + hidden + ' not shown)</button></div>')
     }
@@ -722,18 +766,82 @@
     return b
   }
 
+  // A big listing renders RENDER_FIRST items, then RENDER_CHUNK more whenever
+  // a sentinel after them nears the visible part of the view. Keys, selection
+  // and keyboard moves cover every item; a node is made when it is reached.
+  var RENDER_FIRST = 300
+  var RENDER_CHUNK = 300
+  var more = null            // { folders, files, n } not yet in the DOM
+  var moreObs = null
+  function stopMore () {
+    if (moreObs) moreObs.disconnect()
+    moreObs = null; more = null
+  }
+  function moreSentinel () { return el.view.querySelector('.fx-more-sentinel') }
+  function watchMore () {
+    var col = S.view === 'columns' && el.view.querySelector('.fx-col')
+    ;(col || el.view).insertAdjacentHTML('beforeend', '<div class="fx-more-sentinel" aria-hidden="true"></div>')
+    if (!('IntersectionObserver' in window)) { while (more) appendMore(); return }
+    moreObs = new IntersectionObserver(function (ents) {
+      if (ents.some(function (en) { return en.isIntersecting })) appendMore()
+    }, { root: el.view, rootMargin: '1200px' })
+    moreObs.observe(moreSentinel())
+  }
+  function itemHtml (item, isFolder) {
+    switch (S.view) {
+      case 'list': return listRow(item, isFolder)
+      case 'columns': return colRow(item, isFolder)
+      case 'gallery': return isFolder ? gridCard(item, true) : galItem(item)
+      default: return gridCard(item, isFolder)
+    }
+  }
+  // Where the next items of a kind go. Folders always come first, so a grid's
+  // Files section may not exist yet.
+  function moreTarget (isFolder) {
+    if (S.view === 'list') return el.view.querySelector('.fx-list')
+    if (S.view === 'columns') return el.view.querySelector('.fx-col')
+    if (isFolder) return el.view.querySelector('.fx-grid[data-sec="d"]')
+    if (S.view === 'gallery') return el.view.querySelector('.fx-gallery')
+    var g = el.view.querySelector('.fx-grid[data-sec="f"]')
+    if (!g) {
+      moreSentinel().insertAdjacentHTML('beforebegin', sectionLabel('Files', more.n.files) + '<div class="fx-grid" data-sec="f"></div>')
+      g = el.view.querySelector('.fx-grid[data-sec="f"]')
+    }
+    return g
+  }
+  function appendMore () {
+    var s = more && moreSentinel()
+    if (!s) { stopMore(); return }
+    var fo = more.folders.splice(0, RENDER_CHUNK)
+    var fi = more.files.splice(0, RENDER_CHUNK - fo.length)
+    var thumbs = []
+    ;[[fo, true], [fi, false]].forEach(function (part) {
+      if (!part[0].length) return
+      var box = moreTarget(part[1]), t = document.createElement('template')
+      t.innerHTML = part[0].map(function (item) { return itemHtml(item, part[1]) }).join('')
+      thumbs = thumbs.concat(Array.prototype.slice.call(t.content.querySelectorAll('[data-thumb]')))
+      if (s.parentNode === box) box.insertBefore(t.content, s); else box.appendChild(t.content)
+    })
+    keyNodes = null
+    watchThumbs(thumbs)
+    paintSyncs()
+    if (!more.folders.length && !more.files.length) { stopMore(); s.remove(); return }
+    // A fresh observe reports at once if the sentinel is still near.
+    if (moreObs) { moreObs.unobserve(s); moreObs.observe(s) }
+  }
+
   function parentFolderId () { var b = S.breadcrumbs; return b.length > 1 ? b[b.length - 2].id : null }
-  function folderGrid (folders) {
+  function folderGrid (folders, n) {
     if (!folders.length) return ''
-    return sectionLabel('Folders', folders.length) + '<div class="fx-grid">' + folders.map(function (f) { return gridCard(f, true) }).join('') + '</div>'
+    return sectionLabel('Folders', n.folders) + '<div class="fx-grid" data-sec="d">' + folders.map(function (f) { return gridCard(f, true) }).join('') + '</div>'
   }
 
   var TICK = '<span class="fx-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>'
 
   // GRID
-  function renderGrid (folders, files) {
-    var h = folderGrid(folders)
-    if (files.length) { h += sectionLabel('Files', files.length) + '<div class="fx-grid">'; files.forEach(function (f) { h += gridCard(f, false) }); h += '</div>' }
+  function renderGrid (folders, files, n) {
+    var h = folderGrid(folders, n)
+    if (files.length) { h += sectionLabel('Files', n.files) + '<div class="fx-grid" data-sec="f">'; files.forEach(function (f) { h += gridCard(f, false) }); h += '</div>' }
     el.view.innerHTML = h
   }
   function sectionLabel (label, n) { return '<div class="fx-section-label">' + label + '<span class="fx-section-count">' + n + '</span></div>' }
@@ -761,7 +869,7 @@
   // content save or sync replace mints a new thumbnail under a new nonce, so
   // the old decrypted blob stops matching. Plain ones by size and date.
   function thumbKey (item) { return item.id + ':' + (item.enc_thumb_nonce || '') }
-  function plainThumbKey (item) { return item.id + ':' + (item.size || 0) + ':' + (item.upload_date_iso || '') }
+  function plainThumbKey (item) { return item.id + ':' + (item.size || 0) + ':' + (item.upload_date_iso || '') + ':' + (item.thumb_v || '') }
   function cachedThumb (item) {
     var u = item.is_e2e ? e2eThumbCache.get(thumbKey(item)) : plainThumbCache.get(plainThumbKey(item))
     return u ? '<img src="' + u + '" alt="" class="is-cached' + (isTextThumb(item) ? ' is-text' : '') + '">' : ''
@@ -821,36 +929,37 @@
   }
 
   // GALLERY
-  function renderGallery (folders, files) {
-    var h = folderGrid(folders)
-    if (folders.length && files.length) h += sectionLabel('Files', files.length)
+  function renderGallery (folders, files, n) {
+    var h = folderGrid(folders, n)
+    if (folders.length && n.files) h += sectionLabel('Files', n.files)
     h += '<div class="fx-gallery">'
-    files.forEach(function (f) {
-      var k = keyOf(f, false), nm = displayName(f, false)
-      var cached = cachedThumb(f)
-      var inner = cached ? '<div class="fx-gal-thumb">' + cached + '</div>'
-        : canThumb(f) ? '<div class="fx-gal-thumb" data-thumb="' + f.id + '"><div class="fx-gal-ph">' + docIcon(f) + '</div></div>'
-          : '<div class="fx-gal-ph">' + docIcon(f) + '</div>'
-      h += '<a class="fx-gal-item' + selClass(k) + '" data-k="' + k + '" data-id="' + f.id + '" data-folder="false" draggable="true">' +
-        TICK +
-        inner +
-        '<span class="fx-gal-cap"><span class="fx-name" title="' + esc(nm) + '">' + esc(nm) + '</span></span></a>'
-    })
+    files.forEach(function (f) { h += galItem(f) })
     h += '</div>'
     el.view.innerHTML = h
+  }
+  function galItem (f) {
+    var k = keyOf(f, false), nm = displayName(f, false)
+    var cached = cachedThumb(f)
+    var inner = cached ? '<div class="fx-gal-thumb">' + cached + '</div>'
+      : canThumb(f) ? '<div class="fx-gal-thumb" data-thumb="' + f.id + '"><div class="fx-gal-ph">' + docIcon(f) + '</div></div>'
+        : '<div class="fx-gal-ph">' + docIcon(f) + '</div>'
+    return '<a class="fx-gal-item' + selClass(k) + '" data-k="' + k + '" data-id="' + f.id + '" data-folder="false" draggable="true">' +
+      TICK +
+      inner +
+      '<span class="fx-gal-cap"><span class="fx-name" title="' + esc(nm) + '">' + esc(nm) + '</span></span></a>'
   }
 
   // COLUMNS (Miller) — renders current folder as a single column with a preview pane.
   function renderColumns (folders, files) {
     var h = '<div class="fx-cols"><div class="fx-col">'
-    folders.forEach(function (f) {
-      h += '<button class="fx-col-row' + selClass(keyOf(f, true)) + '" data-k="' + keyOf(f, true) + '" data-id="' + f.id + '" data-folder="true" draggable="true">' + TICK + colIcon(f, true) + '<span class="fx-col-name" title="' + esc(displayName(f, true)) + '">' + esc(displayName(f, true)) + '</span><span class="fx-col-chev">' + ICON.chev + '</span></button>'
-    })
-    files.forEach(function (f) {
-      h += '<button class="fx-col-row' + selClass(keyOf(f, false)) + '" data-k="' + keyOf(f, false) + '" data-id="' + f.id + '" data-folder="false" draggable="true">' + TICK + colIcon(f, false) + '<span class="fx-col-name" title="' + esc(displayName(f, false)) + '">' + esc(displayName(f, false)) + '</span></button>'
-    })
+    folders.forEach(function (f) { h += colRow(f, true) })
+    files.forEach(function (f) { h += colRow(f, false) })
     h += '</div><div class="fx-col fx-col-preview" id="fxColPreview"></div></div>'
     el.view.innerHTML = h
+  }
+  function colRow (item, isFolder) {
+    var k = keyOf(item, isFolder), nm = esc(displayName(item, isFolder))
+    return '<button class="fx-col-row' + selClass(k) + '" data-k="' + k + '" data-id="' + item.id + '" data-folder="' + isFolder + '" draggable="true">' + TICK + colIcon(item, isFolder) + '<span class="fx-col-name" title="' + nm + '">' + nm + '</span>' + (isFolder ? '<span class="fx-col-chev">' + ICON.chev + '</span>' : '') + '</button>'
   }
   function colIcon (item, isFolder) { return itemIcon(item, isFolder).replace('class="fx-ico"', 'class="fx-ico fx-col-ico"') }
   function itemCount (f) { var n = f.file_count || 0; return n + (n === 1 ? ' item' : ' items') }
@@ -898,19 +1007,24 @@
   }
   function observeThumbs () {
     stopThumbs()
-    var nodes = el.view.querySelectorAll('[data-thumb]')
+    watchThumbs(el.view.querySelectorAll('[data-thumb]'))
+  }
+  // Adds nodes to the current render's queue (appendMore's items too).
+  function watchThumbs (nodes) {
     if (!nodes.length) return
     if (!('IntersectionObserver' in window)) {
       nodes.forEach(function (n) { enqueueThumb(n) })
       return
     }
-    thumbObs = new IntersectionObserver(function (ents) {
-      ents.forEach(function (en) {
-        if (!en.isIntersecting) return
-        thumbObs.unobserve(en.target)
-        enqueueThumb(en.target)
-      })
-    }, { root: el.view, rootMargin: '280px' })
+    if (!thumbObs) {
+      thumbObs = new IntersectionObserver(function (ents) {
+        ents.forEach(function (en) {
+          if (!en.isIntersecting) return
+          thumbObs.unobserve(en.target)
+          enqueueThumb(en.target)
+        })
+      }, { root: el.view, rootMargin: '280px' })
+    }
     nodes.forEach(function (n) { thumbObs.observe(n) })
   }
   function enqueueThumb (node) {
@@ -992,7 +1106,9 @@
         } else {
           var fk = f._fileKey || (await OneGyCrypto.unwrapFileKeyWithMasterKey(f.encrypted_file_key, f.file_key_nonce, await OneGyCrypto.getMasterKeyFromSession()))
           if (!fk) return
-          var er = await fetch('/file/' + encodeURIComponent(id) + '/e2e-thumbnail', { signal: signal })
+          // Versioned by the nonce: a new thumbnail gets a new nonce, so the
+          // server lets the browser keep this URL's bytes for good.
+          var er = await fetch('/file/' + encodeURIComponent(id) + '/e2e-thumbnail?v=' + encodeURIComponent(f.enc_thumb_nonce), { signal: signal })
           if (er.status === 429) { scheduleThumbRetry(node); return }
           if (!er.ok) return
           var enc = await er.arrayBuffer()
@@ -1006,7 +1122,9 @@
         blobUrl = plainThumbCache.get(pk)
         if (!blobUrl) {
           var tr
-          try { tr = await fetch('/file/' + encodeURIComponent(id) + '/thumbnail', { signal: signal }) } catch (e) { if (!(signal && signal.aborted)) scheduleThumbRetry(node); return }
+          // thumb_v (the stored thumbnail's checksum) versions the URL the same way.
+          var tu = '/file/' + encodeURIComponent(id) + '/thumbnail' + (f.thumb_v ? '?v=' + encodeURIComponent(f.thumb_v) : '')
+          try { tr = await fetch(tu, { signal: signal }) } catch (e) { if (!(signal && signal.aborted)) scheduleThumbRetry(node); return }
           // 404 is almost always permanent: one retry still picks up the
           // server's on-demand fill, more only for 429 / transient errors.
           if (!tr.ok) { if (tr.status !== 404 || !thumbRetries.has(id)) scheduleThumbRetry(node); return }
@@ -1556,6 +1674,10 @@
   var UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024
   var UPLOAD_MAX_LABEL = '2 GB'
   var UPLOAD_MAX_RETRIES = 3
+  // Small files go up a few at a time; a large one holds its plaintext
+  // stream and whole ciphertext in memory, so those go one at a time after.
+  var UPLOAD_CONCURRENCY = 3
+  var UPLOAD_PARALLEL_MAX = 64 * 1024 * 1024
   // dest: folder id to upload into (null = root); omitted = the open folder.
   async function uploadFiles (fileList, dest) {
     var files = Array.prototype.slice.call(fileList || [])
@@ -1579,15 +1701,17 @@
     var ok = 0, failed = 0, firstErr = ''
     upInFlight++
     updateUnloadGuard()
+    async function one (file, i) {
+      var rowId = 'up' + Date.now() + '_' + i
+      var row = document.createElement('div'); row.className = 'fx-up-row'; row.id = rowId
+      row.innerHTML = '<div class="fx-up-row-top"><span class="fx-name">' + esc(file.name) + '</span><span class="fx-up-pct">0%</span></div><div class="fx-up-bar"><div class="fx-up-bar-fill"></div></div>'
+      list.insertBefore(row, list.firstChild)
+      try { await uploadOne(file, row, destFolderId); ok++ } catch (e) { failed++; failRow(row, e && e.message); if (!firstErr) firstErr = String((e && e.message) || 'UPLOAD FAILED').toUpperCase() }
+    }
     try {
-      for (var i = 0; i < files.length; i++) {
-        var file = files[i]
-        var rowId = 'up' + Date.now() + '_' + i
-        var row = document.createElement('div'); row.className = 'fx-up-row'; row.id = rowId
-        row.innerHTML = '<div class="fx-up-row-top"><span class="fx-name">' + esc(file.name) + '</span><span class="fx-up-pct">0%</span></div><div class="fx-up-bar"><div class="fx-up-bar-fill"></div></div>'
-        list.insertBefore(row, list.firstChild)
-        try { await uploadOne(file, row, destFolderId); ok++ } catch (e) { failed++; failRow(row, e && e.message); if (!firstErr) firstErr = String((e && e.message) || 'UPLOAD FAILED').toUpperCase() }
-      }
+      await runPool(files.filter(function (f) { return f.size <= UPLOAD_PARALLEL_MAX }), UPLOAD_CONCURRENCY, one)
+      var large = files.filter(function (f) { return f.size > UPLOAD_PARALLEL_MAX })
+      for (var i = 0; i < large.length; i++) await one(large[i], files.length + i)
     } finally {
       upInFlight = Math.max(0, upInFlight - 1)
       updateUnloadGuard()
@@ -1607,7 +1731,7 @@
     var isChild = S.folders.some(function (f) { return String(f.id) === String(destFolderId) })
     if (!S.trashMode && (S.searchQ || String(S.folderId) === String(destFolderId) || isChild)) reload({ keepSel: true })
   }
-  function setPct (row, p) { row.querySelector('.fx-up-bar-fill').style.width = p + '%'; row.querySelector('.fx-up-pct').textContent = Math.round(p) + '%' }
+  function setPct (row, p) { row.querySelector('.fx-up-bar-fill').style.transform = 'scaleX(' + (p / 100) + ')'; row.querySelector('.fx-up-pct').textContent = Math.round(p) + '%' }
   function failRow (row, reason) {
     row.classList.add('is-err')
     row.querySelector('.fx-up-pct').textContent = 'FAILED'
@@ -1636,20 +1760,24 @@
     var uid = OneGyCrypto.randomUUID()
     var masterKey = await OneGyCrypto.getMasterKeyFromSession()
     var fileKey = await OneGyCrypto.generateFileKey()
-    // NOTE (memory): the whole plaintext plus its ciphertext are held in RAM
-    // here (up to 2 x the file size). Streaming would change the chunk framing
-    // that crypto.js / client/e2ee/crypto.go both
-    // implement byte-for-byte, so the buffering strategy is left alone.
-    var buf = await file.arrayBuffer()
-    var encData = await OneGyCrypto.encryptFileData(buf, fileKey, function (pct) { setPct(row, pct * 0.6) })
+    // The thumbnail renders while the file encrypts.
+    var thumbJob = (async function () {
+      try {
+        var tb = await OneGyCrypto.generateThumbnail(file)
+        if (!tb) return null
+        var et = await OneGyCrypto.encryptThumbnail(await tb.arrayBuffer(), fileKey)
+        return { blob: new Blob([et.data], { type: 'application/octet-stream' }), nonce: et.nonce }
+      } catch (e) { return null }
+    })()
+    // NOTE (memory): the File itself goes to encryptFileData, which reads it in
+    // chunks inside the crypto worker (same framing as the ArrayBuffer path), so
+    // the plaintext is never copied on the main thread; the ciphertext is still
+    // held whole in RAM until the upload ends.
+    var encData = await OneGyCrypto.encryptFileData(file, fileKey, function (pct) { setPct(row, pct * 0.6) })
     var wrapped = await OneGyCrypto.wrapFileKeyWithMasterKey(fileKey, masterKey)
     var nameRes = await OneGyCrypto.encryptFileName(file.name, fileKey)
     var encFile = new File([encData], 'encrypted.bin', { type: 'application/octet-stream' })
-    var thumb = null
-    try {
-      var tb = await OneGyCrypto.generateThumbnail(file)
-      if (tb) { var td = await tb.arrayBuffer(); var et = await OneGyCrypto.encryptThumbnail(td, fileKey); thumb = { blob: new Blob([et.data], { type: 'application/octet-stream' }), nonce: et.nonce } }
-    } catch (e) {}
+    var thumb = await thumbJob
     // A FormData cannot be re-sent once an XHR consumed it, so each attempt
     // gets a fresh one built from the SAME ciphertext. The file key is minted
     // once above and never partially consumed, so no retry re-encrypts with
@@ -1713,12 +1841,18 @@
       })
       return
     }
-    if (!window.FxPreview || !FxPreview.open) { openDetails(item, false); return }
     // Images browse their siblings: same order as the view, same thumb loader.
-    FxPreview.open(item, IMG_EXT[extension] ? {
+    var gallery = IMG_EXT[extension] ? {
       list: sortItems(S.files, false).filter(function (f) { return IMG_EXT[extOf(f.name, f.extension)] }),
       thumb: function (node) { if (canThumb(itemById(node.getAttribute('data-thumb'), false))) loadThumb(node) }
-    } : null)
+    } : null
+    loadExtra('preview').then(function () {
+      if (!window.FxPreview || !FxPreview.open) { openDetails(item, false); return }
+      FxPreview.open(item, gallery)
+    }, function () { openDetails(item, false) })
+  }
+  function initPreview () {
+    if (window.FxPreview) FxPreview._onSaved = function (item) { if (item) forgetPlainThumbs(item.id); reload({ keepSel: true }) }
   }
 
   // ---- Right-click context menus (shared RdMenu component) -----------------
@@ -1828,6 +1962,8 @@
   }
   function ctxOpen (x, y, info) {
     if (typeof RdMenu === 'undefined') { openManage(info.item, info.isFolder, true); return }
+    // Its Manage entry is a click away.
+    if (!S.trashMode) loadExtra('manage').catch(function () {})
     var menu = S.trashMode
       ? trashItemMenu(info.item, info.isFolder)
       : (info.isFolder ? folderMenu(info.item) : fileMenu(info.item))
@@ -1859,11 +1995,70 @@
     } catch (e) { toast('COULD NOT COPY LINK', 'error') }
   }
 
+  // ---- On-demand modules ---------------------------------------------------
+  // The manage modal (manage-e2e, manage-modal and file-versions + manage.css)
+  // and the preview (preview.js + preview.css) load on first use, as the
+  // uploader extras do (_uploader.html). Each stylesheet goes in before
+  // files.css, where the page used to link it, and has loaded before its modal
+  // shows. A URL that failed is tried again on the next use.
+  var fetched = {}
+  function once (url, add) {
+    if (!fetched[url]) {
+      fetched[url] = new Promise(add)
+      fetched[url].catch(function () { delete fetched[url] })
+    }
+    return fetched[url]
+  }
+  function addCss (href) {
+    return once(href, function (resolve, reject) {
+      var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href
+      l.onload = resolve; l.onerror = reject
+      var anchor = $('fxCss')
+      if (anchor) anchor.parentNode.insertBefore(l, anchor); else document.head.appendChild(l)
+    })
+  }
+  function addScript (src) {
+    return once(src, function (resolve, reject) {
+      var s = document.createElement('script'); s.src = src
+      s.async = false  // run in list order, like the deferred tags
+      s.onload = resolve; s.onerror = reject
+      document.head.appendChild(s)
+    })
+  }
+  var extras = {}
+  function loadExtra (name) {
+    if (!extras[name]) {
+      var attr = function (k) { return (extrasTag && extrasTag.getAttribute('data-' + name + '-' + k)) || '' }
+      var css = attr('css')
+      extras[name] = Promise.all([css ? addCss(css) : null].concat(attr('js').split(' ').filter(Boolean).map(addScript))).then(function () {
+        document.documentElement.classList.add('fx-' + name + '-css')
+        if (name === 'manage') initManageModal(); else initPreview()
+      }, function (err) { extras[name] = null; throw err })
+    }
+    return extras[name]
+  }
+  // Until manage-modal.js has loaded, ManageModal is this stand-in: its open
+  // calls load the modal, then hand over (the testsv2 page objects call
+  // ManageModal.openFile / openFolder directly).
+  if (typeof window.ManageModal === 'undefined') {
+    var manageStub = window.ManageModal = { close: function () {} }
+    ;['openFile', 'openFileByToken', 'openFolder'].forEach(function (fn) {
+      manageStub[fn] = function () {
+        var args = arguments
+        return loadExtra('manage').then(function () {
+          if (window.ManageModal === manageStub) throw new Error('MANAGE MODAL UNAVAILABLE')
+          return window.ManageModal[fn].apply(window.ManageModal, args)
+        })
+      }
+    })
+  }
+
   // ---- Manage / preview modal (reuse ManageModal engine) -------------------
   // Click = select, double-click = open (folder navigate / file preview),
   // right-click / kebab = manage (Settings).
   async function openManage (item, isFolder, manageTab) {
-    if (typeof ManageModal === 'undefined' || !ManageModal.openFile) { openDetails(item, isFolder); return }
+    try { await loadExtra('manage') } catch (e) { openDetails(item, isFolder); return }
+    if (typeof ManageModal === 'undefined' || !ManageModal.init) { openDetails(item, isFolder); return }
     try {
       if (isFolder) await ManageModal.openFolder(item.id); else await ManageModal.openFile(item.id, manageHint(item))
       if (manageTab) { var t = document.querySelector('.manage-modal-tab[data-tab="settings"]'); if (t) t.click() }
@@ -1883,6 +2078,8 @@
       getCSRFToken: csrf,
       domain: window.location.host,
       generateLinkKeysForFiles: genLinkKeys,
+      // The whole folder tree, as the last listing sent it.
+      getFolderTree: function () { return S.sidebar },
       onAfterSave: function () { reload({ keepSel: true }) },
       onFileIdChanged: function () { reload({ keepSel: true }) },
       onDelete: async function (type, data) {
@@ -1908,8 +2105,9 @@
     })
   }
   // Runs fn(item, index) over items, at most n at a time; fn handles its own
-  // errors. Link keys are one POST per item (no batch endpoint).
+  // errors.
   var LINK_KEY_CONCURRENCY = 6
+  var LINK_KEY_BATCH = 200   // /f/batch-link-key's cap per request
   async function runPool (items, n, fn) {
     var next = 0
     async function worker () { while (next < items.length) { var i = next++; await fn(items[i], i) } }
@@ -1937,8 +2135,9 @@
         } catch (e) { if (!firstError) firstError = 'BATCH KEY LOAD FAILED' }
       }
       // Errors by index: the reported one is the first in list order, as before.
-      var errs = []
+      var errs = [], wraps = {}, at = new Map()
       await runPool(fileIds, LINK_KEY_CONCURRENCY, async function (fileId, i) {
+        at.set(String(fileId), i)
         try {
           var keyInfo = keyMap[fileId]
           if (!keyInfo) {
@@ -1949,11 +2148,22 @@
           if (!keyInfo.encrypted_file_key) { errs[i] = 'FILE ' + fileId + ' KEY NOT FOUND'; return }
           var fileKey = await OneGyCrypto.unwrapFileKeyWithMasterKey(keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey)
           var linkData = await OneGyCrypto.wrapFileKeyForLink(fileKey, linkKey)
-          var sr = await fetch('/f/' + fileId + '/link-key', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': token }, body: JSON.stringify({ encrypted_file_key: linkData.encryptedFileKey, file_key_nonce: linkData.nonce, scope: resourceType === 'folder' ? 'folder' : 'file' }) })
-          if (sr.ok) keyed++
-          else errs[i] = 'FILE ' + fileId + ' LINK KEY HTTP ' + sr.status
+          wraps[String(fileId)] = { encrypted_file_key: linkData.encryptedFileKey, file_key_nonce: linkData.nonce }
         } catch (e) { errs[i] = 'FILE ' + fileId + ' LINK KEY FAILED' }
       })
+      // The wrapped keys go up LINK_KEY_BATCH per request.
+      var ready = Object.keys(wraps)
+      for (var c = 0; c < ready.length; c += LINK_KEY_BATCH) {
+        var part = ready.slice(c, c + LINK_KEY_BATCH), keys = {}, missed = part, why = 'LINK KEY FAILED'
+        part.forEach(function (id) { keys[id] = wraps[id] })
+        try {
+          var sr = await fetch('/f/batch-link-key', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': token }, body: JSON.stringify({ keys: keys, scope: resourceType === 'folder' ? 'folder' : 'file' }) })
+          var sd = await sr.json().catch(function () { return {} })
+          if (sr.ok && sd.success) { keyed += (sd.keyed || []).length; missed = sd.failed || []; why = 'LINK KEY NOT STORED' }
+          else why = 'LINK KEY HTTP ' + sr.status
+        } catch (e) {}
+        missed.forEach(function (id) { errs[at.get(String(id))] = 'FILE ' + id + ' ' + why })
+      }
       if (!firstError) firstError = errs.filter(Boolean)[0] || ''
       return { success: keyed === fileIds.length, keyed: keyed, total: fileIds.length, error: firstError }
     } catch (e) { return { success: false, keyed: 0, total: fileIds.length, error: 'LINK KEY GENERATION FAILED' } }
@@ -2077,6 +2287,11 @@
     // The focus ring is a keyboard cursor: any pointer use retires it, so a
     // mouse deselect does not leave an outline on the row.
     document.addEventListener('pointerdown', function () { el.view.classList.remove('is-kbd') })
+    // A press on a file is the likely start of a double-click: fetch the
+    // preview now, so the second click finds it loaded.
+    el.view.addEventListener('pointerdown', function (e) {
+      if (e.target.closest('[data-k][data-folder="false"]')) loadExtra('preview').catch(function () {})
+    })
     // Right-click a folder in the sidebar tree.
     $('fxTree').addEventListener('contextmenu', function (e) {
       var row = e.target.closest('.fx-tree-row'); if (!row) return
@@ -2107,6 +2322,8 @@
     // Search — collapsed icon that expands into a live field on click
     var sBox = $('fxSearchBox'), sInput = $('fxSearch'), sToggle = $('fxSearchToggle'), sClear = $('fxSearchClear')
     function openSearch () {
+      // The index downloads while the query is typed.
+      loadSearchIndex().catch(function () {})
       sBox.classList.add('is-open')
       sToggle.setAttribute('aria-expanded', 'true')
       sInput.tabIndex = 0
@@ -2284,7 +2501,7 @@
     drag = null
   }
   function markLeaving (keys, on) {
-    keys.forEach(function (k) { var n = el.view.querySelector('[data-k="' + k + '"]'); if (n) n.classList.toggle('is-leaving', on) })
+    keys.forEach(function (k) { var n = nodeFor(k); if (n) n.classList.toggle('is-leaving', on) })
   }
   // Moved items shrink away at once; the reload after the server confirms
   // removes them for good, a failure brings them back.
@@ -2311,7 +2528,7 @@
       // Dim the sources only after the browser has snapshotted the drag image
       requestAnimationFrame(function () { if (drag) markDragging(keys) })
     })
-    function markDragging (keys) { keys.forEach(function (k) { var n = el.view.querySelector('[data-k="' + k + '"]'); if (n) n.classList.add('is-dragging') }) }
+    function markDragging (keys) { keys.forEach(function (k) { var n = nodeFor(k); if (n) n.classList.add('is-dragging') }) }
     document.addEventListener('dragend', endDrag)
     document.addEventListener('dragenter', function (e) {
       if (!drag && isFileDrag(e) && !S.trashMode) { fileDragDepth++; overlay.classList.add('is-active') }
@@ -2401,10 +2618,11 @@
       if (idx >= keys.length) idx = keys.length - 1
     }
     var k = keys[idx]
+    while (more && !nodeFor(k)) appendMore()
     if (e.shiftKey) selectRange(S.anchor || S.lastFocus || k, k)
     else if (e.ctrlKey || e.metaKey) { S.lastFocus = k; markSel() }
     else selectOnly(k)
-    var node = el.view && el.view.querySelector('[data-k="' + k + '"]')
+    var node = nodeFor(k)
     if (node && node.scrollIntoView) node.scrollIntoView({ block: 'nearest' })
   }
   // Everything on screen (a search shows its hits a page at a time).
@@ -2429,8 +2647,11 @@
   // (reload(), loadTrash(), a finished upload), and after SEARCH_INDEX_TTL it is
   // fetched again so changes made elsewhere show up. The name cache makes a
   // rebuild decrypt only what changed.
+  // A dropped index is not thrown away: the next fetch sends its ETag, and a 304
+  // (nothing in it changed) reuses it, already parsed and decrypted.
   var searchIndex = null
   var searchIndexAt = 0
+  var searchIndexKept = null   // { etag, idx } of the last index fetched
   var SEARCH_INDEX_TTL = 5 * 60 * 1000
   var searchTimer = null
   // Navigation leaves search: drop the query text and a pending debounce,
@@ -2445,7 +2666,18 @@
     if (searchIndex && Date.now() - searchIndexAt < SEARCH_INDEX_TTL) return searchIndex
     searchIndexAt = Date.now()
     var p = searchIndex = (async function () {
-      var r = await fetch('/search/index', { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      var kept = searchIndexKept, headers = { 'X-Requested-With': 'XMLHttpRequest' }
+      if (kept) headers['If-None-Match'] = kept.etag
+      var r = await fetch('/search/index', { headers: headers, cache: 'no-store' })
+      if (r.status === 304 && kept) {
+        // Names the locked keys left encrypted get another try.
+        var idx0 = kept.idx
+        if (haveKeys() && idx0.files.concat(idx0.folders).some(function (x) { return x.is_e2e && x.encrypted_name && !x._dec })) {
+          await decryptNames(idx0.files, idx0.folders)
+          lowerNames(idx0)
+        }
+        return idx0
+      }
       // An unchecked error body would render as "No matches" — a failed search
       // must never look like a search that found nothing.
       if (!r.ok) throw new Error('HTTP ' + r.status)
@@ -2458,10 +2690,22 @@
       files.forEach(function (f) {
         for (var anc = byId[f.folder_id], depth = 0; anc && depth < 64; anc = byId[anc.parent_id], depth++) { anc.file_count++; anc.size += f.size || 0 }
       })
-      return { files: files, folders: folders }
+      var idx = { files: files, folders: folders }
+      lowerNames(idx)
+      var etag = r.headers.get('ETag')
+      searchIndexKept = etag ? { etag: etag, idx: idx } : null
+      return idx
     })()
     p.catch(function () { if (searchIndex === p) searchIndex = null })
     return p
+  }
+
+  // Each keystroke matches against names lower-cased once per index.
+  function lowerNames (idx) {
+    idx.lc = {
+      f: idx.files.map(function (f) { return displayName(f, false).toLowerCase() }),
+      d: idx.folders.map(function (f) { return displayName(f, true).toLowerCase() })
+    }
   }
 
   // opts.keepSel: a reload of the same query (after a mutation) keeps the
@@ -2487,10 +2731,10 @@
       endLoad('search')
       var needle = q.toLowerCase()
       // An E2EE name that did not decrypt is a server placeholder — never match it.
-      var hit = function (item, isFolder) { return (!item.is_e2e || item._dec) && displayName(item, isFolder).toLowerCase().indexOf(needle) >= 0 }
+      var hit = function (lc) { return function (item, i) { return (!item.is_e2e || item._dec) && lc[i].indexOf(needle) >= 0 } }
       S.loadFailed = false
-      S.folders = idx.folders.filter(function (f) { return hit(f, true) })
-      S.files = idx.files.filter(function (f) { return hit(f, false) })
+      S.folders = idx.folders.filter(hit(idx.lc.d))
+      S.files = idx.files.filter(hit(idx.lc.f))
       S.breadcrumbs = []
       if (opts.keepSel) { pruneSel(); updateSelbar() }
       renderBreadcrumb()
@@ -2526,9 +2770,7 @@
       $('fxViewSeg').querySelectorAll('.fx-seg-btn').forEach(function (x) { x.classList.toggle('is-active', x.getAttribute('data-view') === S.view) })
     } catch (e) {}
     wire()
-    initManageModal()
     if (window.MusicPlayer && MusicPlayer.init) MusicPlayer.init('dashboard')
-    if (window.FxPreview) FxPreview._onSaved = function (item) { if (item) forgetPlainThumbs(item.id); reload({ keepSel: true }) }
     if (desk) desk.onSyncs(onSyncs)
     if (!window.__FX_NO_AUTOLOAD__) {
       // /trash renders this same page and asks for the trash view up front, so

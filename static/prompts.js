@@ -359,7 +359,9 @@
   function init(){
     loadOptions()
     bind()
-    fetch('/prompts/catalog', {credentials:'same-origin', headers:{'X-Requested-With':'XMLHttpRequest'}})
+    var pre = window.__PR_PREFETCH__
+    window.__PR_PREFETCH__ = null
+    ;(pre || fetch('/prompts/catalog', {credentials:'same-origin', headers:{'X-Requested-With':'XMLHttpRequest'}}))
       .then(function(r){ if(!r.ok) throw new Error('catalog'); return r.json() })
       .then(function(data){
         indexCatalog(data)

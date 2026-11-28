@@ -6,7 +6,8 @@
    The manage modal and in-page previews (data-extras, ~200 KB) load up front
    only where quick-share rows need them; elsewhere on first use, after an
    upload (loadUploaderExtras). The landing page never needs them: an upload
-   there continues on /share. #}
+   there continues on /share. It also sets uploader_lazy: the upload stack
+   loads only when the widget nears the viewport or is used. #}
 <div class="rd-uploader" data-extras="{{ versioned_static('manage-e2e.js') }} {{ versioned_static('manage-modal.js') }} {{ versioned_static('temp-preview.js') }}">
   <input type="hidden" id="csrf_token" name="csrf_token" value="{{ csrf_token() }}">
   <div class="drop-zone" id="dropZone">
@@ -49,6 +50,101 @@
     return _uploaderExtras;
   }
 </script>
+{% if uploader_lazy %}
+{# The same scripts as below (no quick-share rows here), loaded on demand. Until
+   script.js has run, this stub owns #fileInput (script.js then leaves it alone)
+   and keeps a drop; both are uploaded once the scripts are in. #}
+<script nonce="{{ csp_nonce }}">
+(function() {
+  var box = document.querySelector('.rd-uploader');
+  var dz = document.getElementById('dropZone');
+  var scripts = {{ [
+    {'src': versioned_static('confirm-modal.js')},
+    {'src': versioned_static('crypto.js'), 'data-hljs': versioned_static('vendor/highlight/highlight.min.js'), 'data-hljs-enhance': versioned_static('vendor/highlight/hljs-enhance.js')},
+    {'src': versioned_static('thumbnail-gen.js')},
+    {'src': versioned_static('temp-keychain.js')},
+    {'src': versioned_static('script.js')}
+  ]|tojson }};
+  var loading = null;
+  function load() {
+    if (!loading) {
+      loading = Promise.all(scripts.map(function(attrs) {
+        return new Promise(function(resolve, reject) {
+          var s = document.createElement('script');
+          Object.keys(attrs).forEach(function(k) { s.setAttribute(k, attrs[k]); });
+          s.async = false;  // run in list order, like the deferred tags
+          s.onload = resolve;
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      })).catch(function(err) { loading = null; throw err; });
+    }
+    return loading;
+  }
+  function quiet() { load().catch(function() {}); }
+  // script.js has bound the drop zone: from then on it handles clicks and drops.
+  function ready() { return !!dz._uploadInitialized; }
+  function upload(getFiles) {
+    dz.setAttribute('data-update-hold', '');
+    load().then(getFiles).then(function(files) { return uploadFiles(files); }, function() {
+      if (typeof showToast === 'function') showToast('COULD NOT LOAD THE UPLOADER, TRY AGAIN', 'error');
+    }).finally(function() { dz.removeAttribute('data-update-hold'); });
+  }
+
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.multiple = true;
+  input.id = 'fileInput';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.addEventListener('change', function() {
+    var files = Array.from(input.files);
+    upload(function() { return files; });
+  });
+
+  dz.addEventListener('click', function(e) {
+    if (ready() || e.target.closest('.drop-zone-toggles')) return;
+    quiet();
+    input.value = '';
+    input.click();
+  });
+  ['dragenter', 'dragover'].forEach(function(type) {
+    dz.addEventListener(type, function(e) {
+      if (ready()) return;
+      e.preventDefault();
+      dz.classList.add('dragover');
+      quiet();
+    });
+  });
+  dz.addEventListener('dragleave', function() { if (!ready()) dz.classList.remove('dragover'); });
+  dz.addEventListener('drop', function(e) {
+    if (ready()) return;
+    e.preventDefault();
+    dz.classList.remove('dragover');
+    // As in script.js: the item list empties once the event is over.
+    var items = e.dataTransfer.items;
+    var entries = items && items.length > 0
+      ? Array.from(items, function(item) { return (item.webkitGetAsEntry && item.webkitGetAsEntry()) || item.getAsFile(); })
+      : Array.from(e.dataTransfer.files);
+    upload(function() { return filesFromDropEntries(entries); });
+  });
+
+  if (!('IntersectionObserver' in window)) { quiet(); return; }
+  // From the load event, so these never compete with the page's fonts and CSS.
+  // rootMargin widens only the root: watch from .rd-scroll where the page
+  // scrolls in it (core.css, pointer devices).
+  window.addEventListener('load', function() {
+    var sc = box.closest('.rd-scroll');
+    var io = new IntersectionObserver(function(entries) {
+      if (!entries.some(function(en) { return en.isIntersecting; })) return;
+      io.disconnect();
+      quiet();
+    }, { root: sc && getComputedStyle(sc).overflowY === 'auto' ? sc : null, rootMargin: '600px 0px' });
+    io.observe(box);
+  });
+})();
+</script>
+{% else %}
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
 <script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
 <script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
@@ -59,6 +155,7 @@
 <script src="{{ versioned_static('temp-preview.js') }}" defer></script>
 {% endif %}
 <script src="{{ versioned_static('script.js') }}" defer></script>
+{% endif %}
 <script nonce="{{ csp_nonce }}">
 document.addEventListener('DOMContentLoaded', function() {
   if (typeof initShareUpload === 'function') initShareUpload();

@@ -1,15 +1,43 @@
-def _send_cached_thumbnail(thumb_bytes):
+# A thumbnail URL carrying ?v=<current version> never changes content: a new
+# thumbnail gets a new version (plain: its stored checksum, E2EE: its nonce), so
+# the browser may keep it for good. Unversioned or stale URLs keep the short age.
+THUMBNAIL_IMMUTABLE_MAX_AGE = 31536000
+
+
+def _thumbnail_version(file):
+    """The ?v= value the listings send for a plain file's thumbnail, or None."""
+    if file.is_e2e_encrypted or not file.has_thumbnail or not file.thumbnail_checksum:
+        return None
+    return file.thumbnail_checksum[:16]
+
+
+def _thumbnail_cache_control(versioned):
+    if versioned:
+        return f'private, max-age={THUMBNAIL_IMMUTABLE_MAX_AGE}, immutable'
+    return f'private, max-age={THUMBNAIL_CACHE_MAX_AGE}'
+
+
+def _thumbnail_not_modified(etag, versioned):
+    """304 when the client already holds the thumbnail tagged etag, else None."""
+    if not request.if_none_match or etag not in request.if_none_match:
+        return None
+    resp = make_response('', 304)
+    resp.headers['ETag'] = '"' + etag + '"'
+    resp.headers['Cache-Control'] = _thumbnail_cache_control(versioned)
+    return resp
+
+
+def _send_cached_thumbnail(thumb_bytes, etag=None, versioned=False):
     """Serve thumbnail bytes with HTTP caching headers (ETag + Cache-Control).
-    Returns 304 Not Modified if the client already has the current version."""
-    etag = '"' + hashlib.md5(thumb_bytes).hexdigest() + '"'
-    if request.if_none_match and etag.strip('"') in request.if_none_match:
-        resp = make_response('', 304)
-        resp.headers['ETag'] = etag
-        resp.headers['Cache-Control'] = f'private, max-age={THUMBNAIL_CACHE_MAX_AGE}'
-        return resp
+    Returns 304 Not Modified if the client already has the current version.
+    etag: from the File row's recorded checksum; else hashed from the bytes."""
+    etag = etag or hashlib.md5(thumb_bytes).hexdigest()
+    not_modified = _thumbnail_not_modified(etag, versioned)
+    if not_modified:
+        return not_modified
     resp = make_response(send_file(io.BytesIO(thumb_bytes), mimetype='image/jpeg'))
-    resp.headers['Cache-Control'] = f'private, max-age={THUMBNAIL_CACHE_MAX_AGE}'
-    resp.headers['ETag'] = etag
+    resp.headers['Cache-Control'] = _thumbnail_cache_control(versioned)
+    resp.headers['ETag'] = '"' + etag + '"'
     return resp
 
 def _thumbnail_path(file_id, is_e2e=False):
@@ -93,20 +121,26 @@ def file_e2e_thumbnail(file_id):
     if not file.has_thumbnail or not file.encrypted_thumbnail_nonce:
         abort(404)
 
+    # The recorded checksum answers a revalidation before any bytes are read.
+    versioned = request.args.get('v') == file.encrypted_thumbnail_nonce
+    etag = ('e2e-' + file.thumbnail_e2e_checksum[:32]) if file.thumbnail_e2e_checksum else None
+    if etag:
+        not_modified = _thumbnail_not_modified(etag, versioned)
+        if not_modified:
+            return not_modified
+
     thumb_bytes = load_thumbnail_from_disk(file.id, is_e2e=True)
     if not thumb_bytes:
         abort(404)
 
     # Serve raw encrypted bytes with HTTP caching (ETag + Cache-Control)
-    etag = '"e2e-' + hashlib.md5(thumb_bytes).hexdigest() + '"'
-    if request.if_none_match and etag.strip('"') in request.if_none_match:
-        resp = make_response('', 304)
-        resp.headers['ETag'] = etag
-        resp.headers['Cache-Control'] = f'private, max-age={THUMBNAIL_CACHE_MAX_AGE}'
-        return resp
+    etag = etag or ('e2e-' + hashlib.md5(thumb_bytes).hexdigest())
+    not_modified = _thumbnail_not_modified(etag, versioned)
+    if not_modified:
+        return not_modified
     resp = make_response(send_file(io.BytesIO(thumb_bytes), mimetype='application/octet-stream'))
-    resp.headers['Cache-Control'] = f'private, max-age={THUMBNAIL_CACHE_MAX_AGE}'
-    resp.headers['ETag'] = etag
+    resp.headers['Cache-Control'] = _thumbnail_cache_control(versioned)
+    resp.headers['ETag'] = '"' + etag + '"'
     return resp
 
 @app.route('/file/<file_id>/thumbnail')
@@ -159,10 +193,19 @@ def file_thumbnail(file_id):
     # generation, so a Fernet txt/image/video whose background render lost the
     # semaphore (or whose flag was never healed) stayed icon-only forever.
     if _local_exists or file.has_thumbnail:
+        # The recorded checksum answers a revalidation before the read, the
+        # integrity check and the decrypt.
+        version = _thumbnail_version(file)
+        versioned = bool(version) and request.args.get('v') == version
+        etag = ('t-' + file.thumbnail_checksum[:32]) if file.thumbnail_checksum else None
+        if etag:
+            not_modified = _thumbnail_not_modified(etag, versioned)
+            if not_modified:
+                return not_modified
         thumb_bytes = load_thumbnail_from_disk(file.id, is_e2e=False)
         if thumb_bytes:
             _heal_has_thumbnail_flag(file)
-            return _send_cached_thumbnail(thumb_bytes)
+            return _send_cached_thumbnail(thumb_bytes, etag=etag, versioned=versioned)
 
     # Fill: generate on first view for previewable Fernet files.
     if not file.is_trashed and _is_thumbnailable_name(file.orig_name):

@@ -62,17 +62,21 @@ def music_api_liked_songs():
 @limiter.limit(music_detail_rate_limit)
 @_music_required
 def music_api_playlists():
-    """List current user's playlists with song count.
+    """List current user's playlists with song count."""
+    return jsonify(_music_playlists_payload(session['logged_in_user_id']))
+
+
+def _music_playlists_payload(user_id):
+    """The user's playlists with song count and cover (also inlined in /music).
 
     AUDIT Tier 1: previously this issued 2 SQL queries + 1 SQLite library
     lookup per playlist (COUNT, first song, enrich). 30 playlists = 90
     round-trips. We now compute counts and first-song-id via a single
     GROUP BY on MusicPlaylistSong and enrich all first songs in one batch.
     """
-    user_id = session['logged_in_user_id']
     playlists = MusicPlaylist.query.filter_by(user_id=user_id).order_by(MusicPlaylist.updated_at.desc()).all()
     if not playlists:
-        return jsonify([])
+        return []
 
     playlist_ids = [p.id for p in playlists]
 
@@ -129,7 +133,7 @@ def music_api_playlists():
             'created_at': p.created_at.isoformat() if p.created_at else None,
             'updated_at': p.updated_at.isoformat() if p.updated_at else None,
         })
-    return jsonify(result)
+    return result
 
 
 @app.route('/music/api/playlists', methods=['POST'])
@@ -379,17 +383,19 @@ def music_api_sync_push():
         if sync:
             current_active = sync.active_device_id
             updated = sync.updated_at.replace(tzinfo=timezone.utc) if sync.updated_at and sync.updated_at.tzinfo is None else sync.updated_at
-            is_stale = not updated or (now - updated).total_seconds() > 15
+            is_stale = not updated or (now - updated).total_seconds() > _music_state_fresh_seconds(sync.state_playing, 15)
             # This device can claim active if: it's already active, or the session is stale, or force flag
             if current_active == device_id or is_stale or data.get('force_active'):
                 sync.active_device_id = device_id
-                sync.state_json, queue_key, need_playlist = _music_prepare_sync_state(state, sync.state_json)
+                state_json, queue_key, need_playlist = _music_prepare_sync_state(state, sync.state_json)
+                _music_set_sync_state(sync, state_json, state)
                 sync.updated_at = now
                 is_accepted_active = True
             # If another device is active and not stale, just update last_seen (don't overwrite)
         else:
             state_json, queue_key, need_playlist = _music_prepare_sync_state(state, None)
-            sync = MusicSyncState(user_id=user_id, active_device_id=device_id, state_json=state_json, updated_at=now)
+            sync = MusicSyncState(user_id=user_id, active_device_id=device_id, updated_at=now)
+            _music_set_sync_state(sync, state_json, state)
             db.session.add(sync)
             db.session.flush()
             is_accepted_active = True
@@ -459,7 +465,13 @@ def music_api_sync_push():
 @limiter.limit(music_stream_rate_limit)
 @_music_required
 def music_api_sync_poll():
-    """Poll for current playback state and device list. Used by all devices."""
+    """Poll for current playback state and device list. Used by all devices.
+
+    Open pages poll every few seconds while another device is online, so an
+    answer with nothing new costs three reads (devices, the sync row without
+    its state, the mailbox) and no write: last_seen is rewritten at most every
+    _MUSIC_LAST_SEEN_WRITE_INTERVAL, and the state is read only when the
+    poll's state_key differs from the stored one."""
     user_id = session['logged_in_user_id']
     device_id = (request.args.get('device_id') or '').strip()
 
@@ -469,6 +481,8 @@ def music_api_sync_poll():
         return jsonify({'error': 'DEVICE ID REQUIRED'}), 400
 
     now = datetime.now(timezone.utc)
+    online_cutoff = now - _MUSIC_ONLINE_WINDOW
+    wrote = False
 
     # Helper to make naive datetimes comparable with aware ones
     def _aware(dt):
@@ -476,25 +490,39 @@ def music_api_sync_poll():
             return dt.replace(tzinfo=timezone.utc)
         return dt
 
+    # One read: the account's online devices and this one, online or not.
     # A GET must not create rows (cross-site requests can trigger it): devices
     # register via POST. last_seen writes are throttled so polls rarely write.
-    device = MusicDevice.query.filter_by(user_id=user_id, device_id=device_id).first()
+    devices = MusicDevice.query.filter(
+        MusicDevice.user_id == user_id,
+        db.or_(MusicDevice.last_seen >= online_cutoff, MusicDevice.device_id == device_id),
+    ).all()
+    device = next((d for d in devices if d.device_id == device_id), None)
     if device and (not device.last_seen or now - _aware(device.last_seen) >= _MUSIC_LAST_SEEN_WRITE_INTERVAL):
         device.last_seen = now
+        wrote = True
+    # Only devices seen in the online window are "online"
+    all_devices = [d for d in devices if d.last_seen and _aware(d.last_seen) >= online_cutoff]
 
-    # Get sync state
+    # The sync row without its state (up to a 201-track queue)
     import json as _json
-    sync = MusicSyncState.query.filter_by(user_id=user_id).first()
-
-    # Build device list (only devices seen in the online window are "online")
-    online_cutoff = now - _MUSIC_ONLINE_WINDOW
-    all_devices = MusicDevice.query.filter_by(user_id=user_id).filter(MusicDevice.last_seen >= online_cutoff).all()
+    sync = db.session.query(
+        MusicSyncState.active_device_id, MusicSyncState.updated_at, MusicSyncState.transfer_to,
+        MusicSyncState.state_key, MusicSyncState.state_playing,
+        MusicSyncState.state_json.isnot(None).label('has_state'),
+    ).filter(MusicSyncState.user_id == user_id).first()
 
     # If the active device hasn't been seen in 30s, clear it from sync state
     if sync and sync.active_device_id:
         active_still_online = any(d.device_id == sync.active_device_id for d in all_devices)
         if not active_still_online:
-            sync = _music_clear_stale_active_device(user_id, online_cutoff)
+            from types import SimpleNamespace
+            cleared = _music_clear_stale_active_device(user_id, online_cutoff)
+            wrote = True
+            sync = cleared and SimpleNamespace(
+                active_device_id=cleared.active_device_id, updated_at=cleared.updated_at,
+                transfer_to=cleared.transfer_to, state_key=cleared.state_key,
+                state_playing=cleared.state_playing, has_state=cleared.state_json is not None)
 
     device_list = []
     for d in all_devices:
@@ -514,22 +542,27 @@ def music_api_sync_poll():
     state_key = None
     state_unchanged = False
     is_stale = True
-    if sync and sync.state_json and sync.updated_at:
+    if sync and sync.has_state and sync.updated_at:
         staleness = (now - _aware(sync.updated_at)).total_seconds()
-        is_stale = staleness > 10
+        # A paused state stays current for the online window (its device only heartbeats)
+        is_stale = staleness > _music_state_fresh_seconds(sync.state_playing, 10)
         state_updated_at = _aware(sync.updated_at).isoformat()
         # Server-measured, so mirrors place the playhead without trusting their clock.
         state_age_ms = max(0, int(staleness * 1000))
         if not is_stale:
             # Opt-in: a poll that sends the state_key it already holds gets
-            # state_unchanged instead of the same state (up to a 201-track queue)
-            # again. A content hash, not updated_at: that column has 1 s precision.
-            state_key = hashlib.sha256(sync.state_json.encode('utf-8')).hexdigest()[:32]
-            if request.args.get('state_key') == state_key:
+            # state_unchanged instead of the same state again.
+            state_key = sync.state_key
+            if not (state_key and request.args.get('state_key') == state_key):
+                state_json = db.session.query(MusicSyncState.state_json).filter(
+                    MusicSyncState.user_id == user_id).scalar()
+                # Rows written before state_key existed are hashed here
+                state_key = state_key or _music_state_key(state_json)
+            if state_key and request.args.get('state_key') == state_key:
                 state_unchanged = True
             else:
                 try:
-                    state_data = _json.loads(sync.state_json)
+                    state_data = _json.loads(state_json)
                 except Exception:
                     state_data = None
                     state_key = None
@@ -542,7 +575,8 @@ def music_api_sync_poll():
     # Results are requester-addressed and remain durable until an explicit ack.
     pending_result, has_command = _music_poll_mailbox(user_id, device_id, now)
 
-    db.session.commit()
+    if wrote or db.session.dirty:
+        db.session.commit()
 
     return jsonify({
         'active': not is_stale and (state_unchanged or state_data is not None),
@@ -801,7 +835,7 @@ def music_api_sync_device_delete():
     sync = MusicSyncState.query.filter_by(user_id=user_id).first()
     if sync and sync.active_device_id == device_id:
         sync.active_device_id = None
-        sync.state_json = None
+        _music_set_sync_state(sync, None, None)
         sync.transfer_to = None
 
     db.session.commit()

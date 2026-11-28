@@ -157,6 +157,13 @@
 .bw-item-meta{ display:flex; align-items:center; gap:4px; min-width:0; }
 .bw-item-actions{ display:flex; align-items:center; gap:1px; justify-self:end; }
 .bw-item.is-selected{ background:var(--sel); }
+/* Off-screen items skip layout and paint, as .fx-item does on the Files page:
+   estimated heights per view (auto keeps the real one once seen). */
+.bw-item{ content-visibility:auto; contain-intrinsic-size:none auto 170px; }
+.bw-item.is-folder{ contain-intrinsic-size:none auto 50px; }
+.bw-view[data-view="list"] .bw-item{ contain-intrinsic-size:none auto 36px; }
+/* End of a listing still rendering in chunks (browse.js appendChunk) */
+.bw-chunk-end{ height:1px; }
 
 .bw-badge{ display:inline-flex; align-items:center; gap:3px; height:16px; padding:0 6px; border-radius:8px; background:var(--press);
   color:var(--text-dim); font-size:.66rem; font-weight:600; letter-spacing:.01em; white-space:nowrap; }
@@ -170,7 +177,8 @@
 .bw-act:hover{ background:var(--press); color:var(--text); }
 .bw-act:focus-visible, .bw-item:focus-within .bw-act, .bw-item.is-selected .bw-act{ opacity:1; }
 
-/* Selection tick: hover to reveal; once anything is ticked every tick shows.
+/* Selection tick: hover to reveal; once anything is ticked every tick shows
+   (.has-sel, set by browse.js syncSelbar).
    Hidden with opacity (not display) so it stays in the keyboard tab order. */
 .bw-check{
   position:absolute; z-index:3; display:block; opacity:0; pointer-events:none; width:18px; height:18px; margin:0; box-sizing:border-box;
@@ -183,13 +191,13 @@
 .bw-check:checked{ background:var(--accent); border-color:var(--accent); }
 .bw-check:checked::after{ opacity:1; }
 .bw-check:focus-visible{ outline-offset:1px; border-radius:50%; }
-.bw-check:checked, .bw-item:has(:focus-visible) .bw-check, .bw-view:has(.bw-check:checked) .bw-check{ opacity:1; pointer-events:auto; }
+.bw-check:checked, .bw-item:has(:focus-visible) .bw-check, .bw-view.has-sel .bw-check{ opacity:1; pointer-events:auto; }
 .bw-view[data-view="list"] .bw-item:has(:focus-visible) .bw-item-thumb, .bw-item.is-folder:has(:focus-visible) .bw-item-thumb{ opacity:0; }
 /* Rows and folder tiles: the tick takes the icon's place */
 .bw-view[data-view="list"] .bw-check, .bw-item.is-folder .bw-check{ top:50%; margin-top:-9px; border-color:var(--text-faint); background:var(--bg); box-shadow:none; }
 .bw-item.is-folder .bw-check:checked, .bw-view[data-view="list"] .bw-check:checked{ background:var(--accent); border-color:var(--accent); }
-.bw-view:has(.bw-check:checked) :is(.bw-item.is-folder, [data-view="list"] .bw-item) .bw-item-thumb,
-.bw-view[data-view="list"]:has(.bw-check:checked) .bw-item .bw-item-thumb{ opacity:0; }
+.bw-view.has-sel :is(.bw-item.is-folder, [data-view="list"] .bw-item) .bw-item-thumb,
+.bw-view[data-view="list"].has-sel .bw-item .bw-item-thumb{ opacity:0; }
 
 @media (hover:hover){
   .bw-item:hover .bw-act{ opacity:1; }

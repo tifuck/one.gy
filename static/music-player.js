@@ -2,18 +2,26 @@
 ;(function(mp) {
   'use strict'
 
-  const { _jsonHeaders, _lsGet, _lsSet, audio, _silentUrl, _volCurve, _setVolume } = mp
+  const { _jsonHeaders, _lsGet, _lsSet, _ssGet, audio, _silentUrl, _volCurve, _setVolume } = mp
 
-  let _audioPlayPrimed = false      // true = audio.play() has been called in a user gesture context
   let _singletonEventsBound = false
   // DOM references only init's bindings use (shared ones live on mp)
   let prevBtn, nextBtn, volumeSlider, closeBtn, mobileCloseBtn
 
   // ─── Public API ─────────────────────────────────────────────────
+  // Pages may call in before the player's idle init ran
+  function _initFirst(fn) {
+    return function() {
+      var el = document.getElementById('musicPlayer')
+      if (el && !el._mpInitialized) init()
+      return fn.apply(this, arguments)
+    }
+  }
+
   const MusicPlayer = {
     init,
-    open: mp.open,
-    playMusicLibrary: mp.playMusicLibrary,
+    open: _initFirst(mp.open),
+    playMusicLibrary: _initFirst(mp.playMusicLibrary),
     isActive: () => mp.isVisible,
     hasAudio: () => mp.isVisible && (mp.currentIndex >= 0 || !audio.paused),
     getContext: () => mp._context,
@@ -22,13 +30,15 @@
     getCurrentIndex: () => mp.currentIndex,
     onFolderChanged: mp.onFolderChanged,
     getAudioElement: () => audio,
+    isPlaying: () => mp.isPlaying,
+    togglePlay: mp.togglePlay,
     close: mp.closePlayer,
     setFsHeartState: mp._setFsHeartState,
     setBarHeartState: mp._setBarHeartState,
     isFullscreen: () => mp._isFullscreen,
     isPhantomMode: () => mp._syncPhantomMode,
-    sendSyncCommand: mp._syncSendCommand,
-    updatePhantomTrack: mp._syncPhantomUpdateTrack,
+    sendSyncCommand: _initFirst(mp._syncSendCommand),
+    updatePhantomTrack: function(track) { if (mp._syncPhantomUpdateTrack) mp._syncPhantomUpdateTrack(track) },
   }
 
   function init(context, shareToken) {
@@ -42,7 +52,8 @@
       return
     }
     mp.playerEl._mpInitialized = true
-    mp._context = context || 'dashboard'
+    // The player loads after the page's scripts: the music page no longer gets to pass its context
+    mp._context = context || (document.getElementById('muView') ? 'music-library' : 'dashboard')
     mp._browseShareToken = shareToken || ''
     // The add-to-playlist menu lives in music.js (music page only)
     mp.playerEl.classList.toggle('mp-no-add', !document.getElementById('muView'))
@@ -57,30 +68,54 @@
     _bindVolumeControls()
     _bindProgressScrub()
     _bindPlaylistToggle()
-    mp._bindSwipeDismiss()
     _bindAudioEvents()
     _bindTitleLinks()
 
-    // ── Mobile fullscreen "Now Playing" setup (music page only) ──
-    try { mp._initFullscreen() } catch(e) { console.warn('[MUSIC PLAYER] Fullscreen init error:', e) }
+    // ── Mobile fullscreen "Now Playing" and swipe gestures ──
+    _initFullscreenPart()
 
     // ── Media Session API (lock screen / notification controls) ──
     mp._initMediaSession()
 
     // Try to restore playback state from a previous page (before the sync
     // controls: the restored context decides whether they show)
-    mp._restoreState()
+    var restored = mp._restoreState()
 
     // ── Cross-device sync setup ──
     _initSyncControls()
 
     // Start sync polling after restore (so we know if we're already playing).
     // Every page polls: the device is listed and controllable from anywhere.
+    // The first poll waits for an idle moment unless this tab plays or mirrored.
     if (mp._syncLoggedIn && mp._syncEnabled) {
-      mp._syncStart()
+      if (restored || _ssGet('mp_mirroring')) mp._syncStart()
+      else _whenIdle(mp._syncStart, 2000)
     }
 
     _bindAutoplayPrimer()
+  }
+
+  function _whenIdle(fn, timeout) {
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(function() { fn() }, { timeout: timeout })
+    else setTimeout(fn, Math.min(timeout, 300))
+  }
+
+  // music-player-fullscreen.js loads where it can be used: narrow windows
+  // (the mobile bar expands) and touch screens (swipe to dismiss)
+  function _initFullscreenPart() {
+    var narrow = window.matchMedia('(max-width: 850px)')
+    function load() {
+      mp._loadPart('fullscreen').then(function() {
+        mp._bindSwipeDismiss()
+        mp._initFullscreen()
+      }).catch(function(e) { console.warn('[MUSIC PLAYER] Fullscreen init error:', e) })
+    }
+    if (narrow.matches || navigator.maxTouchPoints > 0) { load(); return }
+    narrow.addEventListener('change', function onNarrow(e) {
+      if (!e.matches) return
+      narrow.removeEventListener('change', onNarrow)
+      load()
+    })
   }
 
   function _bindDomRefs() {
@@ -109,7 +144,6 @@
     mp.miniDevicesBtn = document.getElementById('mpMiniDevices')
     mp.fsDevicesBtn = document.getElementById('mpFsDevicesBtn')
     mp._fxCanvas = document.getElementById('mpVisualizer')
-    if (mp._fxCanvas) mp._fxCtx = mp._fxCanvas.getContext('2d')
   }
 
   // Restructure player layout for Spotify-style bar (all pages)
@@ -252,7 +286,7 @@
     if (mp.repeatBtn) mp.repeatBtn.addEventListener('click', mp.cycleRepeat)
     if (closeBtn) closeBtn.addEventListener('click', mp.closePlayer)
     if (mobileCloseBtn) mobileCloseBtn.addEventListener('click', mp.closePlayer)
-    if (mp.fxBtn) mp.fxBtn.addEventListener('click', mp._toggleFx)
+    if (mp.fxBtn) mp.fxBtn.addEventListener('click', function() { mp._toggleFx() })
   }
 
   function _bindVolumeControls() {
@@ -401,43 +435,56 @@
   // ── Pre-warm autoplay permission for phantom mode ──
   // Mobile browsers require a user gesture to allow audio.play().
   // Phantom mode enters from a fetch() callback (no gesture), so the
-  // silent keepalive may be blocked by autoplay policy.  On the very
-  // first user interaction, resume the AudioContext and play+pause the
-  // silent blob on a throwaway element. The shared element is never
-  // touched: this capture-phase click may be the one starting a track, or
-  // a restored track may already own it.
+  // silent keepalive may be blocked by autoplay policy.  On the first
+  // click where that can matter (another device online, or the music
+  // page), resume the AudioContext and, with another device online,
+  // play+pause the silent blob on a throwaway element. The shared element
+  // is never touched: this capture-phase click may be the one starting a
+  // track, or a restored track may already own it. The work runs after the
+  // click's own handlers (a timer keeps the user activation).
   // The context only has to start inside a gesture (WebKit): once started,
   // _resumeAudioContext() wakes it without one, so with no track routed
   // through it, it is suspended again instead of running on every page.
   function _bindAutoplayPrimer() {
-    if (mp._syncLoggedIn && mp._syncEnabled) {
-      document.addEventListener('click', function _primeAutoplay() {
-        if (_audioPlayPrimed) return
-        _audioPlayPrimed = true
-        if (mp._ensureAudioContext()) {
+    if (!mp._syncLoggedIn || !mp._syncEnabled) return
+    var ctxPrimed = false, elementPrimed = false
+    document.addEventListener('click', function _primeAutoplay() {
+      var others = mp._syncOthersOnline()
+      var primeCtx = !ctxPrimed && (others || !!document.getElementById('muView'))
+      var primeElement = !elementPrimed && others
+      if (!primeCtx && !primeElement) return
+      ctxPrimed = ctxPrimed || primeCtx
+      elementPrimed = elementPrimed || primeElement
+      if (ctxPrimed && elementPrimed) document.removeEventListener('click', _primeAutoplay, true)
+      setTimeout(function() {
+        if (primeCtx && mp._ensureAudioContext()) {
           var ctx = mp._audioCtx
           ctx.resume().then(function() {
             if (!mp._fxConnected && ctx.state === 'running') ctx.suspend().catch(function() {})
           }).catch(function() {})
         }
-        if (mp.currentIndex >= 0 || !audio.paused || mp._syncPhantomKeepaliveActive) return
+        if (!primeElement || mp.currentIndex >= 0 || !audio.paused || mp._syncPhantomKeepaliveActive) return
         var silentUrl = _silentUrl()
         if (!silentUrl) return
         try {
           var primer = new Audio(silentUrl)
           primer.play().then(function() { primer.pause() }).catch(function() {})
         } catch (e) {}
-      }, { once: true, capture: true })
-    }
+      }, 0)
+    }, true)
   }
 
   // ─── Expose globally ───────────────────────────────────────────
   window.MusicPlayer = MusicPlayer
 
-  // Every app page carries the player (_app_base.html). Files and Music call
-  // init() themselves while their scripts run; any other page resumes here.
+  // Every app page carries the player while music is on (_app_base.html),
+  // loaded after the page's own scripts. A track to resume, and the music
+  // page, start it at once; any other page after its first render (a page
+  // calling in first starts it then, _initFirst).
   document.addEventListener('DOMContentLoaded', function() {
     var el = document.getElementById('musicPlayer')
-    if (el && !el._mpInitialized) init()
+    if (!el || el._mpInitialized) return
+    if (_ssGet('mp_state') || document.getElementById('muView')) init()
+    else _whenIdle(function() { if (!el._mpInitialized) init() }, 300)
   })
 })(window._mpCore)

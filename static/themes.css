@@ -9,7 +9,7 @@
 /* ---- Structural tokens (theme-independent) + default palette (Frost) ----- */
 :root{
   --font-display:'Bricolage Grotesque','Arial Black',sans-serif;
-  --font-body:'Inter',system-ui,sans-serif;
+  --font-body:'Inter','Inter Fallback','Inter Fallback Roboto',system-ui,sans-serif;
   --font-mono:'JetBrains Mono',ui-monospace,monospace;
   --radius:0; --radius-lg:0; --radius-pill:0;
   --shadow-1:none; --shadow-2:6px 6px 0 var(--accent);
@@ -56,7 +56,7 @@
    (hairlines) · --hover / --press (row states) · --sel (selection fill) ·
    --shadow-pop (floating layers) · --kind-* (file-type colours). */
 .ui-v2{
-  --font-display:'Inter',system-ui,sans-serif;
+  --font-display:'Inter','Inter Fallback','Inter Fallback Roboto',system-ui,sans-serif;
   --radius:8px; --radius-lg:14px; --radius-pill:999px;
   --nav-h:52px;
   --bg:#ffffff; --pane:#f6f7f9; --surface:#f3f4f6; --surface-2:#eceef1; --raise:#ffffff; --panel:#ffffff;

@@ -17,22 +17,27 @@
       var onScroll = function () { nav.classList.toggle('rd-scrolled', window.scrollY > 12 || (!!scroller && scroller.scrollTop > 12)) }
       window.addEventListener('scroll', onScroll, { passive: true })
       if (scroller) scroller.addEventListener('scroll', onScroll, { passive: true })
-      // Keys scroll the focused element's scroller: with nothing focused, hand
-      // scroll keys to the page scroller (Tab still starts at the nav).
-      if (scroller && getComputedStyle(scroller).overflowY === 'auto') {
-        scroller.tabIndex = -1
-        var scrollKeys = [' ', 'PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home', 'End']
-        document.addEventListener('keydown', function (e) {
-          if (document.activeElement === document.body && scrollKeys.indexOf(e.key) >= 0) scroller.focus({ preventScroll: true })
-        }, true)
-      }
-      onScroll()
+      // Read on the first frame, after the pages' own DOMContentLoaded rendering:
+      // here it would force an extra style and layout pass before it.
+      requestAnimationFrame(function () {
+        // Keys scroll the focused element's scroller: with nothing focused, hand
+        // scroll keys to the page scroller (Tab still starts at the nav).
+        if (scroller && getComputedStyle(scroller).overflowY === 'auto') {
+          scroller.tabIndex = -1
+          var scrollKeys = [' ', 'PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home', 'End']
+          document.addEventListener('keydown', function (e) {
+            if (document.activeElement === document.body && scrollKeys.indexOf(e.key) >= 0) scroller.focus({ preventScroll: true })
+          }, true)
+        }
+        onScroll()
+      })
     }
     if (toggle) {
       toggle.addEventListener('click', function (e) {
         e.stopPropagation()
         root.classList.toggle('rd-nav-open')
         toggle.setAttribute('aria-expanded', root.classList.contains('rd-nav-open') ? 'true' : 'false')
+        if (root.classList.contains('rd-nav-open')) Update.note()
       })
       document.addEventListener('click', function (e) {
         if (!root.classList.contains('rd-nav-open')) return
@@ -58,7 +63,10 @@
         var m = btn.closest('.rd-menu')
         var open = m.classList.contains('is-open')
         closeMenus(m)
-        if (!open) { m.classList.add('is-open'); btn.setAttribute('aria-expanded', 'true') }
+        if (!open) {
+          m.classList.add('is-open'); btn.setAttribute('aria-expanded', 'true')
+          if (m.querySelector('[data-build-note]')) Update.note()
+        }
         else { m.classList.remove('is-open'); btn.setAttribute('aria-expanded', 'false') }
         return
       }
@@ -87,7 +95,8 @@
   // ---- Admin notification banners (overlay the shared nav on every page) --
   function initNotifs () {
     var host = document.getElementById('rdNotifBanners')
-    if (!host || !window.fetch) return
+    // data-none: the server has no banner live and no one-shot trigger waiting (_nav.html).
+    if (!host || !window.fetch || host.hasAttribute('data-none')) return
 
     var SS_KEY = 'onegy_notif_dismissed_session'
     var LS_KEY = 'onegy_notif_dismissed_always'
@@ -525,17 +534,22 @@
     }
 
     // The account menu's quiet line: the build, and when this browser got it.
+    // The date is written when a menu holding the line first opens (initNav):
+    // a page's first Intl call costs tens of ms on a slow phone.
+    var buildAt = 0
     function buildNote () {
-      var at = 0
       try {
         if (localStorage.getItem('onegy_build') !== meta.content) {
           localStorage.setItem('onegy_build', meta.content)
           localStorage.setItem('onegy_build_at', Date.now())
         }
-        at = +localStorage.getItem('onegy_build_at')
+        buildAt = +localStorage.getItem('onegy_build_at')
       } catch (e) {}
-      if (!at) return
-      var when = new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    }
+    function showBuildNote () {
+      if (!buildAt) return
+      var when = new Date(buildAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      buildAt = 0
       ;[].forEach.call(document.querySelectorAll('[data-build-note]'), function (el) { el.textContent += ' · updated ' + when })
     }
 
@@ -567,7 +581,7 @@
       setInterval(function () { check() }, CHECK_MS)
     }
 
-    return { init: init, busy: busy, resume: resume }
+    return { init: init, busy: busy, resume: resume, note: showBuildNote }
   })()
   // ONE.GY Desktop asks before an update restart (desktop/docs/site-bridge.md).
   window.OneGyUpdate = { busy: Update.busy, resume: Update.resume }

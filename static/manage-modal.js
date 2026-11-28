@@ -687,10 +687,10 @@ window.ManageModal = (function() {
     return data.is_e2e || (data.e2e_count > 0) || data.has_mixed_e2e
   }
 
-  // Link keys are one POST per item (no batch endpoint): run fn(item, index)
-  // at most LINK_KEY_CONCURRENCY at a time. fn handles its own errors; once
-  // stop() is true no further items start.
+  // Runs fn(item, index) at most LINK_KEY_CONCURRENCY at a time. fn handles
+  // its own errors; once stop() is true no further items start.
   const LINK_KEY_CONCURRENCY = 6
+  const LINK_KEY_BATCH = 200  // /f/batch-link-key's cap per request
   async function _runPool(items, fn, stop) {
     let next = 0
     async function worker() {
@@ -752,6 +752,7 @@ window.ManageModal = (function() {
           }
         }
 
+        const wraps = {}
         await _runPool(e2eFiles, async (fileInfo) => {
           try {
             const keyInfo = batchKeys[fileInfo.id]
@@ -762,26 +763,35 @@ window.ManageModal = (function() {
             )
 
             const linkData = await OneGyCrypto.wrapFileKeyForLink(fileKey, linkKey)
+            wraps[fileInfo.id] = { encrypted_file_key: linkData.encryptedFileKey, file_key_nonce: linkData.nonce }
+          } catch (err) {
+            console.error(`[MANAGE MODAL] E2E folder link key failed for ${fileInfo.name}:`, err)
+          }
+        })
 
-            const lkResp = await fetch(`/f/${fileInfo.id}/link-key`, {
+        // The wrapped keys go up LINK_KEY_BATCH per request.
+        const ready = Object.keys(wraps)
+        for (let i = 0; i < ready.length; i += LINK_KEY_BATCH) {
+          const keys = {}
+          ready.slice(i, i + LINK_KEY_BATCH).forEach(id => { keys[id] = wraps[id] })
+          try {
+            const lkResp = await fetch('/f/batch-link-key', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest',
                 'X-CSRFToken': csrfToken
               },
-              body: JSON.stringify({
-                encrypted_file_key: linkData.encryptedFileKey,
-                file_key_nonce: linkData.nonce,
-                scope: 'folder'
-              })
+              body: JSON.stringify({ keys: keys, scope: 'folder' })
             })
-            if (!lkResp.ok) throw new Error(`LINK KEY UPLOAD FAILED (HTTP ${lkResp.status})`)
-            keyed++
+            const lkData = await lkResp.json().catch(() => ({}))
+            if (!lkResp.ok || !lkData.success) throw new Error(`LINK KEY UPLOAD FAILED (HTTP ${lkResp.status})`)
+            keyed += (lkData.keyed || []).length
+            if ((lkData.failed || []).length) console.error('[MANAGE MODAL] E2E folder link keys not stored for:', lkData.failed)
           } catch (err) {
-            console.error(`[MANAGE MODAL] E2E folder link key failed for ${fileInfo.name}:`, err)
+            console.error('[MANAGE MODAL] E2E folder link key batch failed:', err)
           }
-        })
+        }
       }
 
       if (keyed < e2eFileCount) {
@@ -804,11 +814,16 @@ window.ManageModal = (function() {
             if (!nameResp.ok) throw new Error(`FOLDER NAME LINK KEY UPLOAD FAILED (HTTP ${nameResp.status})`)
           }
         }
-        // Also wrap name keys for subfolder names visible in the file listing
-        const subFolderResp = await fetch(`/files/list/${targetFolderId}`)
-        if (!subFolderResp.ok) throw new Error(`FAILED TO LOAD SUBFOLDERS (HTTP ${subFolderResp.status})`)
-        const subData = await subFolderResp.json()
-        const allFolders = subData.sidebar_folders || []
+        // Also wrap name keys for subfolder names visible in the file listing.
+        // The page's own folder tree (cfg.getFolderTree) saves loading the whole
+        // /files/list just for it.
+        let allFolders = cfg.getFolderTree ? cfg.getFolderTree() : null
+        if (!allFolders || !allFolders.length) {
+          const subFolderResp = await fetch(`/files/list/${targetFolderId}`)
+          if (!subFolderResp.ok) throw new Error(`FAILED TO LOAD SUBFOLDERS (HTTP ${subFolderResp.status})`)
+          const subData = await subFolderResp.json()
+          allFolders = subData.sidebar_folders || []
+        }
         const targetIdStr = String(targetFolderId)
         const childrenByParent = new Map()
         for (const sf of allFolders) {

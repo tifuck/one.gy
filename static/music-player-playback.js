@@ -11,7 +11,6 @@
     mp.isPlaying = true
     mp._updatePlayButton()
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'
-    try { document.dispatchEvent(new CustomEvent('musicplayer:playpause', { detail: { playing: true } })) } catch(e) {}
   }
 
   function _onAudioPause() {
@@ -37,7 +36,6 @@
     mp.isPlaying = false
     mp._updatePlayButton()
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'
-    try { document.dispatchEvent(new CustomEvent('musicplayer:playpause', { detail: { playing: false } })) } catch(e) {}
   }
 
   function _onGlobalKeydown(e) {
@@ -444,7 +442,26 @@
           mp._startCrossfade()
         }
       }
+
+      // An encrypted next track is decrypted ahead (music-player-e2e.js is
+      // loaded once one played), so it starts without a silent gap
+      if (mp._prefetchE2E && audio.duration - audio.currentTime <= 15) {
+        var aheadIdx = _peekNextIndex()
+        if (aheadIdx >= 0) mp._prefetchE2E(mp.playlist[aheadIdx])
+      }
     }
+  }
+
+  // The track playNext() loads next, or -1 (repeat one, the queue's end, a new shuffle)
+  function _peekNextIndex() {
+    if (mp.repeatMode === 'one' || !mp.playlist.length) return -1
+    if (mp.shuffleMode) {
+      var pos = mp.shufflePos + 1
+      return pos < mp.shuffleOrder.length ? mp.shuffleOrder[pos] : -1
+    }
+    var next = mp.currentIndex + 1
+    if (next < mp.playlist.length) return next
+    return mp.repeatMode === 'all' ? 0 : -1
   }
 
   function _onMetadataLoaded() {

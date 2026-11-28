@@ -2,7 +2,7 @@
 ;(function(mp) {
   'use strict'
 
-  const { AUDIO_EXTS, audio, _applyOutputVolume, _applyCrossfadeVolumes } = mp
+  const { AUDIO_EXTS, audio, _applyOutputVolume, _applyCrossfadeVolumes, _jsonHeaders } = mp
 
   let _crossfadeTimer = null
 
@@ -348,17 +348,17 @@
     })
     var seedArtists = Object.keys(seedArtistSet)
 
-    var url = '/music/api/suggest?count=20'
-    if (seedArtists.length > 0) {
-      url += '&seed_artists=' + encodeURIComponent(seedArtists.join(','))
-    }
-    if (excludeIds.length > 0) {
-      url += '&exclude=' + encodeURIComponent(excludeIds.join(','))
-    }
+    // A JSON body: a long queue's exclude list does not fit in a URL
+    // (gunicorn's request line limit is 8190 bytes, about 540 ids)
+    var body = { count: 20 }
+    if (seedArtists.length > 0) body.seed_artists = seedArtists
+    if (excludeIds.length > 0) body.exclude = excludeIds
 
-    mp._autoQueuePromise = fetch(url, {
+    mp._autoQueuePromise = fetch('/music/api/suggest', {
+      method: 'POST',
       credentials: 'same-origin',
-      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      headers: _jsonHeaders(),
+      body: JSON.stringify(body)
     })
     .then(function(r) {
       if (r.status === 401 || r.status === 403) {

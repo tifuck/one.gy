@@ -39,6 +39,10 @@
   var ICON_NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'
   var ICON_LIST = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6.5h11M4 11.5h11M4 16.5h6"/><circle cx="17.5" cy="16.5" r="2.5"/><path d="M20 16.5V7l2-1"/></svg>'
   var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4a.8.8 0 0 0 1.2.7l11.4-7.2a.8.8 0 0 0 0-1.4L8.2 4.1A.8.8 0 0 0 7 4.8z"/></svg>'
+  var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4.5" width="4.2" height="15" rx="1.2"/><rect x="13.8" y="4.5" width="4.2" height="15" rx="1.2"/></svg>'
+  function icon (svg, cls) { return svg.replace('<svg ', '<svg class="' + cls + '" ') }
+  // Play + pause stacked; .is-playing on the button crossfades them (music-library.css)
+  var ICON_PP = icon(ICON_PLAY, 'mu-pp-play') + icon(ICON_PAUSE, 'mu-pp-pause')
   var ICON_CHEV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>'
   var ICON_HEART = '<svg viewBox="0 0 24 24"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.2a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z"/></svg>'
 
@@ -63,8 +67,24 @@
   function toPlayable (t, albumName) {
     return { id: t.id, title: t.title || t.name, artists: (t.artists || []), album_name: t.album_name || albumName || '', cover_path: t.cover_path || null, duration_ms: t.duration_ms || 0 }
   }
-  // index < 0: play from the first playable track ("Play" button).
-  function playList (tracks, index, albumName) {
+  // The list the player's queue was started from ({ key, ids }), so that
+  // list's play buttons show pause while it plays. Kept per tab like S.at.
+  var SS_CTX = 'onegy_music_ctx', playing = null, pendingPlay = 0
+  try { playing = JSON.parse(sessionStorage.getItem(SS_CTX) || 'null') } catch (e) {}
+  function isPlaying () {
+    // Started but still loading counts as playing, so the button flips at once
+    if (pendingPlay && Date.now() - pendingPlay < 8000) return true
+    return typeof MusicPlayer !== 'undefined' && MusicPlayer.isPlaying ? MusicPlayer.isPlaying() : false
+  }
+  // key: 'album:<id>', 'playlist:<id>', 'liked', ...; true while the current track came from that list
+  function ctxOn (key) {
+    var id
+    return !!key && !!playing && playing.key === key && !!(id = currentTrackId()) && playing.ids.indexOf(id) >= 0
+  }
+  function ppClass (key) { return isPlaying() && ctxOn(key) ? ' is-playing' : '' }
+  function togglePlay () { if (typeof MusicPlayer !== 'undefined' && MusicPlayer.togglePlay) MusicPlayer.togglePlay() }
+  // index < 0: play from the first playable track ("Play" button). key: the list's ctxOn key.
+  function playList (tracks, index, albumName, key) {
     if (typeof MusicPlayer === 'undefined' || !MusicPlayer.playMusicLibrary) { toast('PLAYER NOT READY', 'error'); return }
     // Re-map index to the filtered array by position (ids may repeat)
     var playable = [], start = index < 0 ? 0 : -1
@@ -76,6 +96,11 @@
     if (!playable.length) { toast('NO PLAYABLE TRACKS', 'error'); return }
     if (start < 0) { toast('TRACK UNAVAILABLE', 'error'); return }
     MusicPlayer.playMusicLibrary(playable, start)
+    playing = { key: key || null, ids: playable.map(function (t) { return t.id }) }
+    try { sessionStorage.setItem(SS_CTX, JSON.stringify(playing)) } catch (e) {}
+    pendingPlay = Date.now()
+    setTimeout(syncPlaying, 8000)
+    syncPlaying()
     syncHearts()
   }
   // Card play button: start an album without opening it
@@ -83,7 +108,7 @@
     try {
       var r = await jgetCached('/music/api/album/' + encodeURIComponent(id))
       var a = r.album || r
-      playList(r.tracks || a.tracks || [], -1, a.name)
+      playList(r.tracks || a.tracks || [], -1, a.name, 'album:' + id)
     } catch (e) { toast('COULD NOT LOAD ALBUM', 'error') }
   }
 
@@ -159,11 +184,25 @@
 
   // ---- Now-playing highlight -------------------------------------------------
   function currentTrackId () { return (typeof MusicPlayer !== 'undefined' && MusicPlayer.getCurrentTrackId) ? MusicPlayer.getCurrentTrackId() : null }
+  // Level meter of the current row (music-library.css), added to that row only
+  var EQ = '<span class="mu-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>'
+  // Current row, its level meter, and every play button ([data-ctx]) follow the player
   function syncPlaying () {
-    var id = currentTrackId()
-    view.querySelectorAll('.mu-track').forEach(function (r) { r.classList.toggle('is-current', !!id && r.getAttribute('data-song-id') === id) })
+    if (!view) return
+    var id = currentTrackId(), on = isPlaying()
+    view.classList.toggle('is-paused', !on)
+    view.querySelectorAll('.mu-track').forEach(function (r) {
+      var cur = !!id && r.getAttribute('data-song-id') === id
+      r.classList.toggle('is-current', cur)
+      var num = cur && !r.querySelector('.mu-eq') && r.querySelector('.mu-track-num')
+      if (num) num.insertAdjacentHTML('beforeend', EQ)
+    })
+    view.querySelectorAll('[data-ctx]').forEach(function (b) {
+      var p = on && ctxOn(b.getAttribute('data-ctx'))
+      b.classList.toggle('is-playing', p)
+      if (b.tagName === 'BUTTON') { b.setAttribute('aria-label', p ? 'Pause' : 'Play'); b.title = p ? 'Pause' : 'Play' }
+    })
   }
-  function setPaused (paused) { if (view) view.classList.toggle('is-paused', paused) }
 
   // ---- Cover tint ------------------------------------------------------------
   // One vivid colour per cover (canvas average weighted toward saturated
@@ -194,22 +233,19 @@
     var hsl = rgbToHsl(r / w, g / w, b / w)
     return 'rgb(' + hslToRgb(hsl[0], Math.min(0.8, Math.max(hsl[1] < 0.08 ? 0 : 0.35, hsl[1])), 0.4).join(' ') + ')'
   }
-  // url: the cover as the page shows it, so sampling it (at 24 x 24) costs no extra download
+  // url: the cover as the page shows it, so sampling it (at 24 x 24) costs no extra download.
+  // decode() decodes off the main thread; drawing the decoded image is cheap.
   function tintOf (url) {
     if (!url) return Promise.resolve(null)
     if (!tintCache.has(url)) {
-      tintCache.set(url, new Promise(function (res) {
-        var img = new Image()
-        img.onload = function () {
-          try {
-            var c = document.createElement('canvas'); c.width = c.height = 24
-            var x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0, 24, 24)
-            res(pickTint(x.getImageData(0, 0, 24, 24).data))
-          } catch (e) { res(null) }
-        }
-        img.onerror = function () { res(null) }
-        img.src = url
-      }))
+      var img = new Image()
+      img.src = url
+      var decoded = img.decode ? img.decode() : new Promise(function (ok, no) { img.onload = ok; img.onerror = no })
+      tintCache.set(url, decoded.then(function () {
+        var c = document.createElement('canvas'); c.width = c.height = 24
+        var x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0, 24, 24)
+        return pickTint(x.getImageData(0, 0, 24, 24).data)
+      }).catch(function () { return null }))
     }
     return tintCache.get(url)
   }
@@ -344,7 +380,7 @@
   function albumCard (a, sub) {
     var line = sub === 'type' ? [year(a), typeLabel(a.album_type)] : [year(a), (a.artists || []).map(function (x) { return x.name }).join(', ')]
     return '<button type="button" class="mu-card" data-album="' + esc(a.id) + '" title="' + esc(a.name) + '">' +
-      '<span class="mu-card-art">' + cover(a.cover_path, '', 320) + '<span class="mu-card-play" data-play-album="' + esc(a.id) + '" aria-hidden="true">' + ICON_PLAY + '</span></span>' +
+      '<span class="mu-card-art">' + cover(a.cover_path, '', 320) + '<span class="mu-card-play' + ppClass('album:' + a.id) + '" data-play-album="' + esc(a.id) + '" data-ctx="album:' + esc(a.id) + '" aria-hidden="true">' + ICON_PP + '</span></span>' +
       '<span class="mu-card-name">' + esc(a.name) + '</span>' +
       '<span class="mu-card-sub">' + esc(line.filter(Boolean).join(' · ')) + '</span></button>'
   }
@@ -367,7 +403,7 @@
     var title = t.title || t.name
     var artists = artistLinks((t.artists || []).concat(t.featured_artists || []))
     return '<div class="mu-track' + (unavailable ? ' is-unavail' : '') + (t.id && t.id === currentTrackId() ? ' is-current' : '') + '" data-track-index="' + i + '" data-song-id="' + esc(t.id) + '"' + (unavailable ? '' : ' tabindex="0"') + '>' +
-      '<span class="mu-track-num">' + esc(opts.art ? i + 1 : (t.track_number || (i + 1))) + '<svg class="mu-track-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.8v14.4a.8.8 0 0 0 1.2.7l11.4-7.2a.8.8 0 0 0 0-1.4L8.2 4.1A.8.8 0 0 0 7 4.8z"/></svg></span>' +
+      '<span class="mu-track-num">' + esc(opts.art ? i + 1 : (t.track_number || (i + 1))) + icon(ICON_PLAY, 'mu-track-play') + icon(ICON_PAUSE, 'mu-track-pause') + (t.id && t.id === currentTrackId() ? EQ : '') + '</span>' +
       (opts.art ? '<span class="mu-track-art">' + cover(t.cover_path, '', 96) + '</span>' : '') +
       '<span class="mu-track-main"><span class="mu-track-title" title="' + esc(title) + '">' + esc(title) + '</span><span class="mu-track-artist">' + artists + '</span></span>' +
       (opts.album ? '<span class="mu-track-album">' + (t.album_id ? '<button type="button" class="mu-link" data-album="' + esc(t.album_id) + '">' + esc(t.album_name || '') + '</button>' : '') + '</span>' : '') +
@@ -389,8 +425,10 @@
     }) + '</div>'
   }
   // extra: HTML after the button (album genre chips)
+  // The open view's list (current.key)
   function playButton (extra) {
-    return '<div class="mu-actions"><button type="button" class="mu-play-big" data-play-all aria-label="Play" title="Play">' + ICON_PLAY + '</button>' + (extra || '') + '</div>'
+    var p = ppClass(current.key), label = p ? 'Pause' : 'Play'
+    return '<div class="mu-actions"><button type="button" class="mu-play-big' + p + '" data-play-all data-ctx="' + esc(current.key) + '" aria-label="' + label + '" title="' + label + '">' + ICON_PP + '</button>' + (extra || '') + '</div>'
   }
   // art: { html, cls }; kicker: what this page is; meta: HTML (already escaped)
   function hero (art, kicker, title, meta, desc) {
@@ -504,7 +542,7 @@
       var r = await jgetCached('/music/api/genre?name=' + encodeURIComponent(name))
       if (!isCurrentView(epoch)) return
       var songs = r.songs || [], albums = r.albums || [], artists = r.artists || []
-      current = { tracks: songs, albumName: '' }
+      current = { tracks: songs, albumName: '', key: 'genre:' + name }
       var art = albums[0] && coverUrl(albums[0].cover_path, 320)   // as its release card shows it
       wash(art)
       var h = hero({ html: '<span class="mu-genre-hero"' + (art ? ' data-tint="' + esc(art) + '"' : '') + '>' + esc(name.charAt(0)) + '</span>' }, 'Genre', name,
@@ -523,7 +561,7 @@
       if (!isCurrentView(epoch)) return
       if (r.error) { view.innerHTML = empty(r.error); return }
       var a = r.album || r, tracks = r.tracks || a.tracks || []   // response is { album, tracks }
-      current = { tracks: tracks, albumName: a.name }
+      current = { tracks: tracks, albumName: a.name, key: 'album:' + id }
       crumbLabel(a.name)
       wash(coverUrl(a.cover_path, 640))
       var count = a.total_tracks && a.total_tracks > tracks.length ? tracks.length + ' of ' + plural(a.total_tracks, 'song') : plural(tracks.length, 'song')
@@ -555,7 +593,7 @@
       var short = own.filter(function (x) { return full.indexOf(x) < 0 })
       var h = hero({ html: cover(a.cover_path, '', 640, true), cls: 'mu-round' }, 'Artist', a.name, facts([plural(songs.length, 'song'), own.length ? plural(own.length, 'release') : '']))
       if (songs.length) {
-        current = { tracks: songs, albumName: '' }
+        current = { tracks: songs, albumName: '', key: 'artist:' + id }
         h += playButton() + sectionTitle('Songs', String(songs.length)) + '<div class="mu-collapsed">' + trackList(songs, { art: true, album: true }) + '</div>' + moreToggle(songs.length)
       }
       if (full.length) h += sectionTitle('Albums', String(full.length)) + '<div class="mu-grid">' + full.map(albumCardType).join('') + '</div>'
@@ -570,7 +608,7 @@
       var arr = await jget('/music/api/liked-songs')
       if (!isCurrentView(epoch)) return
       arr = Array.isArray(arr) ? arr : (arr.songs || [])
-      current = { tracks: arr, albumName: '' }
+      current = { tracks: arr, albumName: '', key: 'liked' }
       var h = hero({ html: ICON_HEART, cls: 'mu-liked-art' }, 'Playlist', 'Liked songs', facts([USERNAME ? '<strong>' + esc(USERNAME) + '</strong>' : '', plural(arr.length, 'song'), esc(totalDur(arr))]))
       h += arr.length ? playButton() + trackList(arr, { art: true, album: true }) : empty('No liked songs yet', 'Tap the heart on any track to save it here.')
       render(h)
@@ -584,7 +622,7 @@
       if (!isCurrentView(epoch)) return
       if (p.error) { view.innerHTML = empty(p.error); return }
       var tracks = p.songs || p.tracks || []
-      current = { tracks: tracks, albumName: '' }
+      current = { tracks: tracks, albumName: '', key: 'playlist:' + id }
       crumbLabel(p.name)
       wash(coverUrl(p.cover_path, 640))
       var h = hero({ html: p.cover_path ? cover(p.cover_path, '', 640, true) : '<span class="mu-art-ph">' + ICON_LIST + '</span>' }, 'Playlist', p.name, facts([plural(tracks.length, 'song'), esc(totalDur(tracks))]), p.description || '')
@@ -606,7 +644,7 @@
       var d = await jget('/music/api/search?q=' + encodeURIComponent(q), ctl.signal)
       if (!isCurrentView(epoch)) return
       var h = ''
-      if ((d.songs || []).length) { current = { tracks: d.songs, albumName: '' }; h += sectionTitle('Songs', String(d.songs.length)) + trackList(d.songs, { art: true, album: true }) }
+      if ((d.songs || []).length) { current = { tracks: d.songs, albumName: '', key: 'search:' + q }; h += sectionTitle('Songs', String(d.songs.length)) + trackList(d.songs, { art: true, album: true }) }
       if ((d.albums || []).length) h += sectionTitle('Albums', String(d.albums.length)) + '<div class="mu-grid">' + d.albums.map(albumCard).join('') + '</div>'
       if ((d.artists || []).length) h += sectionTitle('Artists', String(d.artists.length)) + '<div class="mu-grid mu-grid-artists">' + d.artists.map(artistCard).join('') + '</div>'
       render(h || empty('No results for “' + q + '”', 'Try a different spelling or a shorter search.'))
@@ -617,12 +655,16 @@
   // ---- Playlists in rail ---------------------------------------------------
   async function loadPlaylists () {
     try {
-      var d = await jget('/music/api/playlists'); S.playlists = Array.isArray(d) ? d : (d.playlists || [])
-      var list = $('muRailPlaylists'); if (!list) return
-      list.innerHTML = S.playlists.map(function (p) {
-        return '<button type="button" class="mu-rail-pl rd-side-row' + (S.playlistId === String(p.id) ? ' is-active' : '') + '" data-playlist="' + esc(p.id) + '" title="' + esc(p.name) + '">' + (p.cover_path ? cover(p.cover_path, 'mu-rail-pl-art', 96) : '<span class="mu-rail-pl-art mu-art-ph">' + ICON_LIST + '</span>') + '<span class="mu-rail-pl-name">' + esc(p.name) + '</span></button>'
-      }).join('') || '<div class="mu-rail-hint">No playlists yet</div>'
+      var d = await jget('/music/api/playlists')
+      showPlaylists(Array.isArray(d) ? d : (d.playlists || []))
     } catch (e) {}
+  }
+  function showPlaylists (playlists) {
+    S.playlists = playlists
+    var list = $('muRailPlaylists'); if (!list) return
+    list.innerHTML = S.playlists.map(function (p) {
+      return '<button type="button" class="mu-rail-pl rd-side-row' + (S.playlistId === String(p.id) ? ' is-active' : '') + '" data-playlist="' + esc(p.id) + '" title="' + esc(p.name) + '">' + (p.cover_path ? cover(p.cover_path, 'mu-rail-pl-art', 96) : '<span class="mu-rail-pl-art mu-art-ph">' + ICON_LIST + '</span>') + '<span class="mu-rail-pl-name">' + esc(p.name) + '</span></button>'
+    }).join('') || '<div class="mu-rail-hint">No playlists yet</div>'
   }
   async function createPlaylist (name, desc) {
     try {
@@ -664,7 +706,7 @@
     })
     view.addEventListener('click', function (e) {
       var like = e.target.closest('[data-like]'); if (like) { e.stopPropagation(); toggleLike(like.getAttribute('data-like')); return }
-      var pa = e.target.closest('[data-play-album]'); if (pa) { playAlbum(pa.getAttribute('data-play-album')); return }
+      var pa = e.target.closest('[data-play-album]'); if (pa) { var aid = pa.getAttribute('data-play-album'); if (ctxOn('album:' + aid)) togglePlay(); else playAlbum(aid); return }
       var more = e.target.closest('[data-go]'); if (more) { go(more.getAttribute('data-go')); return }
       var alb = e.target.closest('[data-album]'); if (alb) { viewAlbum(alb.getAttribute('data-album')); return }
       var art = e.target.closest('[data-artist]'); if (art) { viewArtist(art.getAttribute('data-artist')); return }
@@ -672,8 +714,13 @@
       var pl = e.target.closest('[data-playlist]'); if (pl) { viewPlaylist(pl.getAttribute('data-playlist')); return }
       var at = e.target.closest('[data-album-type]'); if (at) { albumPrefs.type = at.getAttribute('data-album-type'); savePrefs(); renderAlbums(S.albums || []); return }
       var mt = e.target.closest('[data-more-tracks]'); if (mt) { var c = mt.previousElementSibling; if (c) c.classList.remove('mu-collapsed'); mt.remove(); return }
-      if (e.target.closest('[data-play-all]')) { playList(current.tracks, -1, current.albumName); return }
-      var tr = e.target.closest('[data-track-index]'); if (tr) { playList(current.tracks, +tr.getAttribute('data-track-index'), current.albumName); return }
+      if (e.target.closest('[data-play-all]')) { if (ctxOn(current.key)) togglePlay(); else playList(current.tracks, -1, current.albumName, current.key); return }
+      var tr = e.target.closest('[data-track-index]')
+      if (tr) {
+        // The current song: its play / pause icon toggles; elsewhere on the row only resumes
+        if (tr.getAttribute('data-song-id') === currentTrackId()) { if (!isPlaying() || e.target.closest('.mu-track-num')) togglePlay(); return }
+        playList(current.tracks, +tr.getAttribute('data-track-index'), current.albumName, current.key); return
+      }
     })
     view.addEventListener('change', function (e) {
       if (e.target.matches('[data-album-sort]')) { albumPrefs.sort = e.target.value; savePrefs(); renderAlbums(S.albums || []) }
@@ -699,7 +746,7 @@
     })
     document.addEventListener('musicplayer:fslike', function (e) { if (e.detail && e.detail.id) toggleLike(e.detail.id) })
     document.addEventListener('musicplayer:trackchange', function (e) { if (e.detail && e.detail.id) { syncPlayerHeart(e.detail.id); syncPlaying() } })
-    document.addEventListener('musicplayer:playpause', function (e) { setPaused(!(e.detail && e.detail.playing)) })
+    document.addEventListener('musicplayer:playpause', function (e) { if (e.detail && e.detail.playing) pendingPlay = 0; syncPlaying() })
     document.addEventListener('musicplayer:fsadd', function (e) { if (e.detail && e.detail.id) addToPlaylistMenu(e.detail.id, e.detail.button) })
 
     var si = $('muSearch'), to = null
@@ -735,15 +782,19 @@
     view = $('muView'); railEl = $('muRail')
     if (!view || !railEl) return
     wire()
+    // The player loads after this script (_app_base.html) and starts itself
+    // in the music-library context; nothing plays before it does.
     if (typeof MusicPlayer !== 'undefined' && MusicPlayer.init) { try { MusicPlayer.init('music-library') } catch (e) {} }
-    if (typeof MusicPlayer !== 'undefined' && MusicPlayer.getAudioElement) setPaused(MusicPlayer.getAudioElement().paused)
-    likesReady = loadLikes()
+    syncPlaying()
+    // Likes and playlists come with the page (music_page); fetched otherwise
+    var boot = window.MU_BOOT
+    if (boot) { S.likes = new Set(boot.likes || []); likesReady = Promise.resolve() } else likesReady = loadLikes()
     likesReady.then(function () {
       updateLikedCount()
       syncPlayerHeart()
       syncHearts()
     })
-    loadPlaylists()
+    if (boot) showPlaylists(boot.playlists || []); else loadPlaylists()
     window.MusicBrowse = { navigate: navigate }
     window.addEventListener('onegy:update', function (e) { e.detail.music = S.at })
     window.addEventListener('pagehide', function () { try { sessionStorage.setItem(SS_SCROLL, String(view.scrollTop)) } catch (e) {} })

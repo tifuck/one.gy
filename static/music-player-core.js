@@ -4,19 +4,19 @@
 // Supports both server-encrypted and E2E encrypted audio files.
 //
 // The player is split into classic scripts that load in this order (see
-// templates/_app_base.html):
-//   music-player-core.js        namespace, shared state, helpers, <audio>
+// templates/_app_base.html), after the page's own scripts:
+//   music-player-core.js        namespace, shared state, helpers, <audio>, AudioContext
 //   music-player-ui.js          player bar rendering, playlist panel
-//   music-player-fullscreen.js  mobile fullscreen view, swipe gestures
-//   music-player-fx.js          Web Audio graph, visualizer, chaos mode
 //   music-player-session.js     Media Session, iOS background, persistence
 //   music-player-playback.js    track loading, transport, <audio> events
 //   music-player-queue.js       playlists, shuffle, autoplay, crossfade
 //   music-player-sync.js        cross-device sync engine
-//   music-player-phantom.js     phantom mode (mirroring a remote device)
 //   music-player-devices.js     devices buttons, panel toggle
 //   music-player.js             window.MusicPlayer and init (load last)
 // Loaded on first use (mp._loadPart, URLs on the player element):
+//   music-player-fullscreen.js    mobile fullscreen view, swipe gestures (narrow or touch screens)
+//   music-player-fx.js            visualizer, chaos mode (when the visualizer can show)
+//   music-player-phantom.js       phantom mode (mirroring a remote device)
 //   music-player-e2e.js           E2E encrypted track loading
 //   music-player-devices-panel.js devices panel list
 // Every file is an IIFE over the shared namespace `mp` (window._mpCore).
@@ -308,6 +308,65 @@
     audio.load()
   }
 
+  // ─── AudioContext (visualizer graph, sync keepalive, autoplay primer) ──
+  function _ensureAudioContext() {
+    if (mp._audioCtx) return true
+    try {
+      mp._audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+      mp._gainNode = mp._audioCtx.createGain()
+      mp._gainNode.gain.value = mp._desiredVolume
+      return true
+    } catch (e) {
+      console.warn('[MUSIC PLAYER] Web Audio not available:', e)
+      return false
+    }
+  }
+
+  /**
+   * Resume the AudioContext if it exists and is suspended.
+   * Browsers suspend AudioContexts after inactivity or when the tab is
+   * backgrounded, and the player suspends it while paused (music-player-sync.js).
+   * Once createMediaElementSource(audio) has been called,
+   * ALL audio output is routed through the AudioContext — if it stays
+   * suspended, the user hears nothing even though audio.play() succeeds.
+   * Calling resume() when already 'running' is a harmless no-op.
+   */
+  function _resumeAudioContext() {
+    if (mp._audioCtx && mp._audioCtx.state === 'suspended') {
+      mp._audioCtx.resume().catch(function(err) {
+        console.warn('[MUSIC PLAYER] AudioContext resume failed:', err)
+      })
+    }
+  }
+  // Every start of playback wakes it, whichever path called play()
+  audio.addEventListener('play', _resumeAudioContext)
+
+  // ─── Visualizer (music-player-fx.js, loaded when it can show) ──
+  // The canvas is hidden in the mobile bar and fullscreen (850px, as in
+  // music.css) and with reduced motion outside chaos mode: nothing is drawn
+  // or routed through Web Audio there.
+  var _narrowMql = window.matchMedia ? window.matchMedia('(max-width: 850px)') : null
+  var _calmMql = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null
+  function _fxShown() {
+    return mp._fxEnabled && mp.isVisible && !(_narrowMql && _narrowMql.matches) &&
+      (mp._chaosMode || !(_calmMql && _calmMql.matches))
+  }
+  // Stand-ins until the part arrives (it replaces them); a mirror shows no spectrum
+  function _startFx() {
+    if (!_fxShown() || mp._syncPhantomMode) return
+    _loadPart('fx').then(function() { if (mp._startFx !== _startFx) mp._startFx() })
+      .catch(function(err) { console.warn('[MUSIC PLAYER]', err.message) })
+  }
+  function _toggleFx() {
+    _loadPart('fx').then(function() { if (mp._toggleFx !== _toggleFx) mp._toggleFx() })
+      .catch(function(err) { console.warn('[MUSIC PLAYER]', err.message) })
+  }
+  // Playback (again) or the canvas showing again starts the spectrum
+  audio.addEventListener('playing', function() { mp._startFx() })
+  ;[_narrowMql, _calmMql].forEach(function(mql) {
+    if (mql && mql.addEventListener) mql.addEventListener('change', function() { mp._startFx() })
+  })
+
   Object.assign(mp, {
     AUDIO_EXTS,
     AUDIO_MIME,
@@ -329,5 +388,12 @@
     _coverUrl,
     _loadPart,
     _clearAudioSrc,
+    _ensureAudioContext,
+    _resumeAudioContext,
+    _fxShown,
+    _startFx,
+    _toggleFx,
+    _stopFxLoop: function() {},
+    _stopChaos: function() {},
   })
 })()

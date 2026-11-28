@@ -253,14 +253,15 @@ class _StorageManagerNotesThumbnails:
             print(f'[STORAGE] Could not look for a corroborating note replica for {note_id}: {e}')
         return False
 
-    def _verify_local_note_integrity(self, note_obj, local_path, context):
+    def _verify_local_note_integrity(self, note_obj, local_path, context, payload=None):
         """Verify the local note matches the DB checksum. Returns True if OK.
         If checksum is missing, computes and stores it. If checksum mismatch,
-        logs and returns False so caller can fall back to remote."""
-        if not note_obj or not local_path or not os.path.isfile(local_path):
+        logs and returns False so caller can fall back to remote. payload: the
+        file's bytes when the caller already read them (hashed in memory)."""
+        if not note_obj or not local_path or (payload is None and not os.path.isfile(local_path)):
             return False
         try:
-            local_size = os.path.getsize(local_path)
+            local_size = len(payload) if payload is not None else os.path.getsize(local_path)
         except Exception:
             return False
         expected_size = int(note_obj.size) if note_obj.size is not None else None
@@ -269,7 +270,7 @@ class _StorageManagerNotesThumbnails:
             return False
         local_checksum = None
         try:
-            local_checksum = self._sha256_file(local_path)
+            local_checksum = _note_content_checksum(payload) if payload is not None else self._sha256_file(local_path)
         except Exception as e:
             print(f'[STORAGE] Failed to checksum local note {note_obj.id}: {e}')
             return False
@@ -296,19 +297,20 @@ class _StorageManagerNotesThumbnails:
 
     # ---- Note operations (notes/) ----
 
-    def get_note_path(self, note_id):
+    def get_note_path(self, note_id, local_corrupt=False):
         """Get local path for a note. Stages from remote if needed.
-        Returns None if the note cannot be found on any backend."""
+        Returns None if the note cannot be found on any backend.
+        local_corrupt: the caller already found the local copy corrupt."""
         _validate_storage_file_id(note_id)
         self._ensure_local_backend_ready()
         backends, local_backend, local_node_id, _version = self._backend_state_snapshot()
         # Track whether the local canonical copy was already proven corrupt
         # during the top-of-function check, so the final fallback does not
         # re-serve bytes that were just rejected. See AUDIT FIX P0-1.
-        _local_corrupt = False
+        _local_corrupt = bool(local_corrupt)
         # Check canonical path (when local node is configured)
         try:
-            if local_backend and local_backend.exists('notes', note_id):
+            if not _local_corrupt and local_backend and local_backend.exists('notes', note_id):
                 local_path = local_backend.get_path('notes', note_id)
                 note_obj = db.session.get(Note, note_id)
                 if note_obj:
@@ -398,14 +400,41 @@ class _StorageManagerNotesThumbnails:
         return None
 
     def read_note(self, note_id):
+        # The canonical local copy is read once and hashed in memory (get_note_path
+        # hashes the file and the read below opens it again); any other copy goes
+        # through get_note_path as before.
+        local_corrupt = False
         try:
-            path = self.get_note_path(note_id)
+            _validate_storage_file_id(note_id)
+            self._ensure_local_backend_ready()
+            local_backend = self._backend_state_snapshot()[1]
+            if local_backend and local_backend.exists('notes', note_id):
+                local_path = local_backend.get_path('notes', note_id)
+                note_obj = db.session.get(Note, note_id)
+                if note_obj:
+                    with open(local_path, 'rb') as f:
+                        payload = f.read()
+                    if self._verify_local_note_integrity(note_obj, local_path, 'READ_NOTE', payload=payload):
+                        return self._note_text(payload)
+                    local_corrupt = True
+        except Exception as e:
+            print(f'[STORAGE] Failed to read local note {note_id}: {e}')
+        try:
+            path = self.get_note_path(note_id, local_corrupt=local_corrupt)
             if path and os.path.isfile(path):
                 with open(path, 'r') as f:
                     return f.read()
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _note_text(payload):
+        # What open(path, 'r').read() returned: UTF-8 text with universal newlines.
+        text = payload.decode('utf-8')
+        if '\r' in text:
+            text = text.replace('\r\n', '\n').replace('\r', '\n')
+        return text
 
     def write_note(self, note_id, content):
         """Write note content atomically.

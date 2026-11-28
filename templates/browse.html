@@ -17,6 +17,18 @@
 <link rel="stylesheet" href="{{ versioned_static('browse.css') }}">
 {% endblock %}
 
+{% block head_early %}
+{# The first listing starts now instead of after every deferred script;
+   browse.js takes this response for its first load (same URL it builds). #}
+<script nonce="{{ csp_nonce }}">(function () {
+  var f = new URLSearchParams(window.location.search).get('folder');
+  var url = '/f/' + encodeURIComponent({{ share_token|tojson }}) + '/browse-data' + (f ? '?folder=' + encodeURIComponent(f) : '');
+  var p = fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  p.catch(function () {});
+  window.__BW_PREFETCH__ = { url: url, p: p };
+})();</script>
+{% endblock %}
+
 {% block content %}
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" id="csrf_token"/>
 
@@ -122,8 +134,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
 <script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
-<script src="{{ versioned_static('thumbnail-gen.js') }}" defer></script>
 <script src="{{ versioned_static('browse.js') }}" defer></script>
 {% endblock %}

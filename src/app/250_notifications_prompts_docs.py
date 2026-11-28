@@ -1,3 +1,58 @@
+# Whether any notification is live. Every page asks (core.js) and there is
+# almost never one, so the answer is cached in-process: a commit that touches
+# a Notification drops it (listeners below), the TTL covers other processes
+# and expiry.
+_NOTIF_LIVE_TTL_SECONDS = 30
+_notif_live = {'gen': 0, 'state': None}
+
+
+def _notifications_live():
+    state = _notif_live['state']
+    if state is not None and time.monotonic() - state[0] < _NOTIF_LIVE_TTL_SECONDS:
+        return state[1]
+    gen = _notif_live['gen']
+    now = datetime.now(timezone.utc)
+    live = db.session.query(Notification.id).filter(
+        Notification.is_active == True,
+        db.or_(Notification.expires_at == None, Notification.expires_at > now)
+    ).first() is not None
+    # An admin edit committed meanwhile: this answer may predate it.
+    if _notif_live['gen'] == gen:
+        _notif_live['state'] = (time.monotonic(), live)
+    return live
+
+
+def _notifications_changed():
+    _notif_live['gen'] += 1
+    _notif_live['state'] = None
+
+
+@event.listens_for(db.session, 'before_flush')
+def _notif_live_mark(session, flush_context, instances):
+    if any(isinstance(obj, Notification)
+           for group in (session.new, session.dirty, session.deleted) for obj in group):
+        session.info['_notif_changed'] = True
+
+
+@event.listens_for(db.session, 'after_commit')
+def _notif_live_drop(session):
+    if session.info.pop('_notif_changed', False):
+        _notifications_changed()
+
+
+@app.context_processor
+def _inject_notifications_live():
+    # False lets core.js skip GET /api/notifications/active (_nav.html data-none):
+    # nothing is live and no one-shot trigger flag waits for that call to consume it.
+    if session.get('just_logged_in') or session.get('just_registered'):
+        return {'notifications_live': True}
+    try:
+        return {'notifications_live': _notifications_live()}
+    except Exception:
+        db.session.rollback()
+        return {'notifications_live': True}
+
+
 @app.route('/api/notifications/active')
 @limiter.limit("30 per minute")
 @csrf.exempt
@@ -13,12 +68,16 @@ def api_notifications_active():
     """
     now = datetime.now(timezone.utc)
 
-    query = Notification.query.filter(
-        Notification.is_active == True,
-        db.or_(Notification.expires_at == None, Notification.expires_at > now)
-    )
-
-    notifs = query.order_by(Notification.created_at.desc()).all()
+    notifs = []
+    if _notifications_live():
+        query = Notification.query.filter(
+            Notification.is_active == True,
+            db.or_(Notification.expires_at == None, Notification.expires_at > now)
+        )
+        notifs = query.order_by(Notification.created_at.desc()).all()
+    # The usual case: nothing to show and no one-shot flag for the code below to consume.
+    if not notifs and not (session.get('just_logged_in') or session.get('just_registered')):
+        return _notif_nocache(jsonify([]))
 
     # AUDIT FIX H4: epoch-validating helper so a revoked session does not get
     # user-targeted notifications.
@@ -37,6 +96,8 @@ def api_notifications_active():
     if logged_in_user_id and first_party:
         session.pop('just_logged_in', None)
         session.pop('just_registered', None)
+    if not notifs:
+        return _notif_nocache(jsonify([]))
 
     session_dismissed = _session_id_set('_session_notif_dismissed')
     session_active = _session_id_set('_session_notif_active')
@@ -170,17 +231,26 @@ def docs():
 
 @app.route('/prompts')
 def prompts_page():
-    return render_template('prompts.html')
-
-@app.route('/prompts/catalog')
-def prompts_catalog():
-    path = os.path.join(app.static_folder, 'prompts-catalog.json')
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception as e:
-        print(f'[PROMPTS] Failed to load catalog: {e}')
-        return jsonify({'error': 'Catalog unavailable'}), 500
+        catalog_url = url_for('prompts_catalog', v=_prompt_catalog_payload()[2])
+    except Exception:
+        catalog_url = url_for('prompts_catalog')
+    return render_template('prompts.html', catalog_url=catalog_url)
+
+# (mtime_ns, JSON body, etag), replaced whole like _PROMPT_ID_CACHE below.
+_PROMPT_CATALOG_CACHE = (None, b'', '')
+
+def _prompt_catalog_payload():
+    """The /prompts/catalog body, rebuilt only when the file changes. Raises on
+    a missing or unreadable catalog."""
+    global _PROMPT_CATALOG_CACHE
+    path = os.path.join(app.static_folder, 'prompts-catalog.json')
+    mtime = os.stat(path).st_mtime_ns
+    cached = _PROMPT_CATALOG_CACHE
+    if cached[0] == mtime:
+        return cached
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
     categories = data.get('categories') or []
     total = 0
     tags = set()
@@ -194,11 +264,31 @@ def prompts_catalog():
                 p['body'] = body.strip('\n')
             for t in (p.get('tags') or []):
                 tags.add(t)
-    return jsonify({
+    body = app.json.dumps({
         'total': total,
         'tags': sorted(tags),
         'categories': categories,
-    })
+    }).encode('utf-8')
+    _PROMPT_CATALOG_CACHE = (mtime, body, hashlib.sha256(body).hexdigest()[:16])
+    return _PROMPT_CATALOG_CACHE
+
+@app.route('/prompts/catalog')
+def prompts_catalog():
+    try:
+        _mtime, body, etag = _prompt_catalog_payload()
+    except Exception as e:
+        print(f'[PROMPTS] Failed to load catalog: {e}')
+        return jsonify({'error': 'Catalog unavailable'}), 500
+    # Flask-Compress sends the ETag back as "<etag>:<encoding>".
+    if any(t.split(':', 1)[0] == etag for t in request.if_none_match.as_set()):
+        resp = app.response_class(status=304, mimetype='application/json')
+    else:
+        resp = app.response_class(body, mimetype='application/json')
+    resp.set_etag(etag)
+    # The page links ?v=<etag>, so a matching URL never changes content.
+    resp.headers['Cache-Control'] = (
+        'public, max-age=31536000, immutable' if request.args.get('v') == etag else 'no-cache')
+    return resp
 
 # (mtime, ids), replaced whole so a reader never pairs a new mtime with old ids.
 _PROMPT_ID_CACHE = (None, frozenset())

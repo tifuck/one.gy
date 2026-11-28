@@ -1210,20 +1210,30 @@ curl -X DELETE https://{{ domain }}/apiv1/trash/empty \
 <script nonce="{{ csp_nonce }}">
 (function () {
   // Syntax colours only wrap text in spans: textContent (what Copy copies) is unchanged.
-  // highlight.js is deferred: the shown examples are coloured once it has run,
-  // the hidden tab panels when the browser is idle (or when their tab opens).
+  // highlight.js is deferred. Once it has run, examples are coloured as they
+  // near the viewport, and the rest (hidden tab panels too) in idle slices, so
+  // no single task colours the whole page and an opened tab finds its block ready.
   function highlight (el) {
     if (el._hl || typeof hljs === 'undefined') return
     el._hl = true
     hljs.highlightElement(el)
   }
   document.addEventListener('DOMContentLoaded', function () {
-    var hidden = []
-    document.querySelectorAll('.docs-main pre code[class*="language-"]').forEach(function (el) {
-      if (el.closest('[hidden]')) hidden.push(el)
-      else highlight(el)
+    var blocks = Array.prototype.slice.call(document.querySelectorAll('.docs-main pre code[class*="language-"]'))
+    if ('IntersectionObserver' in window) {
+      var sc = document.querySelector('.rd-scroll')
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) { if (e.isIntersecting) { io.unobserve(e.target); highlight(e.target) } })
+      }, { root: sc && sc.scrollHeight > sc.clientHeight ? sc : null, rootMargin: '600px 0px' })
+      blocks.forEach(function (el) { io.observe(el) })
+    }
+    var idle = window.requestIdleCallback || function (fn) {
+      setTimeout(function () { var end = Date.now() + 10; fn({ timeRemaining: function () { return end - Date.now() } }) }, 50)
+    }
+    idle(function sweep (deadline) {
+      while (blocks.length && deadline.timeRemaining() > 2) highlight(blocks.shift())
+      if (blocks.length) idle(sweep)
     })
-    ;(window.requestIdleCallback || function (fn) { setTimeout(fn, 50) })(function () { hidden.forEach(highlight) })
   })
 
   // Path placeholders ({file_id}) read as variables

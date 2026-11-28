@@ -31,24 +31,27 @@ r.style.setProperty('--rd-side-w',Math.max(150,Math.min(560,isFinite(v)&&v>0?v:d
 var pg=r.getAttribute('data-rd-page'),c=localStorage.getItem('onegy_rd_side_collapsed_'+pg);
 if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===null&&pg==='files'))r.setAttribute('data-rd-side','collapsed');
 }catch(e){}})();</script>
+  {% block head_early %}{% endblock %}
   <title>{% block title %}ONE.GY{% endblock %}</title>
   <link rel="icon" type="image/x-icon" href="{{ versioned_static('logos/favicon.ico') }}">
   <link rel="icon" type="image/png" sizes="32x32" href="{{ versioned_static('logos/favicon-32x32.png') }}">
   <link rel="apple-touch-icon" sizes="180x180" href="{{ versioned_static('logos/apple-touch-icon.png') }}">
   <link rel="manifest" href="{{ versioned_static('manifest.webmanifest') }}">
   <meta name="theme-color" content="#161616">
-  {# Same unversioned URL as the @font-face rules in core.css, or the preload is a second download #}
+  {# Same unversioned URL as the @font-face rules in core.css, or the preload is a second download.
+     Only 400/600: more preloads delay first paint on slow links (~300 ms at 1.6 Mbps), and the
+     metric-matched 'Inter Fallback' (core.css) keeps a late 500/700 from moving the layout. #}
   <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/inter-latin-400-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="{{ url_for('static', filename='vendor/fonts/inter-latin-600-normal.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{{ versioned_static('core.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('components.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('themes.css') }}">
-  <link rel="stylesheet" href="{{ versioned_static('editorial-base.css') }}">
+  {% if not ui_v2|default(true) %}<link rel="stylesheet" href="{{ versioned_static('editorial-base.css') }}">{% endif %}
   <link rel="stylesheet" href="{{ versioned_static('app-shell.css') }}">
   <link rel="stylesheet" href="{{ versioned_static('context-menu.css') }}">
   {% if ui_v2|default(true) %}<link rel="stylesheet" href="{{ versioned_static('ui-v2.css') }}">{% endif %}
   {% block head_extra %}{% endblock %}
-  {% if _mp_uid %}<link rel="stylesheet" href="{{ versioned_static('music.css') }}">{% endif %}
+  {% if _mp_uid and allow_music %}<link rel="stylesheet" href="{{ versioned_static('music.css') }}">{% endif %}
   {% if desktop_app %}<link rel="stylesheet" href="{{ versioned_static('desktop-shell.css') }}">{% endif %}
 </head>
 <body class="rd-body {{ 'ui-v2' if ui_v2|default(true) else 'rd-theme-editorial' }} rd-app{% if nav_ghost|default(false) %} rd-nav-ghost{% endif %}">
@@ -58,7 +61,7 @@ if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===nul
   {% block content %}{% endblock %}
 </main>
 
-{% if _mp_uid %}{% include 'partials/_music_player.html' %}{% endif %}
+{% if _mp_uid and allow_music %}{% include 'partials/_music_player.html' %}{% endif %}
 
 <div class="toast-container" id="toastContainer"></div>
 <script nonce="{{ csp_nonce }}">
@@ -74,19 +77,17 @@ if((c==='1'&&(pg!=='notes'||localStorage.getItem('onegy_notes_open')))||(c===nul
 <script src="{{ versioned_static('panel-resize.js') }}" defer></script>
 <script src="{{ versioned_static('context-menu.js') }}" defer></script>
 <script src="{{ versioned_static('theme-switch.js') }}" defer></script>
-{% if _mp_uid %}
+{% block scripts %}{% endblock %}
+{# After the page's own scripts: they run first. Fullscreen, FX and phantom load on use (music-player-core.js) #}
+{% if _mp_uid and allow_music %}
 <script src="{{ versioned_static('music-player-core.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-ui.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-fullscreen.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-fx.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-session.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-playback.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-queue.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-sync.js') }}" defer></script>
-<script src="{{ versioned_static('music-player-phantom.js') }}" defer></script>
 <script src="{{ versioned_static('music-player-devices.js') }}" defer></script>
 <script src="{{ versioned_static('music-player.js') }}" defer></script>
 {% endif %}
-{% block scripts %}{% endblock %}
 </body>
 </html>

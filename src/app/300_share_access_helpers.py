@@ -482,6 +482,73 @@ def collect_browsable_files(folder_id, is_owner, folder_is_public, root_has_link
     cache[cache_key] = result
     return result
 
+def _browsable_file_filters(is_owner, folder_is_public):
+    """SQL form of collect_browsable_files()'s per-file rules (temp/trash, expiry,
+    password, private registered file, non-owner E2EE key). The E2EE upload
+    boundary is a folder property: callers apply it per folder. Change both
+    together; tests/test_audit_browse_share_perf.py checks they agree."""
+    # LENGTH, not = '': MariaDB's PAD SPACE collations treat '  ' as equal to ''
+    # where Python's truthiness does not.
+    def _set(col):
+        return db.and_(col.isnot(None), db.func.length(col) > 0)
+    filters = [
+        File.is_temp_upload == False,
+        File.is_trashed == False,
+        db.or_(File.expires_at.is_(None), File.expires_at >= datetime.now(timezone.utc)),
+        db.not_(_set(File.password_hash)),
+    ]
+    if not is_owner:
+        if not folder_is_public:
+            filters.append(db.or_(File.is_public == True, File.registered_user_id.is_(None),
+                                  File.registered_user_id == 0))
+        filters.append(db.or_(
+            File.is_e2e_encrypted.is_(None), File.is_e2e_encrypted == False,
+            _set(File.link_encrypted_file_key), _set(File.folder_link_encrypted_file_key),
+            _set(File.file_key_salt), _set(File.e2e_salt),
+        ))
+    return filters
+
+def _browse_direct_file_stats(folder_id, is_owner, folder_is_public):
+    """Per-folder size, file count and E2EE file count of the files
+    collect_browsable_files() would return, from one GROUP BY instead of loading
+    every File row of the share. Returns (direct_sizes, direct_file_counts,
+    direct_e2e), keyed by folder id (direct children only)."""
+    folder_map, children_map = _browse_subtree_maps(folder_id)
+    subtree_ids = set(_bfs_folder_ids(folder_id, children_map))
+    rows = db.session.query(
+        File.folder_id, File.is_e2e_encrypted, db.func.count(File.id), db.func.sum(File.size)
+    ).filter(
+        File.folder_id.in_(subtree_ids), *_browsable_file_filters(is_owner, folder_is_public)
+    ).group_by(File.folder_id, File.is_e2e_encrypted).all()
+    direct_sizes = {}
+    direct_file_counts = {}
+    direct_e2e = {}
+    for fid, is_e2e, count, size in rows:
+        is_e2e = bool(is_e2e)
+        if not is_owner and not is_e2e and _e2e_upload_boundary_for_folder(folder_map.get(fid)):
+            continue
+        direct_sizes[fid] = direct_sizes.get(fid, 0) + int(size or 0)
+        direct_file_counts[fid] = direct_file_counts.get(fid, 0) + int(count)
+        if is_e2e:
+            direct_e2e[fid] = direct_e2e.get(fid, 0) + int(count)
+    return direct_sizes, direct_file_counts, direct_e2e
+
+def _browse_search_files(folder_id, is_owner, folder_is_public, query_lower, limit):
+    """Files collect_browsable_files() would return whose name contains
+    query_lower, first `limit` of them, matched and capped in SQL."""
+    folder_map, children_map = _browse_subtree_maps(folder_id)
+    subtree_ids = set(_bfs_folder_ids(folder_id, children_map))
+    q = File.query.filter(
+        File.folder_id.in_(subtree_ids),
+        db.func.lower(File.orig_name).contains(query_lower, autoescape=True),
+        *_browsable_file_filters(is_owner, folder_is_public)
+    )
+    if not is_owner:
+        boundary_ids = [fid for fid in subtree_ids if _e2e_upload_boundary_for_folder(folder_map.get(fid))]
+        if boundary_ids:
+            q = q.filter(db.or_(File.is_e2e_encrypted == True, ~File.folder_id.in_(boundary_ids)))
+    return q.limit(limit).all()
+
 def collect_browsable_folders(folder_id):
     """Collect all descendant folder objects using bulk query + BFS."""
     root_folder = db.session.get(Folder, folder_id)
@@ -523,19 +590,11 @@ def build_browse_breadcrumbs(current_folder_id, root_folder):
     return crumbs
 
 
-def _browse_tree_stats(folder, all_subfolders, all_files):
+def _browse_tree_stats(folder, all_subfolders, direct_sizes, direct_file_counts, direct_e2e):
     """Per-folder totals over a shared tree rooted at folder: recursive size, E2EE file count,
-    file count, and whether a folder mixes E2EE and plain subfolders.
+    file count, and whether a folder mixes E2EE and plain subfolders. The direct_* maps
+    come from _browse_direct_file_stats().
     Returns (folder_sizes, e2e_counts, file_counts, has_mixed), keyed by folder id."""
-    direct_sizes = {}
-    direct_e2e = {}
-    direct_file_counts = {}
-    for f in all_files:
-        fid = f.folder_id
-        direct_sizes[fid] = direct_sizes.get(fid, 0) + (f.size or 0)
-        direct_file_counts[fid] = direct_file_counts.get(fid, 0) + 1
-        if f.is_e2e_encrypted:
-            direct_e2e[fid] = direct_e2e.get(fid, 0) + 1
     children_map = {}
     for sf in all_subfolders:
         children_map.setdefault(sf.parent_id, []).append(sf.id)

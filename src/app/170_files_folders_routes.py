@@ -21,12 +21,42 @@ def files(folder_id=None):
                            current_folder=current_folder,
                            root_folder_name=user.root_folder_name or 'FILES')
 
+def _sidebar_tree_unchanged(user):
+    """(tree_seq, unchanged) for the listing routes. tree_seq is the user's
+    sync_seq: every field the sidebar tree shows (and every folder create,
+    trash, restore and delete) is a sync field (045_sync_feed.py), so a client
+    whose tree came with the same tree_seq has the current tree and it is left
+    out of the answer (sidebar_unchanged). Read before the folders are."""
+    tree_seq = int(user.sync_seq or 0)
+    return tree_seq, request.args.get('tree_seq', type=int) == tree_seq
+
+
+def _sidebar_tree_json(folders):
+    sidebar_folders = []
+    for fld in folders:
+        sf_entry = {
+            'id': fld.id,
+            'name': fld.name,
+            'parent_id': fld.parent_id,
+            'is_e2e': fld.is_e2e is True,
+        }
+        if fld.is_e2e is True and fld.encrypted_name:
+            sf_entry['encrypted_name'] = fld.encrypted_name
+            sf_entry['name_nonce'] = fld.name_nonce
+            sf_entry['encrypted_name_key'] = fld.encrypted_name_key
+            sf_entry['name_key_nonce'] = fld.name_key_nonce
+        sidebar_folders.append(sf_entry)
+    return sidebar_folders
+
+
 @app.route('/files/list')
 @app.route('/files/list/<int:folder_id>')
 @login_required
 def files_list_json(folder_id=None):
-    """JSON endpoint returning files and folders for the dashboard file browser."""
+    """JSON endpoint returning files and folders for the dashboard file browser.
+    ?tree_seq=N (optional): see _sidebar_tree_unchanged."""
     user = _current_session_user()
+    tree_seq, tree_unchanged = _sidebar_tree_unchanged(user)
 
     current_folder = None
     if folder_id:
@@ -247,23 +277,10 @@ def files_list_json(folder_id=None):
         # Include E2E thumbnail nonce (thumbnail data fetched lazily via /file/<id>/e2e-thumbnail)
         if f.is_e2e_encrypted and f.has_thumbnail and f.encrypted_thumbnail_nonce:
             file_entry['enc_thumb_nonce'] = f.encrypted_thumbnail_nonce
+        thumb_v = _thumbnail_version(f)
+        if thumb_v:
+            file_entry['thumb_v'] = thumb_v
         files_json.append(file_entry)
-
-    # Sidebar folder tree data
-    sidebar_folders = []
-    for fld in all_folders_list:
-        sf_entry = {
-            'id': fld.id,
-            'name': fld.name,
-            'parent_id': fld.parent_id,
-            'is_e2e': fld.is_e2e is True,
-        }
-        if fld.is_e2e is True and fld.encrypted_name:
-            sf_entry['encrypted_name'] = fld.encrypted_name
-            sf_entry['name_nonce'] = fld.name_nonce
-            sf_entry['encrypted_name_key'] = fld.encrypted_name_key
-            sf_entry['name_key_nonce'] = fld.name_key_nonce
-        sidebar_folders.append(sf_entry)
 
     # Build breadcrumb trail for SPA navigation — walk via the folder map to avoid lazy-load SQL
     breadcrumbs_json = []
@@ -292,7 +309,7 @@ def files_list_json(folder_id=None):
         current_folder_has_e2e_content = e2e_cnt > 0 or has_mixed
 
     storage_used = user.get_storage_used()
-    return jsonify({
+    payload = {
         'folders': folders_json,
         'files': files_json,
         'parent_is_public': parent_is_public,
@@ -300,20 +317,27 @@ def files_list_json(folder_id=None):
         'current_folder_is_e2e': current_folder.is_e2e if current_folder else True,
         'current_folder_has_e2e_content': current_folder_has_e2e_content,
         'trash_count': trash_count,
-        'sidebar_folders': sidebar_folders,
+        'tree_seq': tree_seq,
         'breadcrumbs': breadcrumbs_json,
         'current_folder_id': current_folder.id if current_folder else None,
         'storage_used_gb': round(storage_used / (1024 ** 3), 2),
         'storage_used_bytes': storage_used,
         'storage_limit_gb': round(user.storage_limit_gb, 0),
         'root_folder_name': user.root_folder_name or 'FILES',
-    })
+    }
+    if tree_unchanged:
+        payload['sidebar_unchanged'] = True
+    else:
+        payload['sidebar_folders'] = _sidebar_tree_json(all_folders_list)
+    return jsonify(payload)
 
 @app.route('/trash/list')
 @login_required
 def trash_list_json():
-    """JSON endpoint returning trashed files and folders."""
+    """JSON endpoint returning trashed files and folders.
+    ?tree_seq=N (optional): see _sidebar_tree_unchanged."""
     user = _current_session_user()
+    tree_seq, tree_unchanged = _sidebar_tree_unchanged(user)
     now_utc = datetime.now(timezone.utc)
 
     # Load all trashed data in bulk (2 queries total instead of O(N) recursive)
@@ -445,35 +469,27 @@ def trash_list_json():
             trash_entry['file_key_nonce'] = f.file_key_nonce
         if f.is_e2e_encrypted and f.has_thumbnail and f.encrypted_thumbnail_nonce:
             trash_entry['enc_thumb_nonce'] = f.encrypted_thumbnail_nonce
+        thumb_v = _thumbnail_version(f)
+        if thumb_v:
+            trash_entry['thumb_v'] = thumb_v
         files_json.append(trash_entry)
 
-    # Sidebar folder tree data (non-trashed folders for consistent sidebar)
-    all_sidebar_folders = Folder.query.filter_by(user_id=user.id, is_trashed=False).all()
-    sidebar_folders = []
-    for fld in all_sidebar_folders:
-        sf_entry = {
-            'id': fld.id,
-            'name': fld.name,
-            'parent_id': fld.parent_id,
-            'is_e2e': fld.is_e2e is True,
-        }
-        if fld.is_e2e is True and fld.encrypted_name:
-            sf_entry['encrypted_name'] = fld.encrypted_name
-            sf_entry['name_nonce'] = fld.name_nonce
-            sf_entry['encrypted_name_key'] = fld.encrypted_name_key
-            sf_entry['name_key_nonce'] = fld.name_key_nonce
-        sidebar_folders.append(sf_entry)
-
     storage_used = user.get_storage_used()
-    return jsonify({
+    payload = {
         'folders': folders_json,
         'files': files_json,
         'trash_count': len(folders_json) + len(files_json),
-        'sidebar_folders': sidebar_folders,
+        'tree_seq': tree_seq,
         'storage_used_gb': round(storage_used / (1024 ** 3), 2),
         'storage_used_bytes': storage_used,
         'storage_limit_gb': round(user.storage_limit_gb, 0),
-    })
+    }
+    # Sidebar folder tree data (non-trashed folders for consistent sidebar)
+    if tree_unchanged:
+        payload['sidebar_unchanged'] = True
+    else:
+        payload['sidebar_folders'] = _sidebar_tree_json(Folder.query.filter_by(user_id=user.id, is_trashed=False).all())
+    return jsonify(payload)
 
 def _validate_client_folder_dedupe_token(value):
     if value is None:

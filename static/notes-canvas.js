@@ -54,10 +54,13 @@
   // Highlights carry their own ink (a yellow highlight under the dark theme's light text was unreadable). Only text still
   // showing its container's colour is inked, so a text colour the user picked wins; innermost first for nested highlights.
   // notes.js keeps a copy of inkOn/inkHighlights for documents (no canvas engine there): change both together.
+  // Every colour is read before any is written (one style pass, not one per highlight). A write only reaches the node and
+  // what it contains, which come later in document order, so each read sees what the innermost-first walk saw.
   function inkHighlights (root) {
     var marks = root.querySelectorAll('[style*="background"]'); if (!marks.length) return
     var base = getComputedStyle(root).color
-    Array.prototype.slice.call(marks).reverse().forEach(function (node) { var ink = getComputedStyle(node).color === base && inkOn(getComputedStyle(node).backgroundColor); if (ink) node.style.color = ink })
+    var inks = Array.prototype.map.call(marks, function (node) { var style = getComputedStyle(node); return style.color === base && inkOn(style.backgroundColor) })
+    Array.prototype.forEach.call(marks, function (node, index) { if (inks[index]) node.style.color = inks[index] })
   }
   function sanitizeCanvasTree (root) {
     function clean (node) {
@@ -91,10 +94,20 @@
     sanitizeCanvasTree(template.content)
     return template.content
   }
-  function safeHtml (html) {
+  // The cleaned nodes in a detached div: its innerHTML is the stored form, its children can go on the page as they are.
+  function cleanTree (html) {
     var wrap = document.createElement('div')
     wrap.appendChild(sanitizeToFragment(html))
-    return wrap.innerHTML
+    return wrap
+  }
+  function safeHtml (html) { return cleanTree(html).innerHTML }
+  // The nodes normalize cleaned for this markup while the block still holds it (its first paint), else a fresh clean.
+  function cleanNodes (tree, html) {
+    if (!tree || tree.html !== html) return sanitizeToFragment(html)
+    var frag = document.createDocumentFragment()
+    while (tree.wrap.firstChild) frag.appendChild(tree.wrap.firstChild)
+    tree.html = null
+    return frag
   }
 
   function imageFiles (files) { return Array.prototype.slice.call(files || []).filter(function (file) { return file && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type || '') }) }
@@ -125,10 +138,15 @@
 
   function mount (container, opts) {
     opts = opts || {}
-    var source = opts.data && typeof opts.data === 'object' ? clone(opts.data) : { blocks: [] }
+    // The data is handed over (notes.js parses it fresh for each open) and normalised in place: a deep copy of it
+    // doubled the cost of opening a canvas full of pictures.
+    var source = opts.data && typeof opts.data === 'object' ? opts.data : { blocks: [] }
     var readonly = !!opts.readonly
     var onChange = opts.onChange || function () {}
     var onDirty = opts.onDirty || function () {}
+    // normalize cleans each text and cell once and keeps the cleaned nodes here for the block's first paint, which used
+    // to parse and clean the stored markup a second time. renderBlock drops them.
+    var cleanTrees = new WeakMap()
     var blocks = Array.isArray(source.blocks) ? source.blocks.map(normalize) : []
     var maxZ = Math.max(+source.maxZ || 0, blocks.reduce(function (m, b) { return Math.max(m, +b.zIndex || 0) }, 0))
     var nextId = source.nextId || 1
@@ -143,7 +161,7 @@
     var ac = new AbortController(), signal = ac.signal
     var penMode = 'pen', lineMode = 'arrow', inkId = null // inkId: the block the pen's strokes are joining
 
-    // Changes the block in place: every caller hands over its own copy (mount clones opts.data; undo, paste and
+    // Changes the block in place: every caller hands over its own copy (mount owns opts.data; undo, paste and
     // duplicate clone first; addBlock gets a fresh spec), so a second deep copy per block was wasted work.
     function normalize (block) {
       var b = block && typeof block === 'object' ? block : {}
@@ -153,8 +171,10 @@
       b.w = isFinite(+b.w) && +b.w > 0 ? +b.w : 180; b.h = isFinite(+b.h) && +b.h > 0 ? +b.h : 60
       b.y = isFinite(+b.y) ? Math.max(0, Math.min(Math.max(0, CANVAS_MAX_Y - b.h), +b.y)) : 0
       b.rotation = isFinite(+b.rotation) ? +b.rotation : 0; b.zIndex = isFinite(+b.zIndex) ? +b.zIndex : 0
-      if (typeof b.content === 'string') b.content = safeHtml(b.content)
-      if (Array.isArray(b.cells)) b.cells = b.cells.map(function (row) { return Array.isArray(row) ? row.map(function (cell) { return typeof cell === 'string' ? safeHtml(cell) : '' }) : [] })
+      var trees = {}
+      if (typeof b.content === 'string') { var wrap = cleanTree(b.content); b.content = wrap.innerHTML; trees.content = { html: b.content, wrap: wrap } }
+      if (Array.isArray(b.cells)) { trees.cells = []; b.cells = b.cells.map(function (row, r) { trees.cells[r] = []; return Array.isArray(row) ? row.map(function (cell, c) { if (typeof cell !== 'string') return ''; var cellWrap = cleanTree(cell); trees.cells[r][c] = { html: cellWrap.innerHTML, wrap: cellWrap }; return trees.cells[r][c].html }) : [] }) }
+      if (trees.content || trees.cells) cleanTrees.set(b, trees)
       if (b.type === 'image' && typeof b.src === 'string') b.src = safeUrl(b.src, true)
       if (b.style && typeof b.style === 'object') b.style.bgColor = safeColor(b.style.bgColor, 'transparent')
       ;['borderColor', 'headerBg', 'headerFg', 'stripedBg'].forEach(function (key) { if (b[key] != null) b[key] = safeColor(b[key], '') })
@@ -230,8 +250,23 @@
       button.onclick = fn; return button
     }
 
-    function byId (blockId) { return blocks.filter(function (b) { return b.id === String(blockId) })[0] || null }
+    // Lookups by id go through a Map, rebuilt once blocks is replaced or grows (it is only ever reassigned or pushed to).
+    // The first block with an id wins, as with the linear search this replaced.
+    var blockIndex = null, indexedBlocks = null, indexedLength = -1
+    function byId (blockId) {
+      if (indexedBlocks !== blocks || indexedLength !== blocks.length) {
+        blockIndex = new Map(); indexedBlocks = blocks; indexedLength = blocks.length
+        blocks.forEach(function (b) { if (!blockIndex.has(b.id)) blockIndex.set(b.id, b) })
+      }
+      return blockIndex.get(String(blockId)) || null
+    }
     function blockNode (blockId) { return world.querySelector('[data-id="' + CSS.escape(String(blockId)) + '"]') }
+    // Every block's node by id in one pass over the page's children (blockNode searches the whole page on each call).
+    function worldNodes () {
+      var nodes = new Map()
+      for (var child = world.firstElementChild; child; child = child.nextElementSibling) { var key = child.dataset.id; if (key != null && !nodes.has(key)) nodes.set(key, child) }
+      return nodes
+    }
     function isSelected (blockId) { return selectedIds.indexOf(String(blockId)) >= 0 }
     function selectedBlocks () { return selectedIds.map(byId).filter(Boolean) }
     function toWorld (clientX, clientY) { var rect = page.getBoundingClientRect(); return { x: Math.max(0, (clientX - rect.left) / zoom), y: Math.max(0, Math.min(CANVAS_MAX_Y, (clientY - rect.top) / zoom)) } }
@@ -322,8 +357,9 @@
       var g = gesture
       if (g && g.type === 'rotate') { var turned = byId(g.id), turnedNode = turned && blockNode(turned.id); if (turnedNode) turnedNode.style.transform = blockTransform(turned) }
       if (g && (g.type === 'move' || g.type === 'resize' || g.type === 'colresize')) {
-        (g.type === 'move' ? g.originals.map(function (original) { return byId(original.id) }) : [byId(g.id)]).forEach(function (block) {
-          var node = block && blockNode(block.id); if (!node) return
+        var nodes = worldNodes()
+        ;(g.type === 'move' ? g.originals.map(function (original) { return byId(original.id) }) : [byId(g.id)]).forEach(function (block) {
+          var node = block && nodes.get(block.id); if (!node) return
           if (g.type === 'colresize') { // only the column widths and their grips move; the table is rebuilt on release
             var widths = colWidthsPct(block), group = node.querySelector(':scope > table > colgroup'), grips = node.querySelectorAll(':scope > .fxc-colgrip'), edge = 0
             widths.forEach(function (width, index) { if (group && group.children[index]) group.children[index].style.width = width + '%'; edge += width; if (grips[index]) grips[index].style.left = 'calc(' + edge + '% - 4px)' })
@@ -379,7 +415,7 @@
       if (block.type === 'draw' || block.type === 'line') node = renderSvg(block)
       else if (block.type === 'image') {
         node = el('img', 'fxc-block fxc-img' + (isSelected(block.id) ? ' is-sel' : '') + (block.isBackground ? ' is-background' : '')); node.src = block.src || ''; node.alt = block.alt || ''; node.draggable = false
-        if (block.effects) { node.style.opacity = block.effects.opacity == null ? 1 : block.effects.opacity / 100; node.style.borderRadius = (+block.effects.radius || 0) + 'px'; node.style.clipPath = 'inset(' + (+block.effects.cropTop || 0) + '% ' + (+block.effects.cropRight || 0) + '% ' + (+block.effects.cropBottom || 0) + '% ' + (+block.effects.cropLeft || 0) + '%)' }
+        imageEffects(node, block)
       } else if (block.type === 'todo') node = renderTodo(block)
       else if (block.type === 'code') node = renderCode(block)
       else if (block.type === 'table') node = renderTable(block)
@@ -403,6 +439,27 @@
         var cell = event.target.closest('td'); if (block.type === 'table' && cell) showTableMenu(block, cell, event.clientX, event.clientY)
         else showBlockMenu(block, event.clientX, event.clientY)
       })
+      cleanTrees.delete(block)
+      return node
+    }
+    function imageEffects (node, block) {
+      if (block.effects) { node.style.opacity = block.effects.opacity == null ? 1 : block.effects.opacity / 100; node.style.borderRadius = (+block.effects.radius || 0) + 'px'; node.style.clipPath = 'inset(' + (+block.effects.cropTop || 0) + '% ' + (+block.effects.cropRight || 0) + '% ' + (+block.effects.cropBottom || 0) + '% ' + (+block.effects.cropLeft || 0) + '%)' }
+    }
+    // render() for one changed or added block: only its node is rebuilt, then settled the way render() settles every node
+    // (highlight ink, auto height); callers repaint the selection boxes. An added block is the last one in blocks, so it
+    // goes before the first node that sorts above it, where render() would put it.
+    function renderNode (block) {
+      var old = blockNode(block.id)
+      if (!old && block !== blocks[blocks.length - 1]) { render(); return blockNode(block.id) }
+      var node = renderBlock(block)
+      if (old) old.replaceWith(node)
+      else {
+        var next = world.firstElementChild
+        while (next) { var other = byId(next.dataset.id); if (other && other.zIndex > block.zIndex) break; next = next.nextElementSibling }
+        world.insertBefore(node, next)
+      }
+      node.querySelectorAll('.fxc-text-content, .fxc-table-card td').forEach(function (part) { inkHighlights(part) })
+      syncBlockHeight(block, node); hint.hidden = readonly || blocks.length > 0
       return node
     }
     function blockTransform (block) {
@@ -414,7 +471,7 @@
     function renderText (block) {
       // A fresh, still-empty container shows only the caret — the outline/chrome appears once it has content.
       var node = el('div', 'fxc-block fxc-text' + (isSelected(block.id) ? ' is-sel' : '') + (isEmptyTextContent(block.content) ? ' is-empty' : ''))
-      var content = el('div', 'fxc-text-content'); content.contentEditable = readonly ? 'false' : 'true'; content.spellcheck = true; content.appendChild(sanitizeToFragment(block.content))
+      var content = el('div', 'fxc-text-content'); content.contentEditable = readonly ? 'false' : 'true'; content.spellcheck = true; content.appendChild(cleanNodes((cleanTrees.get(block) || {}).content, block.content))
       if (block.style && block.style.bgColor && block.style.bgColor !== 'transparent') node.style.background = block.style.bgColor
       content.addEventListener('pointerdown', function (event) { if (readonly) return; if (event.ctrlKey || event.metaKey) { event.preventDefault(); event.stopPropagation(); selectBlock(block.id, true); vp.focus() } else selectBlock(block.id) })
       content.addEventListener('beforeinput', snapshotTyping)
@@ -450,7 +507,7 @@
           event.preventDefault()
           snapshot()
           if (!input.textContent.trim()) { exitTodo(block, index); return }
-          block.items.splice(index + 1, 0, { id: id(), text: '', checked: false }); render(); commit(); focusTodoItem(block.id, index + 1)
+          block.items.splice(index + 1, 0, { id: id(), text: '', checked: false }); renderNode(block); renderOverlay(); commit(); focusTodoItem(block.id, index + 1)
         }
         row.appendChild(check); row.appendChild(input); node.appendChild(row)
       })
@@ -469,9 +526,9 @@
     }
     function exitTodo (block, index) {
       block.items.splice(index, 1)
-      if (!block.items.length) { block.type = 'text'; block.content = ''; delete block.items; provisionalText[block.id] = true; render(); commit(); focusBlock(block.id); return }
+      if (!block.items.length) { block.type = 'text'; block.content = ''; delete block.items; provisionalText[block.id] = true; renderNode(block); renderOverlay(); commit(); focusBlock(block.id); return }
       var text = addBlock({ type: 'text', x: block.x, y: block.y + block.h + 8, w: block.w, h: 40, content: '', style: { bgColor: 'transparent' } }); provisionalText[text.id] = true
-      render(); selectBlock(text.id); commit(); focusBlock(text.id)
+      renderNode(block); renderNode(text); selectBlock(text.id); commit(); focusBlock(text.id)
     }
     function renderCode (block) {
       var node = el('div', 'fxc-block fxc-card fxc-code' + (isSelected(block.id) ? ' is-sel' : ''))
@@ -562,9 +619,9 @@
         table.style.clipPath = 'inset(0 round ' + (+preset.borderRadius) + 'px)'
         if ((preset.borderMode || 'all') === 'all' && preset.borderStyle !== 'none') node.style.setProperty('--fxc-round-edge', (+preset.borderWidth || 0) + 'px ' + (preset.borderStyle || 'solid') + ' ' + (preset.borderColor || 'transparent'))
       }
-      var widths = colWidthsPct(block)
+      var widths = colWidthsPct(block), trees = (cleanTrees.get(block) || {}).cells || []
       var colgroup = document.createElement('colgroup'); widths.forEach(function (width) { var col = document.createElement('col'); col.style.width = width + '%'; colgroup.appendChild(col) }); table.appendChild(colgroup)
-      for (var r = 0; r < block.rows; r++) { var tr = document.createElement('tr'); block.cells[r] = block.cells[r] || []; for (var c = 0; c < block.cols; c++) { var td = document.createElement('td');         td.contentEditable = readonly ? 'false' : 'true'; td.dataset.row = r; td.dataset.col = c; td.appendChild(sanitizeToFragment(block.cells[r][c])); styleTableCell(td, preset, r, block.rows); (function (rr, cc, cell) { cell.addEventListener('beforeinput', snapshotTyping); cell.addEventListener('paste', pasteEditable); bindRichDrop(cell); cell.oninput = function () { block.cells[rr][cc] = cell.innerHTML; queueFit(block); scheduleCommit() }; cell.onkeydown = function (event) { tableCellKeydown(event, block, rr, cc) } })(r, c, td); tr.appendChild(td) } table.appendChild(tr) }
+      for (var r = 0; r < block.rows; r++) { var tr = document.createElement('tr'); block.cells[r] = block.cells[r] || []; for (var c = 0; c < block.cols; c++) { var td = document.createElement('td');         td.contentEditable = readonly ? 'false' : 'true'; td.dataset.row = r; td.dataset.col = c; td.appendChild(cleanNodes(trees[r] && trees[r][c], block.cells[r][c])); styleTableCell(td, preset, r, block.rows); (function (rr, cc, cell) { cell.addEventListener('beforeinput', snapshotTyping); cell.addEventListener('paste', pasteEditable); bindRichDrop(cell); cell.oninput = function () { block.cells[rr][cc] = cell.innerHTML; queueFit(block); scheduleCommit() }; cell.onkeydown = function (event) { tableCellKeydown(event, block, rr, cc) } })(r, c, td); tr.appendChild(td) } table.appendChild(tr) }
       node.appendChild(table)
       if (!readonly) {
         // OneNote-style draggable column borders (last grip resizes the final column / table width).
@@ -644,12 +701,7 @@
             if (part.arrowMode === 'end' || part.arrowMode === 'both') { node.appendChild(arrowMarker(markerBlock, 'end')); line.setAttribute('marker-end', 'url(#fxc-arrow-end-' + markerBlock.id + ')') }
             if (part.arrowMode === 'both') { node.appendChild(arrowMarker(markerBlock, 'start')); line.setAttribute('marker-start', 'url(#fxc-arrow-start-' + markerBlock.id + ')') }
             node.appendChild(line)
-          } else if (part.d) {
-            var partPath = document.createElementNS('http://www.w3.org/2000/svg', 'path'); partPath.setAttribute('d', part.d); partPath.setAttribute('fill', 'none'); partPath.setAttribute('stroke', part.strokeColor || '#0e8fd6'); partPath.setAttribute('stroke-width', +part.strokeWidth || 3); partPath.setAttribute('stroke-linecap', 'round'); partPath.setAttribute('stroke-linejoin', 'round'); partPath.setAttribute('data-part', index)
-            if (part.strokeOpacity) partPath.setAttribute('stroke-opacity', +part.strokeOpacity || 1)
-            if (part.dx || part.dy) partPath.setAttribute('transform', 'translate(' + (+part.dx || 0) + ' ' + (+part.dy || 0) + ')')
-            node.appendChild(partPath)
-          }
+          } else if (part.d) node.appendChild(inkPathNode(part, index))
         })
         return node
       }
@@ -660,6 +712,12 @@
       if (block.type === 'line' && (block.arrowMode === 'end' || block.arrowMode === 'both')) { var marker = arrowMarker(block, 'end'); node.appendChild(marker); path.setAttribute('marker-end', 'url(#fxc-arrow-end-' + block.id + ')') }
       if (block.type === 'line' && block.arrowMode === 'both') { var startMarker = arrowMarker(block, 'start'); node.appendChild(startMarker); path.setAttribute('marker-start', 'url(#fxc-arrow-start-' + block.id + ')') }
       node.appendChild(path); return node
+    }
+    function inkPathNode (part, index) {
+      var partPath = document.createElementNS('http://www.w3.org/2000/svg', 'path'); partPath.setAttribute('d', part.d); partPath.setAttribute('fill', 'none'); partPath.setAttribute('stroke', part.strokeColor || '#0e8fd6'); partPath.setAttribute('stroke-width', +part.strokeWidth || 3); partPath.setAttribute('stroke-linecap', 'round'); partPath.setAttribute('stroke-linejoin', 'round'); partPath.setAttribute('data-part', index)
+      if (part.strokeOpacity) partPath.setAttribute('stroke-opacity', +part.strokeOpacity || 1)
+      if (part.dx || part.dy) partPath.setAttribute('transform', 'translate(' + (+part.dx || 0) + ' ' + (+part.dy || 0) + ')')
+      return partPath
     }
     function pointsPath (block) { var points = Array.isArray(block.points) ? block.points : []; if (!points.length) return ''; return points.map(function (point, index) { return (index ? 'L' : 'M') + (point[0] - block.x) + ' ' + (point[1] - block.y) }).join(' ') }
     function arrowMarker (block, side) { var marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker'); marker.id = 'fxc-arrow-' + side + '-' + block.id; marker.setAttribute('viewBox', '0 0 10 10'); marker.setAttribute('refX', side === 'start' ? '2' : '8'); marker.setAttribute('refY', '5'); marker.setAttribute('markerWidth', '6'); marker.setAttribute('markerHeight', '6'); marker.setAttribute('orient', 'auto'); var p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', side === 'start' ? 'M10 0L0 5L10 10z' : 'M0 0L10 5L0 10z'); p.setAttribute('fill', block.strokeColor || '#0e8fd6'); marker.appendChild(p); return marker }
@@ -768,7 +826,7 @@
       if (!fitsLimits(blocks.concat([spec]))) return
       snapshot(); var block = addBlock(spec)
       if (kind === 'text') { provisionalText[block.id] = true; growingText[block.id] = true }
-      render(); selectBlock(block.id); if (kind !== 'text') commit(); setTool('select'); focusBlock(block.id)
+      renderNode(block); selectBlock(block.id); if (kind !== 'text') commit(); setTool('select'); focusBlock(block.id)
     }
     function addSelectedImage () {
       var files = imageFiles(imageInput.files); if (!files.length) return
@@ -791,7 +849,7 @@
           snapshot()
           if (replacing) { block.src = src; block.alt = file.name || block.alt || ''; if (!block.w || !block.h) { block.w = width; block.h = height } }
           else block = addBlock({ type: 'image', x: insertPoint.x - width / 2, y: insertPoint.y - height / 2, w: width, h: height, src: src, alt: file.name || '', effects: { opacity: 100, radius: 0, flipH: false, flipV: false } })
-          render(); selectBlock(block.id); commit(); setTool('select')
+          renderNode(block); selectBlock(block.id); commit(); setTool('select')
         }
         image.src = src
       }, function () { window.showToast && window.showToast('COULD NOT READ IMAGE', 'error') })
@@ -893,7 +951,7 @@
       var radius = document.createElement('input'); radius.type = 'range'; radius.min = 0; radius.max = 50; radius.value = effects.radius || 0
       var opacitySnap = false, radiusSnap = false
       opacity.onpointerdown = opacity.onfocus = function () { if (!opacitySnap) { snapshot(); opacitySnap = true } }; radius.onpointerdown = radius.onfocus = function () { if (!radiusSnap) { snapshot(); radiusSnap = true } }
-      opacity.oninput = function () { effects.opacity = +opacity.value; render(); scheduleCommit() }; radius.oninput = function () { effects.radius = +radius.value; render(); scheduleCommit() }
+      opacity.oninput = function () { effects.opacity = +opacity.value; paintSoon(block); scheduleCommit() }; radius.oninput = function () { effects.radius = +radius.value; paintSoon(block); scheduleCommit() }
       panel.appendChild(fieldRow('Opacity', opacity)); panel.appendChild(fieldRow('Corners', radius))
       var toggles = el('div', 'fxc-pop-buttons')
       toggles.appendChild(controlButton('FLIP H', function () { snapshot(); effects.flipH = !effects.flipH; render(); commit() }))
@@ -904,8 +962,21 @@
     }
     function imageCropControls (block) {
       var panel = el('div', 'fxc-pop-controls'), effects = block.effects || (block.effects = {})
-      ;[['Top', 'cropTop'], ['Right', 'cropRight'], ['Bottom', 'cropBottom'], ['Left', 'cropLeft']].forEach(function (spec) { var input = document.createElement('input'), snapped = false; input.type = 'range'; input.min = 0; input.max = 45; input.value = +effects[spec[1]] || 0; input.onpointerdown = input.onfocus = function () { if (!snapped) { snapshot(); snapped = true } }; input.oninput = function () { effects[spec[1]] = +input.value; render(); scheduleCommit() }; panel.appendChild(fieldRow(spec[0], input)) })
+      ;[['Top', 'cropTop'], ['Right', 'cropRight'], ['Bottom', 'cropBottom'], ['Left', 'cropLeft']].forEach(function (spec) { var input = document.createElement('input'), snapped = false; input.type = 'range'; input.min = 0; input.max = 45; input.value = +effects[spec[1]] || 0; input.onpointerdown = input.onfocus = function () { if (!snapped) { snapshot(); snapped = true } }; input.oninput = function () { effects[spec[1]] = +input.value; paintSoon(block); scheduleCommit() }; panel.appendChild(fieldRow(spec[0], input)) })
       var reset = controlButton('RESET CROP', function () { snapshot(); effects.cropTop = effects.cropRight = effects.cropBottom = effects.cropLeft = 0; render(); commit() }); panel.appendChild(reset); return panel
+    }
+    // A slider tick repaints only its block, once per frame (each tick used to rebuild the whole page). The history step is
+    // still taken when the drag begins and the save still follows the last tick (scheduleCommit).
+    var sliderFrame = 0, sliderQueue = []
+    function paintSoon (block) { if (sliderQueue.indexOf(block) < 0) sliderQueue.push(block); if (!sliderFrame) sliderFrame = requestAnimationFrame(paintSliders) }
+    function paintSliders () {
+      sliderFrame = 0; var queue = sliderQueue; sliderQueue = []
+      if (destroyed) return
+      queue.forEach(function (block) {
+        var node = byId(block.id) === block && blockNode(block.id); if (!node) return // undone or removed meanwhile
+        if (block.type === 'image') imageEffects(node, block); else renderNode(block)
+      })
+      refreshOverlay()
     }
     function showImageCropMenu (block, x, y) { openMenu(x, y, 'Crop picture', [{ node: imageCropControls(block) }]) }
     function strokeControls (block) {
@@ -913,7 +984,7 @@
       width.type = 'range'; width.min = 1; width.max = 20; width.value = +block.strokeWidth || 3; picker.type = 'color'; picker.value = block.strokeColor || '#0e8fd6'
       var widthSnap = false, colorSnap = false
       width.onpointerdown = width.onfocus = function () { if (!widthSnap) { snapshot(); widthSnap = true } }; picker.onpointerdown = picker.onfocus = function () { if (!colorSnap) { snapshot(); colorSnap = true } }
-      width.oninput = function () { block.strokeWidth = +width.value; if (Array.isArray(block.paths)) block.paths.forEach(function (part) { if (part) part.strokeWidth = +width.value }); render(); scheduleCommit() }; picker.oninput = function () { block.strokeColor = picker.value; if (Array.isArray(block.paths)) block.paths.forEach(function (part) { if (part) part.strokeColor = picker.value }); render(); scheduleCommit() }
+      width.oninput = function () { block.strokeWidth = +width.value; if (Array.isArray(block.paths)) block.paths.forEach(function (part) { if (part) part.strokeWidth = +width.value }); paintSoon(block); scheduleCommit() }; picker.oninput = function () { block.strokeColor = picker.value; if (Array.isArray(block.paths)) block.paths.forEach(function (part) { if (part) part.strokeColor = picker.value }); paintSoon(block); scheduleCommit() }
       panel.appendChild(fieldRow('Stroke', width)); panel.appendChild(fieldRow('Colour', picker))
       if (block.type === 'line') { panel.appendChild(el('div', 'fxc-pop-label', 'Arrowheads')); var arrows = el('div', 'fxc-pop-buttons'); [['NONE', 'none'], ['END', 'end'], ['BOTH', 'both']].forEach(function (choice) { arrows.appendChild(controlButton(choice[0], function () { snapshot(); block.arrowMode = choice[1]; render(); commit() }, block.arrowMode === choice[1])) }); panel.appendChild(arrows) }
       return panel
@@ -1180,10 +1251,14 @@
       if (finished.type === 'tap') { if (finished.create && !readonly && Math.hypot(event.clientX - finished.clientX, event.clientY - finished.clientY) < 8) createAt('text', toWorld(event.clientX, event.clientY), true); return }
       if (finished.type === 'marquee') {
         if (!finished.moved && finished.clickCreate && !readonly) { createAt('text', toWorld(event.clientX, event.clientY), true); return }
-        render(); return
+        paintSelection(); return
       }
       if (finished.type === 'scrollpan' || !finished.before) return // !before: a click, nothing moved
-      render(); commit() // re-render with gesture cleared so the page grows to fit moved/resized content
+      // The frames painted the gesture; settle what the last one may have missed, then the overlay with the gesture cleared
+      // so the page grows to fit. A move only changes positions; the eraser already swapped its nodes.
+      if (finished.type === 'move') { var nodes = worldNodes(); finished.originals.forEach(function (original) { var moved = byId(original.id), node = moved && nodes.get(moved.id); if (node) { node.style.left = moved.x + 'px'; node.style.top = moved.y + 'px' } }) }
+      else if (finished.type !== 'erase') { var changed = byId(finished.id); if (changed) renderNode(changed) }
+      renderOverlay(); commit()
     }
     vp.addEventListener('pointerup', endPointer)
     vp.addEventListener('pointercancel', function (event) {
@@ -1225,7 +1300,7 @@
       event.preventDefault()
       var spec = { id: id(), type: 'text', x: Math.max(0, centre.x - 180), y: Math.max(0, centre.y - 40), w: 360, h: 40, content: content, style: { bgColor: 'transparent' } }
       if (!fitsLimits(blocks.concat([spec]))) return
-      snapshot(); var pasted = addBlock(spec); render(); selectBlock(pasted.id); commit()
+      snapshot(); var pasted = addBlock(spec); renderNode(pasted); selectBlock(pasted.id); commit()
     })
     // The eraser looks under the pointer once per frame (up to five hit tests each), at the latest spot it reached.
     var eraseFrame = 0
@@ -1250,9 +1325,9 @@
     // Edges and centres of the dragged block catch those of the blocks it passes (hold Alt to move freely).
     function snapMove (block, state, free) {
       state.guides = null; if (free) return
-      var slop = 6 / zoom, moving = state.originals.map(function (original) { return original.id }), best = { x: null, y: null }
+      var slop = 6 / zoom, moving = new Set(state.originals.map(function (original) { return original.id })), best = { x: null, y: null }
       blocks.forEach(function (other) {
-        if (moving.indexOf(other.id) >= 0 || provisionalText[other.id]) return
+        if (moving.has(other.id) || provisionalText[other.id]) return
         ;[['x', 'w'], ['y', 'h']].forEach(function (axis) {
           [0, 0.5, 1].forEach(function (mine) { [0, 0.5, 1].forEach(function (theirs) {
             var line = other[axis[0]] + other[axis[1]] * theirs, gap = line - (block[axis[0]] + block[axis[1]] * mine)
@@ -1331,7 +1406,7 @@
       spec.id = id()
       if (!fitsLimits(blocks.concat([spec]))) { if (undo.length) undo.pop(); render(); return } // drop startDraw's snapshot
       var block = addBlock(spec)
-      render(); if (current.type === 'line') { selectBlock(block.id); commit(); setTool('select') } else { inkId = block.id; commit() }
+      renderNode(block); renderOverlay(); if (current.type === 'line') { selectBlock(block.id); commit(); setTool('select') } else { inkId = block.id; commit() }
     }
     function inkPart (stroke, d) { var part = { d: d, strokeColor: stroke.strokeColor, strokeWidth: stroke.strokeWidth }; if (stroke.strokeOpacity) part.strokeOpacity = stroke.strokeOpacity; return part }
     // Handwriting: a stroke drawn near the pen's previous one joins that block (a block per stroke ran a page of writing
@@ -1348,21 +1423,32 @@
       var paths = ink.paths.map(function (old) { return Object.assign({}, old, { dx: (+old.dx || 0) + shiftX, dy: (+old.dy || 0) + shiftY }) })
       paths.push(Object.assign(inkPart(stroke, d), { dx: minX - left, dy: minY - top }))
       var grown = Object.assign({}, ink, { x: left, y: top, w: Math.max(ink.x + ink.w, maxX) - left, h: Math.max(ink.y + ink.h, maxY) - top, paths: paths })
-      if (!fitsLimits(blocks.map(function (block) { return block === ink ? grown : block }))) { if (undo.length) undo.pop() } else { Object.assign(ink, grown); commit() }
-      render(); return true
+      if (!fitsLimits(blocks.map(function (block) { return block === ink ? grown : block }))) { if (undo.length) undo.pop(); render(); return true }
+      Object.assign(ink, grown); commit()
+      var node = blockNode(ink.id); if (node) growInk(ink, node, shiftX || shiftY); else render()
+      renderOverlay(); return true
+    }
+    // The page gets only the new stroke and the block's new box (render() rebuilt every block, and every path of this one);
+    // the earlier paths move only when the block grew up or left.
+    function growInk (block, node, shifted) {
+      node.style.left = block.x + 'px'; node.style.top = block.y + 'px'; node.style.width = block.w + 'px'; node.style.height = block.h + 'px'
+      node.setAttribute('viewBox', '0 0 ' + block.w + ' ' + block.h); node.setAttribute('width', block.w); node.setAttribute('height', block.h)
+      if (shifted) node.querySelectorAll('[data-part]').forEach(function (path) { var part = block.paths[+path.getAttribute('data-part')]; path.setAttribute('transform', 'translate(' + (+part.dx || 0) + ' ' + (+part.dy || 0) + ')') })
+      var index = block.paths.length - 1; node.appendChild(inkPathNode(block.paths[index], index))
     }
 
-    // Undo history: image data URLs (up to 16MB each) are stored once and
-    // referenced by token, and the whole history is capped by size as well as count.
-    // ponytail: interned images live until unmount; prune them if sessions churn through many images.
+    // Undo history: image data URLs (up to 16MB each) and pen stroke path data (an ink block holds up to 1500) are
+    // stored once and referenced by token, and the whole history is capped by size as well as count. Both strings are
+    // never edited, only replaced, so a stroke's snapshot no longer copies every earlier stroke.
+    // ponytail: interned images and strokes live until unmount; prune them if sessions churn through many images.
     var HISTORY_MAX_CHARS = 64 * 1024 * 1024, srcTokens = new Map(), tokenSrcs = new Map()
     function packSrc (key, value) {
-      if (key !== 'src' || typeof value !== 'string' || !value) return value
+      if ((key !== 'src' && key !== 'd') || typeof value !== 'string' || !value) return value
       var token = srcTokens.get(value)
       if (!token) { token = '\u0000src' + srcTokens.size; srcTokens.set(value, token); tokenSrcs.set(token, value) }
       return token
     }
-    function unpackSrc (key, value) { return key === 'src' && tokenSrcs.has(value) ? tokenSrcs.get(value) : value }
+    function unpackSrc (key, value) { return (key === 'src' || key === 'd') && tokenSrcs.has(value) ? tokenSrcs.get(value) : value }
     function packBlocks () { return JSON.stringify(blocks, packSrc) }
     function unpackBlocks (packed) { return JSON.parse(packed, unpackSrc).map(normalize) }
     function snapshot () {
@@ -1411,13 +1497,13 @@
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); doRedo() }
       if ((event.ctrlKey || event.metaKey) && (event.key === '+' || event.key === '=')) { event.preventDefault(); zoomBy(1.2); return }
       if ((event.ctrlKey || event.metaKey) && event.key === '-') { event.preventDefault(); zoomBy(1 / 1.2); return }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') { event.preventDefault(); selectedIds = blocks.filter(function (block) { return !provisionalText[block.id] }).map(function (block) { return block.id }); selected = selectedIds[selectedIds.length - 1] || null; render(); return }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') { event.preventDefault(); selectedIds = blocks.filter(function (block) { return !provisionalText[block.id] }).map(function (block) { return block.id }); selected = selectedIds[selectedIds.length - 1] || null; paintSelection(); return }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && selectedIds.length) { event.preventDefault(); copyBlocks(selectedBlocks()) }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'x' && selectedIds.length) { event.preventDefault(); cutBlocks(selectedBlocks()) }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && blockClipboard) { event.preventDefault(); pasteBlock() }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && selectedIds.length) { event.preventDefault(); duplicateBlocks(selectedBlocks()) }
       // A nudge (and its key repeat) only moves the selected blocks' nodes and boxes; the save follows the last one.
-      if (selectedIds.length && /^Arrow(Left|Right|Up|Down)$/.test(event.key)) { event.preventDefault(); if (!event.repeat) snapshot(); var amount = event.shiftKey ? 10 : 1, dx = event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0, dy = event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0; selectedBlocks().forEach(function (block) { block.x += dx; block.y += dy; clampBlockY(block); var node = blockNode(block.id); if (node) { node.style.left = block.x + 'px'; node.style.top = block.y + 'px' } }); refreshOverlay(); scheduleCommit(); return }
+      if (selectedIds.length && /^Arrow(Left|Right|Up|Down)$/.test(event.key)) { event.preventDefault(); if (!event.repeat) snapshot(); var amount = event.shiftKey ? 10 : 1, dx = event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0, dy = event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0, nodes = worldNodes(); selectedBlocks().forEach(function (block) { block.x += dx; block.y += dy; clampBlockY(block); var node = nodes.get(block.id); if (node) { node.style.left = block.x + 'px'; node.style.top = block.y + 'px' } }); refreshOverlay(); scheduleCommit(); return }
       var keys = { v: 'select', t: 'text', i: 'image', o: 'todo', b: 'table', c: 'code', p: 'pen', l: 'line' }; if (keys[event.key] && !event.ctrlKey && !event.metaKey) setTool(keys[event.key])
     }
     function onKeyUp (event) { if (event.code === 'Space') { spaceHeld = false; vp.classList.remove('is-pan-ready') } }
@@ -1438,7 +1524,7 @@
     }
 
     setTool('select'); render()
-    return { getData: getData, peekData: liveData, flush: flush, focusStart: focusStart, destroy: function () { flush(false); destroyed = true; closePopover(); if (longPress) clearTimeout(longPress.timer); ac.abort(); clearTimeout(changeTimer); clearTimeout(editSnapshotTimer); clearTimeout(selectionTimer); [gestureFrame, fitFrame, drawFrame, eraseFrame].forEach(function (frame) { if (frame) cancelAnimationFrame(frame) }); container.innerHTML = '' } }
+    return { getData: getData, peekData: liveData, flush: flush, focusStart: focusStart, destroy: function () { flush(false); destroyed = true; closePopover(); if (longPress) clearTimeout(longPress.timer); ac.abort(); clearTimeout(changeTimer); clearTimeout(editSnapshotTimer); clearTimeout(selectionTimer); [gestureFrame, fitFrame, drawFrame, eraseFrame, sliderFrame].forEach(function (frame) { if (frame) cancelAnimationFrame(frame) }); container.innerHTML = '' } }
   }
 
   window.FxCanvas = { mount: mount, inkHighlights: inkHighlights, shrinkImage: shrinkImage }

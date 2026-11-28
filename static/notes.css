@@ -11,7 +11,7 @@
   min-height:0; overflow:hidden; background:var(--bg);
   /* anchors the absolutely-positioned .rd-resizer / .nt-pane-toggle */
   position:relative;
-  transition:grid-template-columns .22s cubic-bezier(.2,.85,.25,1);
+  /* No column transition (Files has one): every frame of it laid the open note out again, pictures, tables and all. */
 }
 /* The seam lights up on focus (app-shell.css); skip ui-v2's generic ring */
 .nt-shell .rd-resizer:focus-visible{ outline:none; }
@@ -25,7 +25,7 @@
   position:absolute; top:5px; left:max(8px, calc(var(--rd-side-eff) - 38px)); z-index:2;
   display:inline-grid; place-items:center; width:30px; height:30px; padding:0; border:0; border-radius:8px;
   background:none; color:var(--text-dim); cursor:pointer;
-  transition:left .22s cubic-bezier(.2,.85,.25,1), background .12s, color .12s;
+  transition:background .12s, color .12s;
 }
 .nt-pane-toggle:hover{ background:var(--hover); color:var(--text); }
 .nt-pane-toggle svg{ width:18px; height:18px; }
@@ -118,6 +118,8 @@
   padding:7px 10px; border:0; border-radius:9px; background:none; cursor:pointer;
   text-align:left; color:var(--text); font:inherit; transition:background .1s;
   -webkit-tap-highlight-color:transparent;
+  /* Rows out of view are not laid out or painted (long lists) */
+  content-visibility:auto; contain-intrinsic-size:none auto 50px;
 }
 .nt-item + .nt-item{ margin-top:1px; }
 .nt-item:hover{ background:var(--hover); }
@@ -159,6 +161,12 @@
 .nt-items .nt-skel-list{ padding:8px 6px 0; }
 .nt-skel-title{ display:block; width:96px; height:14px; }
 .nt-skel-item{ height:40px; }
+/* The editor while the note open when the page was left reopens (notes.js editorSkeleton) */
+.nt-ed-skel{ display:flex; flex-direction:column; gap:12px; padding:12px 24px; }
+.nt-ed-skel-bar{ height:30px; margin-bottom:14px; }
+.nt-ed-skel-line{ height:14px; width:86%; }
+.nt-ed-skel-line:nth-child(3n){ width:62%; }
+.nt-ed-skel-line:nth-child(3n+1){ width:74%; }
 /* Only fresh data loads set .is-anim; re-renders from clicks/search must not replay it */
 .nt-list.is-anim .nt-item{ animation:rdFade .2s ease backwards; animation-delay:calc(min(var(--i,0),10)*14ms); }
 

@@ -757,18 +757,8 @@ window.ManageModalE2E = function(m) {
   }
 
   // One file of a folder batch; true when the server accepted the plaintext.
+  // The wrapped file key is the listing's (_decryptFolderFileNames checked it).
   async function _decryptFolderFile(fileInfo, masterKey) {
-    const keyResp = await fetch(`/f/${fileInfo.id}/key-info`)
-    if (!keyResp.ok) {
-      console.error(`[MANAGE MODAL] key-info failed for ${fileInfo.name} (HTTP ${keyResp.status})`)
-      return false
-    }
-    const keyInfo = await keyResp.json()
-    if (!keyInfo.encrypted_file_key) {
-      console.error(`[MANAGE MODAL] No file key for ${fileInfo.name}`)
-      return false
-    }
-
     const encResp = await fetch(`/f/${fileInfo.id}/encrypted`)
     if (!encResp.ok) {
       console.error(`[MANAGE MODAL] Failed to download ${fileInfo.name}`)
@@ -777,7 +767,7 @@ window.ManageModalE2E = function(m) {
     const encData = await encResp.arrayBuffer()
 
     const decrypted = await OneGyCrypto.decryptFileForDownload(
-      encData, keyInfo.encrypted_file_key, keyInfo.file_key_nonce, masterKey
+      encData, fileInfo.encrypted_file_key, fileInfo.file_key_nonce, masterKey
     )
 
     const makeResp = await _postForm(`/f/${fileInfo.id}/make-public`, _makePublicForm(decrypted, fileInfo.name))

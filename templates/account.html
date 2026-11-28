@@ -8,8 +8,20 @@
 <button class="rd-modal-close" type="button" data-rd-modal-close aria-label="Close"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
 {%- endmacro %}
 
+{% block head_early %}
+{% if allow_api_keys %}
+{# The key list starts now instead of after every deferred script; account.js
+   takes this response for its first load (loadKeys). #}
+<script nonce="{{ csp_nonce }}">(function () {
+  var p = fetch('/account/api-keys', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  p.catch(function () {});
+  window.__ACC_KEYS__ = p;
+})();</script>
+{% endif %}
+{% endblock %}
+
 {% block content %}
-<div class="rd-page acc-layout">
+<div class="rd-page acc-layout" data-crypto-src="{{ versioned_static('crypto.js') }}">
   <header class="rd-page-head">
     <h1 class="rd-page-title">Account</h1>
     <p class="rd-page-sub">Profile, appearance, security and access for this account.</p>
@@ -432,7 +444,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ versioned_static('crypto.js') }}" data-hljs="{{ versioned_static('vendor/highlight/highlight.min.js') }}" data-hljs-enhance="{{ versioned_static('vendor/highlight/hljs-enhance.js') }}" defer></script>
+{# crypto.js loads on first need (account.js loadCrypto). #}
 <script src="{{ versioned_static('quick-unlock.js') }}" defer></script>
 <script src="{{ versioned_static('confirm-modal.js') }}" defer></script>
 <script src="{{ versioned_static('account.js') }}" defer></script>

@@ -5,6 +5,16 @@
 {% set ui_v2 = true %}
 {% block head_extra %}<link rel="stylesheet" href="{{ versioned_static('prompts.css') }}">{% endblock %}
 
+{% block head_early %}
+{# The catalog starts now instead of after every deferred script;
+   prompts.js takes this response for its first load. #}
+<script nonce="{{ csp_nonce }}">(function () {
+  var p = fetch({{ catalog_url|tojson }}, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+  p.catch(function () {});
+  window.__PR_PREFETCH__ = p;
+})();</script>
+{% endblock %}
+
 {% block content %}
 <div class="rd-page rd-page-wide pr-layout">
   <header class="rd-page-head pr-head">

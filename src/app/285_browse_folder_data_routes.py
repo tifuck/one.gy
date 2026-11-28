@@ -71,10 +71,13 @@ def browse_folder_json(share_token):
     
     # Collect ALL subfolders recursively (for sidebar tree)
     all_subfolders = collect_browsable_folders(folder.id)
-    all_files = collect_browsable_files(folder.id, is_owner, folder.is_public or folder_is_browsable, bool(folder.is_link_shared))
+    # Totals of the files collect_browsable_files() would return, aggregated in
+    # SQL: every folder click used to load every File row of the share.
+    direct_sizes, direct_file_counts, direct_e2e = _browse_direct_file_stats(
+        folder.id, is_owner, folder.is_public or folder_is_browsable)
     
     folder_sizes, browse_e2e_counts, browse_file_counts, browse_has_mixed = _browse_tree_stats(
-        folder, all_subfolders, all_files)
+        folder, all_subfolders, direct_sizes, direct_file_counts, direct_e2e)
     
     # Serialize
     previewable_ext = ['jpg','jpeg','png','gif','bmp','svg','webp','mp4','webm','ogg','mov','m4v','mkv','mp3','wav','ogg','m4a','aac','flac','txt','md','log','csv','json','xml','yaml','yml','py','js','html','css','sh','ini','cfg','conf','c','cpp','h','hpp','lua','rb','rs','go','java','ts','tsx','jsx','toml','bat','ps1','sql','r','swift','kt','php','pl','diff','makefile','pdf']
@@ -226,8 +229,8 @@ def browse_folder_json(share_token):
         'root_folder_name': folder.name,
         'root_folder_encrypted': root_folder_enc if root_folder_enc else None,
         'sidebar_folders': sidebar_json,
-        'total_file_count': len(all_files),
-        'is_e2e_folder': any(f.is_e2e_encrypted for f in all_files),
+        'total_file_count': sum(direct_file_counts.values()),
+        'is_e2e_folder': any(direct_e2e.values()),
     })
 
 @app.route('/f/<share_token>/search')
@@ -252,19 +255,17 @@ def browse_folder_search(share_token):
     if not query:
         return jsonify({'files': [], 'folders': []})
 
-    # Collect all accessible files and folders recursively.
+    query_lower = query.lower()
+
+    # Search files: the collect_browsable_files() rules, matched and capped in SQL
+    # (every debounced keystroke used to load every File row of the share).
     # AUDIT FIX (finding 13): pass the ANCESTOR-DERIVED folder_is_browsable
     # flag -- the stale `folder.is_public or folder.is_browsable` dropped the
     # browsable-ancestor result this route had already resolved above, so a
     # share reached THROUGH a browsable ancestor searched fewer files than
     # the per-level listing showed.
-    all_files = collect_browsable_files(folder.id, is_owner, folder.is_public or folder_is_browsable, bool(folder.is_link_shared))
+    matched_files = _browse_search_files(folder.id, is_owner, folder.is_public or folder_is_browsable, query_lower, 50)
     all_subfolders = collect_browsable_folders(folder.id)
-
-    query_lower = query.lower()
-
-    # Search files
-    matched_files = [f for f in all_files if query_lower in f.orig_name.lower()][:50]
 
     # Search folders
     matched_folders = [sf for sf in all_subfolders if query_lower in sf.name.lower()][:50]

@@ -1,8 +1,11 @@
 // ─── ONE.GY Music Player: Web Audio graph, visualizer and chaos mode ───
+// Loaded on first use (mp._loadPart): when the visualizer can show (core's
+// _startFx stand-in) or on the first FX button click.
 ;(function(mp) {
   'use strict'
 
   const { _lsSet, audio, _setVolume } = mp
+  const _FX_FRAME_MS = 30  // drawn at 30 fps: every other frame at 60 Hz
 
   // ─── Visualizer State ──────────────────────────────────────────
   let _analyser = null
@@ -17,6 +20,7 @@
   let _fxFill = null      // horizon fill gradient
   let _fxStroke = ''
   let _fxResizeObs = null
+  let _fxLastT = 0        // rAF time of the last drawn frame
 
   // ─── Chaos Mode State ──────────────────────────────────────────
   let _chaosClickTimes = []
@@ -53,51 +57,24 @@
     _lsSet('mp_fx', mp._fxEnabled ? '1' : '0')
     if (mp.fxBtn) mp.fxBtn.classList.toggle('mp-btn-active', mp._fxEnabled)
 
-    if (mp._fxEnabled && mp.isVisible) {
+    if (mp._fxEnabled) {
       _startFx()
     } else {
       _stopFx()
     }
   }
 
-  function _ensureAudioContext() {
-    if (mp._audioCtx) return true
-    try {
-      mp._audioCtx = new (window.AudioContext || window.webkitAudioContext)()
-      _analyser = mp._audioCtx.createAnalyser()
-      _analyser.fftSize = 2048
-      _analyser.smoothingTimeConstant = 0.6
-      _analyser.minDecibels = -85
-      _analyser.maxDecibels = -20
-      mp._gainNode = mp._audioCtx.createGain()
-      mp._gainNode.gain.value = mp._desiredVolume
-      return true
-    } catch (e) {
-      console.warn('[MUSIC PLAYER] Web Audio not available:', e)
-      return false
-    }
-  }
-
-  /**
-   * Resume the AudioContext if it exists and is suspended.
-   * Browsers suspend AudioContexts after inactivity or when the tab is
-   * backgrounded.  Once createMediaElementSource(audio) has been called,
-   * ALL audio output is routed through the AudioContext — if it stays
-   * suspended, the user hears nothing even though audio.play() succeeds.
-   * Calling resume() when already 'running' is a harmless no-op.
-   */
-  function _resumeAudioContext() {
-    if (mp._audioCtx && mp._audioCtx.state === 'suspended') {
-      mp._audioCtx.resume().catch(function(err) {
-        console.warn('[MUSIC PLAYER] AudioContext resume failed:', err)
-      })
-    }
-  }
-
   function _connectSource() {
     if (mp._fxConnected) return
-    if (!_ensureAudioContext()) return
+    if (!mp._ensureAudioContext()) return
     try {
+      if (!_analyser) {
+        _analyser = mp._audioCtx.createAnalyser()
+        _analyser.fftSize = 2048
+        _analyser.smoothingTimeConstant = 0.6
+        _analyser.minDecibels = -85
+        _analyser.maxDecibels = -20
+      }
       if (!_sourceNode) {
         _sourceNode = mp._audioCtx.createMediaElementSource(audio)
         // Once connected, volume is controlled via _gainNode -- keep
@@ -110,15 +87,20 @@
       mp._gainNode.connect(mp._audioCtx.destination)
       mp._fxConnected = true
       _setVolume(mp._desiredVolume)  // volume moves from the element to the gain node
-      _resumeAudioContext()
+      mp._resumeAudioContext()
     } catch (e) {
       console.warn('[MUSIC PLAYER] Failed to connect audio source:', e)
     }
   }
 
+  // Only where the canvas shows (mp._fxShown), and never for a mirror: its
+  // audio is a silent keepalive, if any. Called again on every 'playing'.
   function _startFx() {
+    if (!mp._fxShown() || mp._syncPhantomMode || !mp._fxCanvas) return
     _connectSource()
-    if (!mp._fxCanvas || !mp._fxCtx || !_analyser) return
+    if (!mp._fxCtx) mp._fxCtx = mp._fxCanvas.getContext('2d')
+    if (!mp._fxCtx || !_analyser) return
+    if (mp.playerEl && mp.playerEl.classList.contains('mp-fx-active') && _fxFill) { _fxRun(); return }
     if (mp.playerEl) mp.playerEl.classList.add('mp-fx-active')
     // The canvas follows the bar's width and chaos mode's height
     if (!_fxResizeObs && typeof ResizeObserver === 'function') {
@@ -137,7 +119,7 @@
   // Draw a frame; _fxLoop goes on only while audio plays (and until the line
   // has settled after a pause), never on phantom mode's silent keepalive.
   function _fxRun() {
-    if (_fxRafId || !mp._fxEnabled || !mp.isVisible || !_analyser || !mp._fxCtx || !mp._fxCanvas) return
+    if (_fxRafId || !mp._fxShown() || !_analyser || !mp._fxCtx || !mp._fxCanvas) return
     _fxRafId = requestAnimationFrame(_fxLoop)
   }
 
@@ -162,7 +144,7 @@
   }
 
   function _resizeFxCanvas() {
-    if (!mp._fxCanvas) return
+    if (!mp._fxCanvas || !mp._fxCtx) return
     const rect = mp._fxCanvas.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
     _fxW = rect.width
@@ -195,9 +177,11 @@
     return 0.55 + logPos * 1.05
   }
 
-  function _fxLoop() {
+  function _fxLoop(t) {
     _fxRafId = null
-    if (!mp._fxEnabled || !mp.isVisible || !_analyser || !mp._fxCtx || !mp._fxCanvas) return
+    if (!mp._fxShown() || !_analyser || !mp._fxCtx || !mp._fxCanvas) return
+    if (t - _fxLastT < _FX_FRAME_MS) { _fxRafId = requestAnimationFrame(_fxLoop); return }
+    _fxLastT = t
     if (!_fxFill) _resizeFxCanvas()
 
     const bufLen = _analyser.frequencyBinCount   // 1024 bins (fftSize 2048)
@@ -226,6 +210,10 @@
     const freqMax = 18000
     const logMin = Math.log(freqMin)
     const logMax = Math.log(freqMax)
+    // Asymmetric smoothing, per 60 Hz frame (chaos mode: snappier attack for
+    // punchier bass), applied twice per drawn frame at 30 fps
+    const attack = 1 - Math.pow(1 - (mp._chaosMode ? 0.6 : 0.45), 2)
+    const decay = 1 - Math.pow(1 - (mp._chaosMode ? 0.15 : 0.12), 2)
 
     for (let i = 0; i < barCount; i++) {
       // Exponential frequency boundaries for this bar
@@ -268,10 +256,7 @@
       const compressed = cleaned > 0 ? Math.pow(cleaned, compPow) : 0
       const clamped = Math.min(1.0, compressed)
 
-      // Asymmetric smoothing: chaos mode has snappier attack for punchier bass
       const prev = _fxSmoothed[i]
-      const attack = mp._chaosMode ? 0.6 : 0.45
-      const decay  = mp._chaosMode ? 0.15 : 0.12
       _fxSmoothed[i] = clamped > prev
         ? prev + (clamped - prev) * attack
         : prev + (clamped - prev) * decay
@@ -580,17 +565,10 @@
     }
   }
 
-  // Re-trigger FX canvas measurement when window resizes
-  window.addEventListener('resize', () => {
-    if (mp._fxEnabled && mp._fxCanvas) _resizeFxCanvas()
-  })
-  // The loop stops while paused: playback picks it up again
-  audio.addEventListener('playing', _fxRun)
-
+  // The canvas follows the bar through the ResizeObserver (_startFx); the
+  // loop stops while paused and core's 'playing' listener (_startFx) picks it up again.
   Object.assign(mp, {
     _toggleFx,
-    _ensureAudioContext,
-    _resumeAudioContext,
     _startFx,
     _stopFxLoop,
     _stopChaos,
